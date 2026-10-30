@@ -4,9 +4,9 @@
 
 A MIDI editor for the modern age, made with love. 💛
 
-*duckmidi* aims to offer a simple workspace for compositions, arrangements, or just listening to your favorite MIDI tunes. It combines familiar music-editing tools with quality-of-life features that make working with MIDI easier.
+*duckmidi* aims to offer a simple workspace for compositions, arrangements, or just listening to your favorite MIDI tunes. It combines familiar music-editing tools with quality-of-life features that make working with MIDI 1.0 easier.
 
-***duckmidi* is in active development.**
+**This program is in active development; expect bugs.**
 
 <img src="assets/duckmidi-preview.jpg" width="100%">
 
@@ -50,23 +50,23 @@ Tested against *Release* v0.10.0
       - CPU Usage (all threads): ~0.3%
       - GPU Usage: ~0%
    - ***Loading* a ~48k note midi file with ~143k events**
-      - RAM Usage: ~700 MiB
+      - RAM Usage: ~700 MiB - ~1.0 GiB
       - CPU Usage (all threads): ~4.4%
       - GPU Usage: ~13%
    - **Large MIDI file loaded, window active**
-      - RAM Usage: ~650 MiB
+      - RAM Usage: ~1.0 MiB
       - CPU Usage (all threads): ~5.2%
       - GPU Usage: ~13%
    - **Large MIDI file, window inactive & window minimized**
-      - RAM Usage: ~650 MiB
+      - RAM Usage: ~1.0 GiB
       - CPU Usage (all threads): ~0.1%
       - GPU Usage: ~0%
    - **Large MIDI file, playback, active**
-      - RAM Usage: ~660 MiB
+      - RAM Usage: ~1.1 GiB - The test lied >:(
       - CPU Usage (all threads): ~5.2%
       - GPU Usage: ~12.3%
    - **Large MIDI file, WAV Export**
-      - RAM Usage: ~680 MiB
+      - RAM Usage: Can't confirm yet.
       - CPU Usage (all threads): ~10%
       - GPU Usage: ~12.8%
       - Rendering Time: 80 seconds for 16:37 of audio
@@ -75,11 +75,20 @@ Tested against *Release* v0.10.0
 ## Planned
 
 - Core
+   - Performance
+      - Improve Resource consumption
+      - Improve GUI performance; it suffers with complex MIDI compositions
+   - GUI
+      - Pattern colors
+      - 'Unslop' parts of the GUI
+      - More keyboard shortcuts.
    - MIDI Input Support
-   - GUI for Polyphonic Aftertouch
+   - Better implementation for Polyphonic Aftertouch
    - API Expansion
 - Plugins
-   - M64 Loop Points
+   - M64 - Export to repo
+   - M64 - Automatic adjustment of sequence memory code to match export requirements
+   - M64 - Loop Points
    - OoT/MM Exporting
 - Probably a lot more
 

@@ -273,7 +273,7 @@
 #define DM_TEXT_VIBRATO_RATE_CC76_CONTROLS_VIBRATO_SPEED_WHERE_SUPPORTED_THE_RESULT_DEPE "Vibrato rate (CC76) controls vibrato speed where supported. The result depends on the SoundFont or device. The section restores the underlying value when it ends."
 
 /* Window, panel and menu titles */
-#define DM_TEXT_ABOUT_APP_VERSION "duckmidi v0.10.0"
+#define DM_TEXT_ABOUT_APP_VERSION "duckmidi v" DM_APP_VERSION
 #define DM_TEXT_ABOUT_TAGLINE "a midi editor, made with love 💛"
 #define DM_TEXT_AUTOMATION_LANE "Automation lane"
 #define DM_TEXT_CHANNEL_STRIPS "Channel strips"
