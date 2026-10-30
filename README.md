@@ -54,7 +54,7 @@ Tested against *Release* v0.10.0
       - CPU Usage (all threads): ~4.4%
       - GPU Usage: ~13%
    - **Large MIDI file loaded, window active**
-      - RAM Usage: ~1.0 MiB
+      - RAM Usage: ~1.0 GiB
       - CPU Usage (all threads): ~5.2%
       - GPU Usage: ~13%
    - **Large MIDI file, window inactive & window minimized**
