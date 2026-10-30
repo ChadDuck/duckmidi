@@ -6,7 +6,7 @@ Audio export supports 16/24-bit PCM, LAME MP3, native AAC, Vorbis, Opus, and FLA
 
 The build enables LGPL version 3 and disables GPL and nonfree components. Codec dependencies are statically linked into the FFmpeg DLLs; duckmidi dynamically links those DLLs.
 
-The [build recipe](../../tools/build-ffmpeg-minimal.sh) pins source URLs and SHA-256 hashes. See [rebuild and validation instructions](../../docs/ffmpeg-build.md). Temporary sources, downloads, and objects can be removed after validation; this SDK remains sufficient for normal application builds.
+The [build recipe](../../tools/build-ffmpeg-minimal.sh) pins source URLs and SHA-256 hashes. See [rebuild instructions](../../docs/ffmpeg-build.md). Temporary sources, downloads, and objects can be removed; this SDK remains sufficient for normal application builds.
 
 Source archives:
 
