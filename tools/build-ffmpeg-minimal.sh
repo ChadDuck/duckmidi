@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run from MSYS2 bash; installs no system packages. See vendor/ffmpeg-9.0/README.md.
+# Internal MSYS2 recipe; launch with tools/build-ffmpeg-minimal.cmake.
 set -euo pipefail
 export PATH="/ucrt64/bin:/usr/bin:$PATH"
 root=$(cd "$(dirname "$0")/.." && pwd)

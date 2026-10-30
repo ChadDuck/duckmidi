@@ -94,11 +94,11 @@ static void first_boot(Editor *e) {
     assert(dm_unpack(&project,sample.data,sample.size,error,sizeof(error)));project.soundfont[0]=0;
     assert(dm_pack(&project,&packed)&&dm_write("build/development/bundle-fixture/projects/funky-beat.duck",packed.data,packed.size,error,sizeof(error)));
     dm_project_free(&project);dm_bytes_free(&sample);dm_bytes_free(&packed);
-    copy_fixture("agents/reports/generated-programs.sf2","build/development/bundle-fixture/assets/FluidR3.sf2");
+    copy_fixture("agents/reports/generated-programs.sf2","build/development/bundle-fixture/assets/TimGM6mb.sf2");
     Editor *boot=calloc(1,sizeof(*boot));assert(boot);editor_init(boot,e->window,e->renderer,e->audio,"build/development/bundle-fixture/",false);audio_job(e->audio);
-    assert(boot->active&&boot->project.pattern_count>0&&strstr(boot->preferred_font,"assets/FluidR3.sf2")&&strstr(boot->project.soundfont,"bundle-fixture/assets/FluidR3.sf2")&&strstr(boot->path,"projects/funky-beat.duck"));editor_free(boot);free(boot);
+    assert(boot->active&&boot->project.pattern_count>0&&strstr(boot->preferred_font,"assets/TimGM6mb.sf2")&&strstr(boot->project.soundfont,"bundle-fixture/assets/TimGM6mb.sf2")&&strstr(boot->path,"projects/funky-beat.duck"));editor_free(boot);free(boot);
     boot=calloc(1,sizeof(*boot));assert(boot);editor_init(boot,e->window,e->renderer,e->audio,"build/development/bundle-fixture/",false);audio_job(e->audio);
-    assert(!boot->active&&strstr(boot->preferred_font,"assets/FluidR3.sf2"));editor_free(boot);free(boot);
+    assert(!boot->active&&strstr(boot->preferred_font,"assets/TimGM6mb.sf2"));editor_free(boot);free(boot);
     puts("PASS isolated production first boot loads supplied project/default font once; subsequent launch retains preferences without reopening sample");
 }
 int main(void) {

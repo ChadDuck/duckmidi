@@ -2,7 +2,7 @@
 
 *duckmidi* uses the [MIT license](LICENSE).
 
-Dependency licenses are kept in `vendor/licenses/` and the vendored source trees. Production packages include FluidR3; packaged notices and license texts are in `licenses/`.
+Dependency licenses are kept in `vendor/licenses/` and the vendored source trees. Releases labeled 'Full' packages the 'TimGM6mb' SoundFont; notices and license texts are in `licenses/`.
 
 | Component | Use | License text | Upstream source |
 | --- | --- | --- | --- |
@@ -12,7 +12,7 @@ Dependency licenses are kept in `vendor/licenses/` and the vendored source trees
 | RtMidi 6.0.0 | External MIDI and C wrapper | [MIT](vendor/licenses/RtMidi-MIT.txt) | https://github.com/thestk/rtmidi/tree/6.0.0 |
 | FluidSynth 2.5.4 | Dynamically linked synthesizer | [LGPL 2.1](vendor/licenses/FluidSynth-LGPL.txt), upstream permits 2.1 or later | https://github.com/FluidSynth/fluidsynth/tree/v2.5.4 |
 | FFmpeg 9.0.2 | Dynamically linked audio encoders and containers; minimal Windows LGPL build | [LGPL 3](vendor/licenses/FFmpeg-LGPL3.txt), incorporating [GPL 3](vendor/licenses/GCC-GPL3.txt) | https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz |
-| FluidR3 GM | Default SoundFont in production packages | [MIT](vendor/licenses/FluidR3-LICENSE.txt) | https://sources.debian.org/src/fluid-soundfont/ |
+| TimGM6mb GM | Default SoundFont in production packages | [GPL 2](vendor/licenses/TimGM6mb-GPL2.txt) | https://sources.debian.org/src/timgm6mb-soundfont/1.3-5/ |
 | GLib / GObject / GThread | FluidSynth runtime dependencies | [LGPL](vendor/licenses/GLib-LGPL.txt) | https://gitlab.gnome.org/GNOME/glib |
 | libsndfile | Sample/audio file dependency | [LGPL](vendor/licenses/libsndfile-LGPL.txt) | https://github.com/libsndfile/libsndfile |
 | libintl | Runtime internationalization dependency | [LGPL](vendor/licenses/libintl-LGPL.txt) | https://www.gnu.org/software/gettext/ |

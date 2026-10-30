@@ -72,7 +72,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
         ed_preference_load(e);
         if(first_launch) {
             char font[DM_PATH],sample[DM_PATH];SDL_PathInfo font_info,sample_info;
-            bool paths=snprintf(font,sizeof(font),"%sassets/FluidR3.sf2",base)<(int)sizeof(font)&&snprintf(sample,sizeof(sample),"%sprojects/funky-beat.duck",base)<(int)sizeof(sample);
+            bool paths=snprintf(font,sizeof(font),"%sassets/TimGM6mb.sf2",base)<(int)sizeof(font)&&snprintf(sample,sizeof(sample),"%sprojects/funky-beat.duck",base)<(int)sizeof(sample);
             if(paths&&SDL_GetPathInfo(font,&font_info)&&font_info.type==SDL_PATHTYPE_FILE&&SDL_GetPathInfo(sample,&sample_info)&&sample_info.type==SDL_PATHTYPE_FILE) {
                 ed_load(e,sample);
                 if(e->active){snprintf(e->preferred_font,DM_PATH,"%s",font);ed_preference_save(e);}

@@ -1,5 +1,5 @@
 build/
-vendor/FluidR3.sf2
+/build-menu.bat
 agents/
 vendor/*.zip
 vendor/*.tar.gz

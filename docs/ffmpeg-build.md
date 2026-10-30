@@ -10,12 +10,20 @@ Install [MSYS2](https://www.msys2.org/). In the **MSYS2** terminal, install the 
 pacman -S --needed make pkgconf diffutils perl tar curl mingw-w64-ucrt-x86_64-gcc
 ```
 
-From the project root, run:
+Install [CMake](https://cmake.org/download/) 3.22 or newer and add it to PATH. From the project root, run:
 
 ```console
-& C:/msys64/usr/bin/bash.exe tools/build-ffmpeg-minimal.sh
+cmake -P tools/build-ffmpeg-minimal.cmake
 ```
 
-The script downloads pinned source archives, checks their SHA-256 hashes, and builds under `build/development/ffmpeg-minimal-work/`. It does not install system packages. The result is `build/development/ffmpeg-minimal-work/sdk/`, containing `bin/`, `include/`, and `lib/`.
+The launcher uses `C:/msys64` by default. For another installation, run `cmake -DMSYS2_ROOT=D:/msys64 -P tools/build-ffmpeg-minimal.cmake` (quote the entire `-DMSYS2_ROOT=...` argument if its path contains spaces).
 
-Replace the matching SDK directories in `vendor/ffmpeg-9.0/` with those staged directories, then run the normal CMake Release build; see the [project build instructions](../README.md#building).
+To check prerequisites and recipe syntax without downloading or compiling, run:
+
+```console
+cmake -DCHECK_ONLY=ON -P tools/build-ffmpeg-minimal.cmake
+```
+
+The recipe downloads pinned source archives, checks their SHA-256 hashes, and builds under `build/development/ffmpeg-minimal-work/`. The result is `build/development/ffmpeg-minimal-work/sdk/`. Build logs and configuration captures go under `agents/reports/ffmpeg-minimal/`. This rebuild compiles only FFmpeg and its codec dependencies.
+
+Replace the matching SDK directories in `vendor/ffmpeg-9.0/` with those staged directories when ready to use the rebuilt SDK. Application compilation is a separate step; see [project build instructions](../README.md#building).

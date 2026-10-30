@@ -8,7 +8,7 @@ A MIDI editor for the modern age, made with love. 💛
 
 ***duckmidi* is in active development.**
 
-<img src="assets/duckmidi-preview.jpg" width="50%">
+<img src="assets/duckmidi-preview.jpg" width="100%">
 
 ## \*Disclaimer\*
 
@@ -34,52 +34,61 @@ While the design, usability, UI, and goals of this program were dictated by a hu
 
 Tested against *Release* v0.10.0
 
-- **Window active, idling**
-   - RAM Usage: ~300 MiB
-   - CPU Usage (all threads): ~1%
-   - GPU Usage: ~1%
-- **Window inactive, idling**
-   - RAM Usage: ~300 MiB
-   - CPU Usage (all threads): ~0.4%
-   - GPU Usage: ~0.1%
-- **Window minimized, idling**
-   - RAM Usage: ~300 MiB
-   - CPU Usage (all threads): ~0.3%
-   - GPU Usage: ~0%
-- ***Loading* a ~48k note midi file with ~143k events**
-   - RAM Usage: ~700 MiB
-   - CPU Usage (all threads): ~4.4%
-   - GPU Usage: ~13%
-- **Large MIDI file loaded, window active**
-   - RAM Usage: ~650 MiB
-   - CPU Usage (all threads): ~5.2%
-   - GPU Usage: ~13%
-- **Large MIDI file, window inactive & window minimized**
-   - RAM Usage: ~650 MiB
-   - CPU Usage (all threads): ~0.1%
-   - GPU Usage: ~0%
-- **Large MIDI file, playback, active**
-   - RAM Usage: ~660 MiB
-   - CPU Usage (all threads): ~5.2%
-   - GPU Usage: ~12.3%
-- **Large MIDI file, WAV Export**
-   - RAM Usage: ~680 MiB
-   - CPU Usage (all threads): ~10%
-   - GPU Usage: ~12.8%
-   - Rendering Time: 80 seconds for 16:37 of audio
+<details>
+  <summary>Click to expand</summary>
+
+   - **Window active, idling**
+      - RAM Usage: ~300 MiB
+      - CPU Usage (all threads): ~1%
+      - GPU Usage: ~1%
+   - **Window inactive, idling**
+      - RAM Usage: ~300 MiB
+      - CPU Usage (all threads): ~0.4%
+      - GPU Usage: ~0.1%
+   - **Window minimized, idling**
+      - RAM Usage: ~300 MiB
+      - CPU Usage (all threads): ~0.3%
+      - GPU Usage: ~0%
+   - ***Loading* a ~48k note midi file with ~143k events**
+      - RAM Usage: ~700 MiB
+      - CPU Usage (all threads): ~4.4%
+      - GPU Usage: ~13%
+   - **Large MIDI file loaded, window active**
+      - RAM Usage: ~650 MiB
+      - CPU Usage (all threads): ~5.2%
+      - GPU Usage: ~13%
+   - **Large MIDI file, window inactive & window minimized**
+      - RAM Usage: ~650 MiB
+      - CPU Usage (all threads): ~0.1%
+      - GPU Usage: ~0%
+   - **Large MIDI file, playback, active**
+      - RAM Usage: ~660 MiB
+      - CPU Usage (all threads): ~5.2%
+      - GPU Usage: ~12.3%
+   - **Large MIDI file, WAV Export**
+      - RAM Usage: ~680 MiB
+      - CPU Usage (all threads): ~10%
+      - GPU Usage: ~12.8%
+      - Rendering Time: 80 seconds for 16:37 of audio
+</details>
 
 ## Planned
 
-- MIDI Input Support
-- GUI for Polyphonic Aftertouch
-- Additional Export options, primarily OoT/MM.
-- API Expansion
-- Probably a lot more.
+- Core
+   - MIDI Input Support
+   - GUI for Polyphonic Aftertouch
+   - API Expansion
+- Plugins
+   - M64 Loop Points
+   - OoT/MM Exporting
+- Probably a lot more
 
 
 ## Getting Started
 
-*Releases* includes *FluidR3* as the default SoundFont and a sample project that opens on initial launch. For other builds, select a SoundFont in **Edit > Preferences**, then create a project or open a MIDI file.
+*Full* builds include *TimGM6mb.sf2* as the default SoundFont and a sample project that opens on initial launch. 
+
+*Core* builds contain only the *duckmidi* program and necessary libraries; you can select a local SoundFont in **Edit > Preferences**, then create a project or open a MIDI file.
 
 See the [user guide](docs/user-guide.md), [M64 export guide](docs/sm64-export.md), and [plugin API reference](docs/plugin-api.md).
 
@@ -117,7 +126,7 @@ cmake --build build/development/cmake
 ctest --test-dir build/development/cmake --output-on-failure
 ```
 
-Open `build/development/cmake/bin/duckmidi.exe`. Its runtime DLLs and `plugins/` folder are placed beside it. Choose `vendor/FluidR3.sf2` in Preferences, or select another SoundFont.
+Open `build/development/cmake/bin/duckmidi.exe`. Its runtime DLLs and `plugins/` folder are placed beside it. Choose `vendor/TimGM6mb.sf2` in Preferences, or select another SoundFont.
 
 ### macOS
 
@@ -194,7 +203,7 @@ Select a SoundFont in **Edit > Preferences** after launching.
 
 ### Package a Build
 
-To include the *FluidR3* SoundFont and sample project, enable the *Production* option and rebuild:
+To include the *TimGM6mb* SoundFont and sample project, enable the *Production* option and rebuild:
 
 ```console
 cmake -S . -B build/development/cmake -DDUCKMIDI_PRODUCTION=ON
@@ -215,7 +224,7 @@ cmake --install build/development/cmake --prefix build/development/package --str
 
 ## Libraries and Assets
 
-*duckmidi* uses SDL3, Dear ImGui, FluidSynth, FFmpeg, RtMidi, and Iconoir artwork. Production packages also include the *FluidR3* SoundFont. See [third-party notices](THIRD_PARTY_NOTICES.md) for licenses and sources.
+*duckmidi* uses SDL3, Dear ImGui, FluidSynth, FFmpeg, RtMidi, and Iconoir artwork. *Full* builds include *TimGM6mb.sf2*. See [third-party notices](THIRD_PARTY_NOTICES.md) for licenses and sources.
 
 The M64 converter's public API is in `include/m64export/`; its implementation and plugin adapter are in `libraries/m64export/`.
 
