@@ -1,0 +1,23 @@
+build/
+vendor/FluidR3.sf2
+agents/
+vendor/*.zip
+vendor/*.tar.gz
+*.duck-tmp
+*.duck-tmp-*
+tools/python/
+tools/packages/
+# Local validation scripts; keep build and asset-maintenance tools included.
+tools/test-*.ps1
+tools/test-*.py
+tools/compare-midi-*.py
+tools/generate_test_soundfont.py
+# Generated Python caches.
+__pycache__/
+*.py[cod]
+*.keys
+duckmidi.ini
+samples/
+AGENTS.md
+todo.md
+todo-future.md
