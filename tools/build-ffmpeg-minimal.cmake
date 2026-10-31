@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 # A native entry point: callers do not need environment setup.
-if(WIN32)
+if(CMAKE_HOST_WIN32)
   if(NOT DEFINED MSYS2_ROOT)
     if(DEFINED ENV{MSYS2_ROOT})
       set(MSYS2_ROOT "$ENV{MSYS2_ROOT}")
@@ -11,7 +11,7 @@ if(WIN32)
   file(TO_CMAKE_PATH "${MSYS2_ROOT}" MSYS2_ROOT)
   foreach(TOOL usr/bin/bash.exe usr/bin/make.exe usr/bin/pkg-config.exe
       usr/bin/diff.exe usr/bin/perl.exe usr/bin/tar.exe usr/bin/curl.exe
-      usr/bin/sha256sum.exe usr/bin/tee.exe ucrt64/bin/gcc.exe
+      usr/bin/sha256sum.exe usr/bin/awk.exe usr/bin/tee.exe ucrt64/bin/gcc.exe
       ucrt64/bin/g++.exe ucrt64/bin/ar.exe ucrt64/bin/ranlib.exe)
     if(NOT EXISTS "${MSYS2_ROOT}/${TOOL}")
       message(FATAL_ERROR "Missing ${MSYS2_ROOT}/${TOOL}. Install the tools listed in docs/ffmpeg-build.md; set MSYS2_ROOT for a custom installation.")
@@ -21,7 +21,12 @@ if(WIN32)
   set(ENV{MSYSTEM} "UCRT64")
   set(ENV{MSYS2_PATH_TYPE} "strict")
 else()
-  foreach(TOOL bash make pkg-config diff perl tar curl tee cc c++)
+  if(CMAKE_HOST_APPLE)
+    set(HASH_TOOL shasum)
+  else()
+    set(HASH_TOOL sha256sum)
+  endif()
+  foreach(TOOL bash make pkg-config diff perl tar curl awk tee cc c++ ${HASH_TOOL})
     string(MAKE_C_IDENTIFIER "${TOOL}" NAME)
     find_program(TOOL_${NAME} "${TOOL}")
     if(NOT TOOL_${NAME})

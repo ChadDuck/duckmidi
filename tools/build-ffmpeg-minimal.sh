@@ -50,12 +50,19 @@ mkdir -p "$work/downloads" "$work/sources" "$work/objects" "$work/tmp" "$prefix"
 export TMPDIR="$work/tmp"
 exec > >(tee "$reports/build.log") 2>&1
 
+# macOS's sha256sum lacks GNU options, so compare the printed digest instead of using --check.
 check_hash() {
-    if command -v sha256sum > /dev/null; then
-        echo "$1  $2" | sha256sum --check
+    local expected=$1 file=$2 actual
+    if [[ $platform == macos ]]; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
     else
-        echo "$1  $2" | shasum -a 256 --check
+        actual=$(sha256sum "$file" | awk '{print $1}')
     fi
+    if [[ $actual != "$expected" ]]; then
+        echo "SHA-256 mismatch for $file: expected $expected, got $actual." >&2
+        exit 1
+    fi
+    echo "$file: OK"
 }
 
 fetch() {
@@ -84,7 +91,7 @@ build_dependency() {
         cd "$work/objects/$name"
         # shellcheck disable=SC2086 # dependency_flags holds several words.
         "$work/sources/$name/configure" $dependency_flags --prefix="$prefix" \
-            --disable-shared --enable-static --disable-dependency-tracking "$@"
+            --disable-shared --enable-static --disable-dependency-tracking ${1+"$@"}
         make -j"$jobs"
         make install
     )
