@@ -12,7 +12,7 @@ A MIDI editor for the modern age, made with love. 💛
 
 ## \*Disclaimer\*
 
-While the design, usability, UI, and goals of this program were dictated by a human, the codebase itself was **generated and modified with *Codex***.
+While the design, usability, UI, and goals of this program were dictated by a human, the codebase itself was **generated and modified using *Codex* & *Claude***.
 
 ## Capabilities
 
