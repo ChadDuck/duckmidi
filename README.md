@@ -32,45 +32,10 @@ While the design, usability, UI, and goals of this program were dictated by a hu
 
 ## Performance
 
-Tested against *Release* v0.10.0
-
-<details>
-  <summary>Click to expand</summary>
-
-   - **Window active, idling**
-      - RAM Usage: ~300 MiB
-      - CPU Usage (all threads): ~1%
-      - GPU Usage: ~1%
-   - **Window inactive, idling**
-      - RAM Usage: ~300 MiB
-      - CPU Usage (all threads): ~0.4%
-      - GPU Usage: ~0.1%
-   - **Window minimized, idling**
-      - RAM Usage: ~300 MiB
-      - CPU Usage (all threads): ~0.3%
-      - GPU Usage: ~0%
-   - ***Loading* a ~48k note midi file with ~143k events**
-      - RAM Usage: ~700 MiB - ~1.0 GiB
-      - CPU Usage (all threads): ~4.4%
-      - GPU Usage: ~13%
-   - **Large MIDI file loaded, window active**
-      - RAM Usage: ~1.0 GiB
-      - CPU Usage (all threads): ~5.2%
-      - GPU Usage: ~13%
-   - **Large MIDI file, window inactive & window minimized**
-      - RAM Usage: ~1.0 GiB
-      - CPU Usage (all threads): ~0.1%
-      - GPU Usage: ~0%
-   - **Large MIDI file, playback, active**
-      - RAM Usage: ~1.1 GiB - The test lied >:(
-      - CPU Usage (all threads): ~5.2%
-      - GPU Usage: ~12.3%
-   - **Large MIDI file, WAV Export**
-      - RAM Usage: Can't confirm yet.
-      - CPU Usage (all threads): ~10%
-      - GPU Usage: ~12.8%
-      - Rendering Time: 80 seconds for 16:37 of audio
-</details>
+Estimates; tested against *Release* v0.10.2 using a complex midi composition.
+- RAM Usage: ~150 MiB
+- CPU Usage (All threads): ~3%
+- GPU Usage: ~8%
 
 ## Planned
 
