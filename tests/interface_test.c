@@ -1,16 +1,20 @@
 #include "editor_internal.h"
 extern void test_interface_ui(Editor *, void (*)(bool, const char *));
 static int checks;
+
 static void check(bool ok, const char *text) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL interface: %s\n", text);
         exit(1);
     }
 }
+
 static void source_event(Editor *e, const uint8_t *bytes, size_t size, double beat) {
     DmBytes b = {(uint8_t *)bytes, size, size};
     check(dm_event_add(&e->project, beat, 0, 0, &b), "create isolated event");
+
     for (size_t i = 0; i < e->project.event_count; ++i) {
         if (e->project.events[i].beat == beat && e->project.events[i].message.size == size &&
             !memcmp(e->project.events[i].message.data, bytes, size)) {
@@ -18,8 +22,10 @@ static void source_event(Editor *e, const uint8_t *bytes, size_t size, double be
             return;
         }
     }
+
     check(false, "find created event");
 }
+
 static void event_editing(Editor *e) {
     editor_smoke(e);
     const uint8_t initial_volume[] = {0xb2, 7, 120};
@@ -77,11 +83,13 @@ static void event_editing(Editor *e) {
         &e->project,
         (DmAutomation){.type = 0xb0, .channel = 2, .a = 7, .b = 30, .pattern = pattern_id});
     int index = -1;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         if (e->project.automation[i].pattern == pattern_id) {
             index = (int)i;
         }
     }
+
     size_t rows = ed_midi_rows(e);
     check(rows == e->project.event_count + e->project.automation_count,
           "MIDI browser includes controller and pressure automation events");
@@ -90,12 +98,14 @@ static void event_editing(Editor *e) {
     e->midi_draft.data[2] = 80;
     check(ed_midi_apply_draft(e) && e->project.channels[2].volume == volume,
           "editing pattern-local controller does not overwrite global mixer default");
+
     for (int c = 0; c < 16; ++c) {
         if (c != 9) {
             check(ed_track_color(c) != ed_track_color(9), "percussion color is reserved");
         }
     }
 }
+
 static void cursor_preferences(Editor *e) {
     char saved[DM_PATH];
     snprintf(saved, sizeof(saved), "%s", e->settings_path);
@@ -110,6 +120,7 @@ static void cursor_preferences(Editor *e) {
     snprintf(e->settings_path, sizeof(e->settings_path), "%s", saved);
     e->os_cursor = false;
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO), "SDL");
     SDL_Window *w = SDL_CreateWindow("Interface", 1400, 900, SDL_WINDOW_HIDDEN);

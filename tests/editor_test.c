@@ -5,13 +5,16 @@
 static int checks;
 void test_editor_mouse(Editor *e, void (*check)(bool, const char *));
 void test_editor_updates(Editor *e, void (*check)(bool, const char *));
+
 static void check(bool condition, const char *label) {
     ++checks;
+
     if (!condition) {
         fprintf(stderr, "FAIL editor: %s\n", label);
         exit(1);
     }
 }
+
 static void press(Editor *e, SDL_Scancode key, SDL_Keymod mods) {
     SDL_Event event;
     SDL_zero(event);
@@ -21,6 +24,7 @@ static void press(Editor *e, SDL_Scancode key, SDL_Keymod mods) {
     event.key.mod = mods;
     editor_event(e, &event);
 }
+
 static void frame(Editor *e) {
     ui_frame();
     editor_frame(e, 1400, 900);
@@ -29,13 +33,16 @@ static void frame(Editor *e) {
     ui_render(e->renderer);
     SDL_RenderPresent(e->renderer);
 }
+
 static void notes(Editor *e) {
     e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->selected_pattern = 0;
+
     for (size_t i = 0; i < e->project.patterns[0].count; ++i) {
         e->project.patterns[0].notes[i].selected = 0;
     }
+
     e->project.patterns[0].notes[0].selected = 1;
     int pitch = e->project.patterns[0].notes[0].key;
     press(e, SDL_SCANCODE_UP, SDL_KMOD_SHIFT);
@@ -55,12 +62,15 @@ static void notes(Editor *e) {
     press(e, SDL_SCANCODE_V, SDL_KMOD_CTRL);
     check(e->project.patterns[0].count == count + 1, "copy and paste notes");
 }
+
 static void clips(Editor *e) {
     e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
+
     for (size_t i = 0; i < e->project.clip_count; ++i) {
         e->project.clips[i].selected = 0;
     }
+
     e->project.clips[0].selected = 1;
     size_t count = e->project.clip_count;
     press(e, SDL_SCANCODE_C, SDL_KMOD_CTRL);
@@ -71,6 +81,7 @@ static void clips(Editor *e) {
     press(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
     check(e->project.clip_count == count + 1, "undo clip deletion");
 }
+
 static void test_shortcuts(Editor *e) {
     press(e, SDL_SCANCODE_F1, 0);
     check(e->piano, "keyboard piano enabled");
@@ -100,14 +111,20 @@ static void test_shortcuts(Editor *e) {
     check(e->project.pattern_count == count,
           "unused newly-created pattern is removed when stepping back");
 }
+
 static void save_load(Editor *e) {
     snprintf(e->project.name, sizeof(e->project.name), "Editor validation");
     snprintf(e->path, sizeof(e->path), "agents/reports/editor-validation.duck");
     e->dirty = true;
     press(e, SDL_SCANCODE_S, SDL_KMOD_CTRL);
     frame(e);
-    uint64_t save_start=SDL_GetTicks();
-    while(ed_save_busy(e)&&SDL_GetTicks()-save_start<10000){ed_save_poll(e);SDL_Delay(1);}
+    uint64_t save_start = SDL_GetTicks();
+
+    while (ed_save_busy(e) && SDL_GetTicks() - save_start < 10000) {
+        ed_save_poll(e);
+        SDL_Delay(1);
+    }
+
     check(!e->dirty, "Ctrl+S saves project");
     snprintf(e->project.name, sizeof(e->project.name), "Changed in isolated test");
     SDL_Event drop;
@@ -118,6 +135,7 @@ static void save_load(Editor *e) {
     check(!strcmp(e->project.name, "Editor validation"), "drop loads saved project");
     check(!e->config, "project load bypasses import configuration");
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO), "SDL video initialization");
     SDL_Window *window = SDL_CreateWindow("duckmidi validation", 1400, 900, SDL_WINDOW_HIDDEN);

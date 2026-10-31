@@ -1,6 +1,6 @@
 # Export plugin API reference
 
-The public interface is [`duckmidi_export_plugin.h`](../include/duckmidi_export_plugin.h). The current registration ABI is **3**. A plugin is a native library placed in `plugins/` beside the application. Its formats appear in Export's dropdown, and duckmidi draws their declared settings and review controls. Plugins require no editor, SDL, or UI toolkit headers.
+The public interface is [`duckmidi_export_plugin.h`](../include/duckmidi_export_plugin.h). The current registration ABI is **4**. A plugin is a native library placed in `plugins/` beside the application. Its formats appear in Export's dropdown, and duckmidi draws their declared settings and review controls. Plugins require no editor, SDL, or UI toolkit headers. [`duckmidi_midi.h`](../include/duckmidi_midi.h) names the MIDI status bytes, meta types and controller numbers used in events.
 
 Plugins run inside the application; use trusted libraries that match its architecture and ABI. Settings last for the session. Restart the application after adding or replacing a plugin.
 
@@ -12,7 +12,7 @@ Descriptors and function tables live until module unload. Instances and jobs are
 
 | Constant | Meaning |
 | --- | --- |
-| `DME_ABI` | Required registration ABI, currently 3. |
+| `DME_ABI` | Required registration ABI, currently 4. |
 | `DME_OK` | Operation succeeded. |
 | `DME_INVALID` | Invalid input or setting. |
 | `DME_CANCELLED` | Work was cancelled. |
@@ -22,6 +22,8 @@ Descriptors and function tables live until module unload. Instances and jobs are
 | `DME_DISPLAY` | Include a diagnostic in the export panel summary. |
 | `DME_POPUP` | Include a warning in the completion popup after successful output. |
 | `DME_SINGLE_FILE`, `DME_ZIP` | Save exactly one artifact, or package artifacts into ZIP. |
+| `DME_LOOP_START`, `DME_LOOP_END` | Bits of `DmeContext.loop_points`: the arrangement marks a loop start, a loop end, or both. |
+| `DME_INSTALL_BACKUP` | `install_file` flag: keep the original file even when the user turned backups off. |
 
 ## Public data types
 
@@ -36,7 +38,7 @@ DmeEvent note = { .tick=0, .source_id=1, .status=0x90,
 
 ### `DmeContext`
 
-The context borrows `events` and `event_count`, supplies `duration` in ticks, `ppq`, a `project_session` identifier, project/source names, and 128 program/drum name pointers. Use the session identifier to reset source-specific settings when another project opens. A job receives the same frozen arrangement for preflight and conversion even if the live editor changes.
+The context borrows `events` and `event_count`, supplies `duration` in ticks, `ppq`, a `project_session` identifier, project/source names, and 128 program/drum name pointers. `loop_points` says which of `loop_start` and `loop_end` (in the same ticks as events) the arrangement marks with its **M64 - Loop Start** and **M64 - Loop End** events. Use the session identifier to reset source-specific settings when another project opens. A job receives the same frozen arrangement for preflight and conversion even if the live editor changes.
 
 ```c
 double beats = (double)context->duration / context->ppq;
@@ -74,7 +76,7 @@ A review contains a description and affected-source rows. Each row supplies its 
 
 ### `DmeHost`, `DmeExporter`, `DmePlugin`
 
-`DmeHost` carries callback functions and a `user` pointer passed back unchanged. `DmeExporter` describes one format and its lifecycle callbacks. `DmePlugin` registers a module with ABI, structure size, ID/name, exporter count, and lookup callback. A module can expose several exporters; each format receives its own settings instance. Every callback in the current exporter table is required.
+`DmeHost` carries callback functions and a `user` pointer passed back unchanged. `DmeExporter` describes one format and its lifecycle callbacks. `DmePlugin` registers a module with ABI, structure size, ID/name, exporter count, and lookup callback. A module can expose several exporters; each format receives its own settings instance. Every callback in the exporter table is required except the optional folder install, `install_label` and `install`, which are both set or both NULL.
 
 ```c
 static const DmePlugin module = {
@@ -238,6 +240,18 @@ host->progress(host->user,100);
 return DME_OK;
 ```
 
+### `install(job, context, host, error, capacity)` — worker, optional
+
+Install into a folder the user chooses, such as a game's source checkout. The host shows a button labeled `install_label` next to the save button, opens a folder picker, runs preflight and review as for a save, then calls `install` instead of `run`. Read existing files with `host->read_file` and queue whole replacement files with `host->install_file`; do not write files yourself.
+
+The host writes queued files only after `install` returns `DME_OK`. Before replacing an existing file it keeps the original as `<file>.bkp` when the user ticked **Keep original files**, or when the file was queued with `DME_INSTALL_BACKUP`; an existing `.bkp` is never overwritten. The host records every change, so **Revert repository export** restores all originals and removes the backups it created.
+
+```c
+const uint8_t *table; uint64_t size;
+if (!host->read_file(host->user,"sound/sequences.json",&table,&size)) return DME_INVALID;
+if (!host->install_file(host->user,"sound/sequences.json",patched,patched_size,0)) return DME_FAILED;
+```
+
 ### `destroy_job(job)` — main thread
 
 Free all job-owned conversion buffers, frozen settings and review storage after the worker joins, whether it succeeded, failed, or was cancelled. The host also joins workers and destroys pending review jobs before unloading a module.
@@ -286,6 +300,14 @@ Provide a unique leaf filename and bytes; the host copies the buffer before retu
 if (!host->artifact(host->user,"bank.json",buffer,length)) return DME_FAILED;
 free(buffer); /* Safe after the callback has copied it. */
 ```
+
+### `read_file(host->user, path, &data, &size)` — install only
+
+Read a file below the chosen folder. `path` is relative and uses `/`; absolute paths, `..` and drive letters are rejected. Returns zero when the file is missing or unreadable. The bytes stay valid until `install` returns. Up to 16 files can be read per install. NULL outside `install`.
+
+### `install_file(host->user, path, data, size, flags)` — install only
+
+Queue a whole file for writing below the chosen folder, using the same path rules. The host copies the bytes. `flags` may be `DME_INSTALL_BACKUP`. Up to 16 files of at most 64 MiB each. Returns zero for invalid paths, sizes or flags. NULL outside `install`.
 
 ## Registration example and limits
 

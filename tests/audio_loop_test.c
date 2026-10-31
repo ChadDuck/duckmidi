@@ -1,49 +1,65 @@
 #include "../src/audio.c"
 static int checks;
+
 static void check(bool value, const char *what) {
     ++checks;
+
     if (!value) {
         fprintf(stderr, "FAIL keyboard loop: %s\n", what);
         exit(1);
     }
 }
+
 static unsigned voice_id(Synth *s, int channel, int key, bool held) {
     fluid_voice_t *voices[512] = {0};
     fluid_synth_get_voicelist(s->synth, voices, 512, -1);
+
     for (int i = 0; i < 512 && voices[i]; ++i) {
         fluid_voice_t *v = voices[i];
         bool active = held ? fluid_voice_is_on(v) : fluid_voice_is_playing(v);
+
         if (active && fluid_voice_get_channel(v) == channel && fluid_voice_get_key(v) == key) {
             return fluid_voice_get_id(v);
         }
     }
+
     return UINT32_MAX;
 }
+
 static void process(DmAudio *a, int frames) {
     SDL_LockAudioStream(a->stream);
+
     while (frames > 0) {
         float out[BLOCK * 2];
         int n = frames > BLOCK ? BLOCK : frames;
         run_block(a, out, n);
         frames -= n;
     }
+
     SDL_UnlockAudioStream(a->stream);
 }
+
 static void await_font(DmAudio *a) {
     char text[512];
     uint64_t start = SDL_GetTicks();
+
     while (dm_audio_busy(a)) {
         bool success = false;
+
         if (dm_audio_poll(a, text, sizeof(text), &success, NULL)) {
             check(success, "load both SoundFont voice domains");
         }
+
         if (SDL_GetTicks() - start >= 30000) {
             check(false, "SoundFont timeout");
         }
+
         SDL_Delay(5);
     }
+
     check(true, "SoundFont finishes before timeout");
 }
+
 static void whole_song(DmAudio *a, DmProject *p) {
     char error[512];
     check(dm_audio_publish(a, p, 1.99, true, error, sizeof(error)), "publish near song end");
@@ -62,6 +78,7 @@ static void whole_song(DmAudio *a, DmProject *p) {
     fluid_synth_get_pitch_bend(a->keyboard.synth, 0, &bend);
     check(bend == 8192, "song reset and bend automation do not change keyboard pitch");
 }
+
 static void region_and_release(DmAudio *a, DmProject *p) {
     char error[512];
     unsigned original = voice_id(&a->keyboard, 0, 69, true);
@@ -86,6 +103,7 @@ static void region_and_release(DmAudio *a, DmProject *p) {
     check(song != UINT32_MAX && voice_id(&a->live, 0, 69, true) == song,
           "releasing keyboard key does not release a scheduled note of the same pitch");
 }
+
 static void sustain_and_monitor(DmAudio *a, DmProject *p) {
     char error[512];
     dm_audio_control(a, 1, 64, 127);
@@ -113,15 +131,18 @@ static void sustain_and_monitor(DmAudio *a, DmProject *p) {
     run_block(a, muted, BLOCK);
     SDL_UnlockAudioStream(a->stream);
     bool quiet = true;
+
     for (int i = 0; i < BLOCK * 2; ++i) {
         quiet &= muted[i] == 0;
     }
+
     check(quiet, "turning internal monitoring off still silences keyboard voices");
     dm_audio_monitor(a, true);
     process(a, BLOCK * 4);
     check(voice_id(&a->keyboard, 1, 77, true) == UINT32_MAX,
           "reenabling monitoring does not leave stuck keyboard notes");
 }
+
 int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "wasapi");
     check(SDL_Init(SDL_INIT_AUDIO), "SDL audio");

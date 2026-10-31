@@ -1,21 +1,25 @@
 #include "editor_internal.h"
 static int checks;
+
 static void check(bool ok, const char *what) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL recording_feedback: %s\n", what);
         exit(1);
     }
 }
+
 extern void recording_feedback_audio_pause(DmAudio *);
 extern void recording_feedback_audio_render(DmAudio *, int);
 extern unsigned recording_feedback_audio_voice(DmAudio *, int, int);
 extern int recording_feedback_audio_count(DmAudio *);
-extern bool recording_feedback_audio_live_voice(DmAudio *,int,int);
+extern bool recording_feedback_audio_live_voice(DmAudio *, int, int);
 extern int recording_feedback_audio_override(DmAudio *, int);
 extern int recording_feedback_audio_preset(DmAudio *, int, bool);
 extern int recording_feedback_audio_bank(DmAudio *, int, bool);
 extern void test_recording_feedback_ui(Editor *, void (*)(bool, const char *));
+
 static void fixture(Editor *e) {
     ed_release_piano(e);
     dm_audio_recording(e->audio, false);
@@ -42,13 +46,16 @@ static void fixture(Editor *e) {
     ed_transport_publish(e, 0, false);
     recording_feedback_audio_render(e->audio, 256);
 }
+
 static void defaults_and_placement(Editor *e) {
     DmProject p;
     dm_project_init(&p);
     int enabled = 0;
+
     for (int c = 0; c < 16; ++c) {
         enabled += p.channels[c].enabled;
     }
+
     check(enabled == 2 && p.channels[0].enabled && p.channels[9].enabled,
           "new projects enable only channels 1 and 10");
     dm_project_free(&p);
@@ -58,10 +65,12 @@ static void defaults_and_placement(Editor *e) {
     int list[16], count = ed_channels(e, list);
     int spare = ed_available_channel(e), disabled = 0;
     bool ordered = true;
+
     for (int i = 0; i < count; ++i) {
         disabled += !e->project.channels[list[i]].enabled;
         ordered &= !i || list[i - 1] < list[i];
     }
+
     check(ordered && disabled == (spare >= 0 && !e->project.channels[spare].enabled),
           "spare is ordered by channel and reuses an existing empty unassigned row");
     DmPattern *pat = ed_pattern(e);
@@ -75,22 +84,27 @@ static void defaults_and_placement(Editor *e) {
     DmSchedule s = {0};
     check(dm_schedule(&e->project, &s), "trimmed placements schedule");
     bool cutoff = false, late = false;
+
     for (size_t i = 0; i < s.count; ++i) {
         DmScheduled a = s.items[i];
         cutoff |= a.status == 0x80 && a.a == 60 && fabs(a.seconds - .5) < 1e-8;
         late |= a.status == 0x90 && a.a == 64 && a.seconds < 2;
     }
+
     check(cutoff && !late, "trim cuts crossing notes and hides later starts");
     dm_schedule_free(&s);
     ed_resize_clip(e, clip, 8);
     check(dm_schedule(&e->project, &s), "extended placement schedules");
     int starts = 0;
+
     for (size_t i = 0; i < s.count; ++i) {
         starts += s.items[i].status == 0x90 && s.items[i].b && s.items[i].seconds < 2;
     }
+
     check(starts == 2, "extending a placement does not repeat its source notes");
     dm_schedule_free(&s);
 }
+
 static void recording_and_pause(Editor *e) {
     fixture(e);
     dm_note_add(ed_pattern(e), (DmNote){0, 2, 60, 100, 0});
@@ -130,12 +144,14 @@ static void recording_and_pause(Editor *e) {
     recording_feedback_audio_render(e->audio, 24000);
     ed_release_piano(e);
     bool preserved = false, first = false, second = false;
+
     for (size_t i = 0; i < ed_pattern(e)->count; ++i) {
         DmNote n = ed_pattern(e)->notes[i];
         preserved |= n.key == 67;
         first |= n.key == 48;
         second |= n.key == 50;
     }
+
     check(ed_pattern(e)->count == 3 && preserved && first && second,
           "Overlap replaces intersecting old notes of any pitch and retains new "
           "chords/nonoverlapping notes");
@@ -155,6 +171,7 @@ static void recording_and_pause(Editor *e) {
     check(fabs(dm_audio_position(e->audio) - .25) < .01,
           "pattern-focused ordinary pause returns to the earlier set position");
 }
+
 static void preview_and_feedback(Editor *e) {
     fixture(e);
     e->preview_program = 40;
@@ -184,6 +201,7 @@ static void preview_and_feedback(Editor *e) {
     ed_release_piano(e);
     recording_feedback_audio_render(e->audio, 128);
 }
+
 static void instrument_switching(Editor *e) {
     fixture(e);
     e->pattern_mode = true;
@@ -199,6 +217,7 @@ static void instrument_switching(Editor *e) {
     event = (DmBytes){imported_bank, sizeof(imported_bank), sizeof(imported_bank)};
     check(dm_event_add(&e->project, 0, 0, 0, &event), "source bank change fixture");
     int programs[] = {40, 12, 73, 0, 128, 16, 128, 33, 40};
+
     for (size_t i = 0; i < sizeof(programs) / sizeof(programs[0]); ++i) {
         int program = programs[i], route = program == 128 ? 9 : 0;
         e->context = 1;
@@ -227,14 +246,17 @@ static void instrument_switching(Editor *e) {
         check(e->project.channels[0].program == 16 && e->project.channels[2].program == 33,
               "preview instrument never alters playlist instrument assignments");
     }
+
     ed_select_preview_instrument(e, ed_channel_program(e, 2));
     recording_feedback_audio_render(e->audio, 4800);
     check(recording_feedback_audio_preset(e->audio, 0, true) == 33 &&
               recording_feedback_audio_preset(e->audio, 0, false) == 33,
           "Use selected channel action updates both synths while pattern is playing");
+
     for (size_t i = 0; i < e->project.event_count; ++i) {
         dm_bytes_free(&e->project.events[i].message);
     }
+
     e->project.event_count = 0;
     e->pattern_mode = false;
     e->context = 1;
@@ -246,6 +268,7 @@ static void instrument_switching(Editor *e) {
               recording_feedback_audio_preset(e->audio, 0, false) == 16,
           "returning to song and playlist restores original channel program");
 }
+
 static void curve_backend(Editor *e) {
     fixture(e);
     e->automation_cc = 11;
@@ -259,11 +282,13 @@ static void curve_backend(Editor *e) {
     DmSchedule s = {0};
     check(dm_schedule(&e->project, &s), "converted source connection schedules");
     int value = -1;
+
     for (size_t i = 0; i < s.count; ++i) {
         if (s.items[i].status == 0xb0 && s.items[i].a == 11 && s.items[i].seconds <= .5 + 1e-8) {
             value = s.items[i].b;
         }
     }
+
     check(value == 85, "audible schedule follows curved midpoint rather than a held step");
     dm_schedule_free(&s);
     DmBytes midi = {0};
@@ -276,12 +301,14 @@ static void curve_backend(Editor *e) {
     DmSchedule baked = {0};
     check(dm_schedule(&imported, &baked), "baked MIDI schedules");
     int baked_value = -1;
+
     for (size_t i = 0; i < baked.count; ++i) {
         if (baked.items[i].status == 0xb0 && baked.items[i].a == 11 &&
             baked.items[i].seconds <= .5 + 1e-8) {
             baked_value = baked.items[i].b;
         }
     }
+
     check(baked_value == 85, "MIDI export retains the audible curve midpoint");
     dm_schedule_free(&baked);
     dm_project_free(&imported);
@@ -306,20 +333,33 @@ static void curve_backend(Editor *e) {
     dm_bytes_free(&packed);
     dm_project_free(&loaded);
 }
+
 static void waiting_backing_onset(Editor *e) {
-    fixture(e);int backing=dm_pattern_add(&e->project,"Backing onset");check(backing>=0,"backing pattern");
-    dm_note_add(&e->project.patterns[backing],(DmNote){0,4,72,100,0});
-    e->project.channels[1].enabled=true;dm_clip_add(&e->project,(DmClip){.pattern=backing,.channel=1});
-    dm_note_add(ed_pattern(e),(DmNote){0,4,60,100,0});
-    e->record=e->wait_input=true;dm_audio_recording(e->audio,true);ed_play(e);
-    check(e->wait_armed,"waiting recording armed");ed_piano_press(e,SDL_SCANCODE_Z,0,false);
-    recording_feedback_audio_render(e->audio,128);
-    check(recording_feedback_audio_live_voice(e->audio,1,72),"backing beat-zero note survives waiting take preparation");
-    check(!recording_feedback_audio_live_voice(e->audio,0,60),"replaced take does not leak old beat-zero notes");
-    ed_publish(e);recording_feedback_audio_render(e->audio,128);
-    check(recording_feedback_audio_live_voice(e->audio,1,72),"first recording edit retains backing voice");
-    ed_release_piano(e);fixture(e);
+    fixture(e);
+    int backing = dm_pattern_add(&e->project, "Backing onset");
+    check(backing >= 0, "backing pattern");
+    dm_note_add(&e->project.patterns[backing], (DmNote){0, 4, 72, 100, 0});
+    e->project.channels[1].enabled = true;
+    dm_clip_add(&e->project, (DmClip){.pattern = backing, .channel = 1});
+    dm_note_add(ed_pattern(e), (DmNote){0, 4, 60, 100, 0});
+    e->record = e->wait_input = true;
+    dm_audio_recording(e->audio, true);
+    ed_play(e);
+    check(e->wait_armed, "waiting recording armed");
+    ed_piano_press(e, SDL_SCANCODE_Z, 0, false);
+    recording_feedback_audio_render(e->audio, 128);
+    check(recording_feedback_audio_live_voice(e->audio, 1, 72),
+          "backing beat-zero note survives waiting take preparation");
+    check(!recording_feedback_audio_live_voice(e->audio, 0, 60),
+          "replaced take does not leak old beat-zero notes");
+    ed_publish(e);
+    recording_feedback_audio_render(e->audio, 128);
+    check(recording_feedback_audio_live_voice(e->audio, 1, 72),
+          "first recording edit retains backing voice");
+    ed_release_piano(e);
+    fixture(e);
 }
+
 int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "wasapi");
     check(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO), "SDL");
@@ -331,13 +371,17 @@ int main(void) {
     check(audio && dm_audio_soundfont(audio, "agents/reports/generated-programs.sf2", error,
                                       sizeof(error)),
           "SoundFont job");
+
     while (dm_audio_busy(audio)) {
         bool success = false;
+
         if (dm_audio_poll(audio, error, sizeof(error), &success, NULL)) {
             check(success, "SoundFont ready");
         }
+
         SDL_Delay(5);
     }
+
     recording_feedback_audio_pause(audio);
     Editor *e = calloc(1, sizeof(*e));
     editor_init(e, w, r, audio, "", true);

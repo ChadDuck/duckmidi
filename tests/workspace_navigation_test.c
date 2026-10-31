@@ -1,13 +1,17 @@
 #include "editor_internal.h"
 static int checks;
+
 static void check(bool ok, const char *text) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL workspace_navigation: %s\n", text);
         exit(1);
     }
 }
+
 void test_workspace_navigation_ui(Editor *e, void (*check)(bool, const char *));
+
 static void configuration(Editor *e) {
     char error[256];
     const char *path = "agents/reports/workspace_navigation-config.ini";
@@ -34,20 +38,39 @@ static void configuration(Editor *e) {
     ed_defaults(e);
     check(dm_preferences_load(e, ed_shortcut_schema() + 1),
           "other preferences survive shortcut schema change");
-    check(e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_GRAVE && e->accent == 0xff123456,
-          "changed defaults invalidate all saved shortcuts without discarding other settings");
+    check(e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9 && e->accent == 0xff123456,
+          "saved shortcuts survive a changed shortcut list");
+
+    /* An INI saved before an action existed loads, and that action keeps its default key. */
+    DmBytes saved = {0};
+    check(dm_read(path, &saved, error, sizeof(error)) && dm_bytes(&saved, "", 1), "read INI");
+    char *older = strstr((char *)saved.data, "previous_automation_pattern=");
+    check(older != NULL, "new action is saved");
+    char *line_end = strchr(older, '\n');
+    memmove(older, line_end + 1, strlen(line_end + 1) + 1);
+    check(dm_write(path, saved.data, strlen((char *)saved.data), error, sizeof(error)),
+          "write older INI");
+    dm_bytes_free(&saved);
+    ed_defaults(e);
+    check(dm_preferences_load(e, ed_shortcut_schema()) &&
+              e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9 &&
+              e->bindings[ACT_PREVIOUS_AUTOMATION].key == SDL_SCANCODE_KP_MINUS &&
+              e->bindings[ACT_PREVIOUS_AUTOMATION].mods == SDL_KMOD_SHIFT,
+          "older INI loads; actions missing from it keep their defaults");
     const char *bad[] = {"[application",
                          "[application]\nschema=1",
                          "[application]\nschema=3\naccent=bad",
                          "[application]\nschema=3\nsoundfont=%00",
                          "[application]\nschema=3\nsoundfont=%xx",
                          "[application]\nschema=3\nmonitor_soundfont=3"};
+
     for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); ++i) {
         check(dm_write(path, bad[i], strlen(bad[i]), error, sizeof(error)),
               "write isolated invalid configuration");
         check(!dm_preferences_load(e, ed_shortcut_schema()) && e->accent == 0xff123456,
               "invalid INI/schema rejected without partial application");
     }
+
     const char *valid = "[application]\nschema=3\nsoundfont=\"é🎹.sf2\"\n[future]\nvalues=unknown";
     check(dm_write(path, valid, strlen(valid), error, sizeof(error)) &&
               dm_preferences_load(e, ed_shortcut_schema()),
@@ -57,6 +80,7 @@ static void configuration(Editor *e) {
     check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names),
           "leave a valid isolated configuration example");
 }
+
 static void startup(SDL_Window *window, SDL_Renderer *renderer) {
     const char *base = "agents/reports/workspace_navigation-startup/";
     SDL_CreateDirectory(base);
@@ -80,16 +104,19 @@ static void startup(SDL_Window *window, SDL_Renderer *renderer) {
     check(e->device < 0 && strstr(e->status, "unavailable"),
           "missing saved output falls back with a clear message");
     Uint64 start = SDL_GetTicks();
+
     while (e->font_request && SDL_GetTicks() - start < 10000) {
         editor_background(e);
         SDL_Delay(5);
     }
+
     check(!e->font_request && !strcmp(e->status, "SoundFont ready"),
           "saved SoundFont actually loads on next launch");
     editor_free(e);
     dm_audio_destroy(audio);
     free(e);
 }
+
 static void navigation(Editor *e) {
     editor_smoke(e);
     check(ed_piano_key(SDL_SCANCODE_Z) == 48 && ed_piano_key(SDL_SCANCODE_Q) == 60,
@@ -127,21 +154,26 @@ static void navigation(Editor *e) {
     check(e->roll_view.scroll_x == 1280 && e->roll_view.scroll_y == 1230,
           "large leading gap centers earliest time while preserving pitch range midpoint");
     int list[16];
+
     for (int c = 0; c < 16; ++c) {
         e->project.channels[c] = (DmChannel){false, false, false, -1, 100, 64};
     }
+
     e->project.clip_count = 0;
     check(ed_channels(e, list) == 1 && list[0] == 0, "empty arrangement offers one spare channel");
     e->project.channels[0].enabled = true;
     e->project.channels[0].program = 2;
     check(ed_channels(e, list) == 2 && list[0] == 0 && list[1] == 1,
           "enabled channel is followed by one spare");
+
     for (int c = 0; c < 16; ++c) {
         e->project.channels[c] = (DmChannel){true, false, false, 0, 100, 64};
     }
+
     check(ed_channels(e, list) == 16,
           "full arrangement does not add an invalid seventeenth channel");
 }
+
 static void selection(Editor *e) {
     editor_smoke(e);
     e->dirty = false;
@@ -157,6 +189,7 @@ static void selection(Editor *e) {
     ed_playlist_drag(e, (UiRect){0, 0, 600, 400}, &e->playlist_view, 64, 40, list, 3, mouse);
     check(!e->dirty && e->drag == 0, "selection release ends without republishing playback");
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO), "SDL");
     SDL_Window *w =

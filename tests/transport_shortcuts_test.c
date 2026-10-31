@@ -1,16 +1,20 @@
 // Exercise the production editor's internal boundaries, without adding a second app entry point.
 #include "editor_internal.h"
 static int checks;
+
 static void check(bool ok, const char *label) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL transport_shortcuts: %s\n", label);
         exit(1);
     }
 }
+
 static void key(Editor *e, SDL_Scancode code, SDL_Keymod mods) {
     ed_shortcut(e, code, mods, false);
 }
+
 static void playback(Editor *e) {
     editor_smoke(e);
     bool visible;
@@ -32,6 +36,7 @@ static void playback(Editor *e) {
     check(fabs(ed_view_playhead(e, 1, true, 2.5, &visible) - 2.5) < 1e-8,
           "standalone pattern playback keeps local position");
 }
+
 static void shortcuts_added(Editor *e) {
     editor_smoke(e);
     e->context = 1;
@@ -79,6 +84,7 @@ static void shortcuts_added(Editor *e) {
               ed_piano_key(SDL_SCANCODE_P) == 76,
           "two octaves plus four upper notes");
 }
+
 static void channels_and_events(Editor *e) {
     editor_smoke(e);
     DmNote before = ed_pattern(e)->notes[0];
@@ -120,15 +126,18 @@ static void channels_and_events(Editor *e) {
     char error[256];
     check(dm_schedule(&e->project, &schedule), "program event schedule compiles");
     bool found = false;
+
     for (size_t i = 0; i < schedule.count; ++i) {
         if (schedule.items[i].status == 0xc0 && schedule.items[i].seconds > 0) {
             found = true;
         }
     }
+
     check(found, "program change reaches MIDI schedule");
     dm_schedule_free(&schedule);
     ui_end();
 }
+
 static void bend_edits(Editor *e) {
     ui_root(0, 900);
     editor_smoke(e);
@@ -167,11 +176,13 @@ static void bend_edits(Editor *e) {
     check(e->project.automation_count == old - 1 && ed_pattern(e)->count == notes,
           "Delete removes selected overlay point and preserves notes");
     int endpoint = -1;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         if (e->project.automation[i].type == 0xe0 && e->project.automation[i].curve > 0) {
             endpoint = (int)i;
         }
     }
+
     DmAutomation a = e->project.automation[endpoint];
     mouse = (UiMouse){
         .pos = ed_bend_point(e, a, grid, &e->roll_view, 80), .clicked = true, .alt = true};
@@ -192,23 +203,27 @@ static void bend_edits(Editor *e) {
     mouse = (UiMouse){.pos = {180, 200}, .released = true};
     ed_automation_drag(e, lane, &e->roll_view, 80, mouse);
     int discrete = 0;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         discrete += e->project.automation[i].type == 0xe0 && !e->project.automation[i].curve;
     }
-    check(discrete == 1, "plain lane click creates one unconnected point");
-    mouse = (UiMouse){.pos = {260, 182}, .right_clicked = true, .shift = true};
+
+    check(discrete == 1, "Shift lane click creates one unconnected point");
+    mouse = (UiMouse){.pos = {260, 182}, .clicked = true};
     ed_automation_lane_click(e, lane, &e->roll_view, 80, mouse, -1);
     int positives = 0, negative = 0;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation b = e->project.automation[i];
         positives += b.type == 0xe0 && b.curve > 0;
         negative += b.type == 0xe0 && b.curve < 0 && b.beat == 2;
     }
+
     check(positives == 2 && negative == 1,
-          "Shift right click connects new point and moves end restoration");
+          "left click connects new point and moves end restoration");
     mouse = (UiMouse){.right_clicked = true, .shift = true};
     ed_automation_lane_click(e, lane, &e->roll_view, 80, mouse, 0);
-    check(e->drag == 0, "Shift right click on an existing point cannot strand a left-button drag");
+    check(e->drag == 0, "right click on an existing point cannot strand a left-button drag");
     // A new forward extension follows the user's last placement, even when another section
     // has a closer point. A backward insertion instead picks the nearest point in time.
     e->project.automation_count = 0;
@@ -226,6 +241,7 @@ static void bend_edits(Editor *e) {
           "backward extension finds the nearest point");
     ui_end();
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO), "SDL initializes");
     SDL_Window *window =
@@ -259,20 +275,26 @@ int main(void) {
     SDL_PumpEvents();
     e->roll_height = 1000;
     e->automation_height = 450;
+
     for (int frame = 0; frame < 2; ++frame) {
         ui_frame();
         editor_frame(e, 900, 1600);
         SDL_RenderClear(renderer);
         ui_render(renderer);
+
         if (frame == 1) {
             SDL_Surface *tall = SDL_RenderReadPixels(renderer, NULL);
+
             if (tall) {
                 SDL_SaveBMP(tall, "agents/reports/transport_shortcuts-tall.bmp");
             }
+
             SDL_DestroySurface(tall);
         }
+
         SDL_RenderPresent(renderer);
     }
+
     printf("PASS transport_shortcuts: %d targeted checks\n", checks);
     editor_free(e);
     free(e);

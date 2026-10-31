@@ -1,5 +1,6 @@
 #include "duck.h"
 #include "text/en.h"
+
 const char *dm_program_name(int program) {
     static const char *names[128] = {DM_TEXT_ACOUSTIC_GRAND_PIANO,
                                      DM_TEXT_BRIGHT_ACOUSTIC_PIANO,
@@ -88,8 +89,8 @@ const char *dm_program_name(int program) {
                                      DM_TEXT_LEAD_5_CHARANG,
                                      DM_TEXT_LEAD_6_VOICE,
                                      DM_TEXT_LEAD_7_FIFTHS,
-                                     DM_TEXT_LEAD_8_BASS_LEAD,
-                                     DM_TEXT_PAD_1_NEW_AGE,
+                                     DM_TEXT_LEAD_8_BASS,
+                                     DM_TEXT_PAD_1_NEW,
                                      DM_TEXT_PAD_2_WARM,
                                      DM_TEXT_PAD_3_POLYSYNTH,
                                      DM_TEXT_PAD_4_CHOIR,
@@ -104,7 +105,7 @@ const char *dm_program_name(int program) {
                                      DM_TEXT_FX_5_BRIGHTNESS,
                                      DM_TEXT_FX_6_GOBLINS,
                                      DM_TEXT_FX_7_ECHOES,
-                                     DM_TEXT_FX_8_SCI_FI,
+                                     DM_TEXT_FX_8_SCI,
                                      DM_TEXT_SITAR,
                                      DM_TEXT_BANJO,
                                      DM_TEXT_SHAMISEN,
@@ -129,9 +130,11 @@ const char *dm_program_name(int program) {
                                      DM_TEXT_HELICOPTER,
                                      DM_TEXT_APPLAUSE,
                                      DM_TEXT_GUNSHOT};
+
     if (program == -1) {
         return DM_TEXT_CHOOSE_INSTRUMENT;
     }
+
     return program >= 0 && program < 128 ? names[program] : DM_TEXT_UNKNOWN;
 }
 
@@ -184,4 +187,29 @@ const char *dm_drum_name(int key) {
                                   DM_TEXT_MUTE_TRIANGLE,
                                   DM_TEXT_OPEN_TRIANGLE};
     return key >= 35 && key <= 81 ? names[key - 35] : DM_TEXT_UNASSIGNED;
+}
+
+const char *dm_drum_kit_name(int program) {
+    switch (program) {
+    case 0:
+        return DM_TEXT_KIT_STANDARD;
+    case 8:
+        return DM_TEXT_KIT_ROOM;
+    case 16:
+        return DM_TEXT_KIT_POWER;
+    case 24:
+        return DM_TEXT_KIT_ELECTRONIC;
+    case 25:
+        return DM_TEXT_KIT_TR808;
+    case 32:
+        return DM_TEXT_KIT_JAZZ;
+    case 40:
+        return DM_TEXT_KIT_BRUSH;
+    case 48:
+        return DM_TEXT_KIT_ORCHESTRA;
+    case 56:
+        return DM_TEXT_KIT_SFX;
+    default:
+        return NULL;
+    }
 }

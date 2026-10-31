@@ -1,23 +1,30 @@
 #include "editor_internal.h"
 static int checks;
+
 static void check(bool ok, const char *what) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL automation_transfer: %s\n", what);
         exit(1);
     }
 }
+
 extern void test_automation_transfer_ui(Editor *, void (*)(bool, const char *));
+
 static int control_at(const DmSchedule *s, int channel, int cc, double seconds) {
     int value = -1;
+
     for (size_t i = 0; i < s->count; ++i) {
         if (s->items[i].seconds <= seconds + 1e-8 && s->items[i].status == (0xb0 | channel) &&
             s->items[i].a == cc) {
             value = s->items[i].b;
         }
     }
+
     return value;
 }
+
 static void modular_schedule(void) {
     DmProject p;
     dm_project_init(&p);
@@ -93,6 +100,7 @@ static void modular_schedule(void) {
     dm_project_free(&next);
     dm_project_free(&p);
 }
+
 static void bend_and_density(void) {
     DmProject p;
     dm_project_init(&p);
@@ -115,36 +123,46 @@ static void bend_and_density(void) {
     dm_automation_add(&p, (DmAutomation){0, 0xb0, 0, 100, 127, note, 1, 60, 0, false});
     const int setup_cc[] = {101, 100, 6, 38, 101, 100, 99, 98},
               setup_values[] = {0, 0, 12, 50, 127, 127, 1, 2};
+
     for (int i = 0; i < 8; ++i) {
         uint8_t bytes[] = {0xb0, setup_cc[i], setup_values[i]};
         DmBytes ed_message = {bytes, 3, 3};
         dm_event_add(&p, 0, 0, 0, &ed_message);
     }
+
     const int restore_cc[] = {101, 100, 6, 38, 101, 100},
               restore_values[] = {0, 0, 12, 50, 127, 127};
+
     for (int i = 0; i < 6; ++i) {
         dm_automation_add(&p, (DmAutomation){1.001, 0xb0, 0, restore_cc[i], restore_values[i], note,
                                              -1, 60, 0, false});
     }
+
     DmSchedule schedule = {0};
     check(dm_schedule(&p, &schedule), "pitch bend and setup schedule");
     int selector = -1, entry = -1, bend = -1;
     bool bounded = true;
+
     for (size_t i = 0; i < schedule.count; ++i) {
         DmScheduled a = schedule.items[i];
+
         if (a.seconds == 0 && a.status == 0xb0 && a.a == 101 && a.b == 0) {
             selector = (int)i;
         }
+
         if (a.seconds == 0 && a.status == 0xb0 && a.a == 6 && a.b == 24) {
             entry = (int)i;
         }
+
         if (a.status == 0xe0 && a.seconds <= .2) {
             bend = a.a + (a.b << 7);
         }
+
         if (a.status == 0xe0) {
             bounded &= a.a < 128 && a.b < 128;
         }
     }
+
     check(selector >= 0 && entry > selector, "pitch sensitivity selects its RPN before data entry");
     check(bend == 12288 && bounded, "note bend overrides LFO and emitted bends stay 14-bit");
     check(control_at(&schedule, 0, 6, .6) == 2,
@@ -155,24 +173,29 @@ static void bend_and_density(void) {
           "pitch transactions preserve the source NRPN selection");
     dm_schedule_free(&schedule);
     const int later_cc[] = {101, 100, 6, 38, 101, 100}, later_values[] = {0, 0, 7, 25, 127, 127};
+
     for (int i = 0; i < 6; ++i) {
         uint8_t bytes[] = {0xb0, later_cc[i], later_values[i]};
         DmBytes ed_message = {bytes, 3, 3};
         dm_event_add(&p, 2.5, 0, 0, &ed_message);
     }
+
     check(dm_schedule(&p, &schedule), "source bend-range change under active automation");
     check(control_at(&schedule, 0, 6, 1.3) == 2 && control_at(&schedule, 0, 6, 2.1) == 7,
           "active LFO overrides a later source range change, then restores it");
     dm_schedule_free(&schedule);
     p.clip_count = 0;
     p.automation_count = 0;
+
     for (int c = 0; c < 8; ++c) {
         p.lane_count[c] = 1;
         p.channels[c].enabled = true;
+
         for (int i = 0; i < 16; ++i) {
             dm_clip_add(&p, (DmClip){i * 16, mod, c, 0, 16, 1});
         }
     }
+
     uint64_t start = SDL_GetPerformanceCounter();
     check(dm_schedule(&p, &schedule), "dense LFO arrangement schedules successfully");
     double ms = (SDL_GetPerformanceCounter() - start) * 1000.0 / SDL_GetPerformanceFrequency();
@@ -181,6 +204,7 @@ static void bend_and_density(void) {
     dm_schedule_free(&schedule);
     dm_project_free(&p);
 }
+
 static void schema_validation(void) {
     DmProject p, next;
     dm_project_init(&p);
@@ -221,6 +245,7 @@ static void schema_validation(void) {
     dm_project_free(&p);
     dm_project_free(&next);
 }
+
 static void transfer_checks(Editor *e) {
     editor_smoke(e);
     size_t clips = e->project.clip_count;
@@ -235,9 +260,11 @@ static void transfer_checks(Editor *e) {
     check(e->project.clip_count == clips + 4 && e->project.lane_count[0] == 1,
           "transfer adds matching copies beneath all four source placements");
     bool moved = true;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         moved &= e->project.automation[i].pattern == id;
     }
+
     check(moved && e->project.patterns[0].count == (size_t)notes,
           "events move while source notes remain intact");
     int copy = dm_pattern_copy(&e->project, id);
@@ -289,6 +316,7 @@ static void transfer_checks(Editor *e) {
     check(e->start_beat[0] == 1.5 && e->cursor_beat[0] == 1.5,
           "keyboard seek updates set position");
 }
+
 int main(void) {
     modular_schedule();
     bend_and_density();

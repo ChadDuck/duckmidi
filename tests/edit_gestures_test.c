@@ -1,13 +1,16 @@
 /* Production editor boundaries and state transactions, with a real hidden ImGui/SDL renderer. */
 #include "editor_internal.h"
 static int checks;
+
 static void check(bool ok, const char *label) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL edit_gestures: %s\n", label);
         exit(1);
     }
 }
+
 static void history_and_duplication(Editor *e) {
     editor_smoke(e);
     e->context = 2;
@@ -15,18 +18,22 @@ static void history_and_duplication(Editor *e) {
     e->piano = true;
     ed_shortcut(e, SDL_SCANCODE_A, SDL_KMOD_CTRL, false);
     bool all = true;
+
     for (size_t i = 0; i < ed_pattern(e)->count; ++i) {
         all &= ed_pattern(e)->notes[i].selected;
     }
+
     check(all, "Ctrl A selects every note with keyboard piano enabled");
     check(ed_reserved(SDL_SCANCODE_A, SDL_KMOD_CTRL), "Ctrl A cannot be reassigned");
     e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
     ed_shortcut(e, SDL_SCANCODE_A, SDL_KMOD_CTRL, false);
     all = true;
+
     for (size_t i = 0; i < e->project.clip_count; ++i) {
         all &= e->project.clips[i].selected;
     }
+
     check(all, "Ctrl A selects all playlist placements");
     e->context = 2;
     e->edit_focus = FOCUS_NOTES;
@@ -53,9 +60,11 @@ static void history_and_duplication(Editor *e) {
     ed_duplicate_notes(e);
     check(p->notes[2].beat == 4.25 && p->notes[3].beat == 7.25,
           "a bar-sized selection duplicates to the next bar");
+
     for (size_t i = 0; i < p->count; ++i) {
         p->notes[i].selected = 0;
     }
+
     size_t count = p->count;
     ed_duplicate_notes(e);
     check(p->count == count, "empty selection does not duplicate anything");
@@ -74,6 +83,7 @@ static void history_and_duplication(Editor *e) {
     ed_undo(e, true);
     check(ed_pattern(e)->count == count + 2, "take redo restores all changes together");
 }
+
 static void resizing_and_quantize(Editor *e) {
     editor_smoke(e);
     e->context = 2;
@@ -122,6 +132,7 @@ static void resizing_and_quantize(Editor *e) {
     check(p->notes[3].beat == 3.13 && p->notes[3].length == .39,
           "quantize preserves unselected notes when a selection exists");
 }
+
 static void gestures(Editor *e) {
     editor_smoke(e);
     e->piano = true;
@@ -156,6 +167,7 @@ static void gestures(Editor *e) {
     ed_undo(e, false);
     check(ed_pattern(e)->count == count, "one undo restores the entire erase sweep");
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO), "SDL initializes");
     SDL_Window *window = SDL_CreateWindow("edit_gestures validation", 1400, 900, SDL_WINDOW_HIDDEN);
@@ -183,19 +195,23 @@ int main(void) {
     e->piano = false;
     e->confirm = true;
     e->pending_action = PENDING_QUIT;
+
     for (int frame = 0; frame < 2; ++frame) {
         ui_frame();
         editor_frame(e, 1400, 900);
         SDL_RenderClear(renderer);
         ui_render(renderer);
+
         if (frame == 1) {
             SDL_Surface *capture = SDL_RenderReadPixels(renderer, NULL);
             check(capture && SDL_SaveBMP(capture, "agents/reports/edit_gestures-confirm.bmp"),
                   "capture save confirmation");
             SDL_DestroySurface(capture);
         }
+
         SDL_RenderPresent(renderer);
     }
+
     e->confirm = false;
     uint8_t tempo[] = {0xff, 0x51, 3, 7, 0xa1, 0x20};
     uint8_t meter[] = {0xff, 0x58, 4, 3, 2, 24, 8};
@@ -206,19 +222,23 @@ int main(void) {
     ed_song_event_open(e, 1, false);
     check(e->event_edit == 1 && e->event_kind == 1 && e->event_beat == 2 && e->event_numerator == 3,
           "source-event selection updates the selected event's identity and editable fields");
+
     for (int frame = 0; frame < 2; ++frame) {
         ui_frame();
         editor_frame(e, 1400, 900);
         SDL_RenderClear(renderer);
         ui_render(renderer);
+
         if (frame == 1) {
             SDL_Surface *capture = SDL_RenderReadPixels(renderer, NULL);
             check(capture && SDL_SaveBMP(capture, "agents/reports/edit_gestures-event.bmp"),
                   "capture selected source event");
             SDL_DestroySurface(capture);
         }
+
         SDL_RenderPresent(renderer);
     }
+
     printf("PASS edit_gestures: %d targeted checks\n", checks);
     editor_free(e);
     free(e);

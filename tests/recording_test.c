@@ -4,12 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 void test_editor_stop(Editor *e);
+
 static void check(bool ok, const char *label) {
     if (!ok) {
         fprintf(stderr, "FAIL recording: %s\n", label);
         exit(1);
     }
 }
+
 static void key(Editor *e, SDL_Scancode scancode, bool down) {
     SDL_Event event;
     SDL_zero(event);
@@ -20,6 +22,7 @@ static void key(Editor *e, SDL_Scancode scancode, bool down) {
     event.key.down = down;
     editor_event(e, &event);
 }
+
 int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "wasapi");
     check(SDL_Init(SDL_INIT_AUDIO | SDL_INIT_VIDEO), "initialize SDL");
@@ -33,14 +36,18 @@ int main(void) {
     check(dm_audio_soundfont(audio, "agents/reports/generated-sine.sf2", error, sizeof(error)),
           "start font");
     uint64_t limit = SDL_GetTicks() + 30000;
+
     while (dm_audio_busy(audio)) {
         bool success = false;
+
         if (dm_audio_poll(audio, error, sizeof(error), &success, NULL)) {
             check(success, error);
         }
+
         check(SDL_GetTicks() < limit, "worker timeout");
         SDL_Delay(5);
     }
+
     Editor *e = calloc(1, sizeof(*e));
     check(e != NULL, "allocate editor");
     editor_init(e, window, renderer, audio, "", true);
@@ -55,10 +62,12 @@ int main(void) {
     size_t before = e->project.patterns[0].count;
     key(e, SDL_SCANCODE_SPACE, true);
     uint64_t transport_limit = SDL_GetTicks() + 3000;
+
     while (dm_audio_position(audio) < .15) {
         check(SDL_GetTicks() < transport_limit, "transport startup timeout");
         SDL_Delay(5);
     }
+
     SDL_Delay(23);
     key(e, SDL_SCANCODE_Q, true);
     SDL_Delay(83);

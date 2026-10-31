@@ -45,8 +45,8 @@ bool dm_audio_device(DmAudio *audio, int index, char *error, size_t cap);
 void dm_audio_metronome(DmAudio *audio, bool enabled, double bpm);
 void dm_audio_monitor(DmAudio *audio, bool enabled);
 void dm_audio_recording(DmAudio *audio, bool enabled);
-bool dm_audio_export(DmAudio *audio, const DmProject *project, const char *path, const DmAudioOptions *options, char *error,
-                     size_t cap);
+bool dm_audio_export(DmAudio *audio, const DmProject *project, const char *path,
+                     const DmAudioOptions *options, char *error, size_t cap);
 bool dm_audio_exporting(DmAudio *audio);
 int dm_audio_export_progress(DmAudio *audio);
 #endif

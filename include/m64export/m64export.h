@@ -42,38 +42,47 @@ typedef struct {
     const M64Event *events;
     uint64_t event_count, duration;
     uint32_t ppq, target; /* target must be M64_TARGET_SM64_US */
-    uint32_t loop;       /* 0 one shot, 1 restart the complete song */
+    uint32_t loop;        /* 0 one shot, 1 restart the complete song, 2 repeat a loop region */
     uint32_t voice_limit; /* expected game voice budget, 1..64; excess gates warn */
     const char *sequence_name, *bank_name; /* ASCII letters/digits/_/- only */
-    const M64Instrument *programs; /* NULL = built-in GM map; otherwise 128 entries */
-    const M64Instrument *drums;    /* NULL = built-in drum map; otherwise 128 entries */
+    const M64Instrument *programs;         /* NULL = built-in GM map; otherwise 128 entries */
+    const M64Instrument *drums;            /* NULL = built-in drum map; otherwise 128 entries */
     /* Optional 16*128 channel/program definitions. Overrides programs, allowing
        independent mappings for identical GM programs on different channels. */
     const M64Instrument *channel_programs;
+    /* loop == 2: play from the start, then repeat [loop_start, loop_end) in PPQ ticks.
+       loop_end 0 means the end of the song. Notes crossing a boundary are split there. */
+    uint64_t loop_start, loop_end;
 } M64Request;
 
 typedef struct {
     void *user;
-    int32_t (M64_CALL *should_cancel)(void *user);
-    void (M64_CALL *progress)(void *user, uint32_t stage, uint32_t percent);
+    int32_t(M64_CALL *should_cancel)(void *user);
+    void(M64_CALL *progress)(void *user, uint32_t stage, uint32_t percent);
 } M64Hooks;
 
 enum { M64_TARGET_SM64_US = 1 };
+
 enum { M64_OK, M64_INVALID, M64_UNSUPPORTED, M64_LIMIT, M64_CANCELLED, M64_NOMEM };
+
 enum { M64_INFO, M64_WARNING, M64_ERROR };
+
 enum { M64_SEQUENCE, M64_BANK_JSON, M64_SEQUENCE_JSON, M64_MANIFEST, M64_ARTIFACT_COUNT };
 typedef struct M64Result M64Result;
+
 typedef struct {
-    uint32_t channel,program,percussion,note_low,note_high,note_count;
-    double demand,maximum_rate; /* C4-relative demand (drums: control multiplier). */
+    uint32_t channel, program, percussion, note_low, note_high, note_count;
+    double demand, maximum_rate; /* C4-relative demand (drums: control multiplier). */
     char sample[97];
 } M64RangeIssue;
+
 typedef struct {
     uint32_t severity, code;
     uint64_t source_id, tick;
     int32_t channel;
     const char *message;
 } M64DiagnosticView;
+
 typedef struct {
     uint32_t kind;
     const uint8_t *data;
@@ -86,19 +95,19 @@ typedef struct {
    No result survives result_free or unloading the library. Independent calls
    share no mutable state. No callbacks may re-enter the same compilation. */
 typedef struct {
-    int32_t (M64_CALL *compile)(const M64Request *, const M64Hooks *, M64Result **);
-    uint64_t (M64_CALL *diagnostic_count)(const M64Result *);
-    int32_t (M64_CALL *diagnostic_at)(const M64Result *, uint64_t, M64DiagnosticView *);
-    uint64_t (M64_CALL *artifact_count)(const M64Result *);
-    int32_t (M64_CALL *artifact_at)(const M64Result *, uint64_t, M64ArtifactView *);
-    void (M64_CALL *result_free)(M64Result *);
+    int32_t(M64_CALL *compile)(const M64Request *, const M64Hooks *, M64Result **);
+    uint64_t(M64_CALL *diagnostic_count)(const M64Result *);
+    int32_t(M64_CALL *diagnostic_at)(const M64Result *, uint64_t, M64DiagnosticView *);
+    uint64_t(M64_CALL *artifact_count)(const M64Result *);
+    int32_t(M64_CALL *artifact_at)(const M64Result *, uint64_t, M64ArtifactView *);
+    void(M64_CALL *result_free)(M64Result *);
     const M64Instrument *(M64_CALL *default_program)(uint32_t);
     const M64Instrument *(M64_CALL *default_drum)(uint32_t);
     /* Analysis produces diagnostics/range issues, with no output artifacts. */
-    int32_t (M64_CALL *analyze)(const M64Request *,const M64Hooks *,M64Result **);
-    uint64_t (M64_CALL *range_count)(const M64Result *);
-    int32_t (M64_CALL *range_at)(const M64Result *,uint64_t,M64RangeIssue *);
-    int32_t (M64_CALL *preset_supported)(const M64RangeIssue *,uint32_t preset);
+    int32_t(M64_CALL *analyze)(const M64Request *, const M64Hooks *, M64Result **);
+    uint64_t(M64_CALL *range_count)(const M64Result *);
+    int32_t(M64_CALL *range_at)(const M64Result *, uint64_t, M64RangeIssue *);
+    int32_t(M64_CALL *preset_supported)(const M64RangeIssue *, uint32_t preset);
 } M64Api;
 
 /* The single required entry point. Hosts never probe older interfaces. */

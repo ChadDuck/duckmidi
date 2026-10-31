@@ -1,13 +1,17 @@
 #include "editor_internal.h"
 static int checks;
+
 static void check(bool ok, const char *text) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL selection_history: %s\n", text);
         exit(1);
     }
 }
+
 void test_selection_history_ui(Editor *e, void (*check)(bool, const char *));
+
 static void editing_focus(Editor *e) {
     for (int mode = 0; mode < 2; ++mode) {
         editor_smoke(e);
@@ -42,6 +46,7 @@ static void editing_focus(Editor *e) {
               "mixer focus does not delete unfocused clip selections");
     }
 }
+
 static void history(Editor *e) {
     editor_smoke(e);
     int old = ed_pattern(e)->notes[0].key;
@@ -90,6 +95,7 @@ static void history(Editor *e) {
     check(e->automation_node == 0 && e->undo_count == history_count && !e->dirty,
           "selecting and releasing a graph point stays silent and out of history");
 }
+
 static void selection_visibility(Editor *e) {
     editor_smoke(e);
     ed_open_pattern(e, 0, false);
@@ -117,13 +123,16 @@ static void selection_visibility(Editor *e) {
     check(ed_deselect_focused(e) && !e->automation_all && e->automation_node < 0,
           "Escape in event focus clears graph selection");
 }
+
 static void copy_seeking(Editor *e) {
     editor_smoke(e);
     ed_pattern(e)->length = 8;
     e->project.clip_count = 0;
+
     for (int i = 0; i < 3; ++i) {
         dm_clip_add(&e->project, (DmClip){i * 8, 0, 0, 0, 0, 0});
     }
+
     e->selected_clip = -1;
     e->cursor_beat[0] = 2;
     check(ed_pattern_seek_origin(e) == 0, "first-half seek targets the current copy");
@@ -145,6 +154,7 @@ static void copy_seeking(Editor *e) {
     check(e->cursor_beat[1] == 2 && e->pattern_mode,
           "Pattern seek stays local and preserves playback choice");
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO), "SDL");
     SDL_Window *w = SDL_CreateWindow("selection_history checks", 1400, 900, SDL_WINDOW_HIDDEN);

@@ -17,17 +17,27 @@ extern "C" {
 #define DME_CALL
 #define DME_PUBLIC __attribute__((visibility("default")))
 #endif
-#define DME_ABI 3u
+#define DME_ABI 4u
+
 enum { DME_OK, DME_INVALID, DME_CANCELLED, DME_FAILED, DME_NOMEM };
+
 enum { DME_INFO, DME_WARNING, DME_ERROR };
+
 enum { DME_DISPLAY = 1u, DME_POPUP = 2u }; /* Summary and explicit completion warning. */
+
 enum { DME_SINGLE_FILE, DME_ZIP };
+
 enum { DME_BOOL, DME_INT, DME_TEXT, DME_CHOICE, DME_MAPPING, DME_NOTICE, DME_ACTION };
+
+enum { DME_LOOP_START = 1u, DME_LOOP_END = 2u }; /* DmeContext.loop_points */
+
+enum { DME_INSTALL_BACKUP = 1u }; /* install_file: keep the original even without backups */
 
 typedef struct {
     uint64_t tick, source_id;
     uint32_t status, a, b, port;
 } DmeEvent;
+
 /* Absolute PPQ ticks; stable order at a shared tick. 0xff = tempo in a
    (microseconds/quarter); 0xf0 = unsupported source message. Other messages
    use MIDI status/data bytes. Events already reflect routing and mute/solo. */
@@ -37,13 +47,27 @@ typedef struct {
     uint32_t ppq;
     const char *project_name, *source_name;
     const char *program_names[128], *drum_names[128];
+    /* Loop points marked in the arrangement, in the same ticks as events. */
+    uint64_t loop_start, loop_end;
+    uint32_t loop_points; /* DME_LOOP_START and/or DME_LOOP_END */
 } DmeContext;
-typedef struct { uint32_t type; int32_t integer; const char *text; } DmeValue;
-typedef struct { int32_t value; const char *label; } DmeChoice;
+
+typedef struct {
+    uint32_t type;
+    int32_t integer;
+    const char *text;
+} DmeValue;
+
+typedef struct {
+    int32_t value;
+    const char *label;
+} DmeChoice;
+
 typedef struct {
     const char *id, *label;
     int32_t value, default_value;
 } DmeMappingRow;
+
 typedef struct {
     const char *id, *label, *help;
     uint32_t type;
@@ -55,60 +79,92 @@ typedef struct {
     const DmeMappingRow *rows;
     uint32_t row_count;
 } DmeField;
-typedef struct { const DmeField *fields; uint32_t count; } DmeUi;
+
 typedef struct {
-    const char *id,*label,*description,*current_mapping;
-    int32_t value,supported;
+    const DmeField *fields;
+    uint32_t count;
+} DmeUi;
+
+typedef struct {
+    const char *id, *label, *description, *current_mapping;
+    int32_t value, supported;
     const DmeChoice *recommended;
     uint32_t recommended_count;
     const DmeChoice *choices;
     uint32_t choice_count;
 } DmeReviewRow;
-typedef struct {const char *description;const DmeReviewRow *rows;uint32_t count;} DmeReview;
+
+typedef struct {
+    const char *description;
+    const DmeReviewRow *rows;
+    uint32_t count;
+} DmeReview;
+
 typedef struct {
     void *user;
-    int32_t (DME_CALL *cancelled)(void *user);
-    void (DME_CALL *progress)(void *user, uint32_t percent);
-    void (DME_CALL *diagnostic)(void *user,uint32_t severity,uint32_t flags,const char *message);
+    int32_t(DME_CALL *cancelled)(void *user);
+    void(DME_CALL *progress)(void *user, uint32_t percent);
+    void(DME_CALL *diagnostic)(void *user, uint32_t severity, uint32_t flags, const char *message);
     /* Copies bytes before returning. Leaf names only; no paths or duplicates.
        Return zero on cancellation/failure. Never publish files yourself. */
-    int32_t (DME_CALL *artifact)(void *user,const char *name,const uint8_t *data,uint64_t size);
+    int32_t(DME_CALL *artifact)(void *user, const char *name, const uint8_t *data, uint64_t size);
+    /* Folder installs only; NULL during other calls. Paths are relative to the chosen folder and
+       use "/" separators. read_file returns zero when the file is missing; its bytes stay valid
+       until install returns. install_file queues a whole file; the host writes queued files only
+       after install succeeds, keeping originals as described in plugin-api.md. */
+    int32_t(DME_CALL *read_file)(void *user, const char *path, const uint8_t **data,
+                                 uint64_t *size);
+    int32_t(DME_CALL *install_file)(void *user, const char *path, const uint8_t *data,
+                                    uint64_t size, uint32_t flags);
 } DmeHost;
+
 typedef struct {
     const char *id, *name, *extension, *filter_name, *save_label, *description;
     uint32_t container;
     void *(DME_CALL *create)(void);
-    void (DME_CALL *destroy)(void *instance);
+    void(DME_CALL *destroy)(void *instance);
     /* Main thread. Context is borrowed for this call; copy anything retained.
        inspect refreshes source-dependent options, without changing the project. */
-    int32_t (DME_CALL *inspect)(void *instance,const DmeContext *,char *error,uint64_t capacity);
-    int32_t (DME_CALL *describe)(void *instance,DmeUi *ui);
+    int32_t(DME_CALL *inspect)(void *instance, const DmeContext *, char *error, uint64_t capacity);
+    int32_t(DME_CALL *describe)(void *instance, DmeUi *ui);
     /* Views remain valid through setters until the next describe/inspect/reset.
        IDs identify fields or mapping rows; ACTION is a button activation. */
-    int32_t (DME_CALL *set)(void *instance,const char *id,const DmeValue *,char *error,uint64_t capacity);
-    void (DME_CALL *reset)(void *instance);
+    int32_t(DME_CALL *set)(void *instance, const char *id, const DmeValue *, char *error,
+                           uint64_t capacity);
+    void(DME_CALL *reset)(void *instance);
     /* Main thread: freeze settings. Job owns its copies; later UI/project edits
        cannot affect it. NULL means failure, with a readable error. */
-    void *(DME_CALL *create_job)(const void *instance,char *error,uint64_t capacity);
+    void *(DME_CALL *create_job)(const void *instance, char *error, uint64_t capacity);
     /* Worker thread. Input/host borrowed until return. Artifact/diagnostic
        callbacks run synchronously on this worker. No callbacks after return. */
-    int32_t (DME_CALL *run)(void *job,const DmeContext *,const DmeHost *,char *error,uint64_t capacity);
+    int32_t(DME_CALL *run)(void *job, const DmeContext *, const DmeHost *, char *error,
+                           uint64_t capacity);
     /* Main thread, after the worker has joined, including on cancellation. */
-    void (DME_CALL *destroy_job)(void *job);
+    void(DME_CALL *destroy_job)(void *job);
     /* Worker preflight creates no artifacts. Main-thread review views and draft
        setters remain job-owned. Apply commits only after explicit user choice;
        exporting unchanged must retain the original frozen settings. */
-    int32_t (DME_CALL *preflight)(void *job,const DmeContext *,const DmeHost *,char *error,uint64_t capacity);
-    int32_t (DME_CALL *review)(void *job,DmeReview *);
-    int32_t (DME_CALL *review_set)(void *job,const char *id,int32_t value,char *error,uint64_t capacity);
-    int32_t (DME_CALL *review_apply)(void *instance,void *job,char *error,uint64_t capacity);
+    int32_t(DME_CALL *preflight)(void *job, const DmeContext *, const DmeHost *, char *error,
+                                 uint64_t capacity);
+    int32_t(DME_CALL *review)(void *job, DmeReview *);
+    int32_t(DME_CALL *review_set)(void *job, const char *id, int32_t value, char *error,
+                                  uint64_t capacity);
+    int32_t(DME_CALL *review_apply)(void *instance, void *job, char *error, uint64_t capacity);
+    /* Optional folder install, such as a game source checkout. install_label names the button;
+       both are NULL when unsupported. Runs on the worker after preflight/review, like run, with
+       read_file and install_file available. */
+    const char *install_label;
+    int32_t(DME_CALL *install)(void *job, const DmeContext *, const DmeHost *, char *error,
+                               uint64_t capacity);
 } DmeExporter;
+
 typedef struct {
     uint32_t abi, size;
     const char *id, *name;
     uint32_t exporter_count;
     const DmeExporter *(DME_CALL *exporter)(uint32_t index);
 } DmePlugin;
+
 /* Exactly one entry point, no legacy probes. Return NULL for an unsupported ABI.
    Descriptors/function tables live until module unload. Instance/job memory is
    freed only by its module. Different instances/jobs share no mutable state.

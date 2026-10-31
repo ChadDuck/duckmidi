@@ -1,13 +1,17 @@
 #include "editor_internal.h"
 static int checks;
+
 static void check(bool value, const char *text) {
     ++checks;
+
     if (!value) {
         fprintf(stderr, "FAIL live edit UI: %s\n", text);
         exit(1);
     }
 }
+
 extern void test_live_edit_ui(Editor *, void (*)(bool, const char *));
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO), "SDL");
     SDL_Window *w = SDL_CreateWindow("Live edit UI", 1400, 900, SDL_WINDOW_HIDDEN);
@@ -19,9 +23,14 @@ int main(void) {
     test_live_edit_ui(e, check);
     ui_frame();
     ui_root(0, 900);
-    e->project.automation_count=0;
-    check(dm_automation_add(&e->project,(DmAutomation){.pattern=e->selected_pattern,.type=0xe0,.channel=e->pattern_channel,.b=64,.anchor=60}),"isolated pitch automation fixture");
-    e->event_drag.size=0;
+    e->project.automation_count = 0;
+    check(dm_automation_add(&e->project, (DmAutomation){.pattern = e->selected_pattern,
+                                                        .type = 0xe0,
+                                                        .channel = e->pattern_channel,
+                                                        .b = 64,
+                                                        .anchor = 60}),
+          "isolated pitch automation fixture");
+    e->event_drag.size = 0;
     e->automation_node = 0;
     e->automation_raw = true;
     e->automation_cc = -2;
@@ -53,9 +62,11 @@ int main(void) {
     check(e->marquee && !e->drag && e->project.clip_count == clips,
           "Ctrl over a playlist placement starts marquee instead of toggling or moving it");
     e->marquee = false;
+
     for (size_t i = 0; i < clips; ++i) {
         e->project.clips[i].selected = 0;
     }
+
     mouse = (UiMouse){.clicked = true, .shift = true};
     ed_playlist_hit_click(e, mouse, 0, 0);
     e->drag = 0;

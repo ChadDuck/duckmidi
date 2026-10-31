@@ -5,10 +5,16 @@
 #include <string.h>
 #ifdef _WIN32
 #include <windows.h>
+
 static void application_icon(SDL_Window *window) {
-    HWND handle=(HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),SDL_PROP_WINDOW_WIN32_HWND_POINTER,NULL);
-    HICON large=LoadIconW(GetModuleHandleW(NULL),MAKEINTRESOURCEW(1));
-    if(handle&&large){SendMessageW(handle,WM_SETICON,ICON_BIG,(LPARAM)large);SendMessageW(handle,WM_SETICON,ICON_SMALL,(LPARAM)large);}
+    HWND handle = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                               SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+    HICON large = LoadIconW(GetModuleHandleW(NULL), MAKEINTRESOURCEW(1));
+
+    if (handle && large) {
+        SendMessageW(handle, WM_SETICON, ICON_BIG, (LPARAM)large);
+        SendMessageW(handle, WM_SETICON, ICON_SMALL, (LPARAM)large);
+    }
 }
 #endif
 
@@ -22,21 +28,28 @@ static SDL_Renderer *accelerated_renderer(SDL_Window *window) {
 #endif
     for (size_t i = 0; i < sizeof(backends) / sizeof(*backends); ++i) {
         SDL_Renderer *r = SDL_CreateRenderer(window, backends[i]);
+
         if (r) {
             return r;
         }
     }
+
     return NULL;
 }
+
 static void monitor_window(Editor *editor, SDL_Window *window) {
     SDL_DisplayID display = SDL_GetDisplayForWindow(window);
+
     if (!display) {
         display = SDL_GetPrimaryDisplay();
     }
+
     if (!display || display == editor->display) {
         return;
     }
+
     SDL_Rect bounds;
+
     if (SDL_GetDisplayUsableBounds(display, &bounds)) {
         int width = bounds.w / 2, height = bounds.h / 2;
         SDL_RestoreWindow(window);
@@ -45,50 +58,71 @@ static void monitor_window(Editor *editor, SDL_Window *window) {
         SDL_SetWindowPosition(window, bounds.x + (bounds.w - width) / 2,
                               bounds.y + (bounds.h - height) / 2);
     }
+
     editor->display = display;
 }
+
 static bool window_frame(Editor *editor, SDL_Window *window, bool smoke, bool events) {
     monitor_window(editor, window);
     SDL_WindowFlags flags = SDL_GetWindowFlags(window);
     editor->minimized = (flags & SDL_WINDOW_MINIMIZED) != 0;
     editor->focused = (flags & SDL_WINDOW_INPUT_FOCUS) != 0;
-    // Native dialogs can send synchronous messages to their owner while opening and closing.
-    // Keep pumping that owner's message queue promptly without rendering the covered editor.
+    // Native dialogs can send synchronous messages to their owner while opening and closing, so
+    // the owner's message queue is pumped every millisecond. The editor keeps drawing at about
+    // 30 frames per second meanwhile, so playback, meters and progress stay live behind it.
     if (editor->dialog_busy) {
+        static uint64_t last_frame;
+        uint64_t now = SDL_GetTicks();
         editor_background(editor);
-        SDL_Delay(1);
-        return false;
+
+        if (now - last_frame < 33) {
+            SDL_Delay(1);
+            return false;
+        }
+
+        last_frame = now;
+        return true;
     }
+
     if (!smoke && editor->minimized) {
         editor_background(editor);
+
         if (editor->confirm) {
             SDL_RestoreWindow(window);
         }
+
         SDL_Delay(100);
         return false;
     }
+
     if (!smoke && !editor->focused) {
         editor_background(editor);
         SDL_Delay(100);
+
         if (!events && !editor->drop_active && !dm_audio_playing(editor->audio) &&
             !dm_audio_busy(editor->audio)) {
             return false;
         }
     }
+
     return true;
 }
+
 static void editor_loop(Editor *editor, SDL_Window *window, SDL_Renderer *renderer, bool smoke) {
     while (editor->running) {
         SDL_Event event;
         bool events = false;
+
         while (SDL_PollEvent(&event)) {
             events = true;
             ui_event(&event);
             editor_event(editor, &event);
         }
+
         if (!window_frame(editor, window, smoke, events)) {
             continue;
         }
+
         const float scales[] = {.85f, 1, 1.25f};
         ui_set_scale(scales[editor->ui_size]);
         ui_frame();
@@ -98,22 +132,27 @@ static void editor_loop(Editor *editor, SDL_Window *window, SDL_Renderer *render
         SDL_SetRenderDrawColor(renderer, 10, 10, 10, 255);
         SDL_RenderClear(renderer);
         ui_render(renderer);
+
         if (smoke && ++editor->smoke_frames == 30) {
             SDL_Surface *surface = SDL_RenderReadPixels(renderer, NULL);
+
             if (surface) {
                 SDL_SaveBMP(surface, editor->active ? "agents/reports/editor-smoke.bmp"
                                                     : "agents/reports/welcome-smoke.bmp");
                 SDL_DestroySurface(surface);
             }
-            printf(DM_TEXT_RENDERER_S_AUDIO_S_PATTERNS_ZU_CLIPS_ZU_N, SDL_GetRendererName(renderer),
+
+            printf(DM_TEXT_RENDERER_AUDIO_PATTERNS, SDL_GetRendererName(renderer),
                    dm_audio_driver(editor->audio), editor->project.pattern_count,
                    editor->project.clip_count);
             editor->running = false;
         }
+
         SDL_RenderPresent(renderer);
         SDL_Delay(1);
     }
 }
+
 static bool editor_allocation(Editor *editor, DmAudio *audio, SDL_Renderer *renderer,
                               SDL_Window *window) {
     if (!editor) {
@@ -124,17 +163,22 @@ static bool editor_allocation(Editor *editor, DmAudio *audio, SDL_Renderer *rend
         SDL_Quit();
         return false;
     }
+
     return true;
 }
+
 static int launch_mode(int argc, char **argv) {
     if (argc < 2) {
         return 0;
     }
+
     if (!strcmp(argv[1], "--welcome-smoke")) {
         return 2;
     }
+
     return !strcmp(argv[1], "--smoke");
 }
+
 int main(int argc, char **argv) {
     int mode = launch_mode(argc, argv);
     bool welcome = mode == 2, smoke = mode != 0;
@@ -142,55 +186,67 @@ int main(int argc, char **argv) {
     SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "wasapi", SDL_HINT_OVERRIDE);
 #endif
     SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "256");
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
-        fprintf(stderr, DM_TEXT_SDL_VIDEO_S_N, SDL_GetError());
+        fprintf(stderr, DM_TEXT_SDL_VIDEO, SDL_GetError());
         return 1;
     }
+
     SDL_InitSubSystem(SDL_INIT_AUDIO);
     SDL_Window *window = SDL_CreateWindow(DM_TEXT_APP_NAME, 1400, 900,
                                           SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY |
                                               (smoke ? SDL_WINDOW_HIDDEN : 0));
+
     if (!window) {
-        fprintf(stderr, DM_TEXT_WINDOW_S_N, SDL_GetError());
+        fprintf(stderr, DM_TEXT_WINDOW, SDL_GetError());
         SDL_Quit();
         return 1;
     }
+
     SDL_SetWindowMinimumSize(window, 640, 400);
 #ifdef _WIN32
     application_icon(window);
 #endif
     SDL_Renderer *renderer = accelerated_renderer(window);
+
     if (!renderer) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, DM_TEXT_APP_NAME,
-                                 DM_TEXT_NO_HARDWARE_ACCELERATED_GRAPHICS_BACKEND_IS_AVAILABLE,
-                                 window);
+                                 DM_TEXT_HARDWARE_ACCELERATED_GRAPHICS, window);
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
+
     SDL_SetRenderVSync(renderer, 1);
     const char *base = SDL_GetBasePath();
     char ini[DM_PATH];
     snprintf(ini, sizeof(ini), DM_TEXT_SDUCKMIDI_INI, base ? base : "");
+
     if (!ui_init(window, renderer, smoke ? NULL : ini)) {
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
+
     char error[512] = {0};
     DmAudio *audio = dm_audio_create(error, sizeof(error));
     Editor *editor = calloc(1, sizeof(*editor));
+
     if (!editor_allocation(editor, audio, renderer, window)) {
         return 1;
     }
+
     editor_init(editor, window, renderer, audio, base ? base : "", smoke);
+
     if (*error) {
         snprintf(editor->status, sizeof(editor->status), "%s", error);
     }
+
     if (smoke && !welcome) {
         editor_smoke(editor);
     }
+
     editor_loop(editor, window, renderer, smoke);
     DmAudio *final_audio = editor->audio;
     editor_free(editor);

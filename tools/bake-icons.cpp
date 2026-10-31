@@ -141,14 +141,15 @@ static std::vector<std::string> shapes(const std::string &svg, const std::string
 
 static std::string toolbar(const fs::path &root) {
     const char *files[] = {"play", "pause", "square", "circle", "open-select-hand-gesture",
-        "square-dashed", "cut-copy", "trash", "design-nib", "circle-spark", "timer", "hourglass",
+        "square-dashed", "precision-knife", "trash", "paint-brush", "circle-spark", "timer", "hourglass",
         "plus-square", "cursor-pointer", "drag-hand-gesture", "one-finger-select-hand-gesture", "piano-outline"};
     std::ostringstream output;
-    output << "// Baked from MIT-licensed Iconoir SVGs and local piano outline; see assets/iconoir/LICENSE.\n"
+    output << "// Baked from MIT-licensed Iconoir SVGs and local piano, knife and CC0 brush outlines; see assets/iconoir/LICENSE.\n"
               "struct ToolbarShape { int icon, kind, count; float values[512]; };\n"
               "static const ToolbarShape toolbar_shapes[] = {\n";
     for (size_t i = 0; i < std::size(files); ++i) {
-        const bool local = std::string(files[i]) == "cut-copy" || std::string(files[i]) == "piano-outline";
+        const bool local = std::string(files[i]) == "precision-knife" || std::string(files[i]) == "paint-brush" ||
+                           std::string(files[i]) == "piano-outline";
         const fs::path file = root / "assets" / (local ? "" : "iconoir") / (std::string(files[i])+".svg");
         for (const auto &shape : shapes(read(file), "path")) path(output, attribute(shape, "d"), static_cast<int>(i));
     }

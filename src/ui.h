@@ -9,21 +9,24 @@ extern "C" {
 typedef struct {
     float x, y;
 } UiPoint;
+
 typedef struct {
     float x, y, w, h;
 } UiRect;
+
 typedef struct {
     UiPoint pos, delta;
     float wheel;
     bool left, clicked, released, right, right_clicked, double_clicked, shift, ctrl, alt,
         middle_clicked, middle, middle_released;
 } UiMouse;
+
 bool ui_init(SDL_Window *window, SDL_Renderer *renderer, const char *settings);
 void ui_shutdown(void);
 void ui_theme(uint32_t accent);
 bool ui_color(const char *label, uint32_t *color);
-bool ui_port_color(const char *id,uint32_t color,bool selected,float size);
-bool ui_mouse_popup(const char *name,bool request);
+bool ui_port_color(const char *id, uint32_t color, bool selected, float size);
+bool ui_mouse_popup(const char *name, bool request);
 bool ui_toggle(const char *label, bool *value);
 void ui_resize_cursor(bool vertical);
 void ui_triangle(UiPoint a, UiPoint b, UiPoint c, uint32_t color);
@@ -79,6 +82,7 @@ void ui_mixer_wheel(void);
 void ui_piano_icon(UiRect rect);
 bool ui_frame_toggle(const char *label, bool *value);
 bool ui_button(const char *label, float w, float h);
+
 typedef enum {
     UI_PLAY,
     UI_PAUSE,
@@ -99,6 +103,7 @@ typedef enum {
     UI_PIANO,
     UI_ICON_COUNT
 } UiIcon;
+
 bool ui_icon_button(const char *id, UiIcon icon, float width, float height);
 void ui_custom_cursor(bool enabled);
 void ui_gesture_cursor(bool point);
@@ -164,6 +169,7 @@ void ui_border(UiRect r, uint32_t color, float rounding, float width);
 void ui_line(UiPoint a, UiPoint b, uint32_t color, float width);
 void ui_label_fit(UiPoint at, float width, uint32_t color, const char *text);
 void ui_label(UiPoint pos, uint32_t color, const char *text);
+float ui_font_size(void);
 void ui_clip(UiRect r);
 void ui_unclip(void);
 void ui_progress(float value, float w, float h, const char *text);

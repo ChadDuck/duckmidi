@@ -1,24 +1,30 @@
 #include "editor_internal.h"
 extern void test_pattern_workflow_ui(Editor *, void (*)(bool, const char *));
 static int checks;
+
 static void check(bool ok, const char *text) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL pattern_workflow: %s\n", text);
         exit(1);
     }
 }
+
 extern void recording_feedback_audio_pause(DmAudio *);
 extern void recording_feedback_audio_render(DmAudio *, int);
 extern int recording_feedback_audio_preset(DmAudio *, int, bool);
+
 static void fixture(Editor *e) {
     ed_release_piano(e);
     editor_smoke(e);
     e->project.clip_count = e->project.automation_count = 0;
+
     for (size_t i = 0; i < e->project.pattern_count; ++i) {
         e->project.patterns[i].count = 0;
         e->project.patterns[i].length = 1;
     }
+
     e->selected_pattern = 0;
     e->context = 2;
     e->edit_focus = FOCUS_NOTES;
@@ -38,6 +44,7 @@ static void fixture(Editor *e) {
     e->drag = 0;
     e->edit_moved = false;
 }
+
 static void sizing_names(Editor *e) {
     fixture(e);
     DmPattern *p = ed_pattern(e);
@@ -98,6 +105,7 @@ static void sizing_names(Editor *e) {
     dm_bytes_free(&bytes);
     dm_project_free(&loaded);
 }
+
 static void brush_velocity(Editor *e) {
     fixture(e);
     DmPattern *p = ed_pattern(e);
@@ -111,11 +119,13 @@ static void brush_velocity(Editor *e) {
     ed_brush_drag(e, p, grid, &v, 80, 20, m);
     check(p->count >= 6 && e->undo_count == history + 1,
           "brush fills crossed cells in one undo step");
+
     for (size_t i = 0; i < p->count; ++i) {
         check(p->notes[i].length == .25 &&
                   fabs(p->notes[i].beat * 4 - round(p->notes[i].beat * 4)) < 1e-8,
               "brush notes are quarter-beat quantized");
     }
+
     m.left = false;
     m.released = true;
     ed_brush_drag(e, p, grid, &v, 80, 20, m);
@@ -126,9 +136,11 @@ static void brush_velocity(Editor *e) {
     m.clicked = false;
     m.pos = (UiPoint){205, 10};
     ed_brush_drag(e, p, grid, &v, 80, 20, m);
+
     for (size_t i = 0; i < p->count; ++i) {
         check(p->notes[i].key == 60, "Ctrl brush keeps starting pitch");
     }
+
     p->count = 0;
     dm_note_add(p, (DmNote){0, 1, 60, 50, 1});
     dm_note_add(p, (DmNote){1, 1, 64, 75, 1});
@@ -146,6 +158,7 @@ static void brush_velocity(Editor *e) {
     ed_select_all(e);
     check(p->notes[0].selected && p->notes[1].selected, "velocity Ctrl+A selects every note value");
 }
+
 static void linked_copy(Editor *e) {
     fixture(e);
     e->context = 1;
@@ -187,6 +200,7 @@ static void linked_copy(Editor *e) {
               e->project.clips[e->project.clip_count - 1].pattern == (int)patterns,
           "paste into another project session clones content instead of linking equal ids");
 }
+
 static void recording(Editor *e) {
     fixture(e);
     e->record = true;
@@ -207,6 +221,7 @@ static void recording(Editor *e) {
     e->pattern_mode = true;
     check(ed_recording_origin(e, 120) == 0, "Pattern-mode recording already uses local beats");
 }
+
 static void group_points(Editor *e) {
     fixture(e);
     e->edit_focus = FOCUS_EVENTS;
@@ -284,6 +299,7 @@ static void group_points(Editor *e) {
     m.released = true;
     ed_automation_node_drag(e, lane, &v, 80, m);
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO), "SDL");
     SDL_Window *w = SDL_CreateWindow("pattern_workflow", 1400, 900, SDL_WINDOW_HIDDEN);
@@ -294,13 +310,17 @@ int main(void) {
     check(audio && dm_audio_soundfont(audio, "agents/reports/generated-programs.sf2", error,
                                       sizeof(error)),
           "fixture font");
+
     while (dm_audio_busy(audio)) {
         bool success = false;
+
         if (dm_audio_poll(audio, error, sizeof(error), &success, NULL)) {
             check(success, "font loaded");
         }
+
         SDL_Delay(5);
     }
+
     recording_feedback_audio_pause(audio);
     Editor *e = calloc(1, sizeof(*e));
     editor_init(e, w, r, audio, "", true);

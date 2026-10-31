@@ -3,13 +3,16 @@ extern void recording_feedback_audio_pause(DmAudio *);
 extern void recording_feedback_audio_render(DmAudio *, int);
 extern void test_toolbar_followup_ui(Editor *, void (*)(bool, const char *));
 static int checks;
+
 static void check(bool ok, const char *text) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL toolbar followup: %s\n", text);
         exit(1);
     }
 }
+
 static void recording_controls(Editor *e) {
     editor_smoke(e);
     e->pattern_mode = true;
@@ -67,6 +70,7 @@ static void recording_controls(Editor *e) {
     ed_action(e, ACT_PLAY);
     ed_toggle_record(e);
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO), "SDL");
     SDL_Window *w = SDL_CreateWindow("Toolbar followup", 1400, 900, SDL_WINDOW_HIDDEN);
@@ -78,16 +82,21 @@ int main(void) {
                                       sizeof(error)),
           "load generated font");
     uint64_t start = SDL_GetTicks();
+
     while (dm_audio_busy(audio)) {
         bool success = false;
+
         if (dm_audio_poll(audio, error, sizeof(error), &success, NULL)) {
             check(success, error);
         }
+
         if (SDL_GetTicks() - start > 30000) {
             check(false, "font timeout");
         }
+
         SDL_Delay(5);
     }
+
     recording_feedback_audio_pause(audio);
     Editor *e = calloc(1, sizeof(*e));
     editor_init(e, w, r, audio, "", true);

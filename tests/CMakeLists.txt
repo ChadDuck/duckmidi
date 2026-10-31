@@ -74,7 +74,8 @@ foreach(NAME editor recording window transport_shortcuts dialog edit_gestures po
     source_workflow channel_row live_edit_editor interface event_lanes midi_inspector export_plugins backlog)
   desktop_test(${NAME}_test audio)
 endforeach()
-foreach(NAME recording_feedback pattern_workflow channel_routing toolbar_followup todo_b todo_c)
+foreach(NAME recording_feedback pattern_workflow channel_routing toolbar_followup todo_b todo_c
+    frame_performance)
   desktop_test(${NAME}_test recording_feedback_audio)
 endforeach()
 desktop_test(event_controls_test event_controls_audio)

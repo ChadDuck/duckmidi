@@ -5,25 +5,30 @@
 #include <stdlib.h>
 #include <string.h>
 #include "wave_fixture.h"
+
 static void check(bool value, const char *what) {
     if (!value) {
         fprintf(stderr, "FAIL %s: %s\n", what, SDL_GetError());
         exit(1);
     }
 }
+
 static void await_job(DmAudio *a) {
     uint64_t start = SDL_GetTicks();
     bool success = false;
     char ed_message[512];
+
     while (dm_audio_busy(a)) {
         if (dm_audio_poll(a, ed_message, sizeof(ed_message), &success, NULL)) {
             printf("%s\n", ed_message);
             check(success, ed_message);
         }
+
         check(SDL_GetTicks() - start < 30000, "worker timeout");
         SDL_Delay(5);
     }
 }
+
 int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "wasapi");
     check(SDL_Init(SDL_INIT_AUDIO), "audio initialization");
@@ -49,10 +54,12 @@ int main(void) {
     size_t pcm_size, pcm = wave_data_offset(&wave, &pcm_size);
     check(pcm_size == 4 * 48000 * 4, "WAV PCM length");
     long long energy = 0;
+
     for (size_t i = pcm; i + 1 < pcm + pcm_size; i += 2) {
         int v = (int16_t)(wave.data[i] | wave.data[i + 1] << 8);
         energy += (long long)v * v;
     }
+
     check(energy > 1000000, "non-silent audio");
     int modulation = dm_pattern_add(&p, "Rendered expression LFO");
     p.patterns[modulation].kind = 1;
@@ -69,10 +76,12 @@ int main(void) {
           "read modular LFO WAV");
     long long lfo_energy = 0;
     pcm = wave_data_offset(&lfo_wave, &pcm_size);
+
     for (size_t i = pcm; i + 1 < pcm + pcm_size; i += 2) {
         int v = (int16_t)(lfo_wave.data[i] | lfo_wave.data[i + 1] << 8);
         lfo_energy += (long long)v * v;
     }
+
     check(lfo_energy > 1000000 && lfo_energy < energy / 2,
           "rendered expression automation produces a non-silent, attenuated waveform");
     dm_bytes_free(&lfo_wave);
@@ -88,7 +97,8 @@ int main(void) {
     dm_clip_add(&glide, (DmClip){0, glide_id, 0, 0, 0, 0});
     dm_automation_add(&glide, (DmAutomation){0, 0xb0, 0, 5, 5, glide_id, 0, 0, 0, false});
     dm_automation_add(&glide, (DmAutomation){0, 0xb0, 0, 65, 127, glide_id, 0, 0, 0, false});
-    check(dm_audio_export(a, &glide, "agents/reports/portamento-auto.wav", NULL, error, sizeof(error)),
+    check(dm_audio_export(a, &glide, "agents/reports/portamento-auto.wav", NULL, error,
+                          sizeof(error)),
           "portamento render");
     await_job(a);
     DmBytes glide_midi = {0};
@@ -136,9 +146,11 @@ int main(void) {
     DmSchedule muted_song = {0};
     check(dm_schedule(&p, &muted_song), "prepare song under mixer mute/solo");
     bool note_on = false;
+
     for (size_t i = 0; i < muted_song.count; ++i) {
         note_on |= (muted_song.items[i].status & 0xf0) == 0x90 && muted_song.items[i].b > 0;
     }
+
     check(!note_on, "song playback still respects mixer mute/solo");
     dm_schedule_free(&muted_song);
     p.channels[0].mute = p.channels[1].solo = false;
@@ -166,12 +178,15 @@ int main(void) {
     check(dm_audio_soundfont(a, "agents/reports/does-not-exist.sf2", error, sizeof(error)),
           "invalid font job");
     bool success = true;
+
     while (dm_audio_busy(a)) {
         if (dm_audio_poll(a, error, sizeof(error), &success, NULL)) {
             check(!success, "failed SoundFont is reported");
         }
+
         SDL_Delay(5);
     }
+
     dm_audio_preview(a, 0, 69, 100, true);
     SDL_Delay(100);
     check(dm_audio_peak(a, 0) > .001f, "old synth survives failed load");

@@ -1,23 +1,30 @@
 #include "editor_internal.h"
 static int checks;
+
 static void check(bool ok, const char *what) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL event_clipboard: %s\n", what);
         exit(1);
     }
 }
+
 extern void test_event_clipboard_ui(Editor *, void (*)(bool, const char *));
+
 static int pitch_node(Editor *e, double beat) {
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
+
         if (a.pattern == e->selected_pattern && a.type == 0xe0 && a.curve >= 0 &&
             fabs(a.beat - beat) < 1e-7) {
             return (int)i;
         }
     }
+
     return -1;
 }
+
 static void fixture(Editor *e) {
     editor_smoke(e);
     e->selected_pattern = 0;
@@ -34,9 +41,11 @@ static void fixture(Editor *e) {
     e->pattern_channel = 0;
     ed_focus_edit(e, FOCUS_EVENTS);
 }
+
 static void musical_sync(void) {
     DmPattern p = {.pulse = .5, .amount = 1};
     const double bars[] = {4, 2, 3, 3.5};
+
     for (int i = 0; i < 4; ++i) {
         p.speed = dm_lfo_speed_snap(1.02 / bars[i], bars[i]);
         check(fabs(p.speed - 1 / bars[i]) < 1e-9, "whole-bar snap follows time signature");
@@ -46,18 +55,24 @@ static void musical_sync(void) {
         check(fabs(dm_lfo_speed_snap(2.03 / bars[i], bars[i]) - 2 / bars[i]) < 1e-9,
               "half-bar snap follows time signature");
     }
+
     check(dm_lfo_speed_snap(.29, 4) == .29, "free speed remains available away from sync");
 }
+
 static int scheduled_value(const DmSchedule *s, int type, double seconds) {
     int value = -1;
+
     for (size_t i = 0; i < s->count; ++i) {
         DmScheduled a = s->items[i];
+
         if (a.status == type && a.seconds <= seconds + 1e-8) {
             value = type == 0xe0 ? a.a + (a.b << 7) : a.a == 11 ? a.b : value;
         }
     }
+
     return value;
 }
+
 static void scheduled_sync(void) {
     DmProject p;
     dm_project_init(&p);
@@ -69,6 +84,7 @@ static void scheduled_sync(void) {
     p.patterns[id].event = 11;
     p.patterns[id].speed = 1.0 / 3;
     dm_clip_add(&p, (DmClip){0, id, 0, 0, 6, 1});
+
     for (int i = 0; i < 2; ++i) {
         p.bpm = i ? 180 : 60;
         DmSchedule schedule = {0};
@@ -78,6 +94,7 @@ static void scheduled_sync(void) {
               "6/8 trough and next peak follow tempo in actual MIDI output");
         dm_schedule_free(&schedule);
     }
+
     p.patterns[id].mode = 0;
     dm_automation_add(&p, (DmAutomation){0, 0xe0, 0, 0, 64, id, 0, 0, 0, false});
     dm_automation_add(&p, (DmAutomation){2, 0xe0, 0, 0, 96, id, 0, 0, 0, false});
@@ -89,6 +106,7 @@ static void scheduled_sync(void) {
     dm_schedule_free(&schedule);
     dm_project_free(&p);
 }
+
 static void pitch_ranges(Editor *e) {
     fixture(e);
     e->drag_key = 60;
@@ -123,6 +141,7 @@ static void pitch_ranges(Editor *e) {
     check(ed_lane_step(lane) == 20 && ed_lane_step((UiRect){0, 0, 500, 1800}) == 20,
           "pitch row spacing stays constant in both editors");
 }
+
 static void event_clipboard(Editor *e) {
     fixture(e);
     e->automation_cc = 11;
@@ -190,6 +209,7 @@ static void event_clipboard(Editor *e) {
     check(point >= 0 && fabs(ed_automation_pitch(e, e->project.automation[point]) - 61) < .02,
           "discrete pitch paste preserves subsequent destination pitches");
 }
+
 static void transfer_points(Editor *e) {
     fixture(e);
     dm_automation_add(&e->project, (DmAutomation){0, 0xe0, 0, 0, 64, 0, 0, 0, 0, false});
@@ -201,6 +221,7 @@ static void transfer_points(Editor *e) {
     dm_pattern_add(&e->project, "Blank");
     check(e->project.automation_count == before, "blank creation adds no default endpoints");
 }
+
 int main(void) {
     musical_sync();
     scheduled_sync();

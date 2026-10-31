@@ -4,29 +4,41 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "../include/duckmidi_midi.h"
+
 #define DM_PORT_COMBINED 256 /* Virtual source view; exported channel messages use port 0. */
 #define DM_LANES 32
 #define DM_PPQ 960
 #define DM_PIANO_KEYS 37
-#define DM_PROJECT_SCHEMA 9
+#define DM_PROJECT_SCHEMA 10
+#define DM_PROJECT_SCHEMA_PREVIOUS 9 /* Still loaded through src/project_compat.c. */
 #define DM_NOTE_PORTS 128
+#define DM_PATTERN_COLORS 16
+#define DM_DRUM_CHANNEL 9 /* General MIDI channel 10. */
+/* Loop points for exporters, stored as marker meta events so they survive MIDI files. */
+#define DM_LOOP_START_MARKER "loopStart"
+#define DM_LOOP_END_MARKER "loopEnd"
 #define DM_PARTS (DM_NOTE_PORTS * 16)
 #define DM_PATH 4096
 #define DM_BPM_MIN (60000000.0 / 16777215.0)
 #define DM_BPM_MAX 60000000.0
+
 typedef struct {
     void *file;
     char path[DM_PATH], temporary[DM_PATH + 96];
     bool failed;
 } DmOutput;
+
 typedef struct {
     unsigned char *data;
     size_t size, capacity;
 } DmBytes;
+
 typedef struct {
     double beat, length;
     uint8_t key, velocity, selected, port;
 } DmNote;
+
 typedef struct {
     char name[64];
     char base_name[64];
@@ -42,14 +54,18 @@ typedef struct {
     int control_scope; /* 0 ordinary; 1 detached note controls; 2 unscoped source controls. */
     int port;
     bool inverted;
+    uint8_t color; /* 0 uses the application color; 1..DM_PATTERN_COLORS select the palette. */
 } DmPattern;
+
 typedef struct {
     double beat;
     int pattern, channel;
     uint8_t selected;
     double length; /* 0 uses the pattern duration; automation placements may override it. */
     int lane;      /* 0 note row, 1..DM_LANES automation subrow. */
+    double offset; /* Pattern beat shown at the placement start; slices share one pattern. */
 } DmClip;
+
 typedef struct {
     double beat;
     int type, channel, a, b;
@@ -59,23 +75,29 @@ typedef struct {
     bool ramp;         /* Discrete-source outgoing segment was explicitly converted to a curve. */
     uint8_t port;
 } DmAutomation;
+
 typedef struct {
     bool enabled, mute, solo;
     int program, volume, pan;
 } DmChannel;
+
 typedef struct {
     int port, channel, volume, pan;
     bool mute, solo;
+    int program; /* Program plus one for this port only; 0 follows the channel. */
 } DmPortMix;
+
 typedef struct {
     double beat;
     int track, port;
     DmBytes message;
 } DmEvent;
+
 typedef struct {
     int port, sequence;
     DmBytes state;
 } DmView;
+
 typedef struct {
     char name[128], soundfont[DM_PATH];
     double bpm;
@@ -101,6 +123,7 @@ typedef struct {
     DmView *views;
     size_t view_count, view_capacity;
 } DmProject;
+
 typedef struct {
     double seconds;
     uint8_t status, a, b;
@@ -109,6 +132,7 @@ typedef struct {
     uint8_t note_program;
     uint8_t port;
 } DmScheduled;
+
 typedef struct {
     DmScheduled *items;
     size_t count, capacity;
@@ -117,6 +141,7 @@ typedef struct {
     size_t beat_count;
     double next_beat, final_rate;
 } DmSchedule;
+
 typedef struct {
     double bar, origin, completed, next_change;
 } DmMeter;
@@ -127,7 +152,7 @@ void dm_bytes_free(DmBytes *b);
 void dm_project_init(DmProject *p);
 void dm_project_free(DmProject *p);
 /* Deep copy into an initialized destination; leave it unchanged on failure. */
-bool dm_project_copy(DmProject *destination,const DmProject *source);
+bool dm_project_copy(DmProject *destination, const DmProject *source);
 DmPortMix dm_port_mix(const DmProject *project, int port, int channel);
 bool dm_port_mix_set(DmProject *project, DmPortMix mix);
 void dm_channel_ports(const DmProject *project, int channel, bool used[DM_NOTE_PORTS]);
@@ -159,6 +184,9 @@ bool dm_import(DmProject *p, const unsigned char *data, size_t size, int port, i
                char *error, size_t cap);
 bool dm_midi(const DmProject *p, DmBytes *out, char *error, size_t cap);
 bool dm_midi_all(const DmProject *p, DmBytes *out, char *error, size_t cap);
+/* Imports every source port into one arrangement; source port k uses note port k. */
+bool dm_import_ports(DmProject *p, const unsigned char *data, size_t size, const int *ports,
+                     int count, int sequence, char *error, size_t cap);
 
 /* Resolved active-arrangement events, owned by the caller (free with free()).
    0xff denotes tempo (a = microseconds/quarter), 0xf0 unsupported SysEx.
@@ -167,22 +195,36 @@ typedef struct {
     uint64_t tick, source_id;
     uint32_t status, a, b, port;
 } DmExportEvent;
+
 bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *count,
                         uint64_t *duration, char *error, size_t cap);
+
 typedef enum {
     DM_METADATA_KEEP_ALL,
     DM_METADATA_DUCKMIDI_ONLY,
     DM_METADATA_STRIP_ALL
 } DmMetadataMode;
+
 /* File export policy for sequencer-specific (FF 7F) editor information. */
 bool dm_midi_export(const DmProject *p, DmBytes *out, bool all_views, DmMetadataMode metadata,
                     char *error, size_t cap);
 bool dm_pack(const DmProject *p, DmBytes *out);
 bool dm_unpack(DmProject *p, const unsigned char *data, size_t size, char *error, size_t cap);
+/* LZ77 compression of project bodies; see src/compress.c. */
+bool dm_compress(const uint8_t *data, size_t size, DmBytes *out);
+bool dm_decompress(const uint8_t *data, size_t size, size_t limit, DmBytes *out);
+/* Converts a project loaded from DM_PROJECT_SCHEMA_PREVIOUS; see src/project_compat.c. */
+void dm_project_upgrade_previous(DmProject *p);
 bool dm_view_switch(DmProject *p, int port, int sequence, char *error, size_t cap);
 bool dm_read(const char *path, DmBytes *out, char *error, size_t cap);
 bool dm_write(const char *path, const void *data, size_t size, char *error, size_t cap);
-typedef struct { const char *name; const unsigned char *data; size_t size; } DmArchiveEntry;
+
+typedef struct {
+    const char *name;
+    const unsigned char *data;
+    size_t size;
+} DmArchiveEntry;
+
 bool dm_zip(const DmArchiveEntry *entries, size_t count, DmBytes *out, char *error, size_t cap);
 bool dm_output_begin(DmOutput *out, const char *path, char *error, size_t cap);
 bool dm_output_write(DmOutput *out, const void *data, size_t size, char *error, size_t cap);
@@ -192,5 +234,14 @@ void dm_schedule_free(DmSchedule *s);
 double dm_beat_seconds(const DmProject *p, double beat);
 double dm_seconds_beat(const DmProject *p, double seconds);
 const char *dm_drum_name(int key);
+/* GS drum kit name for a channel-10 program, or NULL when the program is not a kit. */
+const char *dm_drum_kit_name(int program);
+/* 1 for a loop start marker, 2 for a loop end marker, 0 otherwise. */
+int dm_loop_marker(const DmBytes *message);
+/* Beats of the first loop start and end markers, -1 when absent. Returns whether either exists. */
+bool dm_loop_points(const DmProject *p, double *start, double *end);
 const char *dm_program_name(int program);
+/* Sets a channel's starting instrument, including program changes sent before its first note.
+   Without apply, only reports whether anything would change. */
+bool dm_set_initial_program(DmProject *p, int channel, int program, bool apply);
 #endif

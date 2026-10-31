@@ -1,22 +1,28 @@
 #include "editor_internal.h"
 extern void test_event_lanes_ui(Editor *, void (*)(bool, const char *));
 static int checks;
+
 static void check(bool ok, const char *label) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL event lanes: %s\n", label);
         exit(1);
     }
 }
+
 static void numeric_ranges(Editor *e) {
     const int events[] = {1, 11, 7, 10, 5, 91, 93, 74, 71, 92, 76, 77, -2};
+
     for (size_t event = 0; event < sizeof(events) / sizeof(*events); ++event) {
         e->automation_cc = events[event];
         e->automation_raw = true;
         int maximum = events[event] == -2 ? 16383 : 127;
         DmAutomation a = {.type = events[event] == -2 ? 0xe0 : 0xb0, .a = events[event]};
+
         for (int height = 35; height <= 435; height += 100) {
             UiRect lane = {100, 200, 500, (float)height};
+
             for (int value = 0; value <= maximum; value += maximum) {
                 ed_set_event_value(&a, value);
                 UiPoint point = ed_automation_point(e, a, lane, &e->roll_view, 80);
@@ -30,12 +36,14 @@ static void numeric_ranges(Editor *e) {
             }
         }
     }
+
     e->automation_cc = -2;
     e->automation_raw = false;
     e->automation_center = 60;
     UiRect lane = {100, 200, 500, 200};
     ed_automation_pan_y(e, lane, 40);
     check(e->automation_center == 62, "note-pitch mode retains semitone-based scrolling");
+
     for (int cc = 64; cc <= 66; cc += 2) {
         e->automation_cc = cc;
         DmAutomation a = {.type = 0xb0, .a = cc, .b = 127};
@@ -43,6 +51,7 @@ static void numeric_ranges(Editor *e) {
               "pedals retain their single-line presentation");
     }
 }
+
 static void parameter_ownership(Editor *e) {
     e->project.automation_count = 0;
     e->automation_cc = -2;
@@ -56,17 +65,21 @@ static void parameter_ownership(Editor *e) {
     size_t rows = ed_midi_rows(e);
     check(rows == e->project.event_count + original,
           "MIDI inspector preserves access to parameter messages");
+
     for (int removed = 0; removed < 2; ++removed) {
         e->automation_node = -1;
+
         for (size_t i = 0; i < e->project.automation_count; ++i) {
             if (e->project.automation[i].type == 0xe0 && e->project.automation[i].curve > 0) {
                 e->automation_node = (int)i;
                 break;
             }
         }
+
         check(e->automation_node >= 0, "find a generated pitch point");
         ed_remove_selected_node(e);
     }
+
     check(e->project.automation_count == 1 && ed_same_event(e->project.automation[0], imported),
           "deleting final pitch point removes its dependencies and preserves imported RPN");
     ed_automation_line(e, 1, 3, 8192, 10000, -2);
@@ -74,6 +87,7 @@ static void parameter_ownership(Editor *e) {
     check(e->project.automation_count == 1 && ed_same_event(e->project.automation[0], imported),
           "clearing pitch bend removes its dependencies and preserves imported RPN");
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO), "SDL");
     SDL_Window *w = SDL_CreateWindow("Event lanes", 1400, 900, SDL_WINDOW_HIDDEN);

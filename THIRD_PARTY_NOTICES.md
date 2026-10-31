@@ -6,7 +6,7 @@ Dependency licenses are kept in `vendor/licenses/` and the vendored source trees
 
 | Component | Use | License text | Upstream source |
 | --- | --- | --- | --- |
-| Iconoir | Transport, editing and status icons plus cached native cursors, baked from SVG | [MIT](vendor/licenses/Iconoir-MIT.txt); source SVGs and license in `assets/iconoir/`, with local `assets/cut-copy.svg` | https://github.com/iconoir-icons/iconoir |
+| Iconoir | Transport, editing and status icons plus cached native cursors, baked from SVG | [MIT](vendor/licenses/Iconoir-MIT.txt); source SVGs and license in `assets/iconoir/` | https://github.com/iconoir-icons/iconoir |
 | Dear ImGui 1.92.5 | GUI, including bundled font/helper code | [MIT](vendor/licenses/Dear-ImGui-MIT.txt); source comments retain embedded helper notices | https://github.com/ocornut/imgui/tree/v1.92.5 |
 | SDL 3.2.28 | GPU renderer, audio, dialogs and platform services | [zlib](vendor/licenses/SDL3-zlib.txt) | https://github.com/libsdl-org/SDL/tree/release-3.2.28 |
 | RtMidi 6.0.0 | External MIDI and C wrapper | [MIT](vendor/licenses/RtMidi-MIT.txt) | https://github.com/thestk/rtmidi/tree/6.0.0 |

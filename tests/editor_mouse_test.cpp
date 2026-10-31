@@ -8,6 +8,7 @@ extern "C" {
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+
 namespace toolbar_geometry {
 #include "toolbar_icons.h"
 }
@@ -16,15 +17,19 @@ extern "C" void test_event_controls_ui(Editor *, void (*)(bool, const char *));
 
 static ImGuiWindow *roll_window() {
     auto &windows = ImGui::GetCurrentContext()->Windows;
+
     for (auto *window : windows) {
         if (window->Active && std::strstr(window->Name, "/Piano roll_")) {
             return window;
         }
     }
+
     return nullptr;
 }
+
 static UiRect pattern_event_lane() {
     float x = FLT_MAX, y = FLT_MAX, right = -FLT_MAX, bottom = -FLT_MAX;
+
     for (const auto &v : roll_window()->DrawList->VtxBuffer) {
         if (v.col == 0xff121212u) {
             x = ImMin(x, v.pos.x);
@@ -33,6 +38,7 @@ static UiRect pattern_event_lane() {
             bottom = ImMax(bottom, v.pos.y);
         }
     }
+
     return {x, y, right - x, bottom - y};
 }
 
@@ -54,6 +60,7 @@ static void mouse_frame(Editor *e, float x, float y, bool down, bool alt = false
     ui_render(e->renderer);
     SDL_RenderPresent(e->renderer);
 }
+
 extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) {
     auto *window = roll_window();
     check(window != nullptr, "piano roll window is rendered");
@@ -82,9 +89,11 @@ extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) 
     mouse_frame(e, gx + 4 * 80 + 65, y + 14, true);
     mouse_frame(e, gx + 4 * 80 + 65, y + 14, false);
     int selected = 0;
+
     for (size_t i = 0; i < e->project.patterns[0].count; ++i) {
         selected += e->project.patterns[0].notes[i].selected != 0;
     }
+
     check(selected >= 2, "marquee selects intersecting notes");
     SDL_Event remove;
     SDL_zero(remove);
@@ -108,8 +117,10 @@ static ImGuiWindow *find_window(const char *part) {
             return w;
         }
     }
+
     return nullptr;
 }
+
 static void direct_key(Editor *e, SDL_Scancode key, SDL_Keymod mods = SDL_KMOD_NONE) {
     SDL_Event event;
     SDL_zero(event);
@@ -119,11 +130,13 @@ static void direct_key(Editor *e, SDL_Scancode key, SDL_Keymod mods = SDL_KMOD_N
     event.key.mod = mods;
     editor_event(e, &event);
 }
+
 static UiPoint roll_origin() {
     auto *w = roll_window();
     return {w->Pos.x + w->WindowPadding.x + 64,
             w->Pos.y + w->WindowPadding.y + 32 + ImGui::GetStyle().ItemSpacing.y + 28};
 }
+
 static void group_drag(Editor *e, void (*check)(bool, const char *)) {
     auto &p = e->project.patterns[0];
     p.count = 0;
@@ -159,6 +172,7 @@ static void group_drag(Editor *e, void (*check)(bool, const char *)) {
     check(std::fabs(p.notes[before + 1].beat - p.notes[before].beat - 1) < 1e-6,
           "pasted note group keeps relative timing");
 }
+
 static void quantized_alignment(Editor *e, void (*check)(bool, const char *)) {
     auto &ed_pattern = e->project.patterns[0];
     ed_pattern.count = 0;
@@ -173,29 +187,36 @@ static void quantized_alignment(Editor *e, void (*check)(bool, const char *)) {
     auto grid = roll_origin();
     float expected = grid.x + 20;
     bool notch = false, note = false;
+
     for (auto &v : roll_window()->DrawList->VtxBuffer) {
         if (v.col == 0xff262626u && std::fabs(v.pos.x - expected) < 1.1f && v.pos.y < grid.y - 1 &&
             v.pos.y > grid.y - 5) {
             notch = true;
         }
-        if (v.col == 0xff9cc153u && std::fabs(v.pos.x - expected) < 1.1f && v.pos.y > grid.y) {
+
+        if (v.col == e->accent && std::fabs(v.pos.x - expected) < 1.1f && v.pos.y > grid.y) {
             note = true;
         }
     }
+
     check(std::fabs(ed_pattern.notes[0].beat - .25) < 1e-6 && notch && note,
           "quantized note edges align with the quarter-beat ruler notches");
 }
+
 static float underlay_min_y(Editor *e) {
     float minimum = FLT_MAX;
     auto *w = roll_window();
     ImU32 color = (e->accent & 0xffffffu) | 0x88000000u;
+
     for (auto &vertex : w->DrawList->VtxBuffer) {
         if (vertex.col == color) {
             minimum = ImMin(minimum, vertex.pos.y - roll_origin().y);
         }
     }
+
     return minimum;
 }
+
 static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     auto &p = e->project.patterns[0];
     p.count = 0;
@@ -221,13 +242,16 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     check(before < FLT_MAX && std::fabs(before - after) < .1f,
           "pitch overlay stays at the same note pitch when the roll is resized");
     int endpoint = -1, id = 0;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         auto a = e->project.automation[i];
+
         if (a.type == 0xe0 && a.curve > 0) {
             endpoint = (int)i;
             id = a.curve;
         }
     }
+
     check(endpoint >= 0, "bend stores editable endpoints");
     float height_before = e->automation_height;
     e->automation_height = 240;
@@ -247,16 +271,20 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, x + 40, y + 24, true, false, true);
     mouse_frame(e, x + 40, y + 24, false);
     bool moved = false, reset = false;
+
     for (auto i = 0u; i < e->project.automation_count; ++i) {
         auto a = e->project.automation[i];
+
         if (a.curve == id && a.type == 0xe0 && std::fabs(a.beat - node.beat - .5) < 1e-6 &&
             a.a + (a.b << 7) == value) {
             moved = true;
         }
+
         if (a.curve == -id && a.type == 0xe0 && std::fabs(a.beat - node.beat - .5) < 1e-6) {
             reset = true;
         }
     }
+
     check(moved, "Shift-drag moves an event point horizontally while retaining its value");
     check(reset, "moving the last event point also moves its baseline restoration");
     // Vertical-only editing keeps the same time; free horizontal editing bypasses quarter beats.
@@ -266,12 +294,15 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, x + 45, y - pitch_step, true, false, false, true);
     mouse_frame(e, x + 45, y - pitch_step, false);
     int edited = -1;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         auto a = e->project.automation[i];
+
         if (a.curve == id && a.type == 0xe0 && std::fabs(a.beat - node.beat - .5) < 1e-6) {
             edited = (int)i;
         }
     }
+
     check(edited >= 0 &&
               e->project.automation[edited].a + (e->project.automation[edited].b << 7) > value,
           "Ctrl-drag changes pitch while retaining event time");
@@ -281,30 +312,39 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, x + 13, y, true, true, true);
     mouse_frame(e, x + 13, y, false);
     bool free_time = false;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         auto a = e->project.automation[i];
+
         if (a.curve == id && a.type == 0xe0 && std::fabs(a.beat - node.beat - .5 - .1625) < 1e-6) {
             free_time = true;
         }
     }
+
     check(free_time, "Alt plus Shift moves an event point without time snapping");
     size_t points = 0;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         if (e->project.automation[i].type == 0xe0 && e->project.automation[i].curve == id) {
             ++points;
         }
     }
-    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, false, false, true);
-    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, true, false, true);
+
+    e->automation_node = -1; /* The moved point stays selected; a click would only deselect it. */
+    e->event_selection.size = 0;
+    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, false);
+    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, true);
     mouse_frame(e, lane_x + 3 * 80, lane_y + 50, false);
     size_t extended = 0;
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         if (e->project.automation[i].type == 0xe0 && e->project.automation[i].curve == id) {
             ++extended;
         }
     }
+
     check(extended == points + 1,
-          "Shift-click extends the closest event section at the same value");
+          "left click extends the closest event section at the cursor value");
     // This fixture extends controllers beyond its two-beat notes. A manual placement
     // extension includes those stored points without changing automatic note sizing.
     for (size_t i = 0; i < e->project.clip_count; ++i) {
@@ -312,27 +352,33 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
             e->project.clips[i].length = 4;
         }
     }
+
     DmSchedule schedule = {};
     check(dm_schedule(&e->project, &schedule), "edited event section compiles for playback");
     int final = -1;
+
     for (size_t i = 0; i < schedule.count; ++i) {
         if (schedule.items[i].status == 0xe0 && std::fabs(schedule.items[i].seconds - 1.5) < 1e-6) {
             final = schedule.items[i].a + (schedule.items[i].b << 7);
         }
     }
+
     check(final == 8192,
           "extended event section resets to its incoming value after the last point");
     dm_schedule_free(&schedule);
 
     mouse_frame(e, 0, 0, false);
     auto *surface = SDL_RenderReadPixels(e->renderer, nullptr);
+
     if (surface) {
         SDL_SaveBMP(surface, "agents/reports/todo-editor.bmp");
         SDL_DestroySurface(surface);
     }
+
     e->automation_open = false;
     e->automation_height = height_before;
 }
+
 static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
     e->roll_height = 320;
     e->playlist_view.scroll_y = 0;
@@ -365,6 +411,7 @@ static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
     check(e->project.clip_count == count + 1,
           "dragging a pattern card onto the playlist places a clip");
 }
+
 static void layout_and_mixer(Editor *e, void (*check)(bool, const char *)) {
     e->automation_open = false;
     mouse_frame(e, 0, 0, false);
@@ -386,11 +433,14 @@ static void layout_and_mixer(Editor *e, void (*check)(bool, const char *)) {
     check(e->mixer_height > old_mix + 20, "mixer divider expands the vertical channel area");
     auto *strip = find_window("/Channel strips_");
     ImGuiWindow *first = nullptr;
+
     for (auto *w : ImGui::GetCurrentContext()->Windows) {
-        if (w->Active && std::strstr(w->Name, "/port strip_") && (!first || w->Pos.x < first->Pos.x)) {
+        if (w->Active && std::strstr(w->Name, "/port strip_") &&
+            (!first || w->Pos.x < first->Pos.x)) {
             first = w;
         }
     }
+
     check(strip && first, "mixer strips are laid out");
     e->project.channels[0].volume = 42;
     auto &io = ImGui::GetIO();
@@ -423,17 +473,21 @@ static void layout_and_mixer(Editor *e, void (*check)(bool, const char *)) {
     direct_key(e, SDL_SCANCODE_SPACE, SDL_KMOD_SHIFT);
     check(e->start_beat[0] == 0, "Shift-Space starts from the beginning");
 }
+
 static float tempo_card_width() {
     auto *w = find_window("/Playlist_");
     float left = FLT_MAX, right = -FLT_MAX;
+
     for (auto &v : w->DrawList->VtxBuffer) {
         if (v.col == 0xff2b367bu) {
             left = ImMin(left, v.pos.x);
             right = ImMax(right, v.pos.x);
         }
     }
+
     return right - left;
 }
+
 static void event_inspection(Editor *e, void (*check)(bool, const char *)) {
     e->project.event_count = 0;
     e->playlist_view.zoom = 1;
@@ -465,6 +519,7 @@ static void event_inspection(Editor *e, void (*check)(bool, const char *)) {
           "event inspector applies a changed tempo to playback timing");
     e->playlist_view.zoom = 1;
 }
+
 static void shortcut_and_dialogs(Editor *e, void (*check)(bool, const char *)) {
     e->shortcuts = true;
     e->capture = ACT_PLAY_START;
@@ -511,6 +566,7 @@ static void shortcut_and_dialogs(Editor *e, void (*check)(bool, const char *)) {
     SDL_PumpEvents();
     mouse_frame(e, 0, 0, false);
 }
+
 static void transport_shortcuts_ui(Editor *e, void (*check)(bool, const char *)) {
     editor_smoke(e);
     e->automation_open = false;
@@ -587,10 +643,12 @@ static void transport_shortcuts_ui(Editor *e, void (*check)(bool, const char *))
     e->automation_height = 180;
     mouse_frame(e, 0, 0, false);
 }
+
 static void middle_frame(Editor *e, float x, float y, bool down) {
     ImGui::GetIO().AddMouseButtonEvent(2, down);
     mouse_frame(e, x, y, false);
 }
+
 static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
     editor_smoke(e);
     e->context = 2;
@@ -611,10 +669,12 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
           "middle drag pans the piano roll on both axes");
     middle_frame(e, x - 30, y - 20, false);
     check(e->pan_context == 0, "releasing middle mouse ends pan capture");
+
     for (int c = 0; c < 16; ++c) {
         e->project.channels[c].enabled = true;
         e->project.channels[c].program = 0;
     }
+
     e->playlist_view = {1, 200, 100, 0};
     mouse_frame(e, 0, 0, false);
     auto *ed_playlist = find_window("/Playlist_");
@@ -665,6 +725,12 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
     check(e->roll_view.scroll_x > sx + 25 && e->automation_center > 64.8f,
           "middle drag pans time and pitch in the event lane");
     middle_frame(e, lx - 30, ly + 18, false);
+    e->edit_focus = FOCUS_NOTES;
+    e->context = 2;
+    mouse_frame(e, lane.x + lane.w * .5f, lane.y - 28 - 14, false);
+    mouse_frame(e, lane.x + lane.w * .5f, lane.y - 28 - 14, true);
+    mouse_frame(e, lane.x + lane.w * .5f, lane.y - 28 - 14, false);
+    check(e->edit_focus == FOCUS_EVENTS, "clicking the events toolbar focuses the events section");
     e->automation_open = false;
     e->roll_view = {1, 0, 1140, 0};
     auto &p = e->project.patterns[0];
@@ -709,7 +775,9 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
           "save confirmation is a fixed-size window");
     e->confirm = false;
 }
+
 static void capture_workspace_navigation(Editor *e, const char *path);
+
 static void metadata_export_ui(Editor *e, void (*check)(bool, const char *)) {
     e->config = e->preferences = e->shortcuts = false;
     e->export_window = true;
@@ -721,24 +789,29 @@ static void metadata_export_ui(Editor *e, void (*check)(bool, const char *)) {
     const char *labels[] = {"Keep all editor metadata", "Keep only duckmidi editor metadata",
                             "Strip all editor metadata"};
     const int choices[] = {0, 2, 1};
+
     for (int choice : choices) {
         ImGui::ActivateItemByID(ed_export_dialog->GetID("Editor metadata"));
         mouse_frame(e, 0, 0, false);
         mouse_frame(e, 0, 0, false);
         auto &popups = ImGui::GetCurrentContext()->OpenPopupStack;
         check(popups.Size > 0 && popups.back().Window, "metadata choices popup opens");
+
         if (choice == 0) {
             capture_workspace_navigation(e, "agents/reports/midi-metadata-choices.bmp");
         }
+
         ImGui::ActivateItemByID(popups.back().Window->GetID(labels[choice]));
         mouse_frame(e, 0, 0, false);
         mouse_frame(e, 0, 0, false);
         check(e->export_metadata == (DmMetadataMode)choice,
               "metadata choice applies through the UI");
     }
+
     capture_workspace_navigation(e, "agents/reports/midi-metadata-choices-default.bmp");
     e->export_window = false;
 }
+
 extern "C" void test_editor_updates(Editor *e, void (*check)(bool, const char *)) {
     editor_smoke(e);
     group_drag(e, check);
@@ -760,30 +833,35 @@ extern "C" void test_editor_stop(Editor *e) {
     mouse_frame(e, 0, 0, false);
 }
 
-extern "C" void test_editor_combine(Editor *e) {
+extern "C" void test_editor_combine(Editor *e, const char *label) {
     mouse_frame(e, 0, 0, false);
     auto *ed_settings = ImGui::FindWindowByName("Project settings");
-    ImGui::ActivateItemByID(ed_settings->GetID("Combine source ports"));
+    ImGui::ActivateItemByID(ed_settings->GetID(label));
     mouse_frame(e, 0, 0, false);
 }
 
 static float event_lane_y() {
     float y = FLT_MAX;
+
     for (auto &v : roll_window()->DrawList->VtxBuffer) {
         if (v.col == 0xff121212u) {
             y = ImMin(y, v.pos.y);
         }
     }
+
     return y;
 }
+
 static void capture_workspace_navigation(Editor *e, const char *path) {
     for (int i = 0; i < 3; ++i) {
         mouse_frame(e, 0, 0, false);
     }
+
     SDL_SetRenderDrawColor(e->renderer, 0, 0, 0, 255);
     SDL_RenderClear(e->renderer);
     ui_render(e->renderer);
     SDL_Surface *s = SDL_RenderReadPixels(e->renderer, nullptr);
+
     if (s) {
         SDL_SaveBMP(s, path);
         SDL_DestroySurface(s);
@@ -792,97 +870,162 @@ static void capture_workspace_navigation(Editor *e, const char *path) {
 #ifdef DM_TEST_VISUALIZERS
 extern "C" void recording_feedback_audio_render(DmAudio *, int);
 extern "C" int visualizers_audio_voices(DmAudio *);
+
 extern "C" void test_visualizers_ui(Editor *e, void (*check)(bool, const char *)) {
-    e->about = true; e->roll = true; e->roll_height = 480; e->focus_pattern = false;
+    e->about = true;
+    e->roll = true;
+    e->roll_height = 480;
+    e->focus_pattern = false;
     capture_workspace_navigation(e, "agents/reports/about-paused.bmp");
     auto *about = ImGui::FindWindowByName("About duckmidi");
     check(about && about->Active && about->Size.y == 158 && !about->ScrollbarY,
           "compact About fits its information without scrolling");
     float maximum = 0;
-    for (float band : e->spectrum) maximum = ImMax(maximum, band);
+
+    for (float band : e->spectrum) {
+        maximum = ImMax(maximum, band);
+    }
+
     check(maximum == 0, "About spectrum stays hidden before playback");
     char error[512];
-    check(dm_audio_publish_pattern(e->audio, &e->project, 0, 0, 0, 16, 0, true, error, sizeof(error)), "start generated playback");
+    check(
+        dm_audio_publish_pattern(e->audio, &e->project, 0, 0, 0, 16, 0, true, error, sizeof(error)),
+        "start generated playback");
     bool interpolated = false;
     float previous = 0, previous_target = 0;
+
     for (int frame = 0; frame < 48; ++frame) {
         recording_feedback_audio_render(e->audio, 768);
         SDL_Delay(16);
         mouse_frame(e, 0, 0, false);
-        if (frame && e->mixer_peak_targets[0] == previous_target && std::fabs(e->mixer_peaks[0] - previous) > .000001f)
+
+        if (frame && e->mixer_peak_targets[0] == previous_target &&
+            std::fabs(e->mixer_peaks[0] - previous) > .000001f) {
             interpolated = true;
-        previous = e->mixer_peaks[0]; previous_target = e->mixer_peak_targets[0];
+        }
+
+        previous = e->mixer_peaks[0];
+        previous_target = e->mixer_peak_targets[0];
     }
+
     maximum = 0;
-    for (float band : e->spectrum) maximum = ImMax(maximum, band);
+
+    for (float band : e->spectrum) {
+        maximum = ImMax(maximum, band);
+    }
+
     check(maximum > .1f && maximum <= 1, "real synth output drives the About spectrum");
     check(interpolated, "mixer bars animate on GUI frames between peak samples");
     capture_workspace_navigation(e, "agents/reports/about-playing.bmp");
     int last_bar = -1, first_body_text = INT_MAX;
     ImU32 text_color = ImGui::GetColorU32(ImGuiCol_Text);
+
     for (int i = 0; i < about->DrawList->VtxBuffer.Size; ++i) {
         auto v = about->DrawList->VtxBuffer[i];
-        if ((v.col & 0x00ffffffu) == (e->accent & 0x00ffffffu) && (v.col >> 24) >= 51 && (v.col >> 24) <= 136) last_bar = i;
-        if (v.col == text_color && v.pos.y > about->Pos.y + about->TitleBarHeight + 8)
+
+        if ((v.col & 0x00ffffffu) == (e->accent & 0x00ffffffu) && (v.col >> 24) >= 51 &&
+            (v.col >> 24) <= 136) {
+            last_bar = i;
+        }
+
+        if (v.col == text_color && v.pos.y > about->Pos.y + about->TitleBarHeight + 8) {
             first_body_text = ImMin(first_body_text, i);
+        }
     }
-    check(last_bar >= 0 && last_bar < first_body_text, "spectrum draws behind the About information");
+
+    check(last_bar >= 0 && last_bar < first_body_text,
+          "spectrum draws behind the About information");
     float stereo[DM_SPECTRUM_FRAMES * 2];
     float falling_before = 0;
-    for (float band : e->spectrum) falling_before = ImMax(falling_before, band);
+
+    for (float band : e->spectrum) {
+        falling_before = ImMax(falling_before, band);
+    }
+
     auto *transport_window = ImGui::FindWindowByName("##workspace");
     SDL_Delay(16);
     ImGui::ActivateItemByID(transport_window->GetID("##Stop"));
     mouse_frame(e, 0, 0, false);
     maximum = 0;
-    for (float band : e->spectrum) maximum = ImMax(maximum, band);
-    check(maximum > 0 && maximum < falling_before, "Stop begins a natural fall instead of hiding the bars");
-    check(!dm_audio_analyzer_read(e->audio, stereo), "stopped analyzer releases capture while its display falls");
+
+    for (float band : e->spectrum) {
+        maximum = ImMax(maximum, band);
+    }
+
+    check(maximum > 0 && maximum < falling_before,
+          "Stop begins a natural fall instead of hiding the bars");
+    check(!dm_audio_analyzer_read(e->audio, stereo),
+          "stopped analyzer releases capture while its display falls");
+
     for (int frame = 0; frame < 85; ++frame) {
         float before = maximum;
-        SDL_Delay(16); mouse_frame(e, 0, 0, false);
+        SDL_Delay(16);
+        mouse_frame(e, 0, 0, false);
         maximum = 0;
-        for (float band : e->spectrum) maximum = ImMax(maximum, band);
+
+        for (float band : e->spectrum) {
+            maximum = ImMax(maximum, band);
+        }
+
         check(maximum <= before, "stopped spectrum decays monotonically");
-        if (frame == 10) capture_workspace_navigation(e, "agents/reports/about-spectrum-falling.bmp");
+
+        if (frame == 10) {
+            capture_workspace_navigation(e, "agents/reports/about-spectrum-falling.bmp");
+        }
     }
+
     check(maximum == 0, "stopped bars disappear completely after their fall");
-    check(dm_audio_publish_pattern(e->audio, &e->project, 0, 0, 0, 16, 0, true, error, sizeof(error)), "restart generated playback");
+    check(
+        dm_audio_publish_pattern(e->audio, &e->project, 0, 0, 0, 16, 0, true, error, sizeof(error)),
+        "restart generated playback");
     mouse_frame(e, 0, 0, false);
     recording_feedback_audio_render(e->audio, 4096);
-    e->about = false; mouse_frame(e, 0, 0, false);
-    check(!dm_audio_analyzer_read(e->audio, stereo), "closing About disables capture during playback");
+    e->about = false;
+    mouse_frame(e, 0, 0, false);
+    check(!dm_audio_analyzer_read(e->audio, stereo),
+          "closing About disables capture during playback");
     dm_audio_transport(e->audio, false);
     dm_audio_control(e->audio, 0, 64, 127);
     dm_audio_preview(e->audio, 0, 60, 100, true);
-    e->held[SDL_SCANCODE_Z] = 60; e->held_channels[SDL_SCANCODE_Z] = 0;
+    e->held[SDL_SCANCODE_Z] = 60;
+    e->held_channels[SDL_SCANCODE_Z] = 0;
     recording_feedback_audio_render(e->audio, 512);
-    check(visualizers_audio_voices(e->audio) > 0, "Shift-Stop starts with a sounding keyboard voice");
+    check(visualizers_audio_voices(e->audio) > 0,
+          "Shift-Stop starts with a sounding keyboard voice");
     mouse_frame(e, 0, 0, false, false, true);
     auto *workspace = ImGui::FindWindowByName("##workspace");
     ImGui::ActivateItemByID(workspace->GetID("##Stop"));
     mouse_frame(e, 0, 0, false, false, true);
     recording_feedback_audio_render(e->audio, 512);
     check(std::strstr(e->status, "MIDI panic") && e->held[SDL_SCANCODE_Z] == -1 &&
-          visualizers_audio_voices(e->audio) == 0, "Shift-click Stop triggers panic and releases held editor keys");
+              visualizers_audio_voices(e->audio) == 0,
+          "Shift-click Stop triggers panic and releases held editor keys");
     mouse_frame(e, 0, 0, false);
     // Exercise the renderer with full-height edge bands to verify flush geometry.
-    ui_frame(); ImGui::SetNextWindowSize({560, 130}); ImGui::Begin("Spectrum bounds");
+    ui_frame();
+    ImGui::SetNextWindowSize({560, 130});
+    ImGui::Begin("Spectrum bounds");
     auto *w = ImGui::GetCurrentWindow();
     int first = w->DrawList->VtxBuffer.Size;
-    float bands[3] = {1, 1, 1}; ui_spectrum(bands, 3, 100, e->accent);
+    float bands[3] = {1, 1, 1};
+    ui_spectrum(bands, 3, 100, e->accent);
     float left = FLT_MAX, top = FLT_MAX, right = -FLT_MAX, bottom = -FLT_MAX;
+
     for (int i = first; i < w->DrawList->VtxBuffer.Size; ++i) {
         auto v = w->DrawList->VtxBuffer[i].pos;
-        left = ImMin(left, v.x); right = ImMax(right, v.x);
-        top = ImMin(top, v.y); bottom = ImMax(bottom, v.y);
+        left = ImMin(left, v.x);
+        right = ImMax(right, v.x);
+        top = ImMin(top, v.y);
+        bottom = ImMax(bottom, v.y);
     }
+
     check(std::fabs(left - w->Pos.x - w->WindowBorderSize) < .01f &&
-          std::fabs(right - w->Pos.x - w->Size.x + w->WindowBorderSize) < .01f &&
-          std::fabs(bottom - w->Pos.y - w->Size.y + w->WindowBorderSize) < .01f,
+              std::fabs(right - w->Pos.x - w->Size.x + w->WindowBorderSize) < .01f &&
+              std::fabs(bottom - w->Pos.y - w->Size.y + w->WindowBorderSize) < .01f,
           "spectrum spans the full interior width and touches the inside of the bottom border");
     check(bottom - top == 100, "spectrum peaks are capped at 100 logical pixels");
     float radius = ImMax(0.f, w->WindowRounding - w->WindowBorderSize);
+
     for (int i = first; i < w->DrawList->VtxBuffer.Size; ++i) {
         auto v = w->DrawList->VtxBuffer[i].pos;
         float cx = ImClamp(v.x, left + radius, right - radius);
@@ -891,8 +1034,11 @@ extern "C" void test_visualizers_ui(Editor *e, void (*check)(bool, const char *)
         check(dx * dx + dy * dy <= radius * radius + .01f,
               "every spectrum vertex stays within the rounded window interior");
     }
+
     first = w->DrawList->VtxBuffer.Size;
-    float short_bands[3] = {.02f, .01f, .02f}; ui_spectrum(short_bands, 3, 100, e->accent);
+    float short_bands[3] = {.02f, .01f, .02f};
+    ui_spectrum(short_bands, 3, 100, e->accent);
+
     for (int i = first; i < w->DrawList->VtxBuffer.Size; ++i) {
         auto v = w->DrawList->VtxBuffer[i].pos;
         float cx = ImClamp(v.x, left + radius, right - radius), cy = bottom - radius;
@@ -900,7 +1046,9 @@ extern "C" void test_visualizers_ui(Editor *e, void (*check)(bool, const char *)
         check(dx * dx + dy * dy <= radius * radius + .01f,
               "falling low bars also follow the window's curved bottom corners");
     }
-    ImGui::End(); ui_render(e->renderer);
+
+    ImGui::End();
+    ui_render(e->renderer);
 }
 #endif
 extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)) {
@@ -914,9 +1062,11 @@ extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)
     e->roll_view = {1, 0, (127 - 65) * 20.f, 0};
     const int events[] = {-3, 1, -2, 64};
     const float heights[] = {140.f, 260.f};
+
     for (int event : events) {
         e->automation_cc = event;
         e->automation_raw = true;
+
         for (float height : heights) {
             e->automation_height = height;
             mouse_frame(e, 0, 0, false);
@@ -928,6 +1078,7 @@ extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)
             ui_render(e->renderer);
             SDL_Surface *surface = SDL_RenderReadPixels(e->renderer, nullptr);
             check(surface != nullptr, "read rendered event lane");
+
             for (int i = 1; i <= 3; ++i) {
                 Uint8 r, g, b, a;
                 SDL_ReadSurfacePixel(surface, (int)x, (int)(lane.y + lane.h * i / 4), &r, &g, &b,
@@ -937,12 +1088,14 @@ extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)
                           std::abs((int)b - (int)((e->accent >> 16) & 255)) < 3,
                       "playhead stays visible over the full event grid at each section size");
             }
+
             SDL_DestroySurface(surface);
             mouse_frame(e, lane.x + 100, lane.y + lane.h / 2, false, false, true, false, 2);
             check(e->roll_view.scroll_x == 0,
                   "Shift-wheel in numeric lane does not scroll the timeline");
         }
     }
+
     capture_workspace_navigation(e, "agents/reports/event-lanes-pedal-playhead.bmp");
     e->automation_cc = -2;
     e->automation_raw = false;
@@ -993,9 +1146,11 @@ extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)
     direct_key(e, SDL_SCANCODE_ESCAPE);
     e->midi_events = false;
 }
+
 extern "C" void test_toolbar_followup_ui(Editor *e, void (*check)(bool, const char *)) {
     for (const auto &shape : toolbar_geometry::toolbar_shapes) {
         int points = shape.count / 2;
+
         for (int i = 0; i < points - 1 + shape.kind; ++i) {
             int next = (i + 1) % points;
             check(std::hypot(shape.values[i * 2] - shape.values[next * 2],
@@ -1003,6 +1158,7 @@ extern "C" void test_toolbar_followup_ui(Editor *e, void (*check)(bool, const ch
                   "baked icon contours have no zero-length joins, including their closure");
         }
     }
+
     e->roll = true;
     e->roll_height = 480;
     e->automation_open = false;
@@ -1037,9 +1193,11 @@ extern "C" void test_toolbar_followup_ui(Editor *e, void (*check)(bool, const ch
     check(std::strstr(e->hover, "click a playlist row") != nullptr,
           "pattern help is published to the status bar text");
     bool tooltip = false;
+
     for (auto *w : ImGui::GetCurrentContext()->Windows) {
         tooltip |= w->Active && std::strstr(w->Name, "##Tooltip");
     }
+
     check(!tooltip, "pattern hover has no floating tooltip");
     SDL_SetRenderDrawColor(e->renderer, 0, 0, 0, 255);
     SDL_RenderClear(e->renderer);
@@ -1052,6 +1210,7 @@ extern "C" void test_toolbar_followup_ui(Editor *e, void (*check)(bool, const ch
     mouse_frame(e, 0, 0, false);
     ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
     float min_y = FLT_MAX, max_y = -FLT_MAX;
+
     for (const auto &vertex : ed_roll->DrawList->VtxBuffer) {
         if (vertex.col == text && vertex.pos.x > ed_roll->WorkRect.Min.x + 3 &&
             vertex.pos.x < ed_roll->WorkRect.Min.x + 20 && vertex.pos.y > ed_roll->WorkRect.Min.y &&
@@ -1060,6 +1219,7 @@ extern "C" void test_toolbar_followup_ui(Editor *e, void (*check)(bool, const ch
             max_y = ImMax(max_y, vertex.pos.y);
         }
     }
+
     check(min_y < max_y && std::fabs((min_y + max_y) * .5f - ed_roll->WorkRect.Min.y - 16) < 1.5f,
           "corner arrow aligns with the centerline of the toolbar controls");
     float mx = ed_roll->WorkRect.Min.x + 10, my = ed_roll->WorkRect.Min.y + 16;
@@ -1078,6 +1238,7 @@ extern "C" void test_toolbar_followup_ui(Editor *e, void (*check)(bool, const ch
     capture_workspace_navigation(e, "agents/reports/toolbar-large-icons.bmp");
     ui_set_scale(1);
 }
+
 extern "C" void test_interface_ui(Editor *e, void (*check)(bool, const char *)) {
     e->roll = true;
     e->roll_height = 500;
@@ -1108,6 +1269,7 @@ extern "C" void test_interface_ui(Editor *e, void (*check)(bool, const char *)) 
     check(std::fabs(e->project.patterns[0].notes[0].beat - .25) < .001,
           "menu Quantize performs existing quarter-beat action");
     float lx = FLT_MAX, ly = FLT_MAX, right = -FLT_MAX, bottom = -FLT_MAX;
+
     for (const auto &v : ed_roll->DrawList->VtxBuffer) {
         if (v.col == 0xff121212u) {
             lx = ImMin(lx, v.pos.x);
@@ -1116,6 +1278,7 @@ extern "C" void test_interface_ui(Editor *e, void (*check)(bool, const char *)) 
             bottom = ImMax(bottom, v.pos.y);
         }
     }
+
     check(lx < right && ly < bottom, "velocity lane has a drawing region");
     size_t notes = e->project.patterns[0].count, automation = e->project.automation_count;
     float rx = lx + 160, ry = ly - 14;
@@ -1141,19 +1304,23 @@ extern "C" void test_interface_ui(Editor *e, void (*check)(bool, const char *)) 
     check(SDL_GetCursor() && SDL_GetCursor() != custom,
           "OS cursor preference restores native default");
     double elapsed[2];
+
     for (int mode = 0; mode < 2; ++mode) {
         e->os_cursor = mode != 0;
         mouse_frame(e, 330, 90, false);
         SDL_Cursor *cached = SDL_GetCursor();
         Uint64 start = SDL_GetPerformanceCounter();
+
         for (int i = 0; i < 200; ++i) {
             mouse_frame(e, 330 + i % 3, 90, false);
         }
+
         elapsed[mode] =
             1000.0 * (SDL_GetPerformanceCounter() - start) / SDL_GetPerformanceFrequency();
         check(SDL_GetCursor() == cached,
               "cursor handle remains cached across 200 mouse-motion frames");
     }
+
     std::printf("CURSOR 200 motion frames: Iconoir=%.3f ms, OS=%.3f ms\n", elapsed[0], elapsed[1]);
     e->os_cursor = false;
     uint8_t pedal[] = {0xb0, 66, 127}, program[] = {0xc0, 81};
@@ -1194,6 +1361,7 @@ extern "C" void test_interface_ui(Editor *e, void (*check)(bool, const char *)) 
     capture_workspace_navigation(e, "agents/reports/interface-midi-program.bmp");
     e->midi_events = false;
 }
+
 extern "C" void test_event_controls_ui(Editor *e, void (*check)(bool, const char *)) {
     e->roll = true;
     e->automation_browser = true;
@@ -1229,19 +1397,19 @@ extern "C" void test_event_controls_ui(Editor *e, void (*check)(bool, const char
     e->automation_cc = 5;
     p.event = 5;
     e->project.automation_count = 0;
-    mouse_frame(e, gx + 80, y, false);
-    mouse_frame(e, gx + 80, y, true);
-    mouse_frame(e, gx + 240, y - 45, true);
-    mouse_frame(e, gx + 240, y - 45, false);
+    mouse_frame(e, gx + 80, y, false, false, true);
+    mouse_frame(e, gx + 80, y, true, false, true);
+    mouse_frame(e, gx + 240, y - 45, true, false, true);
+    mouse_frame(e, gx + 240, y - 45, false, false, true);
     check(e->project.automation_count == 3, "real mouse draws portamento timing section");
     capture_workspace_navigation(e, "agents/reports/event-controls-portamento.bmp");
     e->automation_cc = 7;
     p.event = 7;
     e->project.automation_count = 0;
-    mouse_frame(e, gx + 80, y, false);
-    mouse_frame(e, gx + 80, y, true);
-    mouse_frame(e, gx + 240, y - 45, true);
-    mouse_frame(e, gx + 240, y - 45, false);
+    mouse_frame(e, gx + 80, y, false, false, true);
+    mouse_frame(e, gx + 80, y, true, false, true);
+    mouse_frame(e, gx + 240, y - 45, true, false, true);
+    mouse_frame(e, gx + 240, y - 45, false, false, true);
     check(e->project.automation_count == 3, "real mouse draws volume section");
     capture_workspace_navigation(e, "agents/reports/event-controls-volume.bmp");
     p.mode = 1;
@@ -1249,6 +1417,7 @@ extern "C" void test_event_controls_ui(Editor *e, void (*check)(bool, const char
     e->automation_cc = 93;
     capture_workspace_navigation(e, "agents/reports/event-controls-chorus-lfo.bmp");
 }
+
 extern "C" void test_channel_routing_ui(Editor *e, void (*check)(bool, const char *)) {
     e->roll = false;
     e->label_width = 240;
@@ -1257,11 +1426,13 @@ extern "C" void test_channel_routing_ui(Editor *e, void (*check)(bool, const cha
     e->pattern_highlight = true;
     e->preview_override = false;
     e->project.clip_count = 0;
+
     for (int c = 0; c < 16; ++c) {
         e->project.channels[c] = {false, false, false, -1, 100, 64};
         e->project.lane_count[c] = 0;
         e->channel_expanded[c] = false;
     }
+
     e->project.channels[0] = {true, false, false, 0, 100, 64};
     e->project.channels[2] = {true, false, false, 33, 100, 64};
     dm_clip_add(&e->project, {.beat = 0, .pattern = 0, .channel = 0, .length = 4});
@@ -1299,6 +1470,7 @@ extern "C" void test_channel_routing_ui(Editor *e, void (*check)(bool, const cha
           "dropping notes onto automation subrow creates no placement or phantom selection");
     capture_workspace_navigation(e, "agents/reports/channel-routing-rejected-drop.bmp");
 }
+
 extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, const char *)) {
     e->piano = false;
     e->song_event = e->config = e->preferences = e->shortcuts = false;
@@ -1343,16 +1515,20 @@ extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, cons
     mouse_frame(e, grid_x + 100, ruler_y, false);
     mouse_frame(e, grid_x + 100, ruler_y, true);
     old = e->roll_view.scroll_x;
+
     for (int i = 0; i < 5; ++i) {
         SDL_Delay(10);
         mouse_frame(e, right + 100, ruler_y, true);
     }
+
     check(e->scrub && e->roll_view.scroll_x > old,
           "dragging piano playhead beyond right edge scrolls time");
+
     for (int i = 0; i < 5; ++i) {
         SDL_Delay(10);
         mouse_frame(e, grid_x - 120, ruler_y, true);
     }
+
     check(e->roll_view.scroll_x >= 0, "left playhead autoscroll remains bounded");
     mouse_frame(e, grid_x - 120, ruler_y, false);
     check(!e->scrub, "playhead releases outside its canvas");
@@ -1363,16 +1539,20 @@ extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, cons
     e->playlist_view.scroll_x = 0;
     mouse_frame(e, playlist_x, playlist_y, false);
     mouse_frame(e, playlist_x, playlist_y, true);
+
     for (int i = 0; i < 5; ++i) {
         SDL_Delay(10);
         mouse_frame(e, ed_playlist->WorkRect.Max.x + 100, playlist_y, true);
     }
+
     check(e->scrub && e->playlist_view.scroll_x > 0,
           "dragging arrangement playhead beyond right edge scrolls time");
     mouse_frame(e, playlist_x, playlist_y, false);
+
     for (int c = 0; c < 16; ++c) {
         e->project.channels[c] = {true, false, false, 0, 100, 64};
     }
+
     mouse_frame(e, 0, 0, false);
     mouse_frame(e, 0, 0, false);
     auto *strips = find_window("/Channel strips_");
@@ -1408,6 +1588,7 @@ extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, cons
     capture_workspace_navigation(e, "agents/reports/workspace_navigation-about.bmp");
     e->about = false;
 }
+
 extern "C" void test_selection_history_ui(Editor *e, void (*check)(bool, const char *)) {
     e->piano = false;
     e->automation_open = false;
@@ -1470,6 +1651,7 @@ extern "C" void test_selection_history_ui(Editor *e, void (*check)(bool, const c
     capture_workspace_navigation(e, "agents/reports/selection_history-export.bmp");
     e->export_window = false;
 }
+
 extern "C" void test_automation_transfer_ui(Editor *e, void (*check)(bool, const char *)) {
     check(e->mixer_height == 420, "default mixer height grows to 1.5 times its previous height");
     e->automation_open = true;
@@ -1503,9 +1685,11 @@ extern "C" void test_automation_transfer_ui(Editor *e, void (*check)(bool, const
           "actual right ruler drag selects a Song loop");
     e->pattern_highlight = false;
     e->channel_selected = false;
+
     for (size_t i = 0; i < e->project.clip_count; ++i) {
         e->project.clips[i].selected = 0;
     }
+
     e->edit_focus = FOCUS_PLAYLIST;
     direct_key(e, SDL_SCANCODE_ESCAPE);
     check(!e->loop_enabled[0], "Escape clears playlist loop after selections are gone");
@@ -1615,6 +1799,7 @@ extern "C" void test_automation_transfer_ui(Editor *e, void (*check)(bool, const
     check(e->automation_raw, "Event Editor switches pitch labels to raw MIDI values");
     capture_workspace_navigation(e, "agents/reports/automation_transfer-pitch-raw.bmp");
 }
+
 extern "C" void test_lfo_shapes_ui(Editor *e, void (*check)(bool, const char *)) {
     capture_workspace_navigation(e, "agents/reports/lfo_shapes-header.bmp");
     auto *events = find_window("/Event Editor_");
@@ -1745,6 +1930,7 @@ extern "C" void test_lfo_shapes_ui(Editor *e, void (*check)(bool, const char *))
     check(e->project.clip_count == placements - 2 && e->undo_count == history + 1,
           "plain right drag erases multiple placements as one action");
 }
+
 extern "C" void test_event_clipboard_ui(Editor *e, void (*check)(bool, const char *)) {
     auto &p = e->project.patterns[0];
     p.kind = 1;
@@ -1807,8 +1993,10 @@ extern "C" void test_event_clipboard_ui(Editor *e, void (*check)(bool, const cha
 #ifdef DM_TEST_RECORDING_FEEDBACK
 extern "C" void recording_feedback_audio_render(DmAudio *, int);
 extern "C" int recording_feedback_audio_count(DmAudio *);
+
 static UiRect recording_feedback_event_lane() {
     float x = FLT_MAX, y = FLT_MAX, right = -FLT_MAX, bottom = -FLT_MAX;
+
     for (auto &v : roll_window()->DrawList->VtxBuffer) {
         if (v.col == 0xff121212u) {
             x = ImMin(x, v.pos.x);
@@ -1817,16 +2005,20 @@ static UiRect recording_feedback_event_lane() {
             bottom = ImMax(bottom, v.pos.y);
         }
     }
+
     return {x, y, right - x, bottom - y};
 }
+
 static bool recording_feedback_tooltip() {
     for (auto *w : ImGui::GetCurrentContext()->Windows) {
         if (w->Active && std::strstr(w->Name, "##Tooltip")) {
             return true;
         }
     }
+
     return false;
 }
+
 extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const char *)) {
     e->piano = false;
     e->roll_height = 480;
@@ -1861,6 +2053,8 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     recording_feedback_audio_render(e->audio, 256);
     check(p.count == 0 && recording_feedback_audio_count(e->audio) == 0,
           "right-drag note deletion is silent");
+    e->automation_open = false; /* The open events section covers this part of the playlist. */
+    mouse_frame(e, 0, 0, false);
     auto *ed_playlist = find_window("/Playlist_");
     double source_length = dm_clip_length(&e->project, e->project.clips[0]);
     float px = ed_playlist->WorkRect.Min.x + e->label_width + (float)source_length * 40 - 5;
@@ -1877,6 +2071,7 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     recording_feedback_audio_render(e->audio, 256);
     check(recording_feedback_audio_count(e->audio) == 0,
           "playlist selection and resizing are silent");
+    e->automation_open = true;
     e->project.automation_count = 0;
     e->automation_cc = 11;
     e->context = 2;
@@ -1925,15 +2120,18 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     x = gx + 80;
     y = gy + h - 8 - 32.0f / 127 * (h - 16);
     float markerTop = FLT_MAX, markerBottom = -FLT_MAX;
+
     for (auto &vertex : events->DrawList->VtxBuffer) {
         if (vertex.col == 0xff6fc4f5u && std::fabs(vertex.pos.x - x) < 6) {
             markerTop = ImMin(markerTop, vertex.pos.y);
             markerBottom = ImMax(markerBottom, vertex.pos.y);
         }
     }
+
     if (markerTop < FLT_MAX) {
         y = (markerTop + markerBottom) * .5f;
     }
+
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
     mouse_frame(e, x, y - 25, true);
@@ -1988,6 +2186,7 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
 #ifdef DM_TEST_SOURCE_WORKFLOW
 static UiRect source_workflow_lane() {
     float x = FLT_MAX, y = FLT_MAX, right = -FLT_MAX, bottom = -FLT_MAX;
+
     for (auto &v : roll_window()->DrawList->VtxBuffer) {
         if (v.col == 0xff121212u) {
             x = ImMin(x, v.pos.x);
@@ -1996,8 +2195,10 @@ static UiRect source_workflow_lane() {
             bottom = ImMax(bottom, v.pos.y);
         }
     }
+
     return {x, y, right - x, bottom - y};
 }
+
 static void source_workflow_scale_frame(Editor *e) {
     ui_frame();
     editor_frame(e, 1400, 900);
@@ -2006,17 +2207,20 @@ static void source_workflow_scale_frame(Editor *e) {
     ui_render(e->renderer);
     SDL_RenderPresent(e->renderer);
 }
+
 static void source_workflow_capture(Editor *e, const char *path) {
     source_workflow_scale_frame(e);
     SDL_SetRenderDrawColor(e->renderer, 0, 0, 0, 255);
     SDL_RenderClear(e->renderer);
     ui_render(e->renderer);
     auto *surface = SDL_RenderReadPixels(e->renderer, nullptr);
+
     if (surface) {
         SDL_SaveBMP(surface, path);
         SDL_DestroySurface(surface);
     }
 }
+
 extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const char *)) {
     e->automation_open = true;
     e->roll_height = 480;
@@ -2043,10 +2247,17 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     check(e->project.automation_count == 3 && e->event_selection.size == 2 * sizeof(DmAutomation) &&
               !p.notes[0].selected,
           "Ctrl marquee selects lower event-lane points without inserting or selecting notes");
-    mouse_frame(e, lane.x + 80, lane.y + 50, false, false, true);
-    mouse_frame(e, lane.x + 80, lane.y + 50, true, false, true);
-    mouse_frame(e, lane.x + 80, lane.y + 50, false, false, true);
-    check(e->project.automation_count == 4, "real Shift left click inserts a connected point");
+
+    for (int click = 0; click < 2; ++click) {
+        mouse_frame(e, lane.x + 100, lane.y + 50, false);
+        mouse_frame(e, lane.x + 100, lane.y + 50, true);
+        mouse_frame(e, lane.x + 100, lane.y + 50, false);
+        check((click ? e->project.automation_count >= 4u : e->project.automation_count == 3u) &&
+                  (click || !e->event_selection.size),
+              click ? "left click inserts a connected point"
+                    : "left click with a selection only deselects");
+    }
+
     e->tool = 1;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
@@ -2305,8 +2516,10 @@ extern "C" void test_live_edit_ui(Editor *e, void (*check)(bool, const char *)) 
 #ifdef DM_TEST_PATTERN_WORKFLOW
 extern "C" void recording_feedback_audio_render(DmAudio *, int);
 extern "C" int recording_feedback_audio_preset(DmAudio *, int, bool);
+
 static UiRect pattern_workflow_lane() {
     float x = FLT_MAX, y = FLT_MAX, right = -FLT_MAX, bottom = -FLT_MAX;
+
     for (auto &v : roll_window()->DrawList->VtxBuffer) {
         if (v.col == 0xff121212u) {
             x = ImMin(x, v.pos.x);
@@ -2315,8 +2528,10 @@ static UiRect pattern_workflow_lane() {
             bottom = ImMax(bottom, v.pos.y);
         }
     }
+
     return {x, y, right - x, bottom - y};
 }
+
 extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const char *)) {
     e->piano = true;
     e->roll_height = 500;
@@ -2343,20 +2558,22 @@ extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const ch
     mouse_frame(e, x, y, true, false, true, true);
     mouse_frame(e, x + 120, y - 60, true, false, true, true);
     mouse_frame(e, x + 120, y - 60, false);
-    check(p.count==0,"Ctrl+Shift with Note tool no longer activates temporary Brush");
-    e->tool=4;
+    check(p.count == 0, "Ctrl+Shift with Note tool no longer activates temporary Brush");
+    e->tool = 4;
     mouse_frame(e, x, y, false, false, false, true);
     mouse_frame(e, x, y, true, false, false, true);
     mouse_frame(e, x + 120, y - 60, true, false, false, true);
     mouse_frame(e, x + 120, y - 60, false);
     bool locked = p.count >= 7;
+
     for (size_t i = 0; i < p.count; ++i) {
         locked &= p.notes[i].key == 60;
     }
+
     check(locked, "explicit Brush with Ctrl has priority over marquee and locks starting pitch");
     capture_workspace_navigation(e, "agents/reports/pattern_workflow-brush.bmp");
     p.count = 0;
-    e->tool=0;
+    e->tool = 0;
     dm_note_add(&p, {.25, 1, 60, 50, 1});
     dm_note_add(&p, {1.5, 1, 64, 75, 1});
     e->automation_open = true;

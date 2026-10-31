@@ -9,6 +9,7 @@ static void verify(bool ok, const char *ed_message) {
         exit(1);
     }
 }
+
 int main(void) {
     verify(SDL_Init(SDL_INIT_VIDEO), "SDL video");
     SDL_Window *window =
@@ -40,7 +41,10 @@ int main(void) {
            "isolated desktop capture mode remains runnable");
     editor->dialog_busy = true;
     start = SDL_GetTicks();
-    verify(!window_frame(editor, window, false, false), "native picker skips covered rendering");
+    /* During a native picker the editor keeps drawing at about 30 fps, and checks messages every
+       millisecond in between. */
+    verify(window_frame(editor, window, false, false), "native picker keeps the editor drawing");
+    verify(!window_frame(editor, window, false, false), "native picker limits redraws to ~30 fps");
     verify(SDL_GetTicks() - start < 75, "native picker bypasses the 100ms idle throttle");
     editor->dialog_busy = false;
     printf("PASS window: detected display %u; centered %dx%d; idle rendering skipped\n", display,

@@ -3,64 +3,84 @@
 
 static void controls_process(DmAudio *a, int frames) {
     SDL_LockAudioStream(a->stream);
+
     while (frames > 0) {
         float out[BLOCK * 2];
         int n = frames > BLOCK ? BLOCK : frames;
         run_block(a, out, n);
         frames -= n;
     }
+
     SDL_UnlockAudioStream(a->stream);
 }
+
 static bool controls_voice(DmAudio *a, int key, bool sostenuto) {
     fluid_voice_t *voices[512] = {0};
     fluid_synth_get_voicelist(a->live.synth, voices, 512, -1);
+
     for (int i = 0; i < 512 && voices[i]; ++i) {
         if (fluid_voice_get_channel(voices[i]) == 0 && fluid_voice_get_key(voices[i]) == key &&
             (sostenuto ? fluid_voice_is_sostenuto(voices[i]) : fluid_voice_is_on(voices[i]))) {
             return true;
         }
     }
+
     return false;
 }
+
 static void controls_wait(DmAudio *a, void (*check)(bool, const char *)) {
     uint64_t start = SDL_GetTicks();
+
     while (dm_audio_busy(a)) {
         char error[512];
         bool success = false;
+
         if (dm_audio_poll(a, error, sizeof(error), &success, NULL)) {
             check(success, error);
         }
+
         check(SDL_GetTicks() - start < 30000, "worker timeout");
         SDL_Delay(5);
     }
 }
+
 static double controls_energy(DmBytes *wave, double start, double end, int channel) {
     double energy = 0;
     size_t size, offset = wave_data_offset(wave, &size);
+
     for (size_t f = (size_t)(start * RATE); f < (size_t)(end * RATE); ++f) {
         size_t i = offset + f * 4 + channel * 2;
+
         if (i + 1 >= offset + size) {
             break;
         }
+
         double sample = (int16_t)(wave->data[i] | wave->data[i + 1] << 8);
         energy += sample * sample;
     }
+
     return energy;
 }
+
 static int controls_crossings(DmBytes *wave, double start, double end) {
     int crossings = 0, previous = 0;
     size_t size, offset = wave_data_offset(wave, &size);
+
     for (size_t f = (size_t)(start * RATE); f < (size_t)(end * RATE); ++f) {
         size_t i = offset + f * 4;
+
         if (i + 1 >= offset + size) {
             break;
         }
+
         int sample = (int16_t)(wave->data[i] | wave->data[i + 1] << 8);
         crossings += previous < 0 && sample >= 0;
         previous = sample;
     }
+
     return crossings;
 }
+
 void test_event_controls_audio(DmAudio *a, void (*check)(bool, const char *)) {
     char error[512];
     check(dm_audio_soundfont(a, "agents/reports/generated-sine.sf2", error, sizeof(error)),
@@ -125,7 +145,8 @@ void test_event_controls_audio(DmAudio *a, void (*check)(bool, const char *)) {
         &p, (DmAutomation){
                 .beat = 3, .type = 0xb0, .a = 7, .b = 100, .pattern = controls, .curve = -1});
     dm_audio_transport(a, false);
-    check(dm_audio_export(a, &p, "agents/reports/event-controls-volume.wav", NULL, error, sizeof(error)),
+    check(dm_audio_export(a, &p, "agents/reports/event-controls-volume.wav", NULL, error,
+                          sizeof(error)),
           "render volume section");
     controls_wait(a, check);
     DmBytes wave = {0};
@@ -138,12 +159,15 @@ void test_event_controls_audio(DmAudio *a, void (*check)(bool, const char *)) {
           "volume section audibly mutes and restores the held note");
     dm_bytes_free(&wave);
     p.patterns[controls].event = 10;
+
     for (size_t i = 0; i < p.automation_count; ++i) {
         p.automation[i].a = 10;
         p.automation[i].b = p.automation[i].curve < 0 ? 64 : 0;
     }
-    check(dm_audio_export(a, &p, "agents/reports/event-controls-pan.wav", NULL, error, sizeof(error)),
-          "render pan section");
+
+    check(
+        dm_audio_export(a, &p, "agents/reports/event-controls-pan.wav", NULL, error, sizeof(error)),
+        "render pan section");
     controls_wait(a, check);
     check(dm_read("agents/reports/event-controls-pan.wav", &wave, error, sizeof(error)),
           "read rendered pan fixture");
@@ -158,14 +182,17 @@ void test_event_controls_audio(DmAudio *a, void (*check)(bool, const char *)) {
     dm_note_add(&p.patterns[notes], (DmNote){0, 1, 69, 110, 0});
     dm_note_add(&p.patterns[notes], (DmNote){1, 5, 81, 110, 0});
     p.patterns[controls].event = 5;
+
     for (size_t i = 0; i < p.clip_count; ++i) {
         p.clips[i].length = 8;
     }
+
     for (size_t i = 0; i < p.automation_count; ++i) {
         p.automation[i].a = 5;
         p.automation[i].beat = i == 0 ? 0 : 6;
         p.automation[i].b = p.automation[i].curve < 0 ? 0 : 5;
     }
+
     check(dm_audio_export(a, &p, "agents/reports/event-controls-glide-fast.wav", NULL, error,
                           sizeof(error)),
           "render fast automatic glide");
@@ -174,11 +201,13 @@ void test_event_controls_audio(DmAudio *a, void (*check)(bool, const char *)) {
           "read fast glide fixture");
     int fast = controls_crossings(&wave, .8, 1);
     dm_bytes_free(&wave);
+
     for (size_t i = 0; i < p.automation_count; ++i) {
         if (p.automation[i].curve > 0) {
             p.automation[i].b = 100;
         }
     }
+
     check(dm_audio_export(a, &p, "agents/reports/event-controls-glide-slow.wav", NULL, error,
                           sizeof(error)),
           "render slow automatic glide");

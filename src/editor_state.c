@@ -8,10 +8,10 @@ const char *ed_action_names[ACT_COUNT] = {DM_TEXT_COMPUTER_KEYBOARD_PIANO,
                                           DM_TEXT_BACK_ONE_SECOND,
                                           DM_TEXT_FORWARD_QUARTER_BAR,
                                           DM_TEXT_BACK_QUARTER_BAR,
-                                          DM_TEXT_GO_TO_BEGINNING,
-                                          DM_TEXT_GO_TO_END,
-                                          DM_TEXT_SCROLL_TO_TOP,
-                                          DM_TEXT_SCROLL_TO_BOTTOM,
+                                          DM_TEXT_GO_BEGINNING,
+                                          DM_TEXT_GO_END,
+                                          DM_TEXT_SCROLL_TOP,
+                                          DM_TEXT_SCROLL_BOTTOM,
                                           DM_TEXT_NEXT_CREATE_PATTERN,
                                           DM_TEXT_PREVIOUS_PATTERN,
                                           DM_TEXT_SCROLL_UP,
@@ -20,7 +20,7 @@ const char *ed_action_names[ACT_COUNT] = {DM_TEXT_COMPUTER_KEYBOARD_PIANO,
                                           DM_TEXT_MOVE_SELECTION_DOWN,
                                           DM_TEXT_TRANSPOSE_OCTAVE_UP,
                                           DM_TEXT_TRANSPOSE_OCTAVE_DOWN,
-                                          DM_TEXT_ZOOM_IN,
+                                          DM_TEXT_ZOOM,
                                           DM_TEXT_ZOOM_OUT,
                                           DM_TEXT_RESET_ZOOM,
                                           DM_TEXT_KEYBOARD_SHORTCUTS,
@@ -33,17 +33,20 @@ const char *ed_action_names[ACT_COUNT] = {DM_TEXT_COMPUTER_KEYBOARD_PIANO,
                                           DM_TEXT_BRUSH_TOOL,
                                           DM_TEXT_KEYBOARD_OCTAVE_DOWN,
                                           DM_TEXT_KEYBOARD_OCTAVE_UP,
-                                          DM_TEXT_PLAY_FROM_BEGINNING,
+                                          DM_TEXT_PLAY_BEGINNING,
                                           DM_TEXT_SONG_EVENTS,
                                           DM_TEXT_MUTE_SELECTED_CHANNEL,
                                           DM_TEXT_SOLO_SELECTED_CHANNEL,
-                                          DM_TEXT_RECORD_KEYBOARD_PIANO_OFF,
+                                          DM_TEXT_RECORD_KEYBOARD_PIANO,
                                           DM_TEXT_METRONOME,
-                                          DM_TEXT_WAIT_FOR_INPUT,
+                                          DM_TEXT_WAIT_INPUT,
                                           DM_TEXT_OVERLAPPING_NOTES,
                                           DM_TEXT_RECORD,
                                           DM_TEXT_DUPLICATE_SELECTION,
-                                          DM_TEXT_SONG_PATTERN_PLAYBACK,"Color selected notes"};
+                                          DM_TEXT_SONG_PATTERN_PLAYBACK,
+                                          DM_TEXT_COLOR_SELECTED_NOTES,
+                                          DM_TEXT_NEXT_CREATE_AUTOMATION,
+                                          DM_TEXT_PREVIOUS_AUTOMATION};
 static const SDL_Scancode default_keys[ACT_COUNT] = {
     SDL_SCANCODE_F1,        SDL_SCANCODE_Q,           SDL_SCANCODE_SPACE,
     SDL_SCANCODE_RIGHT,     SDL_SCANCODE_LEFT,        SDL_SCANCODE_RIGHT,
@@ -59,7 +62,8 @@ static const SDL_Scancode default_keys[ACT_COUNT] = {
     SDL_SCANCODE_E,         SDL_SCANCODE_M,           SDL_SCANCODE_S,
     SDL_SCANCODE_R,         SDL_SCANCODE_F2,          SDL_SCANCODE_F3,
     SDL_SCANCODE_F4,        SDL_SCANCODE_F5,          SDL_SCANCODE_D,
-    SDL_SCANCODE_GRAVE,SDL_SCANCODE_C};
+    SDL_SCANCODE_GRAVE,     SDL_SCANCODE_C,           SDL_SCANCODE_KP_PLUS,
+    SDL_SCANCODE_KP_MINUS};
 static void preview_open_pattern(Editor *e, int id);
 static bool push(DmBytes *stack, int *count, const DmProject *p);
 static void publish_loop(Editor *e);
@@ -71,31 +75,38 @@ void ed_decode_source_event(Editor *e, DmEvent *event) {
     const uint8_t *m = event->message.data;
     e->event_beat = (float)event->beat;
     e->event_source_kind = 3;
-    if (event->message.size < 3 || m[0] != 0xff) {
-        if (event->message.size >= 2 && m[0] < 0xf0) {
+
+    if (event->message.size < 3 || m[0] != MIDI_META) {
+        if (event->message.size >= 2 && m[0] < MIDI_SYSTEM) {
             e->event_program = m[1];
-            e->event_channel = m[0] & 15;
+            e->event_channel = m[0] & MIDI_CHANNEL_MASK;
         }
+
         return;
     }
-    if (m[1] == 0x51 && event->message.size == 6) {
+
+    if (m[1] == MIDI_META_TEMPO && event->message.size == 6) {
         e->event_kind = 0;
         e->event_bpm = 60000000.0f / ((m[3] << 16) | (m[4] << 8) | m[5]);
-    } else if (m[1] == 0x58 && event->message.size == 7) {
+    } else if (m[1] == MIDI_META_TIME && event->message.size == 7) {
         e->event_kind = 1;
         e->event_numerator = m[3];
         e->event_denominator = 1 << m[4];
-    } else if (m[1] == 6 && m[2] < 128 && event->message.size == (size_t)m[2] + 3) {
+    } else if (dm_loop_marker(&event->message)) {
+        e->event_kind = 3 + dm_loop_marker(&event->message);
+    } else if (m[1] == MIDI_META_MARKER && m[2] < 128 && event->message.size == (size_t)m[2] + 3) {
         e->event_kind = 2;
         snprintf(e->event_marker, sizeof(e->event_marker), "%.*s", m[2], m + 3);
     } else {
         return;
     }
+
     e->event_source_kind = 1;
 }
 
 void ed_focus_edit(Editor *e, EditFocus focus) {
     e->edit_focus = focus;
+
     if (focus == FOCUS_NOTES || focus == FOCUS_EVENTS) {
         e->context = 2;
     } else {
@@ -113,15 +124,24 @@ EditFocus ed_selection_focus(Editor *e) {
     return e->edit_focus ? e->edit_focus : e->context == 2 ? FOCUS_NOTES : FOCUS_PLAYLIST;
 }
 
+void ed_reset_layout(Editor *e) {
+    e->sidebar = 465;
+    e->mixer_height = 420;
+    e->label_width = 154;
+    e->automation_height = 360;
+    e->roll_height = 320;
+}
+
 void ed_toggle_roll(Editor *e) {
     e->roll = !e->roll;
+
     if (e->roll) {
         e->roll_auto_hidden = false;
     }
 }
 
 int ed_channel_program(Editor *e, int channel) {
-    return channel == 9 ? 128 : (int)fmax(0, e->project.channels[channel].program);
+    return channel == MIDI_DRUM_CHANNEL ? 128 : (int)fmax(0, e->project.channels[channel].program);
 }
 
 void ed_preview_channel(Editor *e, int channel, bool placed) {
@@ -136,6 +156,7 @@ void ed_select_placement_route(Editor *e, int index) {
     e->selected_clip = index;
     e->pattern_channel = e->selected_channel = clip.channel;
     e->channel_selected = true;
+
     if (!e->preview_override) {
         ed_preview_channel(e, clip.channel, true);
     }
@@ -148,36 +169,46 @@ static void preview_open_pattern(Editor *e, int id) {
             return;
         }
     }
+
     ed_preview_channel(e, e->selected_channel, false);
 }
 
 void ed_open_pattern(Editor *e, int id, bool created) {
     e->curve_drag = e->event_marquee = false;
+
     if (created || id != e->selected_pattern || !e->preview_override) {
         preview_open_pattern(e, id);
     }
+
     e->event_selection.size = 0;
+
     if (id != e->selected_pattern) {
         e->loop_enabled[1] = false;
+
         if (e->pattern_mode) {
             dm_audio_loop(e->audio, false, 0, 0);
         }
     }
+
     if (id >= 0 && (size_t)id < e->project.pattern_count) {
         e->automation_browser = e->project.patterns[id].kind != 0;
+
         if (e->automation_browser) {
             e->automation_cc = e->project.patterns[id].event;
         } else if (e->automation_cc == 7 || e->automation_cc == 10) {
             e->automation_cc = -3;
         }
     }
+
     e->selected_pattern = id;
     e->pattern_highlight = id >= 0;
     e->linked_highlight = id >= 0;
     e->roll_auto_hidden = false;
+
     if (created) {
         e->roll = true;
     }
+
     e->focus_pattern = true;
     e->automation_all = false;
 }
@@ -193,14 +224,19 @@ void ed_defaults(Editor *e) {
     for (int i = 0; i < ACT_COUNT; ++i) {
         e->bindings[i] = (Binding){default_keys[i], (SDL_Keymod)0};
     }
+
     e->bindings[ACT_QUANTIZE].mods = SDL_KMOD_CTRL;
     e->bindings[ACT_DUPLICATE].mods = SDL_KMOD_CTRL;
     e->bindings[ACT_PLAY_START].mods = SDL_KMOD_SHIFT;
-    e->bindings[ACT_NOTE_COLOR].mods=SDL_KMOD_ALT;
+    e->bindings[ACT_NOTE_COLOR].mods = SDL_KMOD_ALT;
+    e->bindings[ACT_NEXT_AUTOMATION].mods = e->bindings[ACT_PREVIOUS_AUTOMATION].mods =
+        SDL_KMOD_SHIFT;
     e->bindings[ACT_SONG_EVENT].mods = SDL_KMOD_SHIFT;
+
     for (int i = ACT_FORWARD_BEAT; i <= ACT_BACK_BEAT; ++i) {
         e->bindings[i].mods = SDL_KMOD_SHIFT;
     }
+
     e->bindings[ACT_ITEM_UP].mods = e->bindings[ACT_ITEM_DOWN].mods = SDL_KMOD_SHIFT;
     e->bindings[ACT_OCTAVE_UP].mods = e->bindings[ACT_OCTAVE_DOWN].mods = SDL_KMOD_CTRL;
 }
@@ -221,15 +257,19 @@ void ed_bind_pattern_channel(Editor *e) {
     e->automation_node = -1;
     e->last_automation_valid = false;
     e->focus_pattern = true;
+
     for (size_t i = 0; i < e->project.clip_count; ++i) {
         if (e->project.clips[i].pattern == e->selected_pattern) {
             e->pattern_channel = e->project.clips[i].channel;
+
             if (!e->preview_override) {
                 ed_preview_channel(e, e->pattern_channel, true);
             }
+
             return;
         }
     }
+
     if (!e->preview_override) {
         ed_preview_channel(e, e->pattern_channel, false);
     }
@@ -239,24 +279,30 @@ void ed_clear_history(DmBytes *b, int *count) {
     for (int i = 0; i < *count; ++i) {
         dm_bytes_free(&b[i]);
     }
+
     *count = 0;
 }
 
 static bool push(DmBytes *stack, int *count, const DmProject *p) {
     DmBytes bytes = {0};
+
     if (!dm_pack(p, &bytes)) {
         return false;
     }
+
     size_t total = bytes.size;
+
     for (int i = 0; i < *count; ++i) {
         total += stack[i].size;
     }
+
     while (*count && (*count == 32 || total > 256u * 1024u * 1024u)) {
         total -= stack[0].size;
         dm_bytes_free(&stack[0]);
         memmove(stack, stack + 1, (size_t)(*count - 1) * sizeof(*stack));
         --*count;
     }
+
     stack[(*count)++] = bytes;
     return true;
 }
@@ -265,22 +311,27 @@ void ed_checkpoint(Editor *e) {
     if (e->recording_take && e->take_snapshot) {
         return;
     }
+
     if (!push(e->undo, &e->undo_count, &e->project)) {
-        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_UNDO_SNAPSHOT);
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_UNDO);
     } else if (e->recording_take) {
         e->take_snapshot = true;
     }
+
     ed_clear_history(e->redo, &e->redo_count);
 }
 
 bool ed_add_note(Editor *e, DmPattern *p, DmNote note) {
     double previous = p->length;
+
     if (!dm_note_add(p, note)) {
         return false;
     }
+
     if (p->length > previous) {
         dm_pattern_fit(&e->project, p);
     }
+
     return true;
 }
 
@@ -288,11 +339,13 @@ double ed_pattern_length(Editor *e) {
     if (!ed_pattern(e)) {
         return dm_bar(&e->project);
     }
+
     if (ed_pattern(e)->kind && e->selected_clip >= 0 &&
         (size_t)e->selected_clip < e->project.clip_count &&
         e->project.clips[e->selected_clip].pattern == e->selected_pattern) {
         return dm_clip_length(&e->project, e->project.clips[e->selected_clip]);
     }
+
     return ed_pattern(e)->length;
 }
 
@@ -305,10 +358,12 @@ static void publish_loop(Editor *e) {
 
 bool ed_transport_publish(Editor *e, double seconds, bool playing) {
     bool ok;
+
     if (e->pattern_mode && ed_pattern(e)) {
         if (!e->preview_override && e->preview_source_channel >= 0) {
             e->preview_program = ed_channel_program(e, e->preview_source_channel);
         }
+
         ok = dm_audio_publish_pattern(e->audio, &e->project, e->selected_pattern,
                                       e->pattern_channel, e->preview_program, ed_pattern_length(e),
                                       seconds, playing, e->status, sizeof(e->status));
@@ -316,9 +371,11 @@ bool ed_transport_publish(Editor *e, double seconds, bool playing) {
         ok =
             dm_audio_publish(e->audio, &e->project, seconds, playing, e->status, sizeof(e->status));
     }
+
     if (ok) {
         publish_loop(e);
     }
+
     return ok;
 }
 
@@ -328,10 +385,12 @@ double ed_transport_length(Editor *e) {
 
 void ed_publish(Editor *e) {
     ++e->export_revision;
+
     if (e->active) {
         if (!e->preview_override && e->preview_source_channel >= 0) {
             e->preview_program = ed_channel_program(e, e->preview_source_channel);
         }
+
         if (dm_audio_update(e->audio, &e->project,
                             e->pattern_mode && ed_pattern(e) ? e->selected_pattern : -1,
                             e->pattern_channel, e->preview_program, ed_pattern_length(e), e->status,
@@ -344,20 +403,24 @@ void ed_publish(Editor *e) {
 void ed_changed(Editor *e) {
     ++e->export_revision;
     dm_patterns_fit(&e->project);
+
     if (ed_pattern(e) && ed_pattern(e)->count) {
         e->transient_pattern = -1;
     }
+
     for (size_t i = 0; i < e->project.clip_count; ++i) {
         if (e->project.clips[i].pattern == e->transient_pattern) {
             e->transient_pattern = -1;
         }
     }
+
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         if (e->project.automation[i].pattern == e->transient_pattern) {
             e->transient_pattern = -1;
             break;
         }
     }
+
     e->dirty = true;
 }
 
@@ -366,11 +429,13 @@ void ed_request_font(Editor *e, const char *path) {
         if (e->font_request) {
             dm_audio_cancel(e->audio);
         }
+
         e->font_request = false;
         e->font_queued = true;
         snprintf(e->font_next, sizeof(e->font_next), "%s", path);
         return;
     }
+
     if (dm_audio_soundfont(e->audio, path, e->status, sizeof(e->status))) {
         e->font_request = true;
         snprintf(e->font_pending, sizeof(e->font_pending), "%s", path);
@@ -385,45 +450,59 @@ void ed_commit(Editor *e) {
 
 int ed_note_identity(const void *left, const void *right) {
     const DmNote *a = left, *b = right;
-    if(a->port!=b->port)return (int)a->port-b->port;
+
+    if (a->port != b->port) {
+        return (int)a->port - b->port;
+    }
+
     if (a->beat != b->beat) {
         return a->beat < b->beat ? -1 : 1;
     }
+
     if (a->key != b->key) {
         return a->key < b->key ? -1 : 1;
     }
+
     if (a->length != b->length) {
         return a->length < b->length ? -1 : 1;
     }
+
     return (int)a->velocity - b->velocity;
 }
 
 static int clip_identity(const void *left, const void *right) {
     const DmClip *a = left, *b = right;
+
     if (a->beat != b->beat) {
         return a->beat < b->beat ? -1 : 1;
     }
+
     if (a->pattern != b->pattern) {
         return a->pattern < b->pattern ? -1 : 1;
     }
+
     return (int)a->channel - b->channel;
 }
 
 static void retain_note_selection(DmPattern *next, const DmPattern *live) {
     DmNote *selected = malloc((live->count + 1) * sizeof(*selected));
     size_t count = 0;
+
     for (size_t i = 0; i < live->count && selected; ++i) {
         if (live->notes[i].selected) {
             selected[count++] = live->notes[i];
         }
     }
+
     if (selected) {
         qsort(selected, count, sizeof(*selected), ed_note_identity);
     }
+
     for (size_t i = 0; i < next->count; ++i) {
         next->notes[i].selected = selected && bsearch(next->notes + i, selected, count,
                                                       sizeof(*selected), ed_note_identity);
     }
+
     free(selected);
 }
 
@@ -433,20 +512,25 @@ static void retain_selection(DmProject *next, const DmProject *live) {
         const DmPattern *before = i < live->pattern_count ? live->patterns + i : &empty;
         retain_note_selection(next->patterns + i, before);
     }
+
     DmClip *selected = malloc((live->clip_count + 1) * sizeof(*selected));
     size_t count = 0;
+
     for (size_t i = 0; i < live->clip_count && selected; ++i) {
         if (live->clips[i].selected) {
             selected[count++] = live->clips[i];
         }
     }
+
     if (selected) {
         qsort(selected, count, sizeof(*selected), clip_identity);
     }
+
     for (size_t i = 0; i < next->clip_count; ++i) {
         next->clips[i].selected =
             selected && bsearch(next->clips + i, selected, count, sizeof(*selected), clip_identity);
     }
+
     free(selected);
 }
 
@@ -462,16 +546,20 @@ void ed_undo(Editor *e, bool redo) {
     snprintf(old_font, sizeof(old_font), "%s", e->project.soundfont);
     DmBytes *from = redo ? e->redo : e->undo, *to = redo ? e->undo : e->redo;
     int *n = redo ? &e->redo_count : &e->undo_count, *m = redo ? &e->undo_count : &e->redo_count;
+
     if (!*n) {
         return;
     }
+
     if (!push(to, m, &e->project)) {
-        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_UNDO_SNAPSHOT);
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_UNDO);
         return;
     }
+
     DmBytes b = from[--*n];
     DmProject next;
     dm_project_init(&next);
+
     if (dm_unpack(&next, b.data, b.size, e->status, sizeof(e->status))) {
         /* Identities cannot be reused when an undone creation is replaced by another edit. */
         next.next_pattern_uid = (uint32_t)fmax(next.next_pattern_uid, e->project.next_pattern_uid);
@@ -479,16 +567,20 @@ void ed_undo(Editor *e, bool redo) {
         dm_project_free(&e->project);
         e->project = next;
         dm_project_init(&next);
+
         if ((size_t)e->selected_pattern >= e->project.pattern_count) {
             e->selected_pattern = -1;
             ed_clear_pattern_selection(e);
         }
+
         e->automation_node = -1;
         ed_commit(e);
+
         if (strcmp(old_font, e->project.soundfont)) {
             ed_request_font(e, e->project.soundfont);
         }
     }
+
     dm_project_free(&next);
     dm_bytes_free(&b);
 }

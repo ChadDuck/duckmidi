@@ -25,11 +25,15 @@ Use the mixer to adjust volume and pan, mute a part, or listen to it alone with 
 1. Click **+ New** in the pattern browser, or choose an existing pattern.
 2. Click a playlist row to place it, or drag its card into the arrangement.
 3. Double-click a placement to open its notes in the piano roll.
-4. Click the playlist row's instrument label to choose the channel's instrument.
+4. Click the playlist row's instrument label to choose the channel's instrument. Choose **Drum kit** to make it the drum channel (General MIDI channel 10); on channel 10, the dropdown lists drum kits.
 
 The piano roll's instrument dropdown changes its preview sound. **Use selected channel** copies the selected row's instrument into that preview.
 
-Placements of the same pattern share its notes. To make a separate version, right-click its browser card and choose **Duplicate**. Rename patterns from the same menu.
+Placements of the same pattern share its notes. To make a separate version, click its browser card and press **Ctrl + D**, or right-click it and choose **Duplicate**. Rename patterns from the same menu.
+
+New patterns use the application color. Press **Alt + C** with a pattern card or placements selected, or choose **Change color** from their menu (Shift + right-click), to pick one of 16 colors. Notes use the application color, or their port's color.
+
+The slice tool splits a placement into two linked placements of the same pattern, each showing its part. Slicing again, or resizing a slice's right edge, keeps each part's position in the pattern.
 
 | Gesture | Action |
 | --- | --- |
@@ -80,12 +84,22 @@ Choose percussion, open the pattern editor's top-left menu, and select **Percuss
 
 ### Change velocity or draw a controller effect
 
-1. Open a note pattern and click **Events**.
-2. Choose **Velocity**, **Pitch bend**, **Modulation**, or another controller from the dropdown.
-3. For velocity, drag the note stems up or down. For a controller, click to add points or drag to draw a section.
+1. Open a note pattern and click **Events**. The pattern editor grows upward to make room, so the piano roll keeps its size.
+2. Choose **Velocity**, **Pitch bend**, **Modulation**, or another controller from the dropdown. Hover the dropdown and use the mouse wheel to step through the types.
+3. For velocity, drag the note stems up or down. For a controller, use the gestures below.
 4. Drag points to adjust their time and value. Drag a section's curve handle to shape the transition.
 
-Controller sections affect notes on the same channel and active color/port. The underlying value resumes when a section ends. For a sustained pedal, choose **Sustain** and drag along the line for the interval you want held.
+| Gesture | Action |
+| --- | --- |
+| Click | Add a point at the cursor, connected to the nearest point |
+| Click while points are selected | Deselect them without adding a point |
+| Shift + click or Shift + drag | Add a single point, or draw a section |
+| Right-click / right-drag | Erase points |
+| Ctrl + drag | Select points |
+
+Controller sections affect notes on the same channel and active color/port. The underlying value resumes when a section ends. For a sustained pedal, choose **Sustain** and drag along the line for the interval you want held. A bend drawn on a note moves with the note. Program change points show the instrument name while you place them.
+
+Press **Shift + Keypad +** or **Shift + Keypad −** anywhere to step through automation patterns, creating one after the last, just as **Keypad + / −** steps through note patterns.
 
 ### Make a reusable LFO
 
@@ -104,6 +118,10 @@ Color buttons then appear beside the instrument dropdown across that channel's p
 
 Independent ports work in duckmidi playback and MIDI export. Other players may ignore them, and one external MIDI connection cannot keep their controllers separate. M64 export does not support colored ports.
 
+To remove a port, Shift + click its color button and choose **Delete port**. Its notes return to the default port and its events are discarded.
+
+MIDI files that use several ports open as one arrangement, with each source port on its own color. To merge them, open **Project settings** and choose **Combine original source ports** (only the file's ports) or **Combine ALL source ports** (also ports you colored). A warning lists channels that more than one port uses; Undo reverses the merge.
+
 ## Turn an imported song into patterns
 
 Choose **Edit > Generate Patterns**, then **Generate**. Review the preview and click **Apply**, or close it to discard the result.
@@ -117,9 +135,10 @@ Generation uses the current arrangement, including your edits. Repeated phrases 
 ### MIDI
 
 1. Press **Ctrl + E** and select **MIDI**.
-2. Choose whether to include other source ports/sequences.
-3. Choose an **Editor metadata** option. Keep duckmidi metadata if you want to reopen the MIDI with its editor information; strip it for a file containing only musical MIDI data.
-4. Click **Export MIDI** and choose a filename.
+2. Choose an **Editor metadata** option. Keep duckmidi metadata if you want to reopen the MIDI with its editor information; strip it for a file containing only musical MIDI data.
+3. Click **Export MIDI** and choose a filename.
+
+The file contains the arrangement as you hear it: muted channels are left out, and colored ports and other source sequences are included.
 
 ### Audio
 
@@ -132,7 +151,7 @@ The active view is rendered using the selected SoundFont as 48 kHz stereo, with 
 
 ### M64
 
-Choose **M64** in Export's format dropdown, review the instrument mappings, then save the ZIP package. See the [M64 guide](sm64-export.md) for mapping warnings and installation into an SM64 source tree.
+Choose **M64** in Export's format dropdown, review the instrument mappings, then save the ZIP package or click **Export to Repository** to install it into your SM64 checkout. Add **M64 - Loop Start** / **M64 - Loop End** song events to repeat part of the song. See the [M64 guide](sm64-export.md) for loop points, mapping warnings and installation.
 
 ## Customize shortcuts
 
@@ -146,4 +165,4 @@ play_pause="Space"
 color_selected_notes="Alt + C"
 ```
 
-Keep entries in their existing sections. Use `+` between modifiers, such as `"Shift + Alt + E"`; `-` and `=` refer to those physical keys. Percussion entries use drum names, such as `acoustic_snare="Z"`.
+Shortcuts saved by an earlier version keep working; actions added since then use their default keys. Keep entries in their existing sections. Use `+` between modifiers, such as `"Shift + Alt + E"`; `-` and `=` refer to those physical keys. Percussion entries use drum names, such as `acoustic_snare="Z"`.

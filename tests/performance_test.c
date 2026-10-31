@@ -6,27 +6,33 @@
 static double milliseconds(clock_t start) {
     return (double)(clock() - start) * 1000.0 / CLOCKS_PER_SEC;
 }
+
 static void require(bool ok) {
     if (!ok) {
         fprintf(stderr, "Performance fixture failed\n");
         exit(1);
     }
 }
+
 int main(void) {
     DmProject p, imported;
     dm_project_init(&p);
     dm_project_init(&imported);
+
     for (int channel = 0; channel < 16; ++channel) {
         p.channels[channel].enabled = true;
         int id = dm_pattern_add(&p, "Generated load");
         require(id >= 0);
+
         for (int i = 0; i < 6250; ++i) {
             require(
                 dm_note_add(&p.patterns[id], (DmNote){i * .25, .2, (uint8_t)(48 + i % 24), 90, 0}));
         }
+
         dm_pattern_fit(&p, &p.patterns[id]);
         require(dm_clip_add(&p, (DmClip){0, id, channel, 0, 0, 0}));
     }
+
     char error[256] = {0};
     DmSchedule schedule = {0};
     DmBytes midi = {0}, project = {0};

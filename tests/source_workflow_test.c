@@ -7,14 +7,18 @@
 // clang-format on
 #endif
 static int checks;
+
 static void check(bool ok, const char *text) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL source_workflow: %s\n", text);
         exit(1);
     }
 }
+
 void test_source_workflow_ui(Editor *, void (*)(bool, const char *));
+
 static void fixture(Editor *e) {
     editor_smoke(e);
     e->config = e->preferences = e->midi_events = e->song_event = e->confirm = e->about =
@@ -39,6 +43,7 @@ static void fixture(Editor *e) {
     e->event_selection.size = 0;
     e->drag = 0;
 }
+
 static void preferences_check(Editor *e) {
     snprintf(e->settings_path, DM_PATH, "agents/reports/source_workflow-settings.ini");
     ed_defaults(e);
@@ -61,8 +66,8 @@ static void preferences_check(Editor *e) {
     check(e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9, "shortcut restored");
     ed_defaults(e);
     check(dm_preferences_load(e, ed_shortcut_schema() + 1) &&
-              e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_GRAVE,
-          "changed shortcut schema retains other settings with current defaults");
+              e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9,
+          "changed shortcut list keeps saved shortcuts and other settings");
     const char *bad[] = {"{\"schema\":1}",
                          "[application]\nschema=1",
                          "[application]\nschema=3\nui_size=3",
@@ -72,6 +77,7 @@ static void preferences_check(Editor *e) {
                          "[application\nschema=3",
                          "[application]\nschema=3\n[shortcuts]\naction_0=1,0\naction_0=2,0"};
     char error[256];
+
     for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); ++i) {
         check(dm_write(e->settings_path, bad[i], strlen(bad[i]), error, sizeof(error)),
               "write invalid isolated INI");
@@ -80,6 +86,7 @@ static void preferences_check(Editor *e) {
                   e->accent == 0xff123456,
               "invalid syntax/value/version rejected without partial application");
     }
+
     const char *valid =
         "; comment\r\n[application]\r\nschema=3\r\nsoundfont=\"é🎹.sf2\"\r\n[future]\r\nkey=value";
     check(dm_write(e->settings_path, valid, strlen(valid), error, sizeof(error)) &&
@@ -96,14 +103,15 @@ static void preferences_check(Editor *e) {
     e->ui_size = 1;
     check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names), "leave valid example");
 }
+
 static void preview_check(Editor *e) {
     fixture(e);
     e->project.clips[0].channel = 9;
     ed_open_pattern(e, 0, false);
     ed_bind_pattern_channel(e);
     check(e->preview_program == 128 && e->pattern_channel == 9 &&
-              ed_pattern_color(e, 0) == ed_track_color(9),
-          "percussion preview, piano color and card thumbnail use placed channel");
+              ed_pattern_color(e, 0) == e->accent,
+          "percussion preview uses the placed channel; new patterns use the application color");
     ed_playlist_label_action(e, 1, 0, (UiMouse){.clicked = true});
     check(e->preview_program == 128 && e->pattern_channel == 9,
           "unrelated channel selection preserves open preview/channel");
@@ -139,6 +147,7 @@ static void preview_check(Editor *e) {
     check(e->preview_program == 16 && e->preview_override,
           "another placement of the same pattern preserves explicit override");
 }
+
 static void event_checks(Editor *e) {
     fixture(e);
     UiRect lane = {100, 100, 600, 200};
@@ -146,8 +155,21 @@ static void event_checks(Editor *e) {
     dm_automation_add(&e->project, (DmAutomation){0, 0xb0, 0, 11, 30, 0, 0, 0, 0, false});
     dm_automation_add(&e->project, (DmAutomation){2, 0xb0, 0, 11, 90, 0, 0, 0, 20, true});
     dm_automation_add(&e->project, (DmAutomation){4, 0xb0, 0, 11, 60, 0, 0, 0, 0, false});
-    ed_automation_lane_click(e, lane, &view, 80, (UiMouse){.pos = {340, 180}, .shift = true}, -1);
-    check(e->project.automation_count == 4, "Shift left inserts a curve node");
+    ed_automation_lane_click(e, lane, &view, 80, (UiMouse){.pos = {340, 180}, .clicked = true}, -1);
+    bool connected = false;
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+        connected |= a.beat == 3 && a.type == 0xb0 && a.a == 11 && a.curve > 0;
+    }
+
+    check(connected, "left click adds a connected point at the cursor");
+    e->project.automation_count = 0;
+    dm_automation_add(&e->project, (DmAutomation){0, 0xb0, 0, 11, 30, 0, 0, 0, 0, false});
+    dm_automation_add(&e->project, (DmAutomation){2, 0xb0, 0, 11, 90, 0, 0, 0, 20, true});
+    dm_automation_add(&e->project, (DmAutomation){4, 0xb0, 0, 11, 60, 0, 0, 0, 0, false});
+    check(ed_insert_lane_node(e, 3) && e->project.automation_count == 4,
+          "curve insertion splits a ramp");
     e->event_marquee_start = (UiPoint){90, 90};
     e->event_marquee = true;
     ed_event_box_select(e, lane, &view, 80, (UiMouse){.pos = {500, 310}, .left = true});
@@ -164,6 +186,7 @@ static void event_checks(Editor *e) {
     ed_grid_scroll(e, &e->roll_view, lane, 100, 2560, 20, false);
     check(e->roll_view.scroll_x == 0, "timeline cannot scroll before start");
 }
+
 static void source_checks(Editor *e) {
     fixture(e);
     uint8_t tempo[] = {0xff, 0x51, 3, 7, 0xa1, 0x20};
@@ -186,6 +209,7 @@ static void source_checks(Editor *e) {
     check(e->project.channels[0].program == 24,
           "initial program editing changes GUI-owned channel program");
 }
+
 static void native_drop(Editor *e, const char *path) {
 #ifdef _WIN32
     wchar_t wide[DM_PATH];
@@ -207,12 +231,15 @@ static void native_drop(Editor *e, const char *path) {
     SendMessageW(hwnd, WM_DROPFILES, (WPARAM)memory, 0);
     SDL_Event event;
     bool received = false;
+
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_EVENT_DROP_FILE) {
             received = true;
         }
+
         editor_event(e, &event);
     }
+
     check(received, "Windows native drop message produces an SDL file drop");
 #else
     SDL_Event event;
@@ -222,13 +249,16 @@ static void native_drop(Editor *e, const char *path) {
     editor_event(e, &event);
 #endif
 }
+
 static void drop_checks(Editor *e) {
     fixture(e);
+
     for (int i = 0; i < 15; ++i) {
         char path[100];
         snprintf(path, sizeof(path), "agents/reports/recent-%d.mid", i);
         ed_add_recent(e, path);
     }
+
     check(e->recent_count == 10 && strstr(e->recent[0], "14.mid") && strstr(e->recent[9], "5.mid"),
           "recent files are capped at ten, newest first");
     ed_add_recent(e, "agents/reports/recent-8.mid");
@@ -274,9 +304,11 @@ static void drop_checks(Editor *e) {
     editor_event(e, &event);
     check(e->font_request, "SoundFont drop in Preferences starts background loading");
     uint64_t limit = SDL_GetTicks() + 15000;
+
     while (dm_audio_busy(audio) && SDL_GetTicks() < limit) {
         SDL_Delay(5);
     }
+
     editor_background(e);
     check(!e->font_request && !strcmp(e->project.soundfont, "agents/reports/generated-sine.sf2"),
           "dropped SoundFont installs through the existing background worker");
@@ -297,6 +329,7 @@ static void drop_checks(Editor *e) {
     dm_bytes_free(&midi);
     dm_bytes_free(&project);
 }
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO), "SDL");
     SDL_Window *w = SDL_CreateWindow("source_workflow", 1400, 900, SDL_WINDOW_HIDDEN);

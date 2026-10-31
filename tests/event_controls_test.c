@@ -3,26 +3,34 @@
 extern void test_event_controls_ui(Editor *, void (*)(bool, const char *));
 extern void test_event_controls_audio(DmAudio *, void (*)(bool, const char *));
 static int checks;
+
 static void check(bool ok, const char *text) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL event controls: %s\n", text);
         exit(1);
     }
 }
+
 static int scheduled_value(const DmSchedule *s, int cc, double seconds) {
     int value = -1;
+
     for (size_t i = 0; i < s->count; ++i) {
         DmScheduled a = s->items[i];
+
         if (a.seconds > seconds + 1e-8) {
             break;
         }
+
         if (a.status == 0xb0 && a.a == cc) {
             value = a.b;
         }
     }
+
     return value;
 }
+
 static void fixture(Editor *e, int cc, bool standalone) {
     editor_smoke(e);
     e->project.automation_count = e->project.clip_count = 0;
@@ -45,13 +53,17 @@ static void fixture(Editor *e, int cc, bool standalone) {
     e->tool = 0;
     e->project.channels[0].volume = 93;
     e->project.channels[0].pan = 37;
+
     if (standalone) {
         e->project.lane_count[0] = 1;
     }
+
     dm_clip_add(&e->project, (DmClip){.pattern = 0, .channel = 0, .lane = standalone, .length = 4});
 }
+
 static void continuous(Editor *e) {
     const int controls[] = {7, 10, 91, 93, 74, 71};
+
     for (int k = 0; k < 6; ++k) {
         int cc = controls[k];
         fixture(e, cc, true);
@@ -70,15 +82,18 @@ static void continuous(Editor *e) {
         check(scheduled_value(&s, cc, 2) == baseline, "LFO placement restores baseline");
         dm_schedule_free(&s);
     }
+
     fixture(e, 7, false);
     check(!ed_automation_option(e, 7) && !ed_automation_option(e, 10),
           "volume and pan absent from note pattern selector");
     ed_open_pattern(e, 0, false);
     check(e->automation_cc == -3, "opening note pattern leaves volume automation view");
 }
+
 static void switches_and_glide(Editor *e) {
     UiRect lane = {100, 100, 600, 200};
     View v = {.zoom = 1};
+
     for (int cc = 64; cc <= 66; cc += 2) {
         for (int kind = 0; kind <= 1; ++kind) {
             fixture(e, cc, kind);
@@ -95,11 +110,13 @@ static void switches_and_glide(Editor *e) {
             check(dm_schedule(&e->project, &s), "schedule pedal interval");
             check(scheduled_value(&s, cc, .75) == 127 && scheduled_value(&s, cc, 1.5) == 0,
                   "pedal enables and disables without interpolating");
+
             for (size_t i = 0; i < s.count; ++i) {
                 if (s.items[i].status == 0xb0 && s.items[i].a == cc) {
                     check(s.items[i].b == 0 || s.items[i].b == 127, "pedal values are binary");
                 }
             }
+
             dm_schedule_free(&s);
             e->automation_all = true;
             DmProject copy;
@@ -115,15 +132,17 @@ static void switches_and_glide(Editor *e) {
             check(e->project.automation_count == 0, "deleting pedal removes restoration too");
         }
     }
+
     fixture(e, 5, true);
-    UiMouse m = {.clicked = true, .left = true, .pos = {180, 180}};
+    UiMouse m = {.clicked = true, .left = true, .shift = true, .pos = {180, 180}};
     ed_automation_lane_click(e, lane, &v, 80, m, -1);
     m.clicked = false;
     m.left = false;
     m.released = true;
     ed_automation_drag(e, lane, &v, 80, m);
-    check(e->project.automation_count == 3, "single portamento click creates bounded section");
-    m = (UiMouse){.clicked = true, .shift = true, .pos = {340, 140}};
+    check(e->project.automation_count == 3,
+          "single Shift portamento click creates bounded section");
+    m = (UiMouse){.clicked = true, .pos = {340, 140}};
     ed_automation_lane_click(e, lane, &v, 80, m, -1);
     check(e->project.automation_count == 4, "portamento connects additional points");
     DmSchedule s = {0};
@@ -158,6 +177,35 @@ static void switches_and_glide(Editor *e) {
     dm_bytes_free(&packed);
     dm_project_free(&loaded);
 }
+
+/* Program changes in the events editor are edited like every other event type: a click adds a
+   point, a selected point is removed with Delete, and right-dragging erases points. */
+static void program_change_points(Editor *e) {
+    fixture(e, -1, true);
+    UiRect lane = {100, 100, 600, 200};
+    View v = {1, 0, 0, 0};
+
+    for (int i = 0; i < 3; ++i) {
+        e->automation_node = -1;
+        ed_automation_lane_click(e, lane, &v, 80,
+                                 (UiMouse){.clicked = true, .pos = {140 + 80.0f * i, 180}}, -1);
+    }
+
+    size_t added = e->project.automation_count;
+    check(added == 3, "left clicks add program change points");
+    ed_automation_lane_click(e, lane, &v, 80,
+                             (UiMouse){.clicked = true, .left = true, .pos = {140, 180}}, 0);
+    ed_automation_node_drag(e, lane, &v, 80, (UiMouse){.released = true, .pos = {140, 180}});
+    e->drag = 0;
+    ed_shortcut(e, SDL_SCANCODE_DELETE, SDL_KMOD_NONE, false);
+    check(e->project.automation_count == added - 1,
+          "Delete removes a selected program change point");
+    e->erase_active = false;
+    ed_erase_node(e, 0);
+    check(e->project.automation_count == added - 2,
+          "right-drag erase removes program change points");
+}
+
 int main(void) {
     check(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO), "SDL");
     SDL_Window *w = SDL_CreateWindow("Event controls", 1400, 900, SDL_WINDOW_HIDDEN);
@@ -172,6 +220,7 @@ int main(void) {
     ui_root(0, 900);
     continuous(e);
     switches_and_glide(e);
+    program_change_points(e);
     ui_end();
     ui_render(r);
     fixture(e, 64, true);

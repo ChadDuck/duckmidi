@@ -1,47 +1,62 @@
 #include "../src/audio.c"
 static int checks;
+
 static void check(bool value, const char *what) {
     ++checks;
+
     if (!value) {
         fprintf(stderr, "FAIL live edit: %s\n", what);
         exit(1);
     }
 }
+
 static unsigned voice_id(Synth *s, int channel, int key, bool held) {
     fluid_voice_t *voices[512] = {0};
     fluid_synth_get_voicelist(s->synth, voices, 512, -1);
+
     for (int i = 0; i < 512 && voices[i]; ++i) {
         fluid_voice_t *v = voices[i];
         bool active = held ? fluid_voice_is_on(v) : fluid_voice_is_playing(v);
+
         if (active && fluid_voice_get_channel(v) == channel && fluid_voice_get_key(v) == key) {
             return fluid_voice_get_id(v);
         }
     }
+
     return UINT32_MAX;
 }
+
 static void process(DmAudio *a, int frames) {
     SDL_LockAudioStream(a->stream);
+
     while (frames > 0) {
         float out[BLOCK * 2];
         int n = frames > BLOCK ? BLOCK : frames;
         run_block(a, out, n);
         frames -= n;
     }
+
     SDL_UnlockAudioStream(a->stream);
 }
+
 static void await_font(DmAudio *a) {
     char text[512];
     uint64_t start = SDL_GetTicks();
+
     while (dm_audio_busy(a)) {
         bool success = false;
+
         if (dm_audio_poll(a, text, sizeof(text), &success, NULL)) {
             check(success, "load both SoundFont voice domains");
         }
+
         if (SDL_GetTicks() - start >= 30000) {
             check(false, "SoundFont timeout");
         }
+
         SDL_Delay(5);
     }
+
     check(true, "SoundFont finishes before timeout");
 }
 
@@ -49,6 +64,7 @@ static void update(DmAudio *a, DmProject *p) {
     char error[512];
     check(dm_audio_update(a, p, -1, 0, -1, 0, error, sizeof(error)), "live schedule update");
 }
+
 static void continuity(DmAudio *a, DmProject *p) {
     char error[512];
     DmPattern *pat = &p->patterns[0];
@@ -90,6 +106,7 @@ static void continuity(DmAudio *a, DmProject *p) {
     check(voice_id(&a->live, 0, 64, true) == UINT32_MAX,
           "deleted placement's final note releases at original deadline");
 }
+
 static void replacement_and_pause(DmAudio *a, DmProject *p) {
     char error[512];
     DmPattern *pat = &p->patterns[0];
@@ -111,6 +128,7 @@ static void replacement_and_pause(DmAudio *a, DmProject *p) {
     check(a->release_count == 0 && voice_id(&a->live, 0, 60, true) == UINT32_MAX,
           "pause explicitly stops song voices and pending releases");
 }
+
 static void isolated_feedback(DmAudio *a, DmProject *p) {
     char error[512];
     check(dm_audio_publish(a, p, 0, true, error, sizeof(error)), "start isolation fixture");
@@ -140,15 +158,18 @@ static void isolated_feedback(DmAudio *a, DmProject *p) {
 
 static void preparation_benchmark(DmAudio *a) {
     const int counts[] = {1000, 10000, 100000};
+
     for (size_t n = 0; n < sizeof(counts) / sizeof(counts[0]); ++n) {
         DmProject p;
         dm_project_init(&p);
         p.channels[0].program = 0;
         dm_pattern_add(&p, "Generated preparation benchmark");
         bool notes_ok = true;
+
         for (int i = 0; i < counts[n]; ++i) {
             notes_ok &= dm_note_add(&p.patterns[0], (DmNote){i * .25, .125, 48 + i % 24, 100, 0});
         }
+
         check(notes_ok, "generated benchmark notes");
         dm_clip_add(&p, (DmClip){0, 0, 0, 0, 0, 0});
         uint64_t start = SDL_GetPerformanceCounter();
@@ -168,6 +189,7 @@ static void preparation_benchmark(DmAudio *a) {
         dm_project_free(&p);
     }
 }
+
 int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "wasapi");
     check(SDL_Init(SDL_INIT_AUDIO), "SDL audio");

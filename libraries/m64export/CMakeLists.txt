@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 project(m64export LANGUAGES C)
 set(M64_SOURCES src/api.c src/timeline.c src/sequence.c src/phrases.c src/bank_json.c src/catalog.c src/registers.c)
-add_library(m64export SHARED ${M64_SOURCES} plugin/ui.c plugin/review.c plugin/exporter.c)
+add_library(m64export SHARED ${M64_SOURCES} plugin/ui.c plugin/review.c plugin/samples.c plugin/memory.c plugin/exporter.c)
 target_compile_features(m64export PRIVATE c_std_17)
 target_compile_definitions(m64export PRIVATE M64_BUILD_DLL)
 target_include_directories(m64export PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../include")

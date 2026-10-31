@@ -1,13 +1,17 @@
 #include "editor_internal.h"
 static int checks;
+
 static void check(bool ok, const char *what) {
     ++checks;
+
     if (!ok) {
         fprintf(stderr, "FAIL lfo_shapes: %s\n", what);
         exit(1);
     }
 }
+
 extern void test_lfo_shapes_ui(Editor *, void (*)(bool, const char *));
+
 static void wave_shapes(void) {
     DmProject p;
     dm_project_init(&p);
@@ -91,6 +95,7 @@ static void wave_shapes(void) {
     dm_project_free(&next);
     dm_project_free(&p);
 }
+
 static void midi_centers(void) {
     DmProject p, imported;
     dm_project_init(&p);
@@ -112,13 +117,16 @@ static void midi_centers(void) {
     DmSchedule schedule = {0};
     check(dm_schedule(&imported, &schedule), "exported LFO schedules");
     int maximum = 0, minimum = 127;
+
     for (size_t i = 0; i < schedule.count; ++i) {
         DmScheduled *s = &schedule.items[i];
+
         if (s->status == 0xb0 && s->a == 11 && s->seconds > .01 && s->seconds < .9) {
             minimum = s->b < minimum ? s->b : minimum;
             maximum = s->b > maximum ? s->b : maximum;
         }
     }
+
     check(minimum >= 17 && maximum <= 43 && maximum - minimum >= 24,
           "exported controller waveform retains center and amplitude");
     dm_schedule_free(&schedule);
@@ -126,6 +134,7 @@ static void midi_centers(void) {
     dm_project_free(&imported);
     dm_project_free(&p);
 }
+
 static void editor_units(Editor *e) {
     editor_smoke(e);
     int id = dm_pattern_add(&e->project, "LFO");
@@ -163,6 +172,7 @@ static void editor_units(Editor *e) {
     e->piano = false;
     e->automation_raw = false;
 }
+
 int main(void) {
     wave_shapes();
     midi_centers();

@@ -3,6 +3,7 @@
 #include "audio.h"
 #include "duck.h"
 #include "ui.h"
+
 typedef enum {
     ACT_PIANO,
     ACT_QUANTIZE,
@@ -48,16 +49,21 @@ typedef enum {
     ACT_DUPLICATE,
     ACT_PLAY_MODE,
     ACT_NOTE_COLOR,
+    ACT_NEXT_AUTOMATION,
+    ACT_PREVIOUS_AUTOMATION,
     ACT_COUNT
 } Action;
+
 typedef struct {
     SDL_Scancode key;
     SDL_Keymod mods;
 } Binding;
+
 typedef struct {
     float zoom, scroll_x, scroll_y;
     int focus;
 } View;
+
 typedef enum {
     FOCUS_NONE,
     FOCUS_PLAYLIST,
@@ -66,6 +72,7 @@ typedef enum {
     FOCUS_PATTERNS,
     FOCUS_OTHER
 } EditFocus;
+
 typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
@@ -83,22 +90,29 @@ typedef struct {
     bool font_request, font_queued;
     bool pending_save, pending_save_as;
     bool monitor;
-    bool percussion_window,percussion_listening,percussion_reveal;
+    bool percussion_window, percussion_listening, percussion_reveal;
+    int combine_request; /* 0 none, 1 original source ports, 2 all ports; awaiting a warning. */
+    char combine_channels[64];
     int percussion_note;
-    uint8_t percussion_global[128],percussion_draft[128];
+    uint8_t percussion_global[128], percussion_draft[128];
     char percussion_feedback[160];
-    bool export_all;
+
     DmMetadataMode export_metadata;
     struct DmExportPlugins *export_plugins;
     struct DmSaveJob *save_job;
     struct DmPatternJob *pattern_job;
     bool generate_window;
-    bool note_color_popup;
+    bool note_color_popup, pattern_color_popup;
+    int pattern_color_target; /* Pattern index, or -1 for the selected placements. */
     uint8_t note_ports[16];
     uint64_t export_revision;
     char export_source[DM_PATH];
     char dialog_suggested[DM_PATH];
     char audio_export_pending[DM_PATH], audio_exported[DM_PATH];
+    bool export_shown;                      /* The export window was open last frame. */
+    uint64_t ports_revision, ports_session; /* Project state the port cache describes. */
+    bool ports_cached;
+    bool channel_ports[16][DM_NOTE_PORTS];
     bool pattern_mode, pattern_highlight, linked_highlight, recording_take, take_snapshot,
         erase_active;
     bool duration_beats, focus_pattern, clip_moved;
@@ -116,7 +130,7 @@ typedef struct {
     int midi_source_track, midi_source_port;
     bool drop_active, drop_handled;
     UiPoint drop_position;
-    UiRect preferences_rect;
+    UiRect preferences_rect, info_rect;
     UiPoint event_marquee_start;
     DmBytes record_original, midi_rows;
     bool curve_drag, curve_changed, curve_overlay;
@@ -163,7 +177,8 @@ typedef struct {
     float new_bpm;
     int new_numerator, new_denominator;
     char font_next[DM_PATH];
-    char midi_folder[DM_PATH], font_folder[DM_PATH], export_folder[DM_PATH], preferred_font[DM_PATH], output_name[256];
+    char midi_folder[DM_PATH], font_folder[DM_PATH], export_folder[DM_PATH],
+        preferred_font[DM_PATH], output_name[256];
     float event_beat, event_bpm;
     int event_kind, event_program, event_channel, event_numerator, event_denominator, context_note;
     char event_marker[128];
@@ -178,7 +193,7 @@ typedef struct {
     double record_origin[128];
     uint64_t project_session, clipboard_session;
     int clipboard_port, clipboard_sequence;
-    DmBytes event_drag,clip_drag;
+    DmBytes event_drag, clip_drag;
     float sidebar, roll_height;
     View playlist_view, roll_view;
     UiPoint marquee_start;
@@ -198,6 +213,7 @@ typedef struct {
     char recent[10][DM_PATH];
     int recent_count;
 } Editor;
+
 void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio *audio,
                  const char *base, bool smoke);
 void editor_free(Editor *e);
