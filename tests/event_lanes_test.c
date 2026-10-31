@@ -26,7 +26,8 @@ static void numeric_ranges(Editor *e) {
             for (int value = 0; value <= maximum; value += maximum) {
                 ed_set_event_value(&a, value);
                 UiPoint point = ed_automation_point(e, a, lane, &e->roll_view, 80);
-                check(fabsf(point.y - (value ? lane.y + 8 : lane.y + lane.h - 8)) < .001,
+                /* The maximum sits on the lane's top edge, flush with the ruler above. */
+                check(fabsf(point.y - (value ? lane.y : lane.y + lane.h - 8)) < .001,
                       "full numeric range fits the lane at every section height");
                 ed_automation_pan_y(e, lane, 120);
                 check(fabsf(ed_automation_point(e, a, lane, &e->roll_view, 80).y - point.y) < .001,
@@ -94,7 +95,7 @@ int main(void) {
     SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
     check(w && r && ui_init(w, r, NULL), "real renderer");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", true);
+    editor_init(e, w, r, NULL, "", "", true);
     editor_smoke(e);
     ui_frame();
     ui_root(0, 900);

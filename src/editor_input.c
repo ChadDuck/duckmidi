@@ -194,6 +194,52 @@ static void channel_switch(Editor *e, bool solo) {
     ed_commit(e);
 }
 
+/* Shift+E: with a note pattern in the pattern editor, show or hide its Events section; with the
+   Event editor showing, hide it; with the pattern editor hidden, open the Event editor on the
+   selected automation pattern, or the first one (created if there is none). */
+static void events_shortcut(Editor *e) {
+    if (e->roll && !e->roll_auto_hidden) {
+        if (ed_pattern(e) && !ed_pattern(e)->kind) {
+            e->automation_open = !e->automation_open;
+        } else {
+            e->roll = false;
+        }
+
+        return;
+    }
+
+    if (!ed_pattern(e) || !ed_pattern(e)->kind) {
+        e->automation_browser = true;
+        navigate_pattern(e, 1);
+    }
+
+    if (ed_pattern(e) && ed_pattern(e)->kind) {
+        e->roll = true;
+        e->roll_auto_hidden = false;
+    }
+}
+
+/* Opens the instrument window for the pattern editor's channel when the pattern editor or its
+   events have focus, or for the selected playlist channel. The choice sets both the channel and
+   the pattern editor's instrument dropdown. */
+static void instrument_shortcut(Editor *e) {
+    EditFocus focus = ed_selection_focus(e);
+
+    if (!e->active || (focus != FOCUS_PLAYLIST && focus != FOCUS_NOTES && focus != FOCUS_EVENTS)) {
+        return;
+    }
+
+    int channel = focus == FOCUS_PLAYLIST ? e->selected_channel : e->pattern_channel;
+
+    if (channel < 0 || channel >= MIDI_CHANNELS) {
+        return;
+    }
+
+    ed_release_piano(e);
+    e->instrument_channel = channel;
+    e->instrument_preview = true;
+}
+
 static bool action_input(Editor *e, int a) {
     switch (a) {
     case ACT_SONG_EVENT:
@@ -201,11 +247,10 @@ static bool action_input(Editor *e, int a) {
             break;
         }
 
-        if (e->song_event) {
-            e->song_event = false;
-        } else {
-            ed_new_song_event(e);
-        }
+        events_shortcut(e);
+        break;
+    case ACT_INSTRUMENT:
+        instrument_shortcut(e);
         break;
     case ACT_MUTE:
         channel_switch(e, false);
@@ -275,6 +320,11 @@ static bool action_global(Editor *e, int a) {
         break;
     case ACT_PLAY_MODE:
         toggle_play_mode(e);
+        break;
+    case ACT_PREFERENCES:
+        ed_release_piano(e);
+        e->preferences = true;
+        e->preferences_raise = true;
         break;
     case ACT_SHORTCUTS:
         e->shortcuts = true;
@@ -381,7 +431,7 @@ static bool action_pattern(Editor *e, int a) {
             ed_duplicate_clips(e);
         } else if (ed_selection_focus(e) == FOCUS_EVENTS) {
             ed_duplicate_events(e);
-        } else {
+        } else if (ed_selection_focus(e) != FOCUS_OTHER) {
             ed_duplicate_notes(e);
         }
         break;
@@ -699,7 +749,8 @@ static bool floating_open(Editor *e) {
     return e->generate_window || e->percussion_window || ed_export_review_open(e) ||
            ed_export_warning_open(e) || e->lane_settings || e->confirm || e->config ||
            e->preferences || e->shortcuts || e->about || e->export_window || e->song_event ||
-           e->midi_events || e->instrument_channel >= 0 || e->rename_pattern >= 0;
+           e->midi_events || e->instrument_channel >= 0 || e->rename_pattern >= 0 ||
+           e->update_window;
 }
 
 static bool context_action(int a) {

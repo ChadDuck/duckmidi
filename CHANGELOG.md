@@ -1,5 +1,29 @@
 # duckmidi changelog
 
+## 0.11.0
+
+1. *duckmidi* can now check for updates on launch or from 'Help' > 'Check for Update'. **Disabled by default.**
+2. 'Export to Repository' now works with [HackerSM64](https://github.com/HackerN64/HackerSM64) projects.
+3. 'Export to Repository' works again after an export changed local project's sequence memory.
+4. The M64 export window has a Sequence memory option: 'Console-Compatible' or 'Emulator Only'.
+5. Songs with colored note ports can be exported to M64; ports move to free channels and the window warns when merged ports change the same events.
+6. The percussion keyboard mapping window plays drums when you press mapped keys, similar to the instrument window.
+7. 'Shift + E' shows or hides the Piano Roll's events, or opens the 'Event Editor' when the piano roll is hidden.
+8. The mouse wheel steps through the choices of every dropdown.
+9. Event points have a 'Shift + right-click' menu to change their value, curve them toward the next point, or delete them.
+10. 'Ctrl + C' and 'Ctrl + V' copy and paste patterns in the pattern section, and right-clicking a pattern card opens its menu.
+11. Editing shortcuts no longer change the arrangement while the mixer is focused.
+12. Menus show your own keyboard shortcuts.
+13. The status bar shows messages for a few seconds without a box rather than staying permanently.
+14. Tooltips wrap instead of being truncated.
+15. The top of the events grid now meets the ruler.
+16. The mixer no longer shifts when its scrollbar appears.
+17. The M64 save button has been renamed to 'Save M64 Package'.
+18. *duckmidi* GitHub actions enabled; releases will be built for testing, available for macOS, Arch, Ubuntu, and Debian.
+19. On macOS and Linux, preferences and layout are saved in your user folder instead of beside the program.
+20. Press 'I' in the playlist or piano roll to choose the channel's instrument, which also sets the piano roll's instrument dropdown.
+21. Press 'P' anywhere to open 'Preferences'; previous defaults moved to 'S' & '/'' unless changed.
+
 ## 0.10.2
 
 1. Backwards-Compatibility has been implemented from v0.10.1 onwards.
@@ -12,7 +36,7 @@
 8. The slice tool now works as intended; slicing a pattern cuts it at the selected position, both instances tied to each other.
 9. Clicking the events lane adds a connected point, 'Shift + click' or drag draws, and right-drag erases.
 10. Program change points can be erased and deleted, and they show the instrument name while you place them.
-11. The events section opens taller and grows the pattern editor upward instead of shrinking the piano roll.
+11. The events section opens taller and grows the piano roll upward instead of shrinking the piano roll.
 12. Pitch bends drawn on a note now move along with said note.
 13. 'Shift + Keypad +'' and 'Shift + Keypad −' step through automation patterns.
 14. 'Shift + click' on a port color button to delete the port.

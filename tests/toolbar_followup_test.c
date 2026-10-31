@@ -99,7 +99,7 @@ int main(void) {
 
     recording_feedback_audio_pause(audio);
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, audio, "", true);
+    editor_init(e, w, r, audio, "", "", true);
     ui_frame();
     ui_root(0, 900);
     recording_controls(e);

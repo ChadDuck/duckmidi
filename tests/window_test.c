@@ -18,7 +18,7 @@ int main(void) {
     verify(window && renderer && ui_init(window, renderer, NULL), "actual hidden UI");
     Editor *editor = calloc(1, sizeof(*editor));
     verify(editor != NULL, "editor allocation");
-    editor_init(editor, window, renderer, NULL, "", true);
+    editor_init(editor, window, renderer, NULL, "", "", true);
     SDL_DisplayID display = SDL_GetDisplayForWindow(window);
     SDL_Rect bounds;
     verify(display && SDL_GetDisplayUsableBounds(display, &bounds), "display detection");

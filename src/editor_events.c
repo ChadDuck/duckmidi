@@ -263,14 +263,6 @@ void ed_automation_selector(Editor *e) {
         }
 
         ui_combo_end();
-    } else if (ui_hover() && ui_mouse().wheel && count && ed_pattern(e)) {
-        /* The wheel steps through event types without opening the list. */
-        int step = ui_mouse().wheel > 0 ? -1 : 1;
-        int next = current < 0 ? 0 : (int)fmax(0, fmin(count - 1, current + step));
-
-        if (next != current) {
-            choose_event_type(e, all_values[values[next]]);
-        }
     }
 
     ui_tip(DM_TEXT_CHOOSE_EVENT_TYPE);
@@ -317,7 +309,7 @@ float ed_automation_pitch(Editor *e, DmAutomation a) {
 UiPoint ed_automation_point(Editor *e, DmAutomation a, UiRect lane, View *v, float scale) {
     float value = ed_event_value(a),
           maximum = a.type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX;
-    float y = lane.y + lane.h - 8 - value / maximum * (lane.h - 16);
+    float y = lane.y + lane.h - 8 - value / maximum * (lane.h - 8);
 
     if (a.type == MIDI_PITCH_BEND && !e->automation_raw) {
         y = lane.y + lane.h * .5f -
@@ -336,7 +328,7 @@ float ed_curve_units(Editor *e, DmAutomation a, UiRect lane, bool overlay) {
         return 20 * ed_automation_range(e, a) / MIDI_BEND_CENTER;
     }
 
-    return (lane.h - 16) / (a.type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX);
+    return (lane.h - 8) / (a.type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX);
 }
 
 void ed_automation_connection(UiPoint previous, UiPoint point, DmAutomation before, DmAutomation a,
@@ -456,7 +448,7 @@ int ed_lane_value(Editor *e, UiRect lane, float y, DmAutomation a, bool free) {
                               0, MIDI_BEND_MAX);
     }
 
-    float value = (lane.y + lane.h - 8 - y) / (lane.h - 16) * max;
+    float value = (lane.y + lane.h - 8 - y) / (lane.h - 8) * max;
     return (int)ed_clampf(value, 0, (float)max);
 }
 
@@ -844,7 +836,7 @@ static double event_group_delta(Editor *e, UiRect lane, UiMouse mouse, EventDrag
     if (!mouse.shift) {
         delta = (e->node_y - mouse.pos.y) *
                 (pitch ? 1 / ed_lane_step(lane)
-                       : (e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX) / (lane.h - 16));
+                       : (e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX) / (lane.h - 8));
         delta = mouse.alt && pitch ? delta : round(delta);
         delta = fmax(lo, fmin(hi, delta));
     }
@@ -1136,6 +1128,53 @@ static void add_connected_point(Editor *e, UiRect lane, UiMouse mouse, double be
     ed_commit(e);
 }
 
+/* Shift + right click on a point opens its menu, as notes and placements have: delete it, change
+   its value, or make a discrete point curve toward the next one. */
+static void point_menu(Editor *e, int hit) {
+    if (hit >= 0) {
+        e->context_point = hit;
+        ed_focus_edit(e, FOCUS_EVENTS);
+    }
+
+    if (!ui_mouse_popup(DM_TEXT_EVENT_POINT, hit >= 0)) {
+        return;
+    }
+
+    int index = e->context_point;
+
+    if (index < 0 || (size_t)index >= e->project.automation_count) {
+        ui_popup_end();
+        return;
+    }
+
+    DmAutomation *a = &e->project.automation[index];
+    int value = ed_event_value(*a);
+    int maximum = a->type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+
+    if (ui_slider(DM_TEXT_VALUE, &value, 0, maximum, 180)) {
+        ed_checkpoint(e);
+        ed_set_event_value(a, value);
+        ed_commit(e);
+    }
+
+    if (!a->curve && a->type != MIDI_PROGRAM) {
+        bool ramp = a->ramp;
+
+        if (ui_toggle(DM_TEXT_CURVE_TO_NEXT_POINT, &ramp)) {
+            ed_checkpoint(e);
+            a->ramp = ramp;
+            ed_commit(e);
+        }
+    }
+
+    if (ui_menu_item(DM_TEXT_DELETE, NULL, true)) {
+        ed_erase_node(e, index);
+        e->context_point = -1;
+    }
+
+    ui_popup_end();
+}
+
 /* Lane clicks: left adds a connected point at the cursor, Shift+left draws a line or a single
    point by dragging, and a left click while points are selected only clears the selection. */
 void ed_automation_lane_click(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse,
@@ -1368,6 +1407,8 @@ void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse m
         ed_erase_node(e, hit);
     }
 
+    point_menu(e, hovered && ed_inside(mouse.pos, lane) && mouse.right_clicked && mouse.shift ? hit
+                                                                                              : -1);
     ed_automation_node_drag(e, lane, v, scale, mouse);
 
     if (!pedal) {

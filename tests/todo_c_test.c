@@ -162,7 +162,7 @@ int main(void) {
         wait_job(audio));
     Editor *e = calloc(1, sizeof(*e));
     assert(e);
-    editor_init(e, window, renderer, audio, "", true);
+    editor_init(e, window, renderer, audio, "", "", true);
     mixer(e);
     codecs(e);
     char suggested[DM_PATH];

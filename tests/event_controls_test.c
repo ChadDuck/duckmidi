@@ -215,7 +215,7 @@ int main(void) {
     DmAudio *audio = dm_audio_create(error, sizeof(error));
     check(audio != NULL, "audio backend");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, audio, "", true);
+    editor_init(e, w, r, audio, "", "", true);
     ui_frame();
     ui_root(0, 900);
     continuous(e);

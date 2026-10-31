@@ -195,19 +195,16 @@ After building, create a delivery folder from the same terminal:
 cmake --build build/development/cmake --target deliver
 ```
 
-Each delivery goes to a new `build/YYYY-MM-DD_HH-mm-ss-vVERSION/` folder containing the executable, the M64 plugin, required runtime libraries, documentation, the changelog, and licenses.
+Each delivery goes to `build/duckmidi-vVERSION-Core/`, containing the executable, the M64 plugin, required runtime libraries, documentation, and licenses. A new delivery of the same version and type replaces the previous one.
 
-| Option | Effect |
-| --- | --- |
-| `-DDUCKMIDI_PRODUCTION=ON` | Includes the *TimGM6mb* SoundFont and sample project (*Full* build). `OFF` packages only the application (*Core* build). |
-| `-DDUCKMIDI_DELIVERY_TYPE=Full` or `Core` | Writes to `build/duckmidi-vVERSION-Full/` or `-Core/` instead of a dated folder, replacing the previous one. |
-
-Add options to the configure command, then rebuild before delivering:
+For a *Full* build, which also includes the *TimGM6mb* SoundFont and sample project, enable the *Production* option, then rebuild and deliver to `build/duckmidi-vVERSION-Full/`:
 
 ```sh
-cmake -S . -B build/development/cmake -DDUCKMIDI_PRODUCTION=ON -DDUCKMIDI_DELIVERY_TYPE=Full
+cmake -S . -B build/development/cmake -DDUCKMIDI_PRODUCTION=ON
 cmake --build build/development/cmake --target deliver
 ```
+
+Use `-DDUCKMIDI_PRODUCTION=OFF` to return to *Core* builds.
 
 To stage the files in a folder of your choice instead, run `cmake --install build/development/cmake --prefix build/development/package --strip`.
 

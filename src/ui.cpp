@@ -335,30 +335,14 @@ void ui_dim(const char *t) {
 }
 
 void ui_tip(const char *t) {
+    /* Long tips wrap onto more lines instead of being cut off. */
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
-        char text[256];
-        std::snprintf(text, sizeof(text), "%s", t);
-
-        for (char *p = text; *p; ++p) {
-            if (*p == '\n' || *p == '\r') {
-                *p = ' ';
-            }
-        }
-
-        size_t n = std::strlen(text);
-        float width = ImMin(520.f, ImGui::GetMainViewport()->Size.x - 40);
-        bool trimmed = false;
-
-        while (n && ImGui::CalcTextSize(text).x > width - 24) {
-            text[--n] = 0;
-            trimmed = true;
-        }
-
-        if (trimmed) {
-            std::strcat(text, "...");
-        }
-
-        ImGui::SetTooltip("%s", text);
+        float width = ImMax(160.f, ImMin(420.f, ImGui::GetMainViewport()->Size.x - 50));
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(width);
+        ImGui::TextUnformatted(t);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
     }
 }
 
@@ -370,7 +354,10 @@ void ui_info(const char *text) {
     ImU32 color =
         ImGui::GetColorU32(ImGui::IsItemHovered() ? ImGuiCol_Text : ImGuiCol_TextDisabled);
     draw->AddCircle({pos.x + 12, pos.y + h * .5f}, 8, color, 16, 1.5f);
-    draw->AddText({pos.x + 9, pos.y + (h - ImGui::GetFontSize()) * .5f}, color, "i");
+    /* The glyph is centered on the circle by its measured width at every UI size. */
+    draw->AddText(
+        {pos.x + 12 - ImGui::CalcTextSize("i").x * .5f, pos.y + (h - ImGui::GetFontSize()) * .5f},
+        color, "i");
 
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
         ImGui::BeginTooltip();
@@ -393,9 +380,19 @@ bool ui_frame_toggle(const char *label, bool *value) {
     return clicked;
 }
 
+float ui_scrollbar_reserved() {
+    return ImGui::GetCurrentWindow()->ScrollbarSizes.y;
+}
+
 void ui_mixer_wheel() {
     auto *window = ImGui::GetCurrentWindow();
     window->Flags |= ImGuiWindowFlags_NoScrollWithMouse;
+
+    /* The strips scroll only sideways; the horizontal scrollbar uses space kept free for it. */
+    if (window->Scroll.y != 0) {
+        ImGui::SetScrollY(0);
+    }
+
     auto &io = ImGui::GetIO();
 
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
@@ -621,7 +618,15 @@ bool ui_icon_button(const char *id, UiIcon icon, float width, float height) {
     return pressed;
 }
 
+static bool wheel_choice(bool selected, bool *chosen);
+
 bool ui_select(const char *s, bool selected, float w, float h) {
+    bool chosen;
+
+    if (wheel_choice(selected, &chosen)) {
+        return chosen;
+    }
+
     bool pressed = ImGui::Selectable(s, selected, 0, {w, h});
 
     /* Dropdowns open scrolled to their current choice. */
@@ -816,17 +821,80 @@ bool ui_vslider(const char *s, int *v, float height) {
     return ImGui::VSliderInt(s, {24, height}, v, 0, 127, "");
 }
 
+/* Mouse wheel over a closed dropdown steps to the neighbouring choice. The first frame runs the
+   dropdown's choices without drawing them to find the selected one; the next frame reports the
+   neighbour as clicked, so every dropdown steps through its own selection code. */
+static struct {
+    ImGuiID id;
+    int phase; /* 0 idle, 1 finding the selected choice, 2 choosing the neighbour */
+    int direction, index, selected, target, frame;
+    bool active; /* The current dropdown is being stepped rather than drawn. */
+} wheel_step;
+
+static void wheel_begin() {
+    /* Choices drawn while stepping land in an off-screen window, not the visible layout. */
+    ImGui::SetNextWindowPos({-100000, -100000});
+    ImGui::Begin("##dropdown wheel", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                     ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground);
+}
+
+static bool combo_wheel(ImGuiID id) {
+    int frame = ImGui::GetFrameCount();
+
+    if (wheel_step.phase && frame > wheel_step.frame + 1) {
+        wheel_step.phase = 0;
+    }
+
+    if (wheel_step.phase == 2 && wheel_step.id == id) {
+        wheel_step.active = true;
+        wheel_begin();
+        wheel_step.index = 0;
+        return true;
+    }
+
+    auto &io = ImGui::GetIO();
+
+    if (wheel_step.phase || !ImGui::IsItemHovered() || !io.MouseWheel) {
+        return false;
+    }
+
+    ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, id);
+    wheel_step = {};
+    wheel_step.id = id;
+    wheel_step.phase = 1;
+    wheel_step.direction = io.MouseWheel > 0 ? -1 : 1;
+    wheel_step.selected = -1;
+    wheel_step.frame = frame;
+    wheel_step.active = true;
+    wheel_begin();
+    return true;
+}
+
+static bool combo(const char *s, const char *p, bool bar) {
+    ImGuiID id = ImGui::GetID(s);
+    bool open;
+
+    if (bar) {
+        auto padding = ImGui::GetStyle().FramePadding;
+        padding.y = (32 - ImGui::GetFontSize()) * .5f;
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, padding);
+        open = ImGui::BeginCombo(s, p);
+        ImGui::PopStyleVar();
+    } else {
+        open = ImGui::BeginCombo(s, p);
+    }
+
+    return open || combo_wheel(id);
+}
+
 bool ui_combo(const char *s, const char *p) {
-    return ImGui::BeginCombo(s, p);
+    return combo(s, p, false);
 }
 
 bool ui_bar_combo(const char *s, const char *p) {
-    auto padding = ImGui::GetStyle().FramePadding;
-    padding.y = (32 - ImGui::GetFontSize()) * .5f;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, padding);
-    bool open = ImGui::BeginCombo(s, p);
-    ImGui::PopStyleVar();
-    return open;
+    return combo(s, p, true);
 }
 
 void ui_bar_begin() {
@@ -862,8 +930,42 @@ bool ui_shift_context(const char *s) {
     return ImGui::BeginPopup(s);
 }
 
+/* While a dropdown is stepped, its choices are counted instead of drawn. */
+static bool wheel_choice(bool selected, bool *chosen) {
+    if (!wheel_step.active) {
+        return false;
+    }
+
+    int index = wheel_step.index++;
+
+    if (wheel_step.phase == 1 && selected) {
+        wheel_step.selected = index;
+    }
+
+    *chosen = wheel_step.phase == 2 && index == wheel_step.target;
+    return true;
+}
+
 void ui_combo_end() {
-    ImGui::EndCombo();
+    if (!wheel_step.active) {
+        ImGui::EndCombo();
+        return;
+    }
+
+    wheel_step.active = false;
+    ImGui::End();
+
+    if (wheel_step.phase == 2) {
+        wheel_step.phase = 0;
+        return;
+    }
+
+    /* With nothing selected, the wheel starts at the first or last choice. */
+    int count = wheel_step.index;
+    int target = wheel_step.selected < 0 ? (wheel_step.direction > 0 ? 0 : count - 1)
+                                         : wheel_step.selected + wheel_step.direction;
+    wheel_step.phase = target >= 0 && target < count && target != wheel_step.selected ? 2 : 0;
+    wheel_step.target = target;
 }
 
 void ui_id(int id) {
@@ -1035,6 +1137,30 @@ bool ui_fixed_dialog(const char *s, bool *open, float w, float h) {
     ImGui::SetNextWindowSize({w, h}, ImGuiCond_Always);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
     return ImGui::Begin(s, open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
+}
+
+bool ui_fitted_dialog(const char *s, bool *open, float w) {
+    /* Fixed width; the height follows the contents every frame. */
+    /* The height is only known after the window has measured its contents, so it is centered
+       again for its first frames, then left where the user drags it. */
+    ImGuiWindow *existing = ImGui::FindWindowByName(s);
+    ImGuiStorage *storage = ImGui::GetStateStorage();
+    ImGuiID frames = ImGui::GetID(s);
+
+    if (!existing || !existing->WasActive) {
+        storage->SetInt(frames, 0);
+    }
+
+    if (storage->GetInt(frames, 0) < 4) {
+        storage->SetInt(frames, storage->GetInt(frames, 0) + 1);
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
+                                {.5f, .5f});
+    }
+
+    ImGui::SetNextWindowSizeConstraints({w, 0}, {w, FLT_MAX});
+    return ImGui::Begin(s, open,
+                        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                            ImGuiWindowFlags_AlwaysAutoResize);
 }
 
 void ui_center_row(float width) {
@@ -1219,6 +1345,10 @@ bool ui_popup_open() {
     return ImGui::GetCurrentContext()->OpenPopupStack.Size != 0;
 }
 
+void ui_raise_next() {
+    ImGui::SetNextWindowFocus();
+}
+
 void ui_focus_next() {
     ImGui::SetKeyboardFocusHere();
 }
@@ -1259,6 +1389,10 @@ void ui_label_fit(UiPoint at, float width, uint32_t color, const char *text) {
 
 float ui_font_size() {
     return ImGui::GetFontSize();
+}
+
+float ui_text_width(const char *text) {
+    return ImGui::CalcTextSize(text).x;
 }
 
 void ui_label(UiPoint p, uint32_t c, const char *s) {

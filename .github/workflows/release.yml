@@ -1,0 +1,170 @@
+# Builds release packages for Windows, macOS, Arch Linux and Ubuntu/Debian.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        name: Read and check the version
+        run: |
+          version=$(sed -n 's/^project(duckmidi VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          if [ -z "$version" ]; then
+            echo "Could not read the version from CMakeLists.txt." >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match project version $version." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja zip
+      - name: Build and test
+        run: |
+          cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DDUCKMIDI_DELIVERY_TYPE=Core
+          cmake --build build/development/cmake
+          ctest --test-dir build/development/cmake --output-on-failure
+      - name: Package Core and Full
+        run: |
+          version=${{ needs.version.outputs.version }}
+          cmake --build build/development/cmake --target deliver
+          cmake -S . -B build/development/cmake -DDUCKMIDI_PRODUCTION=ON -DDUCKMIDI_DELIVERY_TYPE=Full
+          cmake --build build/development/cmake --target deliver
+          mkdir -p dist
+          for type in Core Full; do
+            (cd build && zip -r "../dist/duckmidi-v$version-windows-$type.zip" "duckmidi-v$version-$type")
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install cmake ninja pkgconf sdl3 fluid-synth ffmpeg dylibbundler
+      - name: Build and test
+        run: |
+          cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DDUCKMIDI_PRODUCTION=ON -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+          cmake --build build/development/cmake
+          ctest --test-dir build/development/cmake --output-on-failure
+      - name: Package
+        run: bash tools/package-macos.sh build/development/cmake ${{ needs.version.outputs.version }} dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/
+          if-no-files-found: error
+
+  arch:
+    needs: version
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed base-devel git cmake ninja pkgconf sdl3 fluidsynth alsa-lib ffmpeg
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: |
+          cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DDUCKMIDI_PRODUCTION=ON
+          cmake --build build/development/cmake
+          ctest --test-dir build/development/cmake --output-on-failure
+      - name: Package
+        # makepkg refuses to run as root.
+        run: |
+          useradd --create-home builder
+          chown -R builder "$GITHUB_WORKSPACE"
+          su builder -c "bash tools/package-linux.sh arch build/development/cmake ${{ needs.version.outputs.version }} dist"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-arch
+          path: dist/
+          if-no-files-found: error
+
+  debian-ubuntu:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-26.04
+            image: ubuntu:26.04
+          - name: debian-13
+            image: debian:13
+    container: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential cmake ninja-build pkg-config git libsdl3-dev libasound2-dev libglib2.0-dev libsndfile1-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
+      - uses: actions/checkout@v4
+      - name: Build FluidSynth 2.5.4
+        run: |
+          git clone --depth 1 --branch v2.5.4 https://github.com/FluidSynth/fluidsynth.git build/development/deps/fluidsynth
+          cmake -S build/development/deps/fluidsynth -B build/development/deps/fluidsynth-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH="$PWD/build/development/deps/install" -DCMAKE_INSTALL_LIBDIR=lib
+          cmake --build build/development/deps/fluidsynth-build
+          cmake --install build/development/deps/fluidsynth-build
+      - name: Build and test
+        run: |
+          cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DDUCKMIDI_PRODUCTION=ON -DCMAKE_PREFIX_PATH:PATH="$PWD/build/development/deps/install" '-DCMAKE_INSTALL_RPATH=$ORIGIN/lib'
+          cmake --build build/development/cmake
+          ctest --test-dir build/development/cmake --output-on-failure
+      - name: Package
+        run: FLUIDSYNTH_LIB="$PWD/build/development/deps/install/lib" bash tools/package-linux.sh deb build/development/cmake ${{ needs.version.outputs.version }} dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: dist/
+          if-no-files-found: error
+
+  draft:
+    needs: [version, windows, macos, arch, debian-ubuntu]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=${{ needs.version.outputs.version }}
+          # Release notes are this version's section of CHANGELOG.md.
+          awk -v heading="## $version" '$0 == heading {found = 1; next} found && /^## / {exit} found' CHANGELOG.md > notes.md
+          gh release create "v$version" dist/* --draft --title "duckmidi $version" --notes-file notes.md --target "$GITHUB_SHA"

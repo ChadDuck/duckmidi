@@ -50,7 +50,7 @@ int main(void) {
 
     Editor *e = calloc(1, sizeof(*e));
     check(e != NULL, "allocate editor");
-    editor_init(e, window, renderer, audio, "", true);
+    editor_init(e, window, renderer, audio, "", "", true);
     editor_smoke(e);
     e->context = 2;
     e->edit_focus = FOCUS_NOTES;

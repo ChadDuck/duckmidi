@@ -141,6 +141,8 @@ int ed_port_collisions(Editor *e, bool all, char *text, size_t capacity);
 void ed_combine_dialog(Editor *e);
 void ed_pending_execute(Editor *e);
 void ed_request(Editor *e, int ed_action, const char *path);
+void ed_update_dialog(Editor *e);
+void ed_update_open(Editor *e);
 void ed_cancel_wait(Editor *e);
 void ed_play(Editor *e);
 void ed_seek(Editor *e, double beat);

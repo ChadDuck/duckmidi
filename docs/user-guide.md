@@ -2,9 +2,9 @@
 
 ## Open a song
 
-Use **File > Load MIDI / MUS / project**, or drop a file onto the editor. Use **File > New MIDI** to start from scratch. Open **Project settings** to change the song's name, tempo, or source view; click **Apply** or press **Enter** when finished.
+Use **File > Load MIDI / MUS / project**, or drop a file onto the editor. Use **File > New MIDI** to start from scratch. Open **Project settings** (**S**) to change the song's name, tempo, or source view; click **Apply** or press **Enter** when finished.
 
-If you cannot hear anything, open **Edit > Preferences** and select an SF2/SF3 SoundFont or an external MIDI output. Production packages supply a default SoundFont and open a sample project on first launch.
+If you cannot hear anything, open **Edit > Preferences** (**P**) and select an SF2/SF3 SoundFont or an external MIDI output. Production packages supply a default SoundFont and open a sample project on first launch.
 
 ## Play and navigate
 
@@ -18,20 +18,20 @@ If you cannot hear anything, open **Edit > Preferences** and select an SF2/SF3 S
 
 Choose **Song** in the toolbar to hear the arrangement, or **Pattern** to hear the selected pattern. Click the ruler to choose a starting position; right-drag along it to select a loop. **Escape** clears the loop after dismissing any active selection or window.
 
-Use the mixer to adjust volume and pan, mute a part, or listen to it alone with Solo. Colored ports appear side by side within their channel, each with independent controls. Click the volume number to type a value from 0 to 127; **Enter** applies it and **Escape** discards it. If a note gets stuck, **Shift-click Stop** to silence held notes and release pedals.
+Use the mixer to adjust volume and pan, mute a part, or listen to it alone with Solo. With a playlist row selected, **M** mutes it and **/** solos it. Colored ports appear side by side within their channel, each with independent controls. Click the volume number to type a value from 0 to 127; **Enter** applies it and **Escape** discards it. If a note gets stuck, **Shift-click Stop** to silence held notes and release pedals.
 
 ## Arrange and edit notes
 
 1. Click **+ New** in the pattern browser, or choose an existing pattern.
 2. Click a playlist row to place it, or drag its card into the arrangement.
 3. Double-click a placement to open its notes in the piano roll.
-4. Click the playlist row's instrument label to choose the channel's instrument. Choose **Drum kit** to make it the drum channel (General MIDI channel 10); on channel 10, the dropdown lists drum kits.
+4. Click the playlist row's instrument label to choose the channel's instrument, or press **I** with the playlist or pattern editor focused and the keyboard piano off. The **I** shortcut also sets the pattern editor's instrument dropdown. Choose **Drum kit** to make it the drum channel (General MIDI channel 10); on channel 10, the dropdown lists drum kits.
 
 The piano roll's instrument dropdown changes its preview sound. **Use selected channel** copies the selected row's instrument into that preview.
 
-Placements of the same pattern share its notes. To make a separate version, click its browser card and press **Ctrl + D**, or right-click it and choose **Duplicate**. Rename patterns from the same menu.
+Placements of the same pattern share its notes. To make a separate version, click its browser card and press **Ctrl + D**, or right-click it and choose **Duplicate**. Rename patterns from the same menu. With the pattern section focused, **Ctrl + C** and **Ctrl + V** copy a pattern and paste it as a new one.
 
-New patterns use the application color. Press **Alt + C** with a pattern card or placements selected, or choose **Change color** from their menu (Shift + right-click), to pick one of 16 colors. Notes use the application color, or their port's color.
+New patterns use the application color. Press **Alt + C** with a pattern card or placements selected, or choose **Change color** from their menu (right-click a pattern card, Shift + right-click a placement), to pick one of 16 colors. Notes use the application color, or their port's color.
 
 The slice tool splits a placement into two linked placements of the same pattern, each showing its part. Slicing again, or resizing a slice's right edge, keeps each part's position in the pattern.
 
@@ -72,7 +72,7 @@ Turn keyboard piano off when you want its letter keys to operate editor shortcut
 
 ### Assign percussion keys
 
-Choose percussion, open the pattern editor's top-left menu, and select **Percussion keyboard mapping**. Choose a drum, click **Listen for key**, and press a piano key. Click a drum to audition it.
+Choose percussion, open the pattern editor's top-left menu, and select **Percussion keyboard mapping**. Choose a drum, click **Listen for key**, and press a piano key. Click a drum to audition it, or play the mapped keys to hear the drums you have assigned so far.
 
 - **Save for current project** applies the mapping to this project. Save the project file to keep it.
 - **Save to preferences (global)** makes it the default for projects without their own mapping.
@@ -84,8 +84,8 @@ Choose percussion, open the pattern editor's top-left menu, and select **Percuss
 
 ### Change velocity or draw a controller effect
 
-1. Open a note pattern and click **Events**. The pattern editor grows upward to make room, so the piano roll keeps its size.
-2. Choose **Velocity**, **Pitch bend**, **Modulation**, or another controller from the dropdown. Hover the dropdown and use the mouse wheel to step through the types.
+1. Open a note pattern and click **Events**, or press **Shift + E**. The pattern editor grows upward to make room, so the piano roll keeps its size.
+2. Choose **Velocity**, **Pitch bend**, **Modulation**, or another controller from the dropdown. Hover the dropdown and use the mouse wheel to step through the types; this works on every dropdown.
 3. For velocity, drag the note stems up or down. For a controller, use the gestures below.
 4. Drag points to adjust their time and value. Drag a section's curve handle to shape the transition.
 
@@ -95,6 +95,7 @@ Choose percussion, open the pattern editor's top-left menu, and select **Percuss
 | Click while points are selected | Deselect them without adding a point |
 | Shift + click or Shift + drag | Add a single point, or draw a section |
 | Right-click / right-drag | Erase points |
+| Shift + right-click a point | Change its value, curve it toward the next point, or delete it |
 | Ctrl + drag | Select points |
 
 Controller sections affect notes on the same channel and active color/port. The underlying value resumes when a section ends. For a sustained pedal, choose **Sustain** and drag along the line for the interval you want held. A bend drawn on a note moves with the note. Program change points show the instrument name while you place them.
@@ -103,7 +104,7 @@ Press **Shift + Keypad +** or **Shift + Keypad −** anywhere to step through au
 
 ### Make a reusable LFO
 
-1. Change the pattern browser's category to **Automation**, then click **+ New**.
+1. Change the pattern browser's category to **Automation**, then click **+ New**. With the pattern editor hidden, **Shift + E** also opens the Event Editor on an automation pattern, creating one if there is none.
 2. Choose the controller in the Event Editor and switch **Point** to **LFO**.
 3. Adjust **Center** for the resting value, **Speed** for the rate, and **Amount** for the depth. Tension, Skew, Width, and Invert change the waveform.
 4. Place the automation pattern on the channel you want it to affect. Resize its playlist placement to set the effect's duration.
@@ -116,7 +117,7 @@ Select notes in the piano roll and press **Alt + C**. Choose a color to give the
 
 Color buttons then appear beside the instrument dropdown across that channel's patterns. Choose a button before editing events to affect that color's notes. For example, give one sustained note a pitch bend while another note on the same channel stays steady.
 
-Independent ports work in duckmidi playback and MIDI export. Other players may ignore them, and one external MIDI connection cannot keep their controllers separate. M64 export does not support colored ports.
+Independent ports work in duckmidi playback and MIDI export. Other players may ignore them, and one external MIDI connection cannot keep their controllers separate. M64 export moves colored ports to unused channels, or merges them and warns when their controls collide.
 
 To remove a port, Shift + click its color button and choose **Delete port**. Its notes return to the default port and its events are discarded.
 
@@ -153,11 +154,17 @@ The active view is rendered using the selected SoundFont as 48 kHz stereo, with 
 
 Choose **M64** in Export's format dropdown, review the instrument mappings, then save the ZIP package or click **Export to Repository** to install it into your SM64 checkout. Add **M64 - Loop Start** / **M64 - Loop End** song events to repeat part of the song. See the [M64 guide](sm64-export.md) for loop points, mapping warnings and installation.
 
+## Check for updates
+
+After you open your first file or project, duckmidi asks whether to check for updates. Choose **On Launch** and click **Apply** to check each time duckmidi starts, or keep **Never**; closing the window also keeps **Never**. Click **Check now** for a single check. Nothing is sent over the network until you apply **On Launch** or click **Check now**.
+
+Open the same window from **Help > Check for Update**. When a newer version is available, click **Download update**, then **Restart and install** or **Install when duckmidi closes**. Your settings, layout and projects are kept; the sample project is updated only if you have not edited it. Updates are available on Windows.
+
 ## Customize shortcuts
 
 Open **Edit > Keyboard shortcuts**, choose an action, and enter its new binding. Shortcuts act on the focused editor; click the notes, events, or playlist before using an editing shortcut. Escape closes the active popup/window first.
 
-Preferences and layout are saved beside the executable. For manual INI edits, close duckmidi first. Paths and shortcuts are quoted strings; action labels use underscores:
+On Windows, preferences and layout are saved beside the executable. On macOS they are saved in `~/Library/Application Support/duckmidi/`, and on Linux in `~/.local/share/duckmidi/`. For manual INI edits, close duckmidi first. Paths and shortcuts are quoted strings; action labels use underscores:
 
 ```ini
 soundfont="C:\Music\my-font.sf2"

@@ -1,0 +1,35 @@
+# Builds and tests duckmidi on Arch Linux.
+name: Arch Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed base-devel git cmake ninja pkgconf sdl3 fluidsynth alsa-lib ffmpeg
+
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build/development/cmake
+
+      - name: Test
+        run: ctest --test-dir build/development/cmake --output-on-failure
+
+      - name: Upload build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckmidi-arch-x86_64
+          path: build/development/cmake/bin/
+          if-no-files-found: ignore

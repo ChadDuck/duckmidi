@@ -48,6 +48,7 @@ static void *DME_CALL create_job(const void *instance, char *error, uint64_t cap
     memcpy(j->presets, s->melodic, sizeof(j->presets));
     memcpy(j->drum_presets, s->drums, sizeof(j->drum_presets));
     j->loop_points = s->loop_points && s->has_loop_points;
+    j->memory_maximum = s->memory == 1;
     j->request.target = M64_TARGET_SM64_US;
     j->request.loop = (uint32_t)s->loop;
     j->request.voice_limit = 16;
@@ -79,27 +80,32 @@ static M64Event *prepare(ExportJob *j, const DmeContext *c, char *error, uint64_
         return NULL;
     }
 
-    for (uint64_t i = 0; i < c->event_count; i++) {
-        if (c->events[i].port) {
-            snprintf(error, (size_t)cap,
-                     "M64 cannot preserve independent note ports. Remove note colors or export "
-                     "MIDI instead.");
-            return NULL;
-        }
-    }
-
     M64Event *events = calloc((size_t)c->event_count + 1, sizeof(*events));
+    M64PortLayout *layout = calloc(1, sizeof(*layout));
 
-    if (!events) {
+    if (!events || !layout || !m64_port_layout(c->events, c->event_count, layout)) {
         snprintf(error, (size_t)cap, "Cannot allocate SM64 timeline.");
         *status = DME_NOMEM;
+        free(events);
+        free(layout);
         return NULL;
     }
 
+    /* Colored ports play on the channels the layout gives them. */
     for (uint64_t i = 0; i < c->event_count; i++) {
         const DmeEvent *e = &c->events[i];
-        events[i] = (M64Event){e->tick, e->source_id, e->status, e->a, e->b};
+        uint32_t status = e->status;
+
+        if (status >= MIDI_STATUS && status < MIDI_SYSTEM && e->port < M64_PORTS) {
+            status = (status & MIDI_STATUS_MASK) | layout->out[status & MIDI_CHANNEL_MASK][e->port];
+        }
+
+        events[i] = (M64Event){e->tick, e->source_id, status, e->a, e->b};
     }
+
+    snprintf(j->port_notice, sizeof(j->port_notice), "%s",
+             layout->interference ? layout->notice : "");
+    free(layout);
 
     j->request.events = events;
     j->request.event_count = c->event_count;
@@ -183,6 +189,10 @@ static int32_t compile(ExportJob *j, const DmeContext *c, const DmeHost *host, c
         return status;
     }
 
+    if (*j->port_notice) {
+        host->diagnostic(host->user, DME_WARNING, DME_DISPLAY | DME_POPUP, j->port_notice);
+    }
+
     M64Hooks hooks = {(void *)host, cancel, progress};
     int compiled = m64_get_api_3()->compile(&j->request, &hooks, result);
     report(host, *result, error, cap);
@@ -223,9 +233,13 @@ static int32_t DME_CALL run(void *job, const DmeContext *c, const DmeHost *host,
              host->artifact(host->user, names[i], a.data, a.size);
     }
 
-    /* The package also explains any sequence memory changes the song needs. */
-    if (ok) {
-        char *guide = m64_memory_guide(required_memory(result), j->sequence);
+    /* When the song needs source edits for its sequence memory, the package explains them for
+       the chosen memory option. */
+    uint64_t required = ok ? required_memory(result) : 0;
+    M64MemoryPlan plan = m64_memory_plan(required, j->memory_maximum);
+
+    if (ok && (plan.needed || !plan.fits)) {
+        char *guide = m64_memory_guide(required, j->sequence, j->memory_maximum);
         ok = guide && host->artifact(host->user, "sequence-memory.txt", (const uint8_t *)guide,
                                      strlen(guide));
         free(guide);
@@ -282,6 +296,39 @@ static bool install_memory(const DmeHost *host, const M64MemoryPlan *plan, char 
     return true;
 }
 
+/* Raises HackerSM64's temporary sequence pool when the song needs more than it has. */
+static bool install_hacker_memory(const DmeHost *host, uint64_t required, bool expanded,
+                                  char *error, uint64_t cap) {
+    const uint8_t *data;
+    uint64_t size;
+
+    if (!host->read_file(host->user, M64_DATA_H, &data, &size)) {
+        snprintf(error, (size_t)cap, "Cannot read %s in the chosen folder.", M64_DATA_H);
+        return false;
+    }
+
+    M64Text text = {0};
+    bool changed = false;
+
+    if (!m64_patch_hacker_data_h(data, size, required, expanded, &text, &changed, error,
+                                 (size_t)cap)) {
+        m64_text_free(&text);
+        return false;
+    }
+
+    if (!changed) {
+        m64_text_free(&text);
+        return true;
+    }
+
+    if (!install_text(host, M64_DATA_H, &text, DME_INSTALL_BACKUP)) {
+        snprintf(error, (size_t)cap, "Cannot queue %s for writing.", M64_DATA_H);
+        return false;
+    }
+
+    return true;
+}
+
 /* Installs into an SM64 decomp checkout: the sequence replaces the chosen song, the bank is
    added, the song's entry in sound/sequences.json points at the bank, and the audio memory grows
    when the song needs it. */
@@ -324,8 +371,29 @@ static int32_t DME_CALL install(void *job, const DmeContext *c, const DmeHost *h
     bool ok = status == DME_OK && api->artifact_at(result, M64_SEQUENCE, &sequence) == M64_OK &&
               api->artifact_at(result, M64_BANK_JSON, &bank) == M64_OK;
 
-    if (ok) {
-        M64MemoryPlan plan = m64_memory_plan(required_memory(result), false);
+    /* HackerSM64 keeps its audio settings in include/config/; its sequence pool is one macro. */
+    const uint8_t *config;
+    uint64_t config_size;
+    bool hacker = host->read_file(host->user, M64_HACKER_CONFIG, &config, &config_size) != 0;
+
+    if (ok && hacker) {
+        bool expanded = m64_hacker_expanded(config, config_size);
+        snprintf(path, sizeof(path), "sound/sequences/us/%s.m64", j->sequence);
+        ok = host->install_file(host->user, path, sequence.data, sequence.size, 0);
+        snprintf(path, sizeof(path), "sound/sound_banks/%s.json", j->bank);
+        ok = ok && host->install_file(host->user, path, bank.data, bank.size, 0);
+        ok = ok && install_text(host, M64_SEQUENCES_JSON, &entry, 0);
+        ok = ok && install_hacker_memory(host, required_memory(result), expanded, error, cap);
+
+        if (!ok && status == DME_OK) {
+            status = DME_FAILED;
+
+            if (!*error) {
+                snprintf(error, (size_t)cap, "Cannot prepare the repository files.");
+            }
+        }
+    } else if (ok) {
+        M64MemoryPlan plan = m64_memory_plan(required_memory(result), j->memory_maximum);
 
         if (plan.needed && !plan.fits) {
             snprintf(error, (size_t)cap,

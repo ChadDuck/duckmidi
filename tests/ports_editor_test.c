@@ -87,7 +87,7 @@ int main(void) {
     SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
     check(w && r && ui_init(w, r, NULL), "actual UI");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", true);
+    editor_init(e, w, r, NULL, "", "", true);
     const char *path = "agents/reports/2026-10-30-run/two-ports.mid";
     write_fixture(path);
     ed_load(e, path);

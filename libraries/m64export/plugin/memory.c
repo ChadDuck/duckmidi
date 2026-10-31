@@ -115,19 +115,12 @@ static uint32_t new_pool(uint32_t stock, const M64MemoryPlan *plan) {
     return plan->pool > stock ? plan->pool : stock;
 }
 
-static void guide_variant(M64Text *t, const char *title, const char *summary,
-                          const M64MemoryPlan *plan) {
-    append(t, "%s\n", title);
-
-    for (size_t i = 0; title[i]; ++i) {
-        append(t, "-");
-    }
-
-    append(t, "\n\n%s\n\n", summary);
+/* Writes the source edits for one memory plan as numbered instructions. */
+static void guide_steps(M64Text *t, const M64MemoryPlan *plan) {
     append(t,
-           "1. src/audio/data.c, in gAudioSessionPresets: the US rows are the eight rows between\n"
-           "   \"#else\" and \"#endif\". Change each row's ninth value (memory used for temporary\n"
-           "   sequences):\n\n");
+           "1. src/audio/data.c - the audio session presets (gAudioSessionPresets).\n"
+           "   The eight US rows sit between \"#else\" and \"#endif\" in that table. Change each\n"
+           "   row's ninth value, the memory for temporary sequences, so the song fits:\n\n");
 
     for (int i = 0; i < 8; ++i) {
         uint32_t value = new_pool(us_pools[i], plan);
@@ -139,65 +132,61 @@ static void guide_variant(M64Text *t, const char *title, const char *summary,
         append(t,
                "\n   The nine rows after \"#endif\" are shared with the JP version. Replace their\n"
                "   ninth value 0x7400 with %s, and add this above\n"
-               "   \"struct AudioSessionSettings gAudioSessionPresets[18] = {\":\n\n"
+               "   \"struct AudioSessionSettings gAudioSessionPresets[18] = {\" so only US\n"
+               "   builds change:\n\n"
                "     #ifdef VERSION_US\n     #define %s 0x%04X\n     #else\n"
                "     #define %s 0x7400\n     #endif\n",
                LOW_RATE_MACRO, LOW_RATE_MACRO, plan->low_rate, LOW_RATE_MACRO);
     }
 
     append(t,
-           "\n2. src/audio/data.h: replace\n\n     #define AUDIO_HEAP_SIZE 0x31150\n\n   with\n\n"
+           "\n2. src/audio/data.h - the audio heap size. The heap holds the sequence pool, so it\n"
+           "   grows by the same amount. Replace\n\n"
+           "     #define AUDIO_HEAP_SIZE 0x31150\n\n   with\n\n"
            "     #ifdef VERSION_US\n     #define AUDIO_HEAP_SIZE 0x%05X\n     #else\n"
            "     #define AUDIO_HEAP_SIZE 0x31150\n     #endif\n",
            plan->heap);
-    append(t,
-           "\n3. src/buffers/buffers.c: above the last \"#else\" before\n"
-           "   \"ALIGNED16 u8 gAudioHeap[DOUBLE_SIZE_ON_64_BIT(0x31200)];\", add\n\n"
-           "     #elif defined(VERSION_US)\n"
-           "     ALIGNED16 u8 gAudioHeap[DOUBLE_SIZE_ON_64_BIT(0x%05X)];\n\n",
-           plan->buffer);
+    append(
+        t,
+        "\n3. src/buffers/buffers.c - the buffer that backs the audio heap. Above the last\n"
+        "   \"#else\" before \"ALIGNED16 u8 gAudioHeap[DOUBLE_SIZE_ON_64_BIT(0x31200)];\", add\n\n"
+        "     #elif defined(VERSION_US)\n"
+        "     ALIGNED16 u8 gAudioHeap[DOUBLE_SIZE_ON_64_BIT(0x%05X)];\n\n",
+        plan->buffer);
+    append(t, "4. Build for US: make VERSION=us COMPARE=0\n"
+              "   The linker reports an overflow if other changes already use the free RAM.\n");
 }
 
-char *m64_memory_guide(uint64_t required, const char *sequence) {
+char *m64_memory_guide(uint64_t required, const char *sequence, bool maximum) {
     M64Text t = {0};
-    M64MemoryPlan console = m64_memory_plan(required, false);
-    M64MemoryPlan emulator = m64_memory_plan(required, true);
+    M64MemoryPlan plan = m64_memory_plan(required, maximum);
     append(&t, "SM64 sequence memory for %s.m64\n\n", sequence);
-    append(&t, "This sequence needs %llu bytes (0x%llX) of temporary sequence memory.\n",
-           (unsigned long long)required, (unsigned long long)required);
+    append(&t,
+           "This song needs 0x%llX bytes of temporary sequence memory. Some stock US audio\n"
+           "presets provide only 0x3F00; a song larger than its preset's pool overwrites\n"
+           "instrument data and loses instruments.\n\n",
+           (unsigned long long)required);
 
-    if (!console.fits) {
+    if (!plan.fits) {
         append(&t,
-               "\nThis is more than the stock US memory layout can provide: at most 0x%X bytes\n"
-               "fit in the RAM left free by the stock build. Shorten or simplify the song, or\n"
-               "move other data out of main RAM in your ROM.\n",
+               "The stock US memory layout can provide at most 0x%X bytes. Shorten or simplify\n"
+               "the song, or move other data out of main RAM in your ROM.\n",
                SMALLEST_POOL + SPARE_RAM);
-        return t.failed ? (m64_text_free(&t), NULL) : t.data;
-    }
-
-    if (!console.needed) {
-        append(&t, "Every stock US audio preset already provides enough. No source changes are "
-                   "needed.\n\n");
     } else {
-        append(&t, "Some stock US audio presets provide only 0x3F00 bytes. Without one of the\n"
-                   "changes below, the song can overwrite bank data and lose instruments.\n\n");
-        char summary[512];
-        snprintf(summary, sizeof(summary),
-                 "The smallest change for this song. Grows the US audio heap by 0x%X of the 0x%X\n"
-                 "bytes the stock build leaves free, so it fits on console hardware. Export to\n"
-                 "Repository applies this variant.",
-                 console.growth, SPARE_RAM);
-        guide_variant(&t, "Console-Compatible", summary, &console);
+        append(&t, "%s\n\n",
+               maximum ? "Emulator Only: every US preset gets the largest pool the stock layout\n"
+                         "can hold, using all of the free RAM. Later songs up to that size fit\n"
+                         "without new edits, but other mods may no longer have room in main RAM."
+                       : "Console-Compatible: the smallest change for this song. It uses part of\n"
+                         "the RAM the stock build leaves free, so the ROM still runs on console.");
+        guide_steps(&t, &plan);
     }
 
-    guide_variant(
-        &t, "Emulator Only",
-        "Raises every US preset to the largest pool the stock layout can hold, using all\n"
-        "of the free RAM. Later songs of any size up to this limit then fit without new\n"
-        "changes, but other mods may no longer have room in main RAM.",
-        &emulator);
-    append(&t, "Build the checkout for US afterwards:\n\n     make VERSION=us COMPARE=0\n\n"
-               "The linker reports an overflow if other changes already use the free RAM.\n");
+    append(&t,
+           "\nHackerSM64 checkouts use one setting instead of the steps above:\n\n"
+           "  src/audio/data.h - in the EXPAND_AUDIO_HEAP branch your config uses, make sure\n"
+           "  TEMPORARY_SEQ_MEM is at least 0x%llX. The audio heap grows with it.\n",
+           (unsigned long long)((required + 0xFF) & ~(uint64_t)0xFF));
     return t.failed ? (m64_text_free(&t), NULL) : t.data;
 }
 
@@ -248,6 +237,19 @@ static bool contains(Line line, const char *needle) {
     }
 
     return false;
+}
+
+/* The table ends with an all-zero row, { 0, 0, ... }, that is not a preset. */
+static bool zero_row(Line line) {
+    for (size_t i = 0; i < line.length; ++i) {
+        char c = line.text[i];
+
+        if ((c >= '1' && c <= '9') || c == 'x' || c == 'X' || c == '_') {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 /* Replaces the ninth value of a preset row, keeping its spacing. */
@@ -334,7 +336,7 @@ bool m64_patch_data_c(const uint8_t *data, uint64_t size, const M64MemoryPlan *p
 
             ++us_rows;
             continue;
-        } else if (section == 4 && starts(line, "{")) {
+        } else if (section == 4 && starts(line, "{") && !zero_row(line)) {
             if (use_macro && !replace_pool(out, line, LOW_RATE_MACRO)) {
                 snprintf(error, capacity,
                          "src/audio/data.c has an unexpected low-rate preset row.");
@@ -494,8 +496,35 @@ bool m64_patch_sequences(const uint8_t *data, uint64_t size, const char *sequenc
                 }
             }
 
-            append_bytes(out, line.text, indent);
-            append(out, "%s [\"%s\"]%s%s", key, bank, comma ? "," : "", ending(line));
+            /* HackerSM64 also writes entries as {"ifdef": [...], "banks": [...]}; only the
+               bank list changes there. */
+            const char *banks = NULL;
+
+            for (size_t i = 0; i + 8 <= line.length; ++i) {
+                if (!memcmp(line.text + i, "\"banks\":", 8)) {
+                    banks = line.text + i;
+                    break;
+                }
+            }
+
+            const char *open =
+                banks ? memchr(banks, '[', line.length - (size_t)(banks - line.text)) : NULL;
+            const char *close =
+                open ? memchr(open, ']', line.length - (size_t)(open - line.text)) : NULL;
+
+            if (banks && (!open || !close)) {
+                break;
+            }
+
+            if (banks) {
+                append_bytes(out, line.text, (size_t)(open - line.text));
+                append(out, "[\"%s\"]", bank);
+                append_bytes(out, close + 1, line.length - (size_t)(close + 1 - line.text));
+            } else {
+                append_bytes(out, line.text, indent);
+                append(out, "%s [\"%s\"]%s%s", key, bank, comma ? "," : "", ending(line));
+            }
+
             patched = true;
             continue;
         }
@@ -508,6 +537,69 @@ bool m64_patch_sequences(const uint8_t *data, uint64_t size, const char *sequenc
                  "sound/sequences.json has no \"%s\" entry. Export to Repository replaces an "
                  "existing song; choose one of the listed sequence names.",
                  sequence);
+        return false;
+    }
+
+    return true;
+}
+
+/* HackerSM64 sizes the audio heap from TEMPORARY_SEQ_MEM and the other pools in
+   src/audio/data.h, with one value per EXPAND_AUDIO_HEAP branch. The active branch is raised to
+   the song's need; a larger value is left alone. */
+bool m64_hacker_expanded(const uint8_t *config, uint64_t size) {
+    const char *cursor = (const char *)config, *end = cursor + size;
+    Line line;
+
+    while (next_line(&cursor, end, &line)) {
+        if (starts(line, "#define EXPAND_AUDIO_HEAP")) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool m64_patch_hacker_data_h(const uint8_t *data, uint64_t size, uint64_t required, bool expanded,
+                             M64Text *out, bool *changed, char *error, size_t capacity) {
+    const char *cursor = (const char *)data, *end = cursor + size;
+    uint64_t pool = (required + 0xFF) & ~(uint64_t)0xFF;
+    int branch = 0; /* 0 outside, 1 expanded branch, 2 default branch */
+    bool found = false;
+    Line line;
+    *changed = false;
+
+    while (next_line(&cursor, end, &line)) {
+        if (starts(line, "#ifdef EXPAND_AUDIO_HEAP")) {
+            branch = 1;
+        } else if (branch == 1 && starts(line, "#else")) {
+            branch = 2;
+        } else if (branch && starts(line, "#endif")) {
+            branch = 0;
+        } else if (branch == (expanded ? 1 : 2) && starts(line, "#define TEMPORARY_SEQ_MEM")) {
+            char text[96] = {0};
+            memcpy(text, line.text,
+                   line.length < sizeof(text) - 1 ? line.length : sizeof(text) - 1);
+            const char *value = strstr(text, "TEMPORARY_SEQ_MEM");
+            unsigned long current = value ? strtoul(value + 17, NULL, 0) : 0;
+            found = current > 0;
+
+            if (found && current < pool) {
+                append(out, "#define TEMPORARY_SEQ_MEM 0x%llX /* " MARKER " */%s",
+                       (unsigned long long)pool, ending(line));
+                *changed = true;
+                continue;
+            }
+        }
+
+        append_bytes(out, line.text, line.length);
+    }
+
+    if (!found || out->failed) {
+        snprintf(error, capacity,
+                 out->failed ? "Not enough memory to patch src/audio/data.h."
+                             : "src/audio/data.h does not define TEMPORARY_SEQ_MEM for this "
+                               "HackerSM64 configuration. Set it by hand to at least 0x%llX.",
+                 (unsigned long long)pool);
         return false;
     }
 

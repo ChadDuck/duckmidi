@@ -42,6 +42,8 @@ static const DmeChoice sequences[] = {{0, "00_sound_player"},
                                       {35, "Custom"}};
 #define CUSTOM_SEQUENCE 35
 
+static const DmeChoice memory_choices[] = {{0, "Console-Compatible"}, {1, "Emulator Only"}};
+
 static void reset_maps(M64PluginUi *s) {
     for (unsigned ch = 0; ch < 16; ch++) {
         for (unsigned p = 0; p < 128; p++) {
@@ -63,6 +65,7 @@ void DME_CALL m64_ui_reset(void *instance) {
     s->custom_sequence_set = false;
     s->loop = 0;
     s->loop_points = 1;
+    s->memory = 0;
     s->percussion = 0;
     reset_maps(s);
 }
@@ -117,6 +120,15 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
         }
     }
 
+    M64PortLayout *layout = calloc(1, sizeof(*layout));
+
+    if (!layout || !m64_port_layout(c->events, c->event_count, layout)) {
+        free(layout);
+        return DME_NOMEM;
+    }
+
+    snprintf(s->port_notice, sizeof(s->port_notice), "%s", layout->notice);
+    s->port_interference = layout->interference;
     unsigned program[16] = {0};
 
     for (uint64_t i = 0; i < c->event_count; i++) {
@@ -126,7 +138,9 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
             continue;
         }
 
-        unsigned ch = e->status & MIDI_CHANNEL_MASK, type = e->status & MIDI_STATUS_MASK;
+        unsigned type = e->status & MIDI_STATUS_MASK;
+        unsigned ch = e->port < M64_PORTS ? layout->out[e->status & MIDI_CHANNEL_MASK][e->port]
+                                          : e->status & MIDI_CHANNEL_MASK;
 
         if (type == MIDI_PROGRAM) {
             program[ch] = e->a;
@@ -141,6 +155,7 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
         }
     }
 
+    free(layout);
     return DME_OK;
 }
 
@@ -175,6 +190,11 @@ int32_t DME_CALL m64_ui_describe(void *instance, DmeUi *ui) {
     }
 
     unsigned f = 0;
+
+    if (*s->port_notice) {
+        s->fields[f++] = (DmeField){.id = "ports", .label = s->port_notice, .type = DME_NOTICE};
+    }
+
     s->fields[f++] = (DmeField){.id = "sequence",
                                 .label = "Sequence name",
                                 .type = DME_CHOICE,
@@ -205,11 +225,20 @@ int32_t DME_CALL m64_ui_describe(void *instance, DmeUi *ui) {
             .id = "loop_points",
             .label = "Use M64 loop points",
             .help =
-                "Play once from the start, then repeat from M64 - Loop Start to M64 - Loop End (or the song end). Overrides Loop the complete song.",
+                "Play once, then repeat from M64 - Loop Start to M64 - Loop End. Overrides Loop the complete song.",
             .type = DME_BOOL,
             .value = {DME_BOOL, s->loop_points, NULL}};
     }
 
+    s->fields[f++] = (DmeField){
+        .id = "memory",
+        .label = "Sequence memory",
+        .help =
+            "Console-Compatible makes the smallest memory change and runs on console. Emulator Only uses all free RAM so later songs fit too.",
+        .type = DME_CHOICE,
+        .value = {DME_CHOICE, s->memory, NULL},
+        .choices = memory_choices,
+        .choice_count = 2};
     s->fields[f++] = (DmeField){.id = "percussion",
                                 .label = "Edit percussion mappings",
                                 .type = DME_BOOL,
@@ -253,6 +282,11 @@ int32_t DME_CALL m64_ui_set(void *instance, const char *id, const DmeValue *v, c
         }
 
         s->sequence_choice = v->integer;
+        return DME_OK;
+    }
+
+    if (!strcmp(id, "memory") && v->type == DME_CHOICE && (v->integer == 0 || v->integer == 1)) {
+        s->memory = v->integer;
         return DME_OK;
     }
 

@@ -33,7 +33,7 @@ int main(void) {
         return 1;
     }
 
-    editor_init(e, window, renderer, NULL, "", true);
+    editor_init(e, window, renderer, NULL, "", "", true);
     char *directory = SDL_GetCurrentDirectory();
     snprintf(e->midi_folder, DM_PATH, "%ssamples/", directory);
     snprintf(e->font_folder, DM_PATH, "%sagents/reports/", directory);

@@ -235,6 +235,35 @@ static bool application(Ini *ini, const char *key, const char *s) {
         return true;
     }
 
+    if (!strcmp(key, "update_check") || !strcmp(key, "update_prompted")) {
+        uint32_t on;
+
+        if (!number(s, &on) || on > 1) {
+            return false;
+        }
+
+        if (key[7] == 'c') {
+            e->update_mode = (int)on;
+        } else {
+            e->update_prompted = on != 0;
+        }
+
+        return true;
+    }
+
+    if (!strcmp(key, "sample_hash")) {
+        char *end;
+        errno = 0;
+        unsigned long long hash = strtoull(s, &end, 10);
+
+        if (!isdigit((unsigned char)*s) || errno || *end) {
+            return false;
+        }
+
+        e->sample_hash = hash;
+        return true;
+    }
+
     if (!strcmp(key, "os_cursor")) {
         uint32_t on;
 
@@ -418,6 +447,65 @@ static bool parse(Ini *ini, char *data) {
     return ok;
 }
 
+static bool same_binding(Binding a, Binding b) {
+    return a.key == b.key && a.mods == b.mods;
+}
+
+static bool binding_taken(const Binding *b, int except, Binding binding) {
+    for (int i = 0; i < ACT_COUNT; ++i) {
+        if (i != except && same_binding(b[i], binding)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* Shortcut files written before the Preferences shortcut existed: Project settings leaves its old
+   default P for S, and Solo leaves S for its new default when it still has S. Bindings the user
+   changed are kept. */
+static void upgrade_shortcuts(Ini *ini, Binding *merged) {
+    Binding old_config = {SDL_SCANCODE_P, (SDL_Keymod)0},
+            old_solo = {SDL_SCANCODE_S, (SDL_Keymod)0};
+
+    if (ini->seen[ACT_PREFERENCES] || !ini->seen[ACT_CONFIG] ||
+        !same_binding(ini->keys[ACT_CONFIG], old_config)) {
+        return;
+    }
+
+    if (ini->seen[ACT_SOLO] && same_binding(ini->keys[ACT_SOLO], old_solo) &&
+        !binding_taken(merged, ACT_SOLO, ini->next.bindings[ACT_SOLO])) {
+        merged[ACT_SOLO] = ini->next.bindings[ACT_SOLO];
+    }
+
+    if (!binding_taken(merged, ACT_CONFIG, ini->next.bindings[ACT_CONFIG])) {
+        merged[ACT_CONFIG] = ini->next.bindings[ACT_CONFIG];
+    }
+}
+
+/* An action the file does not list takes its default key. When the user already uses that key,
+   the action takes the same key with Shift, Ctrl + Shift or Alt + Shift instead, so a new action
+   never resets the user's shortcuts. */
+static void place_new_actions(Ini *ini, Binding *merged) {
+    static const SDL_Keymod extra[] = {SDL_KMOD_SHIFT, SDL_KMOD_CTRL | SDL_KMOD_SHIFT,
+                                       SDL_KMOD_ALT | SDL_KMOD_SHIFT};
+
+    for (int i = 0; i < ACT_COUNT; ++i) {
+        if (ini->seen[i] || !binding_taken(merged, i, merged[i])) {
+            continue;
+        }
+
+        for (size_t k = 0; k < sizeof(extra) / sizeof(*extra); ++k) {
+            Binding candidate = {merged[i].key, (SDL_Keymod)(merged[i].mods | extra[k])};
+
+            if (!binding_taken(merged, i, candidate)) {
+                merged[i] = candidate;
+                break;
+            }
+        }
+    }
+}
+
 bool dm_preferences_load(Editor *e, uint32_t shortcut_schema) {
     DmBytes b = {0};
     char error[256];
@@ -471,6 +559,8 @@ bool dm_preferences_load(Editor *e, uint32_t shortcut_schema) {
         }
 
         (void)shortcut_schema;
+        upgrade_shortcuts(ini, merged);
+        place_new_actions(ini, merged);
 
         if (valid_bindings(merged)) {
             memcpy(ini->next.bindings, merged, sizeof(merged));
@@ -536,7 +626,8 @@ bool dm_preferences_save(Editor *e, uint32_t shortcut_schema, const char *const 
     DmBytes b = {0};
     char head[256];
     snprintf(head, sizeof(head), DM_TEXT_INI_APPLICATION_SECTION, e->accent, e->monitor ? 1 : 0,
-             e->ui_size, e->os_cursor ? 1 : 0);
+             e->ui_size, e->os_cursor ? 1 : 0, e->update_mode, e->update_prompted ? 1 : 0,
+             (unsigned long long)e->sample_hash);
     bool ok = text(&b, head) && fields(&b, e);
     snprintf(head, sizeof(head), DM_TEXT_SHORTCUTS_NSCHEMA, shortcut_schema);
     ok = ok && text(&b, head);

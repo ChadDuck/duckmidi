@@ -44,8 +44,8 @@ static void shortcuts_added(Editor *e) {
     key(e, SDL_SCANCODE_M, 0);
     check(e->project.channels[0].mute && !e->project.channels[0].solo,
           "M mutes selected playlist channel");
-    key(e, SDL_SCANCODE_S, 0);
-    check(!e->project.channels[0].mute && e->project.channels[0].solo, "S replaces mute with solo");
+    key(e, SDL_SCANCODE_SLASH, 0);
+    check(!e->project.channels[0].mute && e->project.channels[0].solo, "/ replaces mute with solo");
     key(e, SDL_SCANCODE_M, 0);
     check(e->project.channels[0].mute && !e->project.channels[0].solo, "M replaces solo with mute");
     e->context = 2;
@@ -71,11 +71,71 @@ static void shortcuts_added(Editor *e) {
     key(e, SDL_SCANCODE_R, 0);
     check(e->record, "R records with piano disabled");
     key(e, SDL_SCANCODE_R, 0);
+    bool roll = e->roll;
+    int selected = e->selected_pattern;
+    size_t patterns = e->project.pattern_count;
+    check(ed_pattern(e) && !ed_pattern(e)->kind, "a note pattern is selected");
+    e->roll = true;
+    e->automation_open = false;
     key(e, SDL_SCANCODE_E, SDL_KMOD_SHIFT);
-    check(e->song_event && e->event_source_kind == 0 && e->event_edit == -1,
-          "Shift E opens a fresh manually authored song event");
+    check(e->automation_open && !e->song_event,
+          "Shift E opens the pattern editor's Events section");
     key(e, SDL_SCANCODE_E, SDL_KMOD_SHIFT);
-    check(!e->song_event, "Shift E toggles event window closed");
+    check(!e->automation_open, "Shift E hides the Events section again");
+    e->roll = false;
+    key(e, SDL_SCANCODE_E, SDL_KMOD_SHIFT);
+    check(e->roll && ed_pattern(e) && ed_pattern(e)->kind && !e->song_event,
+          "Shift E opens the Event editor when the pattern editor is hidden");
+    key(e, SDL_SCANCODE_E, SDL_KMOD_SHIFT);
+    check(!e->roll, "Shift E hides the Event editor again");
+
+    if (e->project.pattern_count > patterns) {
+        dm_pattern_remove(&e->project, (int)patterns);
+    }
+
+    e->selected_pattern = selected;
+    e->roll = roll;
+
+    /* I opens the instrument window for the focused channel; the piano keyboard keeps I. */
+    e->piano = false;
+    e->selected_channel = 1;
+    e->pattern_channel = 0;
+    ed_focus_edit(e, FOCUS_PLAYLIST);
+    key(e, SDL_SCANCODE_I, 0);
+    check(e->instrument_channel == 1 && e->instrument_preview,
+          "I opens the playlist channel's instrument window");
+    e->instrument_channel = -1;
+    e->instrument_preview = false;
+    ed_focus_edit(e, FOCUS_EVENTS);
+    key(e, SDL_SCANCODE_I, 0);
+    check(e->instrument_channel == 0, "I opens the pattern editor channel's instrument window");
+    e->instrument_channel = -1;
+    e->instrument_preview = false;
+    ed_focus_edit(e, FOCUS_PATTERNS);
+    key(e, SDL_SCANCODE_I, 0);
+    check(e->instrument_channel == -1, "I does nothing in the pattern section");
+    ed_focus_edit(e, FOCUS_PLAYLIST);
+    e->piano = true;
+    key(e, SDL_SCANCODE_I, 0);
+    check(e->instrument_channel == -1, "I plays the keyboard piano while it is on");
+    ed_release_piano(e);
+    e->piano = false;
+
+    /* P opens Preferences in front of an open window, from any section; S opens Project
+       settings. Both belong to the keyboard piano while it is on. */
+    e->shortcuts = true;
+    ed_focus_edit(e, FOCUS_OTHER);
+    key(e, SDL_SCANCODE_P, 0);
+    check(e->preferences && e->preferences_raise, "P opens Preferences over another window");
+    e->preferences = e->preferences_raise = e->shortcuts = false;
+    key(e, SDL_SCANCODE_S, 0);
+    check(e->config, "S opens Project settings");
+    e->config = false;
+    e->piano = true;
+    key(e, SDL_SCANCODE_P, 0);
+    check(!e->preferences, "P plays the keyboard piano while it is on");
+    ed_release_piano(e);
+    e->piano = false;
     e->bindings[ACT_METRONOME] = (Binding){SDL_SCANCODE_F8, SDL_KMOD_ALT};
     key(e, SDL_SCANCODE_F8, SDL_KMOD_ALT);
     check(!e->metronome, "new shortcuts are customizable");
@@ -249,7 +309,7 @@ int main(void) {
     SDL_Renderer *renderer = SDL_CreateRenderer(window, "direct3d11");
     check(window && renderer && ui_init(window, renderer, NULL), "real ImGui renderer initializes");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, window, renderer, NULL, "", true);
+    editor_init(e, window, renderer, NULL, "", "", true);
     ui_frame();
     playback(e);
     shortcuts_added(e);

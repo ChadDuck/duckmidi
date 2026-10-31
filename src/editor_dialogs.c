@@ -348,6 +348,7 @@ void ed_dialogs(Editor *e) {
     ed_instrument(e);
     ed_preferences(e);
     ed_shortcuts(e);
+    ed_update_dialog(e);
 
     if (e->about) {
         if (ui_fixed_dialog(DM_TEXT_ABOUT_DUCKMIDI, &e->about, 560, 158)) {

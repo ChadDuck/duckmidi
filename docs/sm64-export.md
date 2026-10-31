@@ -1,6 +1,6 @@
 # M64 export
 
-The bundled M64 plugin exports music for the stock SM64 US audio engine. It creates a sequence and sound-bank definitions using SM64's existing samples.
+The bundled M64 plugin exports music for the SM64 US audio engine, in stock [n64decomp/sm64](https://github.com/n64decomp/sm64) and [HackerSM64](https://github.com/HackerN64/HackerSM64) checkouts. It creates a sequence and sound-bank definitions using SM64's existing samples.
 
 ## Export a song
 
@@ -8,8 +8,9 @@ The bundled M64 plugin exports music for the stock SM64 US audio engine. It crea
 2. Choose a **Sequence name** from the dropdown, or choose **Custom** and enter a filename stem.
 3. Set a **Bank name** that does not conflict with another bank in your SM64 checkout.
 4. Enable **Loop the complete song** if you want it to repeat, or **Use M64 loop points** to repeat part of it (see [Loop points](#loop-points)).
-5. Review the instrument mappings, then click **Save M64 Package**, or **Export to Repository** to install into your SM64 checkout.
-6. Choose a filename and extract the saved ZIP.
+5. Choose **Sequence memory**: **Console-Compatible** makes the smallest memory change and still runs on console; **Emulator Only** uses all free RAM so later songs fit without new changes.
+6. Review the instrument mappings, then click **Save M64 Package**, or **Export to Repository** to install into your SM64 checkout.
+7. Choose a filename and extract the saved ZIP.
 
 The export uses the active arrangement, including mute and solo. The last save folder is remembered. Keep `m64.dll` in the application's `plugins/` directory.
 
@@ -27,7 +28,7 @@ If a mapping exceeds the stock sample's pitch range, a review appears before out
 
 Choose from the recommendations or the manual dropdown. Unsupported manual selections are marked in the review. Mapping changes remain in the export panel for the session; they do not edit the project.
 
-Independent note-color ports are not supported by M64. Remove explicit note colors before exporting to this format.
+M64 has one set of controls per channel. Colored note ports move to unused channels, which keeps them exact. Drum ports, and ports beyond the free channels, merge into their channel. When merged ports change the same control, such as pitch bend, to different values, the export window shows a notice and the latest value wins.
 
 ## Package contents
 
@@ -37,7 +38,7 @@ Independent note-color ports are not supported by M64. Remove explicit note colo
 | `<bank>.json` | Instrument and drum bank definitions |
 | `sequences-entry.json` | Entry to merge into `sound/sequences.json` |
 | `manifest.json` | Used samples, mappings, memory requirements, and warnings |
-| `sequence-memory.txt` | Exact source changes for the sequence memory this song needs, in Console-Compatible and Emulator Only variants |
+| `sequence-memory.txt` | Included when the song needs more sequence memory: the source edits for the chosen **Sequence memory** option, with what each file is and why it changes |
 
 Sequence and bank names control the files inside the ZIP; the ZIP itself can have any name. Game sample audio is not included. Your SM64 checkout must supply the samples referenced by the bank.
 
@@ -49,7 +50,9 @@ Sequence and bank names control the files inside the ZIP; the ZIP itself can hav
 2. Click **Export to Repository** and choose the checkout's root folder (it contains `sound/sequences.json`).
 3. Rebuild the checkout as described below.
 
-The export writes `sound/sequences/us/<sequence>.m64` and `sound/sound_banks/<bank>.json`, points the song's entry in `sound/sequences.json` at the new bank, and applies the Console-Compatible memory changes from `sequence-memory.txt` when the song needs them.
+The export writes `sound/sequences/us/<sequence>.m64` and `sound/sound_banks/<bank>.json`, points the song's entry in `sound/sequences.json` at the new bank, and applies the chosen **Sequence memory** changes when the song needs them. Exporting again to the same checkout updates those changes.
+
+HackerSM64 checkouts are recognized automatically. There, the export raises `TEMPORARY_SEQ_MEM` in `src/audio/data.h` when the song needs more than the current setting.
 
 **Keep original files** (on by default) saves each replaced file beside it as `<file>.bkp`. With it off, files are replaced directly, except stock audio memory files, which are always kept. **Revert repository export** restores every changed file and removes the backups the exports created, for all exports to that folder since the last revert during this session.
 
@@ -74,7 +77,7 @@ An **Export warnings** popup lists engine limitations after a successful save. T
 | --- | --- |
 | Sample pitch range | Try a supported mapping from the review, or provide a suitable sample in your ROM. Stock playback caps near 4x sample speed. |
 | More than 16 simultaneous notes | Listen for voice stealing. Notes are retained at this advisory threshold; release tails and sound effects also consume game voices. |
-| Sequence memory | Apply one variant from `sequence-memory.txt`, or use **Export to Repository**, which applies the Console-Compatible changes. Insufficient memory can cause missing instruments. |
+| Sequence memory | Apply `sequence-memory.txt` from a saved package, or use **Export to Repository**, which applies the chosen **Sequence memory** option. Insufficient memory can cause missing instruments. |
 | Unsupported controls | Check the affected effect in-game; the warning identifies what was omitted or approximated. |
 | Timing or note changes | Review the affected passage. Native tick rounding and hard engine limits can require changes that are reported explicitly. |
 

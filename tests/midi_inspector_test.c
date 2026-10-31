@@ -13,7 +13,7 @@ int main(void) {
     SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
     check(w && r && ui_init(w, r, NULL), "renderer");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", true);
+    editor_init(e, w, r, NULL, "", "", true);
     editor_smoke(e);
     uint8_t bytes[] = {0xb2, 7, 120};
     DmBytes message = {bytes, 3, 3};

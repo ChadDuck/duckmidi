@@ -75,7 +75,7 @@ int main(void) {
     SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
     check(w && r && ui_init(w, r, NULL), "renderer");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", true);
+    editor_init(e, w, r, NULL, "", "", true);
     const char *file = SDL_getenv("DUCKMIDI_FRAME_FILE");
 
     if (file && *file) {

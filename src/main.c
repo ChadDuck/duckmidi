@@ -219,10 +219,19 @@ int main(int argc, char **argv) {
 
     SDL_SetRenderVSync(renderer, 1);
     const char *base = SDL_GetBasePath();
+#ifdef _WIN32
+    /* Windows builds are portable: preferences stay beside the executable. */
+    char *data = NULL;
+#else
+    /* App bundles and system installs are read-only, so use the per-user folder. */
+    char *data = SDL_GetPrefPath(NULL, "duckmidi");
+#endif
+    const char *settings = data ? data : (base ? base : "");
     char ini[DM_PATH];
-    snprintf(ini, sizeof(ini), DM_TEXT_SDUCKMIDI_INI, base ? base : "");
+    snprintf(ini, sizeof(ini), DM_TEXT_SDUCKMIDI_INI, settings);
 
     if (!ui_init(window, renderer, smoke ? NULL : ini)) {
+        SDL_free(data);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         SDL_Quit();
@@ -234,10 +243,15 @@ int main(int argc, char **argv) {
     Editor *editor = calloc(1, sizeof(*editor));
 
     if (!editor_allocation(editor, audio, renderer, window)) {
+        SDL_free(data);
         return 1;
     }
 
-    editor_init(editor, window, renderer, audio, base ? base : "", smoke);
+    editor_init(editor, window, renderer, audio, base ? base : "", settings, smoke);
+
+    if (!smoke) {
+        ed_update_launch(editor);
+    }
 
     if (*error) {
         snprintf(editor->status, sizeof(editor->status), "%s", error);
@@ -248,11 +262,13 @@ int main(int argc, char **argv) {
     }
 
     editor_loop(editor, window, renderer, smoke);
+    ed_update_finish(editor);
     DmAudio *final_audio = editor->audio;
     editor_free(editor);
     free(editor);
     dm_audio_destroy(final_audio);
     ui_shutdown();
+    SDL_free(data);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();

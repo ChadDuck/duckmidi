@@ -18,7 +18,7 @@ int main(void) {
     SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
     check(w && r && ui_init(w, r, NULL), "hidden renderer");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", true);
+    editor_init(e, w, r, NULL, "", "", true);
     editor_smoke(e);
     test_live_edit_ui(e, check);
     ui_frame();

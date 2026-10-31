@@ -32,6 +32,7 @@ static const char *data_c =
     "    { 32000, 12, 1, 0x0800, 0x2FFF, 0x7FFF, 0x2500, 0x5500, 0x7400, 0x2400 },\n"
     "    { 32000, 10, 1, 0x0800, 0x2FFF, 0x7FFF, 0x2500, 0x5500, 0x7400, 0x2400 },\n"
     "    { 32000, 8, 1, 0x0800, 0x2FFF, 0x7FFF, 0x2500, 0x5500, 0x7400, 0x2400 },\n"
+    "    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }\n"
     "};\n"
     "#endif\n";
 
@@ -128,9 +129,13 @@ int main(void) {
            large.low_rate == 0xC400);
     assert(maximum.pool == 0x3F00 + 0x114A0 && maximum.growth == 0x114A0);
     assert(huge.needed && !huge.fits);
-    char *guide = m64_memory_guide(0xC350, "03_level_grass");
-    assert(guide && strstr(guide, "Console-Compatible") && strstr(guide, "Emulator Only") &&
-           strstr(guide, "#define AUDIO_HEAP_SIZE 0x39650") && strstr(guide, "0x153A0"));
+    char *guide = m64_memory_guide(0xC350, "03_level_grass", false);
+    assert(guide && strstr(guide, "Console-Compatible") && !strstr(guide, "Emulator Only") &&
+           strstr(guide, "#define AUDIO_HEAP_SIZE 0x39650") && strstr(guide, "HackerSM64"));
+    free(guide);
+    guide = m64_memory_guide(0xC350, "03_level_grass", true);
+    assert(guide && strstr(guide, "Emulator Only") && !strstr(guide, "Console-Compatible") &&
+           strstr(guide, "0x153A0"));
     free(guide);
 
     /* Patching is repeatable: a second pass with another size rewrites the same lines. */
@@ -146,6 +151,7 @@ int main(void) {
                             sizeof(error)));
     assert(strstr(second.data, "#define DUCKMIDI_US_LOW_RATE_SEQ_MEM 0x153A0") &&
            !strstr(second.data, "0xC400"));
+    assert(strstr(second.data, "{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }"));
     m64_text_free(&first);
     m64_text_free(&second);
     assert(m64_patch_data_h((const uint8_t *)data_h, strlen(data_h), &large, &first, error,
@@ -169,6 +175,43 @@ int main(void) {
         !m64_patch_data_h((const uint8_t *)"nothing\n", 8, &large, &first, error, sizeof(error)) &&
         strstr(error, "sequence-memory.txt"));
     m64_text_free(&first);
+
+    /* HackerSM64: object-form sequence entries and one TEMPORARY_SEQ_MEM per branch. */
+    const char *hacker_sequences =
+        "{\n    \"22_cutscene_lakitu\": {\"ifdef\": [\"VERSION_US\"], \"banks\": [\"1B\"]},\n}\n";
+    assert(m64_patch_sequences((const uint8_t *)hacker_sequences, strlen(hacker_sequences),
+                               "22_cutscene_lakitu", "26_custom", &first, error, sizeof(error)));
+    assert(strstr(first.data, "{\"ifdef\": [\"VERSION_US\"], \"banks\": [\"26_custom\"]},"));
+    m64_text_free(&first);
+    const char *hacker_h = "#ifdef EXPAND_AUDIO_HEAP\n#define TEMPORARY_SEQ_MEM 0xE800\n#else\n"
+                           "#define TEMPORARY_SEQ_MEM 0x7400\n#endif\n";
+    const char *config = "#define PERSISTENT_CAP_MUSIC\n// #define BETTER_REVERB\n";
+    bool changed = true;
+    assert(!m64_hacker_expanded((const uint8_t *)config, strlen(config)));
+    assert(m64_patch_hacker_data_h((const uint8_t *)hacker_h, strlen(hacker_h), 0x9010, true,
+                                   &first, &changed, error, sizeof(error)) &&
+           !changed);
+    m64_text_free(&first);
+    assert(m64_patch_hacker_data_h((const uint8_t *)hacker_h, strlen(hacker_h), 0x9010, false,
+                                   &first, &changed, error, sizeof(error)) &&
+           changed && strstr(first.data, "#define TEMPORARY_SEQ_MEM 0x9100") &&
+           strstr(first.data, "#define TEMPORARY_SEQ_MEM 0xE800"));
+    m64_text_free(&first);
+
+    /* Colored ports: a melodic port moves to a free channel; drum ports stay on channel 10 and
+       interfere only when they send different values for the same control. */
+    DmeEvent ported[] = {{0, 1, 0x90, 60, 100, 0}, {0, 2, 0x91, 60, 100, 2},
+                         {0, 3, 0x99, 36, 100, 0}, {0, 4, 0x99, 38, 100, 1},
+                         {10, 5, 0xE9, 0, 64, 0},  {10, 6, 0xE9, 0, 64, 1},
+                         {20, 7, 0xB9, 7, 100, 0}, {20, 8, 0xB9, 7, 90, 1}};
+    M64PortLayout layout;
+    assert(m64_port_layout(ported, 8, &layout));
+    assert(layout.out[0][0] == 0 && layout.out[1][2] == 1 && layout.out[9][1] == 9);
+    assert(layout.merged && layout.interference && layout.conflict_count == 1 &&
+           strstr(layout.notice, "controller 7") && !strstr(layout.notice, "pitch bend"));
+    DmeEvent moved[] = {{0, 1, 0x90, 60, 100, 0}, {0, 2, 0x90, 64, 100, 1}};
+    assert(m64_port_layout(moved, 2, &layout) && !layout.merged && layout.out[0][1] == 1 &&
+           strstr(layout.notice, "Port 1 of channel 1 plays on channel 2."));
 
     /* Install through the plugin: the song replaces 03_level_grass and its bank entry. */
     const DmeExporter *exporter = duckmidi_export_plugin(DME_ABI)->exporter(0);

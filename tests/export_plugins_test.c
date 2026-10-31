@@ -104,7 +104,7 @@ int main(void) {
     assert(renderer && ui_init(window, renderer, NULL));
     Editor *e = calloc(1, sizeof(*e));
     assert(e);
-    editor_init(e, window, renderer, NULL, "", true);
+    editor_init(e, window, renderer, NULL, "", "", true);
     size_t m64 = find(e, "org.duckmidi.sm64"), fixture = find(e, "org.duckmidi.fixture");
     assert(ed_export_count(e) == 2);
     int pattern = dm_pattern_add(&e->project, "generated melodic fixture");
@@ -187,10 +187,11 @@ int main(void) {
                     review_error, sizeof(review_error)));
     ed_export_start(e, m64, "agents/reports/export-plugins/worker/ports-preserved.zip");
     wait_work(e);
-    assert(strstr(e->status, "ports"));
+    /* Colored ports export: the port moves to a free channel. */
+    assert(strstr(e->status, "complete"));
     assert(dm_read("agents/reports/export-plugins/worker/ports-preserved.zip", &preserved,
                    review_error, sizeof(review_error)) &&
-           preserved.size == 8 && !memcmp(preserved.data, "sentinel", 8));
+           preserved.size > 8 && memcmp(preserved.data, "sentinel", 8));
     dm_bytes_free(&preserved);
     e->project.patterns[pattern].notes[0].port = 0;
     ed_changed(e);

@@ -51,6 +51,8 @@ typedef enum {
     ACT_NOTE_COLOR,
     ACT_NEXT_AUTOMATION,
     ACT_PREVIOUS_AUTOMATION,
+    ACT_INSTRUMENT,
+    ACT_PREFERENCES,
     ACT_COUNT
 } Action;
 
@@ -180,7 +182,8 @@ typedef struct {
     char midi_folder[DM_PATH], font_folder[DM_PATH], export_folder[DM_PATH],
         preferred_font[DM_PATH], output_name[256];
     float event_beat, event_bpm;
-    int event_kind, event_program, event_channel, event_numerator, event_denominator, context_note;
+    int event_kind, event_program, event_channel, event_numerator, event_denominator, context_note,
+        context_point;
     char event_marker[128];
     int smoke_frames;
     int pattern_channel, selected_pattern, selected_channel, instrument_channel, tool, context,
@@ -189,6 +192,8 @@ typedef struct {
     double drag_beat, drag_length, record_start[128];
     int drag_key;
     bool edit_feedback, instrument_accept;
+    bool instrument_preview; /* The instrument window also sets the pattern editor's dropdown. */
+    bool preferences_raise;  /* Preferences comes to the front on its next frame. */
     int brush_quarter, brush_pitch, brush_anchor;
     double record_origin[128];
     uint64_t project_session, clipboard_session;
@@ -203,6 +208,14 @@ typedef struct {
     bool automation_open;
     char path[DM_PATH], pending_path[DM_PATH], status[512], hover[256], settings_path[DM_PATH],
         font_pending[DM_PATH];
+    char status_shown[512];         /* Status text when it was last posted; see ed_info_box. */
+    uint64_t status_time;           /* When the status was posted, in SDL ticks. */
+    char base_path[DM_PATH];        /* Folder holding the executable, ending with a separator. */
+    struct DmUpdate *update;        /* Update checker, created on first use; see editor_update.c. */
+    int update_mode, update_choice; /* Saved check setting (1 On Launch) and the window choice. */
+    bool update_window, update_prompted, update_announced, update_install, update_restart;
+    bool update_prompt_pending; /* First-launch question shown once a file is open. */
+    uint64_t sample_hash;       /* Sample project fingerprint when first opened; 0 if unknown. */
     int pending_action, new_mode, device;
     Binding bindings[ACT_COUNT];
     DmBytes undo[32], redo[32], clipboard, event_selection;
@@ -214,9 +227,12 @@ typedef struct {
     int recent_count;
 } Editor;
 
+/* base holds the bundled plugins and assets; data holds the preference files. */
 void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio *audio,
-                 const char *base, bool smoke);
+                 const char *base, const char *data, bool smoke);
 void editor_free(Editor *e);
+void ed_update_launch(Editor *e); /* Shows the first-launch prompt or starts a launch check. */
+void ed_update_finish(Editor *e); /* Starts a scheduled install as duckmidi exits. */
 void editor_background(Editor *e);
 void editor_event(Editor *e, const SDL_Event *event);
 void editor_frame(Editor *e, float width, float height);

@@ -2,10 +2,21 @@
 #include "text/en.h"
 
 static bool pattern_context(Editor *e, size_t i);
+static void delete_pattern(Editor *e, size_t i);
 static void pattern_browser_header(Editor *e);
 
 static void mixer_peak_update(Editor *e, uint64_t now);
 
+static void delete_pattern(Editor *e, size_t i) {
+    ed_checkpoint(e);
+    dm_pattern_remove(&e->project, (int)i);
+    e->selected_pattern = e->project.pattern_count ? 0 : -1;
+    ed_bind_pattern_channel(e);
+    ed_commit(e);
+}
+
+/* Right click opens a pattern card's menu. Patterns hold song data, so the right button never
+   erases them here; deleting is a menu choice. */
 static bool pattern_context(Editor *e, size_t i) {
     if (!ui_context(DM_TEXT_PATTERN_ACTIONS)) {
         return false;
@@ -31,11 +42,7 @@ static bool pattern_context(Editor *e, size_t i) {
     bool removed = false;
 
     if (ui_menu_item(DM_TEXT_DELETE_PATTERN, NULL, true)) {
-        ed_checkpoint(e);
-        dm_pattern_remove(&e->project, (int)i);
-        e->selected_pattern = e->project.pattern_count ? 0 : -1;
-        ed_bind_pattern_channel(e);
-        ed_commit(e);
+        delete_pattern(e, i);
         removed = true;
     }
 
@@ -409,7 +416,9 @@ void ed_mixer(Editor *e, float width, float height) {
     ui_child(DM_TEXT_CHANNEL_STRIPS, 0, 0, true);
     ui_mixer_wheel();
     UiPoint start = ui_cursor();
-    float strip_height = fmaxf(180, ui_available().y - 16), x = start.x;
+    /* Measured as if the horizontal scrollbar were hidden, so the strips keep their size and
+       position when it appears in the space below them. */
+    float strip_height = fmaxf(180, ui_available().y + ui_scrollbar_reserved() - 16), x = start.x;
 
     for (int c = 0; c < 16; c++) {
         if (!e->project.channels[c].enabled) {

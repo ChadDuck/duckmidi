@@ -174,7 +174,7 @@ int main(void) {
     SDL_Renderer *renderer = SDL_CreateRenderer(window, "direct3d11");
     check(window && renderer && ui_init(window, renderer, NULL), "real renderer initializes");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, window, renderer, NULL, "", true);
+    editor_init(e, window, renderer, NULL, "", "", true);
     ui_frame();
     ui_root(0, 900);
     history_and_duplication(e);

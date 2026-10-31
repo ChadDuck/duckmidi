@@ -240,7 +240,9 @@ void ed_note_color_dialog(Editor *e) {
         float width = (VISIBLE_PORTS + 1) * 25 + VISIBLE_PORTS * ui_item_spacing_x();
         ui_text(DM_TEXT_ASSIGN_NOTE_PORT);
         ui_same();
-        ui_position(top.x + width - 24, top.y);
+        /* The icon sits at the right end of the swatch row, past the title if it is wider. */
+        float title = ui_text_width(DM_TEXT_ASSIGN_NOTE_PORT) + ui_item_spacing_x();
+        ui_position(top.x + fmaxf(width - 24, title), top.y);
         ui_info(DM_TEXT_INDEPENDENT_MIDI_PORTS_MAY);
 
         for (unsigned port = 0; port <= VISIBLE_PORTS; port++) {

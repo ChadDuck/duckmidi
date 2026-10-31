@@ -46,7 +46,9 @@ const char *ed_action_names[ACT_COUNT] = {DM_TEXT_COMPUTER_KEYBOARD_PIANO,
                                           DM_TEXT_SONG_PATTERN_PLAYBACK,
                                           DM_TEXT_COLOR_SELECTED_NOTES,
                                           DM_TEXT_NEXT_CREATE_AUTOMATION,
-                                          DM_TEXT_PREVIOUS_AUTOMATION};
+                                          DM_TEXT_PREVIOUS_AUTOMATION,
+                                          DM_TEXT_CHOOSE_CHANNEL_INSTRUMENT,
+                                          DM_TEXT_PREFERENCES};
 static const SDL_Scancode default_keys[ACT_COUNT] = {
     SDL_SCANCODE_F1,        SDL_SCANCODE_Q,           SDL_SCANCODE_SPACE,
     SDL_SCANCODE_RIGHT,     SDL_SCANCODE_LEFT,        SDL_SCANCODE_RIGHT,
@@ -55,15 +57,15 @@ static const SDL_Scancode default_keys[ACT_COUNT] = {
     SDL_SCANCODE_KP_MINUS,  SDL_SCANCODE_UP,          SDL_SCANCODE_DOWN,
     SDL_SCANCODE_UP,        SDL_SCANCODE_DOWN,        SDL_SCANCODE_UP,
     SDL_SCANCODE_DOWN,      SDL_SCANCODE_LEFTBRACKET, SDL_SCANCODE_RIGHTBRACKET,
-    SDL_SCANCODE_BACKSLASH, SDL_SCANCODE_K,           SDL_SCANCODE_P,
+    SDL_SCANCODE_BACKSLASH, SDL_SCANCODE_K,           SDL_SCANCODE_S,
     SDL_SCANCODE_E,         SDL_SCANCODE_1,           SDL_SCANCODE_2,
     SDL_SCANCODE_3,         SDL_SCANCODE_4,           SDL_SCANCODE_5,
     SDL_SCANCODE_KP_1,      SDL_SCANCODE_KP_2,        SDL_SCANCODE_SPACE,
-    SDL_SCANCODE_E,         SDL_SCANCODE_M,           SDL_SCANCODE_S,
+    SDL_SCANCODE_E,         SDL_SCANCODE_M,           SDL_SCANCODE_SLASH,
     SDL_SCANCODE_R,         SDL_SCANCODE_F2,          SDL_SCANCODE_F3,
     SDL_SCANCODE_F4,        SDL_SCANCODE_F5,          SDL_SCANCODE_D,
     SDL_SCANCODE_GRAVE,     SDL_SCANCODE_C,           SDL_SCANCODE_KP_PLUS,
-    SDL_SCANCODE_KP_MINUS};
+    SDL_SCANCODE_KP_MINUS,  SDL_SCANCODE_I,           SDL_SCANCODE_P};
 static void preview_open_pattern(Editor *e, int id);
 static bool push(DmBytes *stack, int *count, const DmProject *p);
 static void publish_loop(Editor *e);
@@ -243,6 +245,7 @@ void ed_defaults(Editor *e) {
 
 void ed_message(Editor *e, const char *text) {
     snprintf(e->status, sizeof(e->status), "%s", text);
+    e->status_time = SDL_GetTicks();
 }
 
 DmPattern *ed_pattern(Editor *e) {

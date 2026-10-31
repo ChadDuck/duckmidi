@@ -145,7 +145,7 @@ int main(void) {
     check(ui_init(window, renderer, NULL), "ImGui initialization");
     Editor *e = calloc(1, sizeof(*e));
     check(e != NULL, "editor allocation");
-    editor_init(e, window, renderer, NULL, "", true);
+    editor_init(e, window, renderer, NULL, "", "", true);
     editor_smoke(e);
     frame(e);
     test_editor_mouse(e, check);

@@ -3,7 +3,7 @@
 #include <assert.h>
 
 static void capture(Editor *e, const char *path) {
-    for (int frame = 0; frame < 3; frame++) {
+    for (int frame = 0; frame < 6; frame++) {
         ui_frame();
         editor_frame(e, 1000, 800);
         ui_render(e->renderer);
@@ -41,6 +41,43 @@ static void wait_save(Editor *e) {
     }
 
     assert(!ed_save_busy(e));
+}
+
+/* Shortcut files from before the Preferences shortcut: untouched defaults move, customized ones
+   stay, and a new action whose default is taken gets a free variant instead of resetting the
+   user's shortcuts. Uses generated settings files only. */
+static void load_shortcuts(Editor *e, const char *text) {
+    ed_defaults(e);
+    snprintf(e->settings_path, DM_PATH, "agents/reports/updates-2026-10-31/shortcuts.ini");
+    assert(dm_write(e->settings_path, text, strlen(text), e->status, sizeof(e->status)));
+    e->status[0] = 0;
+    assert(dm_preferences_load(e, ed_shortcut_schema()));
+}
+
+static bool bound(Editor *e, int action, SDL_Scancode key, SDL_Keymod mods) {
+    return e->bindings[action].key == key && e->bindings[action].mods == mods;
+}
+
+static void shortcut_upgrade(Editor *e) {
+    load_shortcuts(e, "[application]\nschema=3\n[shortcuts]\nproject_settings=\"P\"\n"
+                      "solo_selected_channel=\"S\"\n");
+    assert(bound(e, ACT_CONFIG, SDL_SCANCODE_S, 0) && bound(e, ACT_SOLO, SDL_SCANCODE_SLASH, 0) &&
+           bound(e, ACT_PREFERENCES, SDL_SCANCODE_P, 0) && !*e->status);
+
+    load_shortcuts(e, "[application]\nschema=3\n[shortcuts]\nproject_settings=\"O\"\n"
+                      "solo_selected_channel=\"S\"\n");
+    assert(bound(e, ACT_CONFIG, SDL_SCANCODE_O, 0) && bound(e, ACT_SOLO, SDL_SCANCODE_S, 0) &&
+           bound(e, ACT_PREFERENCES, SDL_SCANCODE_P, 0) && !*e->status);
+
+    load_shortcuts(e, "[application]\nschema=3\n[shortcuts]\nproject_settings=\"P\"\n"
+                      "metronome=\"I\"\n");
+    assert(bound(e, ACT_METRONOME, SDL_SCANCODE_I, 0) &&
+           bound(e, ACT_INSTRUMENT, SDL_SCANCODE_I, SDL_KMOD_SHIFT) &&
+           bound(e, ACT_CONFIG, SDL_SCANCODE_S, 0) && !*e->status);
+
+    ed_defaults(e);
+    e->status[0] = 0;
+    puts("PASS older shortcut files keep custom keys and move untouched defaults");
 }
 
 static void preferences(Editor *e) {
@@ -100,6 +137,14 @@ static void percussion(Editor *e) {
     key.key.key = SDLK_Z;
     editor_event(e, &key);
     assert(!e->percussion_listening && !e->percussion_draft[36] && e->percussion_draft[38]);
+
+    /* Not listening: the key plays the drum it is mapped to in the draft. */
+    editor_event(e, &key);
+    assert(e->held[SDL_SCANCODE_Z] == 38 && e->held_channels[SDL_SCANCODE_Z] == MIDI_DRUM_CHANNEL);
+    key.type = SDL_EVENT_KEY_UP;
+    editor_event(e, &key);
+    assert(e->held[SDL_SCANCODE_Z] == -1);
+    key.type = SDL_EVENT_KEY_DOWN;
     ed_percussion_save(e, true);
     assert(e->project.percussion_override && e->dirty);
     capture(e, "agents/reports/backlog-2026-10-29/percussion-mapping.bmp");
@@ -484,6 +529,22 @@ static void imported_generation(void) {
     }
 }
 
+/* The first-launch update question waits for an open file, then fits its contents. No network:
+   nothing is applied or checked. */
+static void updates(Editor *e) {
+    e->active = false;
+    e->update_prompted = false;
+    ed_update_launch(e);
+    capture(e, "agents/reports/updates-2026-10-31/welcome.bmp");
+    assert(!e->update_window && e->update_prompt_pending && !e->update);
+    fixture(e);
+    capture(e, "agents/reports/updates-2026-10-31/updates-window.bmp");
+    assert(e->update_window && !e->update_prompt_pending && e->update_choice == 1 && !e->update);
+    e->update_window = false;
+    e->update_prompted = true;
+    puts("PASS update question waits for an open file");
+}
+
 int main(void) {
     assert(SDL_Init(SDL_INIT_VIDEO));
     SDL_Window *window = SDL_CreateWindow("Backlog checks", 1000, 800, SDL_WINDOW_HIDDEN);
@@ -492,9 +553,12 @@ int main(void) {
     assert(renderer && ui_init(window, renderer, NULL));
     Editor *e = calloc(1, sizeof(*e));
     assert(e);
-    editor_init(e, window, renderer, NULL, "", true);
+    editor_init(e, window, renderer, NULL, "", "", true);
     preferences(e);
     percussion(e);
+    SDL_CreateDirectory("agents/reports/updates-2026-10-31");
+    updates(e);
+    shortcut_upgrade(e);
     gestures(e);
     saves(e);
     generation(e);

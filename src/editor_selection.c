@@ -70,6 +70,10 @@ void ed_delete_selection(Editor *e) {
 
     EditFocus focus = ed_selection_focus(e);
 
+    if (focus == FOCUS_OTHER) {
+        return;
+    }
+
     if (focus == FOCUS_EVENTS) {
         if (!ed_point_editing(e)) {
             return;
@@ -128,6 +132,13 @@ void ed_delete_selection(Editor *e) {
 }
 
 void ed_select_all(Editor *e) {
+    EditFocus focus = ed_selection_focus(e);
+
+    /* The pattern section has no multiple selection, and the mixer has nothing to select. */
+    if (focus == FOCUS_PATTERNS || focus == FOCUS_OTHER) {
+        return;
+    }
+
     if (ed_selection_focus(e) == FOCUS_EVENTS && ed_velocity_editing(e)) {
         for (size_t i = 0; i < ed_pattern(e)->count; ++i) {
             ed_pattern(e)->notes[i].selected = 1;
@@ -433,6 +444,57 @@ static int copy_pattern_between(DmProject *to, const DmProject *from, int source
     return id;
 }
 
+/* The pattern section copies whole patterns, with their automation points, and pastes them as
+   new patterns. */
+static bool copy_pattern_card(Editor *e, DmProject *to) {
+    if (!e->pattern_highlight || !ed_pattern(e)) {
+        return false;
+    }
+
+    snprintf(to->name, sizeof(to->name), "%s", DM_TEXT_PATTERNS_TITLE);
+    return copy_pattern_between(to, &e->project, e->selected_pattern) >= 0;
+}
+
+static bool pattern_name_taken(const DmProject *p, int id) {
+    for (size_t i = 0; i < p->pattern_count; ++i) {
+        if ((int)i != id && !strcmp(p->patterns[i].name, p->patterns[id].name)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void paste_patterns(Editor *e, const DmProject *from) {
+    int last = -1;
+
+    for (size_t i = 0; i < from->pattern_count; ++i) {
+        int id = copy_pattern_between(&e->project, from, (int)i);
+
+        if (id < 0) {
+            break;
+        }
+
+        DmPattern *pat = &e->project.patterns[id];
+        snprintf(pat->base_name, sizeof(pat->base_name), "%s", from->patterns[i].base_name);
+
+        for (uint32_t n = 2; pattern_name_taken(&e->project, id) && n < 100000; ++n) {
+            char postfix[16];
+            snprintf(postfix, sizeof(postfix), "-%u", n);
+            snprintf(pat->name, sizeof(pat->name), "%.*s%s", (int)(63 - strlen(postfix)),
+                     pat->base_name, postfix);
+            pat->duplicate_index = n;
+        }
+
+        last = id;
+    }
+
+    if (last >= 0) {
+        ed_open_pattern(e, last, true);
+        ed_focus_edit(e, FOCUS_PATTERNS);
+    }
+}
+
 static bool copy_notes(Editor *e, DmProject *to) {
     DmPattern *p = ed_pattern(e);
 
@@ -604,7 +666,9 @@ static void paste_clips(Editor *e, const DmProject *from, double at) {
 }
 
 void ed_paste(Editor *e) {
-    if (ed_selection_focus(e) == FOCUS_EVENTS && !ed_point_editing(e)) {
+    EditFocus focus = ed_selection_focus(e);
+
+    if ((focus == FOCUS_EVENTS && !ed_point_editing(e)) || focus == FOCUS_OTHER) {
         return;
     }
 
@@ -620,16 +684,16 @@ void ed_paste(Editor *e) {
         ed_deselect(e);
         double at = e->cursor_beat[e->context == 2];
 
-        if (ed_selection_focus(e) == FOCUS_EVENTS && ed_point_editing(e) &&
-            !strcmp(from.name, DM_TEXT_EVENTS)) {
+        if (focus == FOCUS_PATTERNS) {
+            if (!strcmp(from.name, DM_TEXT_PATTERNS_TITLE)) {
+                paste_patterns(e, &from);
+            }
+        } else if (focus == FOCUS_EVENTS && ed_point_editing(e) &&
+                   !strcmp(from.name, DM_TEXT_EVENTS)) {
             ed_paste_events(e, &from, at);
-        }
-
-        if (e->context == 2 && !strcmp(from.name, DM_TEXT_NOTES)) {
+        } else if (e->context == 2 && !strcmp(from.name, DM_TEXT_NOTES)) {
             paste_notes(e, &from, at);
-        }
-
-        if (e->context == 1 && !strcmp(from.name, DM_TEXT_CLIPS)) {
+        } else if (e->context == 1 && !strcmp(from.name, DM_TEXT_CLIPS)) {
             paste_clips(e, &from, at);
         }
 
@@ -649,12 +713,18 @@ void ed_clipboard(Editor *e, int mode) {
         return;
     }
 
+    EditFocus focus = ed_selection_focus(e);
+
+    if (focus == FOCUS_OTHER) {
+        return; /* The mixer and other panels have nothing to copy. */
+    }
+
     DmProject copy;
     dm_project_init(&copy);
-    bool ok = ed_selection_focus(e) == FOCUS_EVENTS
-                  ? ed_point_editing(e) && ed_copy_events(e, &copy)
-              : e->context == 2 ? copy_notes(e, &copy)
-                                : copy_clips(e, &copy);
+    bool ok = focus == FOCUS_EVENTS     ? ed_point_editing(e) && ed_copy_events(e, &copy)
+              : focus == FOCUS_PATTERNS ? copy_pattern_card(e, &copy)
+              : e->context == 2         ? copy_notes(e, &copy)
+                                        : copy_clips(e, &copy);
 
     if (ok) {
         DmBytes bytes = {0};

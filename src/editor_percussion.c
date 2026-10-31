@@ -63,9 +63,47 @@ void ed_percussion_open(Editor *e) {
     e->percussion_feedback[0] = 0;
 }
 
-bool ed_percussion_key(Editor *e, const SDL_KeyboardEvent *key) {
-    if (!e->percussion_window || !e->percussion_listening) {
+/* While the window is open, piano keys play the drums of the mapping being edited, as the
+   instrument window plays its instrument. */
+static bool percussion_preview(Editor *e, const SDL_KeyboardEvent *key) {
+    int index = ed_piano_index(key->scancode);
+
+    if (index < 0 || ed_normalized(key->mod)) {
         return false;
+    }
+
+    if (key->repeat) {
+        return true;
+    }
+
+    for (int note = 0; note < 128; note++) {
+        if (e->percussion_draft[note] != index + 1) {
+            continue;
+        }
+
+        if (e->preview_route >= 0 && e->preview_route != MIDI_DRUM_CHANNEL) {
+            dm_audio_keyboard_program(e->audio, e->preview_route, -1);
+        }
+
+        e->held[key->scancode] = note;
+        e->record_start[note] = -1;
+        e->held_channels[key->scancode] = MIDI_DRUM_CHANNEL;
+        dm_audio_keyboard_program(e->audio, MIDI_DRUM_CHANNEL, 0);
+        dm_audio_preview(e->audio, MIDI_DRUM_CHANNEL, note, 100, true);
+        e->preview_route = MIDI_DRUM_CHANNEL;
+        break;
+    }
+
+    return true;
+}
+
+bool ed_percussion_key(Editor *e, const SDL_KeyboardEvent *key) {
+    if (!e->percussion_window) {
+        return false;
+    }
+
+    if (!e->percussion_listening) {
+        return percussion_preview(e, key);
     }
 
     if (key->scancode == SDL_SCANCODE_ESCAPE) {

@@ -53,7 +53,7 @@ static void automation_grid(Editor *e, UiRect lane, View *v, float scale) {
 
         for (int i = 0; i <= 8; ++i) {
             int value = i == 8 ? maximum : i * (maximum + 1) / 8;
-            float y = lane.y + lane.h - 8 - (float)value / maximum * (lane.h - 16);
+            float y = lane.y + lane.h - 8 - (float)value / maximum * (lane.h - 8);
             ui_line((UiPoint){lane.x, y}, (UiPoint){lane.x + lane.w, y}, GRID, 1);
         }
 
@@ -443,7 +443,7 @@ static UiPoint lfo_point(Editor *e, DmPattern *p, UiRect lane, View *v, float sc
            value =
                p->event == -2 ? dm_lfo_value(p, beat) : fmax(0, fmin(127, p->center + 63.5 * wave)),
            maximum = p->event == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
-    float y = lane.y + lane.h - 8 - (float)(value / maximum) * (lane.h - 16);
+    float y = lane.y + lane.h - 8 - (float)(value / maximum) * (lane.h - 8);
 
     if (p->event == -2 && !e->automation_raw) {
         y = lane.y + lane.h * .5f -
@@ -485,10 +485,10 @@ void ed_lfo_center_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse, boo
     }
 
     if (mouse.left) {
-        double units = p->event == -2 ? 1 / ed_lane_step(lane) : 127 / (lane.h - 16);
+        double units = p->event == -2 ? 1 / ed_lane_step(lane) : 127 / (lane.h - 8);
 
         if (p->event == -2 && e->automation_raw) {
-            units = e->lfo_center_range * 2 / (lane.h - 16);
+            units = e->lfo_center_range * 2 / (lane.h - 8);
         }
 
         double value =
@@ -745,7 +745,7 @@ bool ed_note_velocity_wheel(Editor *e, DmPattern *p, UiRect r, View *v, float la
 
 static UiPoint velocity_point(DmNote note, UiRect lane, View *v, float scale) {
     return (UiPoint){lane.x + (float)note.beat * scale - v->scroll_x,
-                     lane.y + lane.h - 8 - note.velocity * (lane.h - 16) / 127.0f};
+                     lane.y + lane.h - 8 - note.velocity * (lane.h - 8) / 127.0f};
 }
 
 static void velocity_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse) {
@@ -754,7 +754,7 @@ static void velocity_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse) {
     }
 
     if (mouse.left && ed_gesture_moved(e, mouse)) {
-        int target = (int)roundf(e->node_value + (e->node_y - mouse.pos.y) * 127 / (lane.h - 16));
+        int target = (int)roundf(e->node_value + (e->node_y - mouse.pos.y) * 127 / (lane.h - 8));
 
         if (!mouse.alt) {
             target = (int)lround(target / 10.0) * 10;
@@ -827,8 +827,9 @@ static void velocity_panel(Editor *e, UiRect lane, View *v, float scale, UiMouse
     DmPattern *p = ed_pattern(e);
     ui_rect(lane, COLOR(18, 18, 18), 0);
 
-    for (int value = 0; value <= 127; value += 10) {
-        float y = lane.y + lane.h - 8 - value * (lane.h - 16) / 127;
+    /* Lines every 10, plus one at 127 along the top edge. */
+    for (int value = 0; value <= 127; value = value == 120 ? 127 : value + 10) {
+        float y = lane.y + lane.h - 8 - value * (lane.h - 8) / 127;
         ui_line((UiPoint){lane.x, y}, (UiPoint){lane.x + lane.w, y}, GRID, 1);
     }
 

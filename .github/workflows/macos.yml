@@ -1,0 +1,34 @@
+# Builds and tests duckmidi on macOS (Apple Silicon).
+name: macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cmake ninja pkgconf sdl3 fluid-synth ffmpeg
+
+      - name: Configure
+        run: cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+
+      - name: Build
+        run: cmake --build build/development/cmake
+
+      - name: Test
+        run: ctest --test-dir build/development/cmake --output-on-failure
+
+      - name: Upload build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckmidi-macos-arm64
+          path: build/development/cmake/bin/
+          if-no-files-found: ignore

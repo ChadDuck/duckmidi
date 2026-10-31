@@ -427,7 +427,7 @@ void ed_instrument(Editor *e) {
             open = false;
         }
 
-        if (ui_button("Apply", ui_available().x, 0) || e->instrument_accept) {
+        if (ui_button(DM_TEXT_APPLY, ui_available().x, 0) || e->instrument_accept) {
             open = false;
         }
     }
@@ -435,7 +435,14 @@ void ed_instrument(Editor *e) {
     ui_end();
 
     if (!open) {
+        /* Opened with the instrument shortcut, the choice also becomes the pattern editor's
+           instrument, which then follows the channel. */
+        if (e->instrument_preview && e->project.channels[c].enabled) {
+            ed_preview_channel(e, c, true);
+        }
+
         e->instrument_accept = false;
+        e->instrument_preview = false;
         e->instrument_channel = -1;
     }
 }
@@ -477,6 +484,11 @@ static void midi_preferences(Editor *e) {
 void ed_preferences(Editor *e) {
     if (!e->preferences) {
         return;
+    }
+
+    if (e->preferences_raise) {
+        ui_raise_next();
+        e->preferences_raise = false;
     }
 
     bool show = ui_dialog(DM_TEXT_PREFERENCES, &e->preferences, 630, 400);
@@ -544,8 +556,10 @@ void ed_preferences(Editor *e) {
 static void shortcut_row(Editor *e, int i) {
     ui_id(i);
 
-    /* Action names are also preference keys; this label changed after release. */
-    ui_text(i == ACT_NOTE_COLOR ? DM_TEXT_COLOR_NOTES_PATTERNS : ed_action_names[i]);
+    /* Action names are also preference keys; these labels changed after release. */
+    ui_text(i == ACT_NOTE_COLOR   ? DM_TEXT_COLOR_NOTES_PATTERNS
+            : i == ACT_SONG_EVENT ? DM_TEXT_EVENTS_SHORTCUT
+                                  : ed_action_names[i]);
     ui_same();
     UiPoint cursor = ui_cursor(), window = ui_window();
     ui_position(window.x + 360, cursor.y);

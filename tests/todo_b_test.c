@@ -269,7 +269,7 @@ static void first_boot(Editor *e) {
                  "build/development/bundle-fixture/assets/TimGM6mb.sf2");
     Editor *boot = calloc(1, sizeof(*boot));
     assert(boot);
-    editor_init(boot, e->window, e->renderer, e->audio, "build/development/bundle-fixture/", false);
+    editor_init(boot, e->window, e->renderer, e->audio, "build/development/bundle-fixture/", "build/development/bundle-fixture/", false);
     audio_job(e->audio);
     assert(boot->active && boot->project.pattern_count > 0 &&
            strstr(boot->preferred_font, "assets/TimGM6mb.sf2") &&
@@ -279,7 +279,7 @@ static void first_boot(Editor *e) {
     free(boot);
     boot = calloc(1, sizeof(*boot));
     assert(boot);
-    editor_init(boot, e->window, e->renderer, e->audio, "build/development/bundle-fixture/", false);
+    editor_init(boot, e->window, e->renderer, e->audio, "build/development/bundle-fixture/", "build/development/bundle-fixture/", false);
     audio_job(e->audio);
     assert(!boot->active && strstr(boot->preferred_font, "assets/TimGM6mb.sf2"));
     editor_free(boot);
@@ -303,7 +303,7 @@ int main(void) {
     audio_job(audio);
     Editor *e = calloc(1, sizeof(*e));
     assert(e);
-    editor_init(e, window, renderer, audio, "", true);
+    editor_init(e, window, renderer, audio, "", "", true);
     names();
     sample();
     routing(e);

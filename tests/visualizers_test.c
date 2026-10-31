@@ -40,7 +40,7 @@ int main(void) {
 
     recording_feedback_audio_pause(audio);
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, audio, "", true);
+    editor_init(e, w, r, audio, "", "", true);
     editor_smoke(e);
     e->project.patterns[0].count = 0;
     dm_note_add(&e->project.patterns[0], (DmNote){0, 16, 69, 100, 0});

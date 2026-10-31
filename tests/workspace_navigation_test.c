@@ -86,7 +86,7 @@ static void startup(SDL_Window *window, SDL_Renderer *renderer) {
     SDL_CreateDirectory(base);
     SDL_RemovePath("agents/reports/workspace_navigation-startup/duckmidi-settings.ini");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, window, renderer, NULL, base, false);
+    editor_init(e, window, renderer, NULL, base, base, false);
     SDL_PathInfo info;
     check(SDL_GetPathInfo(e->settings_path, &info),
           "first launch generates configuration beside app");
@@ -97,7 +97,7 @@ static void startup(SDL_Window *window, SDL_Renderer *renderer) {
     char error[512];
     DmAudio *audio = dm_audio_create(error, sizeof(error));
     check(audio != NULL, "audio for preference restoration");
-    editor_init(e, window, renderer, audio, base, false);
+    editor_init(e, window, renderer, audio, base, base, false);
     check(!strcmp(e->preferred_font, "agents/reports/generated-sine.sf2") &&
               !strcmp(e->project.soundfont, e->preferred_font),
           "next launch restores selected SoundFont");
@@ -197,7 +197,7 @@ int main(void) {
     SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
     check(w && r && ui_init(w, r, NULL), "hidden renderer");
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", true);
+    editor_init(e, w, r, NULL, "", "", true);
     configuration(e);
     startup(w, r);
     navigation(e);

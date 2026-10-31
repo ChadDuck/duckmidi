@@ -1,6 +1,8 @@
 #include "editor_internal.h"
 #include "text/en.h"
 
+#define STATUS_DURATION_MS 5000 /* How long a status message stays in the status bar. */
+
 static void record_button(Editor *e, bool playing);
 static void tempo_control(Editor *e);
 static void duration_control(Editor *e);
@@ -45,11 +47,23 @@ void ed_info_box(Editor *e) {
         return;
     }
 
-    const char *text = *e->hover ? e->hover : e->status;
-    ui_rect(r, COLOR(22, 26, 29), 6);
-    ui_border(r, *e->hover ? (e->accent & 0x00ffffffu) | 0x90000000u : GRID, 6, 1);
-    ui_label_fit((UiPoint){r.x + 12, r.y + (r.h - ui_font_size()) * .5f}, r.w - 24,
-                 *e->hover ? TEXT : DIM, text);
+    /* Status messages show for a few seconds after they are posted; hover help shows while the
+       pointer stays on its item. Text written straight into e->status counts as posted when it
+       changes. */
+    uint64_t now = SDL_GetTicks();
+
+    if (strcmp(e->status_shown, e->status)) {
+        snprintf(e->status_shown, sizeof(e->status_shown), "%s", e->status);
+        e->status_time = now;
+    }
+
+    bool recent = *e->status && now - e->status_time < STATUS_DURATION_MS;
+    const char *text = *e->hover ? e->hover : recent ? e->status : "";
+
+    if (*text) {
+        ui_label_fit((UiPoint){r.x + 12, r.y + (r.h - ui_font_size()) * .5f}, r.w - 24,
+                     *e->hover ? TEXT : DIM, text);
+    }
 }
 
 void ed_new_song_event(Editor *e) {
@@ -74,11 +88,17 @@ const char *ed_binding_text(Editor *e, Action action, char *out, size_t capacity
     return out;
 }
 
+/* Short button help goes to the status bar info text; tooltips are kept for longer
+   explanations, so the same text never shows twice. */
 void ed_action_tip(Editor *e, const char *name, Action ed_action) {
+    if (!ui_hover()) {
+        return;
+    }
+
     char binding[96], text[256];
     snprintf(text, sizeof(text), "%s (%s)", name,
              ed_binding_text(e, ed_action, binding, sizeof(binding)));
-    ui_tip(text);
+    ed_hover(e, text);
 }
 
 static void record_button(Editor *e, bool playing) {
@@ -189,7 +209,10 @@ void ed_toolbar(Editor *e) {
         }
     }
 
-    ui_tip(DM_TEXT_STOP_PANIC_HELP);
+    if (ui_hover()) {
+        ed_hover(e, DM_TEXT_STOP_PANIC_HELP);
+    }
+
     ui_same();
     record_button(e, playing);
     ui_same();
@@ -327,6 +350,8 @@ static void file_menu(Editor *e) {
 }
 
 static void edit_menu(Editor *e) {
+    char key[64];
+
     if (ui_menu(DM_TEXT_EDIT)) {
         if (ui_menu_item(DM_TEXT_UNDO, DM_TEXT_CTRL_Z, e->undo_count > 0)) {
             ed_undo(e, false);
@@ -352,7 +377,8 @@ static void edit_menu(Editor *e) {
 
         ui_separator();
 
-        if (ui_menu_item(DM_TEXT_PROJECT_SETTINGS, DM_TEXT_P, e->active)) {
+        if (ui_menu_item(DM_TEXT_PROJECT_SETTINGS, ed_binding_text(e, ACT_CONFIG, key, sizeof(key)),
+                         e->active)) {
             e->config = true;
         }
 
@@ -366,11 +392,13 @@ static void edit_menu(Editor *e) {
             e->midi_event_index = -1;
         }
 
-        if (ui_menu_item(DM_TEXT_KEYBOARD_SHORTCUTS, DM_TEXT_K, true)) {
+        if (ui_menu_item(DM_TEXT_KEYBOARD_SHORTCUTS,
+                         ed_binding_text(e, ACT_SHORTCUTS, key, sizeof(key)), true)) {
             e->shortcuts = true;
         }
 
-        if (ui_menu_item(DM_TEXT_PREFERENCES, NULL, true)) {
+        if (ui_menu_item(DM_TEXT_PREFERENCES, ed_binding_text(e, ACT_PREFERENCES, key, sizeof(key)),
+                         true)) {
             e->preferences = true;
         }
 
@@ -399,18 +427,22 @@ static void ui_size_menu(Editor *e) {
 }
 
 static void view_menu(Editor *e) {
+    char key[64];
+
     if (ui_menu(DM_TEXT_VIEW)) {
         ui_size_menu(e);
 
-        if (ui_menu_item(DM_TEXT_SONG_EVENTS, DM_TEXT_SHIFT_E, e->active)) {
+        if (ui_menu_item(DM_TEXT_SONG_EVENTS, NULL, e->active)) {
             ed_new_song_event(e);
         }
 
-        if (ui_menu_item(DM_TEXT_PIANO_ROLL_TITLE, DM_TEXT_E, true)) {
+        if (ui_menu_item(DM_TEXT_PIANO_ROLL_TITLE, ed_binding_text(e, ACT_EDITOR, key, sizeof(key)),
+                         true)) {
             ed_toggle_roll(e);
         }
 
-        if (ui_menu_item(DM_TEXT_COMPUTER_KEYBOARD_PIANO, DM_TEXT_INSERT, true)) {
+        if (ui_menu_item(DM_TEXT_COMPUTER_KEYBOARD_PIANO,
+                         ed_binding_text(e, ACT_PIANO, key, sizeof(key)), true)) {
             ed_release_piano(e);
             e->piano = !e->piano;
         }
@@ -425,6 +457,10 @@ static void view_menu(Editor *e) {
 
 static void help_menu(Editor *e) {
     if (ui_menu(DM_TEXT_HELP)) {
+        if (ui_menu_item(DM_TEXT_CHECK_FOR_UPDATE, NULL, true)) {
+            ed_update_open(e);
+        }
+
         if (ui_menu_item(DM_TEXT_ABOUT_DUCKMIDI, NULL, true)) {
             e->about = true;
         }

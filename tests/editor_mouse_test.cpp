@@ -2080,7 +2080,7 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     mouse_frame(e, 0, 0, false);
     auto lane = recording_feedback_event_lane();
     x = lane.x + 80;
-    y = lane.y + lane.h - 8 - 64.0f / 127 * (lane.h - 16);
+    y = lane.y + lane.h - 8 - 64.0f / 127 * (lane.h - 8);
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
     mouse_frame(e, x, y - 20, true);
@@ -2269,7 +2269,7 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     e->tool = 0;
     e->event_selection.size = 0;
     e->automation_node = -1;
-    float vy = lane.y + lane.h - 8 - 64.0f / 127 * (lane.h - 16);
+    float vy = lane.y + lane.h - 8 - 64.0f / 127 * (lane.h - 8);
     mouse_frame(e, lane.x + 240, vy, false);
     mouse_frame(e, lane.x + 240, vy, true);
     source_workflow_capture(e, "agents/reports/source_workflow-value-tip.bmp");
@@ -2593,14 +2593,14 @@ extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const ch
     auto lane = pattern_workflow_lane();
     check(lane.w > 100 && lane.h > 30, "velocity lane fills existing event panel");
     x = lane.x + 20;
-    y = lane.y + lane.h - 8 - 45 * (lane.h - 16) / 127;
+    y = lane.y + lane.h - 8 - 45 * (lane.h - 8) / 127;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
-    mouse_frame(e, x, y - 25 * (lane.h - 16) / 127, true);
-    mouse_frame(e, x, y - 25 * (lane.h - 16) / 127, false);
+    mouse_frame(e, x, y - 25 * (lane.h - 8) / 127, true);
+    mouse_frame(e, x, y - 25 * (lane.h - 8) / 127, false);
     check(p.notes[0].velocity == 70 && p.notes[1].velocity == 95,
           "velocity stem drag snaps anchor to tens and moves group relatively");
-    y = lane.y + lane.h - 8 - 70 * (lane.h - 16) / 127;
+    y = lane.y + lane.h - 8 - 70 * (lane.h - 8) / 127;
     mouse_frame(e, x, y, false, true);
     mouse_frame(e, x, y, true, true);
     mouse_frame(e, x, y - 3, true, true);
@@ -2623,7 +2623,7 @@ extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const ch
     e->edit_focus = FOCUS_EVENTS;
     direct_key(e, SDL_SCANCODE_A, SDL_KMOD_CTRL);
     x = lane.x + 120;
-    y = lane.y + lane.h - 8 - 60 * (lane.h - 16) / 127;
+    y = lane.y + lane.h - 8 - 60 * (lane.h - 8) / 127;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
     mouse_frame(e, x + 40, y - 10, true);

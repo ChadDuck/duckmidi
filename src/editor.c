@@ -1,4 +1,5 @@
 #include "editor_internal.h"
+#include "update.h"
 #include "text/en.h"
 
 static void footer(Editor *e, UiPoint origin, float body);
@@ -7,7 +8,7 @@ static void editor_pointer_state(Editor *e);
 static void right_workspace(Editor *e, float right, float body, UiPoint origin);
 
 void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio *audio,
-                 const char *base, bool smoke) {
+                 const char *base, const char *data, bool smoke) {
     memset(e, 0, sizeof(*e));
     e->window = window;
     e->renderer = renderer;
@@ -24,6 +25,8 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->display = SDL_GetDisplayForWindow(window);
     e->selected_pattern = -1;
     e->instrument_channel = -1;
+    e->instrument_preview = false;
+    e->preferences_raise = false;
     e->selected_clip = -1;
     e->context_note = -1;
     e->capture = -1;
@@ -39,6 +42,17 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->midi_event_index = -1;
     e->midi_split = 0; /* Centered when the MIDI Events window first opens. */
     e->ui_size = 1;
+    e->status_time = 0;
+    e->context_point = -1;
+    snprintf(e->base_path, sizeof(e->base_path), "%s", base);
+    e->update = NULL;
+    e->update_mode = 0;
+    e->update_choice = 0;
+    e->update_window = e->update_prompted = e->update_announced = false;
+    e->update_install = e->update_restart = false;
+    e->update_prompt_pending = false;
+    e->sample_hash = 0;
+    e->status_shown[0] = 0;
     e->os_cursor = false;
     e->midi_values = false;
     e->event_ruler_drag = false;
@@ -63,7 +77,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     ed_defaults(e);
     dm_project_init(&e->project);
     ed_dialog_event = SDL_RegisterEvents(1);
-    snprintf(e->settings_path, sizeof(e->settings_path), DM_TEXT_SDUCKMIDI_SETTINGS_INI, base);
+    snprintf(e->settings_path, sizeof(e->settings_path), DM_TEXT_SDUCKMIDI_SETTINGS_INI, data);
     ed_message(e, DM_TEXT_READY_OPEN_MIDI);
 
     if (!smoke) {
@@ -82,6 +96,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
             if (paths && SDL_GetPathInfo(font, &font_info) && font_info.type == SDL_PATHTYPE_FILE &&
                 SDL_GetPathInfo(sample, &sample_info) && sample_info.type == SDL_PATHTYPE_FILE) {
                 ed_load(e, sample);
+                e->sample_hash = dm_file_fingerprint(sample);
 
                 if (e->active) {
                     snprintf(e->preferred_font, DM_PATH, "%s", font);
@@ -124,6 +139,8 @@ void editor_free(Editor *e) {
     ed_generate_free(e);
     ed_save_free(e);
     ed_export_free(e);
+    dm_update_destroy(e->update);
+    e->update = NULL;
     dm_audio_analyzer_enable(e->audio, false);
     free(e->drag_notes);
     ed_preference_save(e);
@@ -163,6 +180,8 @@ void editor_background(Editor *e) {
     int job = 0;
 
     if (dm_audio_poll(e->audio, e->status, sizeof(e->status), &success, &job)) {
+        e->status_time = SDL_GetTicks();
+
         if (job == 2) {
             if (success && *e->audio_export_pending) {
                 snprintf(e->audio_exported, DM_PATH, "%s", e->audio_export_pending);

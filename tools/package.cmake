@@ -9,11 +9,25 @@ if(WIN32)
   endif()
 endif()
 install(FILES docs/user-guide.md docs/sm64-export.md docs/plugin-api.md DESTINATION docs)
-include("${CMAKE_CURRENT_LIST_DIR}/changelog.cmake")
 install(FILES LICENSE DESTINATION licenses RENAME duckmidi-MIT.txt)
 install(DIRECTORY vendor/licenses/ DESTINATION licenses FILES_MATCHING PATTERN "*.txt")
 
-set(DUCKMIDI_DELIVERY_TYPE "" CACHE STRING "Full or Core for a replaceable named delivery; empty for a dated delivery")
+# Deliveries are named duckmidi-vVERSION-TYPE. The type follows DUCKMIDI_PRODUCTION (Full bundles
+# the SoundFont and sample, Core does not) unless DUCKMIDI_DELIVERY_TYPE names it.
+set(DUCKMIDI_DELIVERY_TYPE "" CACHE STRING "Full or Core; empty follows DUCKMIDI_PRODUCTION")
+if(DUCKMIDI_DELIVERY_TYPE STREQUAL "" AND DUCKMIDI_PRODUCTION)
+  set(DELIVERY_TYPE_NAME Full)
+elseif(DUCKMIDI_DELIVERY_TYPE STREQUAL "")
+  set(DELIVERY_TYPE_NAME Core)
+elseif(DUCKMIDI_DELIVERY_TYPE STREQUAL "Full" AND NOT DUCKMIDI_PRODUCTION)
+  message(FATAL_ERROR "Full deliveries need -DDUCKMIDI_PRODUCTION=ON.")
+elseif(DUCKMIDI_DELIVERY_TYPE STREQUAL "Core" AND DUCKMIDI_PRODUCTION)
+  message(FATAL_ERROR "Core deliveries need -DDUCKMIDI_PRODUCTION=OFF.")
+elseif(DUCKMIDI_DELIVERY_TYPE MATCHES "^(Full|Core)$")
+  set(DELIVERY_TYPE_NAME "${DUCKMIDI_DELIVERY_TYPE}")
+else()
+  message(FATAL_ERROR "DUCKMIDI_DELIVERY_TYPE must be Full, Core or empty.")
+endif()
 set(PACKAGE_DOCS "${CMAKE_CURRENT_BINARY_DIR}/docs")
 file(MAKE_DIRECTORY "${PACKAGE_DOCS}")
 configure_file(THIRD_PARTY_NOTICES.md "${PACKAGE_DOCS}/notices-source.md" COPYONLY)
@@ -52,13 +66,13 @@ if(DUCKMIDI_PRODUCTION)
   set(BUNDLE_HELP "Includes a default SoundFont and projects/funky-beat.duck, opened on first launch.")
 endif()
 file(WRITE "${PACKAGE_DOCS}/README.txt"
-  "duckmidi ${DUCKMIDI_DELIVERY_VERSION}\n\nKeep the runtime libraries and plugins/ beside the executable. ${BUNDLE_HELP}\n\nSee user-guide.md, sm64-export.md and plugin-api.md in this docs/ folder, and ../changelog/CHANGELOG.md for changes in this version.\n\nduckmidi uses the MIT license; see ../licenses/duckmidi-MIT.txt and ../licenses/THIRD_PARTY_NOTICES.md.\n")
+  "duckmidi ${DUCKMIDI_DELIVERY_VERSION}\n\nKeep the runtime libraries and plugins/ beside the executable. ${BUNDLE_HELP}\n\nSee user-guide.md, sm64-export.md and plugin-api.md in this docs/ folder.\n\nduckmidi uses the MIT license; see ../licenses/duckmidi-MIT.txt and ../licenses/THIRD_PARTY_NOTICES.md.\n")
 install(FILES "${PACKAGE_DOCS}/README.txt" DESTINATION docs)
 install(FILES "${PACKAGE_DOCS}/THIRD_PARTY_NOTICES.md" DESTINATION licenses)
 add_custom_target(deliver
   COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
     "-DBUILD_DIR=${CMAKE_BINARY_DIR}" "-DVERSION=${DUCKMIDI_DELIVERY_VERSION}" "-DCONFIG=$<CONFIG>"
-    "-DDELIVERY_TYPE=${DUCKMIDI_DELIVERY_TYPE}"
+    "-DDELIVERY_TYPE=${DELIVERY_TYPE_NAME}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/deliver.cmake"
   DEPENDS duckmidi
   USES_TERMINAL VERBATIM)

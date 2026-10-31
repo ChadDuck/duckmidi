@@ -384,7 +384,7 @@ int main(void) {
 
     recording_feedback_audio_pause(audio);
     Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, audio, "", true);
+    editor_init(e, w, r, audio, "", "", true);
     ui_frame();
     defaults_and_placement(e);
     recording_and_pause(e);

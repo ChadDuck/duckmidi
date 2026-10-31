@@ -412,6 +412,19 @@ static bool commit_install(DmPluginWork *w) {
             change->backup_created = true;
         }
 
+        /* A new file may go in a folder the checkout has not created yet. */
+        if (!change->existed) {
+            char folder[DM_PATH];
+            snprintf(folder, sizeof(folder), "%s", change->path);
+            char *slash = strrchr(folder, '/'), *backslash = strrchr(folder, '\\');
+            char *cut = slash > backslash ? slash : backslash;
+
+            if (cut) {
+                *cut = 0;
+                SDL_CreateDirectory(folder);
+            }
+        }
+
         if (!dm_write(change->path, file->data.data, file->data.size, error, sizeof(error))) {
             snprintf(w->message, sizeof(w->message), DM_TEXT_CANNOT_WRITE, file->path, error);
             return false;
