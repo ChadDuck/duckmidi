@@ -134,16 +134,22 @@ static void switches_and_glide(Editor *e) {
     }
 
     fixture(e, 5, true);
-    UiMouse m = {.clicked = true, .left = true, .shift = true, .pos = {180, 180}};
+    /* Dragging past the click buffer draws a section; release places it. */
+    UiMouse m = {.clicked = true, .left = true, .pos = {180, 180}};
     ed_automation_lane_click(e, lane, &v, 80, m, -1);
+    check(e->drag == 12 && e->project.automation_count == 0,
+          "a press waits to tell a click from a drag");
     m.clicked = false;
+    m.pos = (UiPoint){200, 180};
+    ed_automation_press(e, lane, &v, 80, m);
+    check(e->drag == 4, "moving past the buffer starts a line");
     m.left = false;
     m.released = true;
     ed_automation_drag(e, lane, &v, 80, m);
-    check(e->project.automation_count == 3,
-          "single Shift portamento click creates bounded section");
-    m = (UiMouse){.clicked = true, .pos = {340, 140}};
+    check(e->project.automation_count == 3, "dragged portamento line creates bounded section");
+    m = (UiMouse){.clicked = true, .shift = true, .pos = {340, 140}};
     ed_automation_lane_click(e, lane, &v, 80, m, -1);
+    ed_automation_press(e, lane, &v, 80, (UiMouse){.released = true, .pos = {340, 140}});
     check(e->project.automation_count == 4, "portamento connects additional points");
     DmSchedule s = {0};
     check(dm_schedule(&e->project, &s), "schedule automatic portamento switch");
@@ -189,6 +195,8 @@ static void program_change_points(Editor *e) {
         e->automation_node = -1;
         ed_automation_lane_click(e, lane, &v, 80,
                                  (UiMouse){.clicked = true, .pos = {140 + 80.0f * i, 180}}, -1);
+        ed_automation_press(e, lane, &v, 80,
+                            (UiMouse){.released = true, .pos = {140 + 80.0f * i, 180}});
     }
 
     size_t added = e->project.automation_count;

@@ -126,6 +126,9 @@ typedef struct {
     int ui_size;
     bool os_cursor;
     bool event_ruler_drag;
+    bool event_free;           /* Alt was held when an event point or line was started. */
+    bool event_connect; /* Shift was held: the clicked point connects to the nearest one. */
+    uint64_t event_press_tick; /* When the pending event-lane press began (drag 12). */
     bool midi_values, midi_hex;
     char midi_error[160];
     DmBytes midi_draft, midi_text;

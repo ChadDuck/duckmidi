@@ -529,6 +529,58 @@ void dm_pattern_remove(DmProject *p, int id) {
     --p->pattern_count;
 }
 
+int dm_pattern_move(DmProject *p, int from, int before) {
+    int count = (int)p->pattern_count;
+
+    if (from < 0 || from >= count || before < 0 || before > count) {
+        return from;
+    }
+
+    /* Index the pattern takes once it is removed and inserted before the pattern at "before". */
+    int to = before > from ? before - 1 : before;
+
+    if (to == from) {
+        return from;
+    }
+
+    DmPattern moved = p->patterns[from];
+
+    if (to > from) {
+        memmove(p->patterns + from, p->patterns + from + 1,
+                (size_t)(to - from) * sizeof(DmPattern));
+    } else {
+        memmove(p->patterns + to + 1, p->patterns + to, (size_t)(from - to) * sizeof(DmPattern));
+    }
+
+    p->patterns[to] = moved;
+
+    for (size_t i = 0; i < p->clip_count; ++i) {
+        p->clips[i].pattern = dm_pattern_moved_index(p->clips[i].pattern, from, to);
+    }
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        p->automation[i].pattern = dm_pattern_moved_index(p->automation[i].pattern, from, to);
+    }
+
+    return to;
+}
+
+int dm_pattern_moved_index(int index, int from, int to) {
+    if (index == from) {
+        return to;
+    }
+
+    if (from < to && index > from && index <= to) {
+        return index - 1;
+    }
+
+    if (to < from && index >= to && index < from) {
+        return index + 1;
+    }
+
+    return index;
+}
+
 double dm_clip_length(const DmProject *p, DmClip c) {
     return c.length > 0 ? c.length : fmax(0, p->patterns[c.pattern].length - c.offset);
 }
@@ -697,9 +749,20 @@ bool dm_automation_add(DmProject *p, DmAutomation a) {
     return true;
 }
 
+/* Whether a point curves toward the next point of its line; otherwise its value holds. */
+bool dm_automation_curves(DmAutomation a) {
+    return a.type != MIDI_PROGRAM && ((a.curve > 0 && !a.hold) || (!a.curve && a.ramp));
+}
+
+/* A point's value: pitch bends use both data bytes; program and channel pressure the first. */
+static double automation_value(DmAutomation a) {
+    return a.type == MIDI_PITCH_BEND                                   ? a.a + (a.b << 7)
+           : a.type == MIDI_PROGRAM || a.type == MIDI_CHANNEL_PRESSURE ? a.a
+                                                                       : a.b;
+}
+
 double dm_curve_value(DmAutomation first, DmAutomation last, double t) {
-    double a = first.type == MIDI_PITCH_BEND ? first.a + (first.b << 7) : first.b;
-    double b = last.type == MIDI_PITCH_BEND ? last.a + (last.b << 7) : last.b;
+    double a = automation_value(first), b = automation_value(last);
     double value = a + (b - a) * t + first.bend * 4 * t * (1 - t);
     return fmax(0, fmin(first.type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX, value));
 }

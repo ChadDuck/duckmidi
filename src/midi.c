@@ -1365,9 +1365,10 @@ static double clip_end(const DmProject *p, const DmClip *clip) {
 }
 
 static bool curve_sample(Midi *m, const DmClip *clip, DmAutomation a, double beat, int value) {
+    /* Program and channel pressure carry their value in the first data byte. */
     uint8_t first = a.type == MIDI_PITCH_BEND ? value & MIDI_DATA_MASK
-                    : a.type == MIDI_PROGRAM  ? value
-                                              : a.a;
+                    : a.type == MIDI_PROGRAM || a.type == MIDI_CHANNEL_PRESSURE ? value
+                                                                                : a.a;
     uint8_t second = a.type == MIDI_PITCH_BEND ? (value >> 7) & MIDI_DATA_MASK : value;
     uint8_t message[] = {a.type | clip->channel, first, second};
     return add_message(m, clip_time(clip, beat), clip->channel + 1, message,
@@ -1377,7 +1378,7 @@ static bool curve_sample(Midi *m, const DmClip *clip, DmAutomation a, double bea
 static bool curve_segment(const DmProject *p, Midi *m, const DmClip *clip, size_t index) {
     DmAutomation a = p->automation[index];
 
-    if (a.curve < 0 || (!a.curve && !a.ramp) || a.type == MIDI_PROGRAM) {
+    if (!dm_automation_curves(a)) {
         return true;
     }
 

@@ -258,6 +258,15 @@ static void reset_regions(Editor *e) {
     dm_audio_loop(e->audio, false, 0, 0);
 }
 
+/* The percussion window edits the open project's mapping; it closes with that project. */
+static void reset_percussion(Editor *e) {
+    if (e->percussion_window) {
+        ed_percussion_close(e);
+    }
+
+    e->percussion_feedback[0] = 0;
+}
+
 void ed_new_project(Editor *e) {
     reset_regions(e);
     e->pattern_mode = false;
@@ -278,6 +287,8 @@ void ed_new_project(Editor *e) {
     snprintf(font, sizeof(font), "%s", e->project.soundfont);
     dm_project_free(&e->project);
     dm_project_init(&e->project);
+    /* New projects start with channel 1 playing program 0 beside the channel 10 drums. */
+    e->project.channels[0].program = 0;
     snprintf(e->project.soundfont, sizeof(e->project.soundfont), "%s", font);
     memcpy(e->reset_channels, e->project.channels, sizeof(e->reset_channels));
     memset(e->start_beat, 0, sizeof(e->start_beat));
@@ -299,6 +310,7 @@ void ed_new_project(Editor *e) {
     ed_clear_history(e->undo, &e->undo_count);
     ed_clear_history(e->redo, &e->redo_count);
     dm_audio_publish(e->audio, &e->project, 0, false, e->status, sizeof(e->status));
+    reset_percussion(e);
 }
 
 void ed_load(Editor *e, const char *path) {
@@ -370,6 +382,7 @@ void ed_load(Editor *e, const char *path) {
     ed_clear_history(e->undo, &e->undo_count);
     ed_clear_history(e->redo, &e->redo_count);
     dm_audio_publish(e->audio, &e->project, 0, false, e->status, sizeof(e->status));
+    reset_percussion(e);
 
     if (*e->project.soundfont) {
         ed_request_font(e, e->project.soundfont);

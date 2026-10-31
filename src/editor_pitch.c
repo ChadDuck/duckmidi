@@ -270,7 +270,7 @@ void ed_automation_line(Editor *e, double start, double end, int first, int last
     PitchState previous = ed_pitch_state(e, start);
     replace_curve_range(e, start, end, cc);
 
-    if (cc < 0) {
+    if (cc == -2) { /* Pitch bends carry their bend range. */
         ed_curve_range(e, start, e->bend_range, 0, 127, 127, id);
     }
 
@@ -280,7 +280,7 @@ void ed_automation_line(Editor *e, double start, double end, int first, int last
     double after = end;
     dm_automation_add(&e->project, ed_curve_node(e, after, baseline, cc, -id, anchor));
 
-    if (cc < 0) {
+    if (cc == -2) {
         ed_curve_range(e, after, previous.range, previous.cents, previous.msb, previous.lsb, -id);
     }
 

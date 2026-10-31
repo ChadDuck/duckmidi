@@ -155,7 +155,9 @@ static void event_checks(Editor *e) {
     dm_automation_add(&e->project, (DmAutomation){0, 0xb0, 0, 11, 30, 0, 0, 0, 0, false});
     dm_automation_add(&e->project, (DmAutomation){2, 0xb0, 0, 11, 90, 0, 0, 0, 20, true});
     dm_automation_add(&e->project, (DmAutomation){4, 0xb0, 0, 11, 60, 0, 0, 0, 0, false});
-    ed_automation_lane_click(e, lane, &view, 80, (UiMouse){.pos = {340, 180}, .clicked = true}, -1);
+    ed_automation_lane_click(e, lane, &view, 80,
+                             (UiMouse){.pos = {340, 180}, .clicked = true, .shift = true}, -1);
+    ed_automation_press(e, lane, &view, 80, (UiMouse){.pos = {341, 181}, .released = true});
     bool connected = false;
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
@@ -163,7 +165,7 @@ static void event_checks(Editor *e) {
         connected |= a.beat == 3 && a.type == 0xb0 && a.a == 11 && a.curve > 0;
     }
 
-    check(connected, "left click adds a connected point at the cursor");
+    check(connected, "Shift + click adds a connected point at the cursor");
     e->project.automation_count = 0;
     dm_automation_add(&e->project, (DmAutomation){0, 0xb0, 0, 11, 30, 0, 0, 0, 0, false});
     dm_automation_add(&e->project, (DmAutomation){2, 0xb0, 0, 11, 90, 0, 0, 0, 20, true});

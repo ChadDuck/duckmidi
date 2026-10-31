@@ -1,27 +1,69 @@
 #!/usr/bin/env bash
-# Internal MSYS2 recipe; launch with tools/build-ffmpeg-minimal.cmake.
+# Internal recipe for Windows (MSYS2) and macOS; launch with tools/build-ffmpeg-minimal.cmake.
+# Linux also works for local checks; Linux CI uses the distribution's FFmpeg.
+# Keep it compatible with macOS's bash 3.2: no empty "${array[@]}" under set -u.
 set -euo pipefail
-export PATH="/ucrt64/bin:/usr/bin:$PATH"
+case "$(uname -s)" in
+    MINGW* | MSYS*) platform=windows ;;
+    Darwin) platform=macos ;;
+    Linux) platform=linux ;;
+    *)
+        echo "Unsupported build platform: $(uname -s)." >&2
+        exit 1
+        ;;
+esac
 root=$(cd "$(dirname "$0")/.." && pwd)
 work="$root/build/development/ffmpeg-minimal-work"
 prefix="$work/prefix"
 reports="$root/agents/reports/ffmpeg-minimal"
-export CC=gcc CXX=g++ AR=ar RANLIB=ranlib
 export CFLAGS='-O2' CXXFLAGS='-O2'
-export PKG_CONFIG=/usr/bin/pkg-config
+if [[ $platform == windows ]]; then
+    export PATH="/ucrt64/bin:/usr/bin:$PATH"
+    export CC=gcc CXX=g++ AR=ar RANLIB=ranlib
+    export PKG_CONFIG=/usr/bin/pkg-config
+    dependency_flags="--host=x86_64-w64-mingw32"
+    ffmpeg_flags="--target-os=mingw32 --arch=x86_64 --disable-schannel --extra-libs=-lssp"
+    ffmpeg_ldflags="-static-libgcc"
+    jobs=${JOBS:-4}
+else
+    export CC=${CC:-cc} CXX=${CXX:-c++}
+    PKG_CONFIG=$(command -v pkg-config)
+    export PKG_CONFIG
+    # The static codec libraries are linked into shared FFmpeg libraries.
+    dependency_flags="--with-pic"
+    ffmpeg_flags=""
+    ffmpeg_ldflags=""
+    if [[ $platform == macos ]]; then
+        # Matches LSMinimumSystemVersion in tools/package-macos.sh.
+        export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-13.0}
+        # The bundled config.guess scripts predate Apple Silicon.
+        triple="$(uname -m | sed 's/^arm64$/aarch64/')-apple-darwin"
+        dependency_flags="$dependency_flags --build=$triple --host=$triple"
+        jobs=${JOBS:-$(sysctl -n hw.ncpu)}
+    else
+        jobs=${JOBS:-$(nproc)}
+    fi
+fi
 export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig"
 export PKG_CONFIG_PATH="$PKG_CONFIG_LIBDIR"
-jobs=${JOBS:-4}
 mkdir -p "$work/downloads" "$work/sources" "$work/objects" "$work/tmp" "$prefix" "$reports"
 export TMPDIR="$work/tmp"
 exec > >(tee "$reports/build.log") 2>&1
+
+check_hash() {
+    if command -v sha256sum > /dev/null; then
+        echo "$1  $2" | sha256sum --check
+    else
+        echo "$1  $2" | shasum -a 256 --check
+    fi
+}
 
 fetch() {
     local name=$1 url=$2 hash=$3
     if [[ ! -f "$work/downloads/$name" ]]; then
         curl --fail --location --retry 2 --output "$work/downloads/$name" "$url"
     fi
-    echo "$hash  $work/downloads/$name" | sha256sum --check
+    check_hash "$hash" "$work/downloads/$name"
 }
 fetch ffmpeg-9.0.2.tar.xz https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz 8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
 fetch lame-3.100.tar.gz https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
@@ -29,13 +71,19 @@ fetch libogg-1.3.6.tar.xz https://downloads.xiph.org/releases/ogg/libogg-1.3.6.t
 fetch libvorbis-1.3.7.tar.xz https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.xz b33cc4934322bcbf6efcbacf49e3ca01aadbea4114ec9589d1b1e9d20f72954b
 fetch opus-1.6.tar.gz https://downloads.xiph.org/releases/opus/opus-1.6.tar.gz b7637334527201fdfd6dd6a02e67aceffb0e5e60155bbd89175647a80301c92c
 for archive in "$work"/downloads/*; do tar -xf "$archive" -C "$work/sources"; done
+if [[ $platform == macos ]]; then
+    # Current Apple linkers reject this flag from libvorbis's Darwin defaults.
+    perl -pi -e 's/ -force_cpusubtype_ALL//g' "$work/sources/libvorbis-1.3.7/configure"
+fi
 
 build_dependency() {
-    local name=$1; shift
+    local name=$1
+    shift
     mkdir -p "$work/objects/$name"
     (
         cd "$work/objects/$name"
-        "$work/sources/$name/configure" --host=x86_64-w64-mingw32 --prefix="$prefix" \
+        # shellcheck disable=SC2086 # dependency_flags holds several words.
+        "$work/sources/$name/configure" $dependency_flags --prefix="$prefix" \
             --disable-shared --enable-static --disable-dependency-tracking "$@"
         make -j"$jobs"
         make install
@@ -48,11 +96,12 @@ build_dependency lame-3.100 --disable-frontend --disable-decoder --disable-analy
 
 mkdir -p "$work/objects/ffmpeg"
 cd "$work/objects/ffmpeg"
+# shellcheck disable=SC2086 # ffmpeg_flags holds several words.
 "$work/sources/ffmpeg-9.0.2/configure" \
-    --prefix="$prefix" --target-os=mingw32 --arch=x86_64 --cc=gcc --cxx=g++ \
+    --prefix="$prefix" --cc="$CC" --cxx="$CXX" $ffmpeg_flags \
     --disable-autodetect --disable-everything --disable-programs --disable-doc \
     --disable-debug --disable-network --disable-avdevice --disable-avfilter --disable-swscale \
-    --disable-x86asm --disable-iconv --disable-schannel --disable-sdl2 \
+    --disable-x86asm --disable-iconv --disable-sdl2 \
     --enable-shared --disable-static --enable-version3 --disable-gpl --disable-nonfree \
     --enable-small --enable-avcodec --enable-avformat --enable-avutil --enable-swresample \
     --enable-libmp3lame --enable-libvorbis --enable-libopus \
@@ -60,11 +109,14 @@ cd "$work/objects/ffmpeg"
     --enable-muxer=wav,mp3,ipod,ogg,opus,flac \
     --pkg-config="$PKG_CONFIG" --pkg-config-flags=--static \
     --extra-cflags="-I$prefix/include" \
-    --extra-ldflags="-L$prefix/lib -static-libgcc" \
-    --extra-libs=-lssp
+    --extra-ldflags="-L$prefix/lib $ffmpeg_ldflags"
 make -j"$jobs"
 make install
 cp config.h config_components.h ffbuild/config.mak "$reports/"
+if [[ $platform != windows ]]; then
+    echo "FFmpeg installed at $prefix. Configure duckmidi with -DCMAKE_PREFIX_PATH=$prefix."
+    exit 0
+fi
 sdk="$work/sdk"
 mkdir -p "$sdk/bin" "$sdk/lib" "$sdk/include"
 for component in avcodec avformat avutil swresample; do

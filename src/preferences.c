@@ -462,8 +462,8 @@ static bool binding_taken(const Binding *b, int except, Binding binding) {
 }
 
 /* Shortcut files written before the Preferences shortcut existed: Project settings leaves its old
-   default P for S, and Solo leaves S for its new default when it still has S. Bindings the user
-   changed are kept. */
+   default P for its current default (/). Solo keeps S, which is its default again; the move below
+   only applies if the defaults differ. Bindings the user changed are kept. */
 static void upgrade_shortcuts(Ini *ini, Binding *merged) {
     Binding old_config = {SDL_SCANCODE_P, (SDL_Keymod)0},
             old_solo = {SDL_SCANCODE_S, (SDL_Keymod)0};

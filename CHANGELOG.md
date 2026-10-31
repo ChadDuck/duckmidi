@@ -22,7 +22,27 @@
 18. *duckmidi* GitHub actions enabled; releases will be built for testing, available for macOS, Arch, Ubuntu, and Debian.
 19. On macOS and Linux, preferences and layout are saved in your user folder instead of beside the program.
 20. Press 'I' in the playlist or piano roll to choose the channel's instrument, which also sets the piano roll's instrument dropdown.
-21. Press 'P' anywhere to open 'Preferences'; previous defaults moved to 'S' & '/'' unless changed.
+21. Press 'P' anywhere to open 'Preferences'; 'Project settings' default moved from 'P' to '/'.
+22. Pattern cards can be dragged to rearrange them in the pattern section.
+23. New projects start with channel 1 playing a piano alongside the channel 10 drums.
+24. Clicking in an event lane adds a single point and dragging draws a line.
+25. 'Shift + click' in an event lane adds a point connected to its nearest neighbor; 'Shift + drag' draws a line - both points connecting to its nearest neighbor.
+26. Event lane grid line previews now snap by default while dragging.
+26. The 'Events Editor' right-click menu has a 'Curve' option.
+    - 'Line' is a straight line to the next point
+    - 'Hold' holds the value until it reaches the next point - forming a 90 degree angle.
+27. '.duck' format schema is now 11; new value added to track held notes.
+28. Fixed an issue with the drum channel not showing with it selected; 'Enter' now applies drum changes, like with the regular 'instruments' window.
+29. Added an option to the drums dropdown after clicking 'Drum kit' to return to regular instruments.
+30. An unsaved percussion mapping no longer carries over into a new or opened project.
+31. The percussion keyboard mapping and 'Instrument' windows fit their contents.
+32. Right-dragging the ruler to loop part of a short pattern works again.
+33. After recording, the piano roll is automatically focused so its shortcuts work.
+34. Beat grid lines are now darker than bar grid lines, and the playlist shows quarter beats when zoomed in.
+35. Mouse cursor changed solid instead of an outline.
+37. The user guide has been rewritten with imagery to make it less boring.
+38. Program changes are placed as single points; dragging in their lane no longer draws a line.
+39. Channel pressure and key pressure lanes draw lines, and channel pressure lines play their changing values.
 
 ## 0.10.2
 

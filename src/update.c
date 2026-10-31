@@ -204,6 +204,21 @@ DmUpdateStatus dm_update_status(DmUpdate *u) {
     return status;
 }
 
+void dm_update_dismiss(DmUpdate *u) {
+    if (!u) {
+        return;
+    }
+
+    SDL_LockMutex(u->lock);
+
+    if (u->status.state == DM_UPDATE_CURRENT || u->status.state == DM_UPDATE_FAILED) {
+        u->status.state = DM_UPDATE_IDLE;
+        u->status.message[0] = 0;
+    }
+
+    SDL_UnlockMutex(u->lock);
+}
+
 DmUpdate *dm_update_create(const char *base, const char *current_version) {
     DmUpdate *u = calloc(1, sizeof(*u));
 

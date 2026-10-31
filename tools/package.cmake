@@ -9,6 +9,7 @@ if(WIN32)
   endif()
 endif()
 install(FILES docs/user-guide.md docs/sm64-export.md docs/plugin-api.md DESTINATION docs)
+install(DIRECTORY docs/images DESTINATION docs)
 install(FILES LICENSE DESTINATION licenses RENAME duckmidi-MIT.txt)
 install(DIRECTORY vendor/licenses/ DESTINATION licenses FILES_MATCHING PATTERN "*.txt")
 

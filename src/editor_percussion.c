@@ -102,6 +102,12 @@ bool ed_percussion_key(Editor *e, const SDL_KeyboardEvent *key) {
         return false;
     }
 
+    if (!e->percussion_listening && !ed_normalized(key->mod) && !key->repeat &&
+        (key->scancode == SDL_SCANCODE_RETURN || key->scancode == SDL_SCANCODE_KP_ENTER)) {
+        ed_percussion_accept(e);
+        return true;
+    }
+
     if (!e->percussion_listening) {
         return percussion_preview(e, key);
     }
@@ -166,17 +172,45 @@ void ed_percussion_save(Editor *e, bool project) {
     }
 }
 
+/* Enter saves the draft where this project's mapping comes from (its own mapping, or the global
+   preferences) and closes the window, as Apply does in the instrument window. */
+void ed_percussion_accept(Editor *e) {
+    const uint8_t *current =
+        e->project.percussion_override ? e->project.percussion_keys : e->percussion_global;
+
+    if (memcmp(current, e->percussion_draft, 128) != 0) {
+        ed_percussion_save(e, e->project.percussion_override);
+
+        if (!e->project.percussion_override &&
+            memcmp(e->percussion_global, e->percussion_draft, 128) != 0) {
+            return; /* The preferences could not be saved; the window shows why. */
+        }
+    }
+
+    ed_percussion_close(e);
+}
+
+/* Closes the window and forgets its unsaved draft, as when a project is opened or created. */
+void ed_percussion_close(Editor *e) {
+    ed_release_piano(e);
+    e->percussion_window = false;
+    e->percussion_listening = false;
+    memcpy(e->percussion_draft,
+           e->project.percussion_override ? e->project.percussion_keys : e->percussion_global, 128);
+    e->percussion_feedback[0] = 0;
+}
+
 void ed_percussion_dialog(Editor *e) {
     if (!e->percussion_window) {
         e->percussion_listening = false;
         return;
     }
 
-    if (ui_dialog(DM_TEXT_PERCUSSION_KEYBOARD_MAPPING, &e->percussion_window, 780, 580)) {
+    /* The window's height follows its contents: fixed-height lists, then the buttons. */
+    if (ui_fitted_dialog(DM_TEXT_PERCUSSION_KEYBOARD_MAPPING, &e->percussion_window, 780)) {
         ui_wrap(e->project.percussion_override ? DM_TEXT_THIS_PROJECT_USES_ITS
                                                : DM_TEXT_THIS_PROJECT_USES_GLOBAL);
-        float width = ui_available().x, left = width * .42f,
-              height = fmaxf(120, ui_available().y - 105);
+        float width = ui_available().x, left = width * .42f, height = 380;
 
         if (ui_child("percussion-sources", left, height, true)) {
             float origin = ui_cursor().y;

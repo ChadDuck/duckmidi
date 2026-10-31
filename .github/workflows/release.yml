@@ -70,10 +70,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: brew install cmake ninja pkgconf sdl3 fluid-synth ffmpeg dylibbundler
+        run: brew install cmake ninja pkgconf sdl3 fluid-synth dylibbundler
+      # Same minimal FFmpeg and cache key as the macOS workflow; dylibbundler copies it into the app.
+      - name: Restore FFmpeg
+        id: ffmpeg
+        uses: actions/cache/restore@v4
+        with:
+          path: build/development/ffmpeg-minimal-work/prefix
+          key: ffmpeg-minimal-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build-ffmpeg-minimal.sh') }}
+      - name: Build FFmpeg
+        if: steps.ffmpeg.outputs.cache-hit != 'true'
+        run: cmake -P tools/build-ffmpeg-minimal.cmake
+      - name: Save FFmpeg
+        if: steps.ffmpeg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: build/development/ffmpeg-minimal-work/prefix
+          key: ${{ steps.ffmpeg.outputs.cache-primary-key }}
       - name: Build and test
         run: |
-          cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DDUCKMIDI_PRODUCTION=ON -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+          cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DDUCKMIDI_PRODUCTION=ON -DCMAKE_PREFIX_PATH="$PWD/build/development/ffmpeg-minimal-work/prefix;$(brew --prefix)"
           cmake --build build/development/cmake
           ctest --test-dir build/development/cmake --output-on-failure
       - name: Package

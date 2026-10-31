@@ -12,6 +12,18 @@ static void timeline_begin(Editor *e, UiRect r, float label, int context, bool h
 static void timeline_region(Editor *e, UiRect r, View *v, float scale, float label, int context,
                             bool hovered, UiMouse mouse);
 
+/* Grid line shades shared by every editor grid: bars are lightest, beats a shade darker, and
+   quarter beats darkest. */
+uint32_t ed_grid_color(Editor *e, double beat) {
+    DmMeter meter = dm_meter(&e->project, beat);
+
+    if (fabs(remainder(beat - meter.origin, meter.bar)) < .001) {
+        return COLOR(80, 80, 80);
+    }
+
+    return fabs(beat - round(beat)) < .001 ? COLOR(62, 62, 62) : GRID;
+}
+
 static void grid_pan(Editor *e, View *v, UiRect canvas, UiMouse mouse, int context) {
     if (mouse.middle_clicked && ui_hover() && ed_inside(mouse.pos, canvas)) {
         e->pan_context = context;
@@ -280,6 +292,11 @@ static void timeline_region(Editor *e, UiRect r, View *v, float scale, float lab
         e->loop_drag = true;
         e->loop_context = context;
         e->loop_anchor = ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale, .25, mouse.alt);
+
+        if (!mode) {
+            e->loop_anchor = fmin(e->loop_anchor, dm_duration(&e->project));
+        }
+
         e->pattern_mode = mode;
         e->context = context;
         ed_focus_edit(e, mode ? FOCUS_NOTES : FOCUS_PLAYLIST);
@@ -290,10 +307,13 @@ static void timeline_region(Editor *e, UiRect r, View *v, float scale, float lab
     }
 
     if (mouse.right) {
-        double length = mode && ed_pattern(e) ? ed_pattern_length(e) : dm_duration(&e->project);
+        /* A pattern's length ends at its last note, often well before the visible ruler does,
+           so pattern loops follow the mouse; song loops stay within the song. */
+        double length = mode ? INFINITY : dm_duration(&e->project);
         timeline_autoscroll(e, r, v, scale, label, mouse, length);
         double beat = fmin(
-            length, ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale, .25, mouse.alt));
+            length,
+            fmax(0, ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale, .25, mouse.alt)));
         e->loop_start[mode] = fmin(e->loop_anchor, beat);
         e->loop_end[mode] = fmax(e->loop_anchor, beat);
         e->loop_enabled[mode] = e->loop_end[mode] - e->loop_start[mode] >= .001;

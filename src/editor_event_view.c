@@ -44,8 +44,7 @@ static void automation_grid(Editor *e, UiRect lane, View *v, float scale) {
 
     for (int i = first; i < first + (int)(lane.w / (scale * step)) + 2; ++i) {
         float beat = i * step, x = lane.x + beat * scale - v->scroll_x;
-        bool major = fabsf(beat - roundf(beat)) < .001f;
-        ui_line((UiPoint){x, lane.y}, (UiPoint){x, lane.y + lane.h}, major ? DIM : GRID, 1);
+        ui_line((UiPoint){x, lane.y}, (UiPoint){x, lane.y + lane.h}, ed_grid_color(e, beat), 1);
     }
 
     if (e->automation_cc != -2 || e->automation_raw) {

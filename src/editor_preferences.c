@@ -361,6 +361,20 @@ void ed_choose_drums(Editor *e, int channel) {
     e->instrument_channel = DM_DRUM_CHANNEL;
 }
 
+/* Moves the drum channel's part to a free melodic channel playing program. */
+static void choose_melodic(Editor *e, int program) {
+    int to = ed_available_channel(e);
+
+    if (to < 0 || to == DM_DRUM_CHANNEL || !move_channel(e, DM_DRUM_CHANNEL, to)) {
+        ed_message(e, DM_TEXT_NO_FREE_INSTRUMENT_CHANNEL);
+        return;
+    }
+
+    e->project.channels[to].enabled = true;
+    ed_choose_program(e, to, program);
+    e->instrument_channel = to;
+}
+
 /* General MIDI plays drums on channel 10. Its programs select drum kits; other channels offer a
    Drum kit entry that moves them to channel 10. */
 static void instrument_combo(Editor *e, int c) {
@@ -398,6 +412,22 @@ static void instrument_combo(Editor *e, int c) {
         }
     }
 
+    /* The drum channel also lists instruments, which move its part to a free channel. */
+    if (drums) {
+        ui_separator();
+
+        for (int i = 0; i < 128; ++i) {
+            snprintf(text, sizeof(text), DM_TEXT_PROGRAM_NUMBERED, dm_program_name(i), i);
+            ui_id(1000 + i);
+
+            if (ui_select(text, false, 0, 0)) {
+                choose_melodic(e, i);
+            }
+
+            ui_pop_id();
+        }
+    }
+
     ui_combo_end();
 }
 
@@ -407,7 +437,7 @@ void ed_instrument(Editor *e) {
     }
 
     bool open = true;
-    bool show = ui_dialog(DM_TEXT_INSTRUMENT, &open, 460, 320);
+    bool show = ui_fitted_dialog(DM_TEXT_INSTRUMENT, &open, 460);
     int c = e->instrument_channel;
 
     if (show) {

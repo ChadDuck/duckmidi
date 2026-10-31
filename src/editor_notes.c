@@ -584,7 +584,9 @@ static void piano_header(Editor *e, DmPattern *p) {
             e->note_color_popup = true;
         }
 
-        if (e->preview_program == 128 &&
+        /* Shown for percussion: the drum channel's pattern, or the Percussion preview. */
+        if ((e->preview_program == 128 || e->pattern_channel == MIDI_DRUM_CHANNEL ||
+             (e->channel_selected && e->selected_channel == MIDI_DRUM_CHANNEL)) &&
             ui_menu_item(DM_TEXT_PERCUSSION_KEYBOARD_MAPPING, NULL, true)) {
             ed_percussion_open(e);
         }
@@ -714,7 +716,7 @@ static int bend_hit(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse,
                 ed_event_value(before) + (ed_event_value(a) - ed_event_value(before)) * t;
             float y = first.y;
 
-            if (before.curve || before.ramp) {
+            if (dm_automation_curves(before)) {
                 y += (point.y - first.y) * (float)t -
                      (float)(dm_curve_value(before, a, t) - linear) *
                          ed_curve_units(e, before, grid, true);
@@ -1010,13 +1012,7 @@ void ed_roll(Editor *e, float width, float height) {
 
     for (int i = first; i < first + (int)(grid.w / (scale * .25)) + 3; ++i) {
         float x = grid.x + i * .25f * scale - v->scroll_x;
-        DmMeter meter = dm_meter(&e->project, i * .25);
-        bool bar = fabs(remainder(i * .25 - meter.origin, meter.bar)) < .001;
-        ui_line((UiPoint){x, grid.y}, (UiPoint){x, r.y + r.h},
-                bar          ? COLOR(65, 65, 65)
-                : i % 4 == 0 ? COLOR(42, 42, 42)
-                             : GRID,
-                1);
+        ui_line((UiPoint){x, grid.y}, (UiPoint){x, r.y + r.h}, ed_grid_color(e, i * .25), 1);
     }
 
     UiRect hit_box = {0};

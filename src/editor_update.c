@@ -32,6 +32,7 @@ void ed_update_launch(Editor *e) {
 }
 
 void ed_update_open(Editor *e) {
+    dm_update_dismiss(e->update); /* Each open starts without the last check's result. */
     e->update_window = true;
     e->update_choice = e->update_mode == UPDATE_ON_LAUNCH ? 0 : 1;
 }
@@ -39,6 +40,7 @@ void ed_update_open(Editor *e) {
 /* Closing the window without applying keeps Never and does not ask again. */
 static void close_window(Editor *e) {
     e->update_window = false;
+    dm_update_dismiss(e->update);
 
     if (!e->update_prompted) {
         e->update_prompted = true;

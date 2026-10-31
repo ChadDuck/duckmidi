@@ -173,6 +173,165 @@ static void pattern_browser_header(Editor *e) {
     ui_separator();
 }
 
+#define CARD_HEIGHT 92
+
+/* Draws a pattern card's face. Cards match playlist placements: the pattern color fills it. */
+static void pattern_card_face(Editor *e, int i, UiRect r, bool selected, bool hovered) {
+    uint32_t color = ed_pattern_color(e, i);
+    ui_rect(r, color, 5);
+
+    if (hovered) {
+        ui_rect(r, 0x28ffffffu, 5);
+    }
+
+    ui_border(r, selected ? TEXT : color, 5, selected ? 2 : 1);
+    ui_clip(r);
+    ui_label((UiPoint){r.x + 9, r.y + 10}, BG, e->project.patterns[i].name);
+    DmPattern *p = &e->project.patterns[i];
+
+    ed_note_thumbnail(p, (NoteThumbnail){.visible = r,
+                                         .x = r.x + 9,
+                                         .x_scale = (float)((r.w - 18) / p->length),
+                                         .y = r.y + 68,
+                                         .y_scale = 1.1f,
+                                         .top = r.y + 32,
+                                         .bottom = r.y + 81});
+
+    if (p->kind) {
+        ed_automation_preview(e, i, (UiRect){r.x + 9, r.y + 33, r.w - 18, 48}, BG, 0, p->length);
+    }
+
+    ui_unclip();
+}
+
+/* The card's button, which also starts a drag. While dragged, the card floats under the mouse
+   with the grab cursor. Returns true when its menu deleted the pattern. */
+static bool pattern_card_button(Editor *e, int i, float card, float height, bool *hovered) {
+    bool selected = e->pattern_highlight && e->selected_pattern == i;
+    ui_accent(selected);
+
+    if (ui_button("##pattern", card, height)) {
+        ed_choose_pattern_card(e, i, selected);
+    }
+
+    ui_accent_end();
+    *hovered = ui_hover();
+
+    if (pattern_context(e, (size_t)i)) {
+        return true;
+    }
+
+    if (ui_drag_pattern(i)) {
+        e->pattern_drag = i;
+        ui_gesture_cursor(false);
+        UiPoint at = ui_cursor();
+        ui_dummy(card, CARD_HEIGHT);
+        pattern_card_face(e, i, (UiRect){at.x, at.y, card, CARD_HEIGHT}, selected, false);
+        ui_drag_pattern_end();
+    }
+
+    return false;
+}
+
+/* Next grid cell: cards fill two columns. */
+static void pattern_cell(int *cell) {
+    if ((*cell)++ % 2) {
+        ui_same();
+    }
+}
+
+/* The dragged card keeps its button alive, since ImGui ends a drag whose source disappears: as
+   the outlined open space where it will land, or as a thin row while it is elsewhere. */
+static void dragged_cell(Editor *e, int dragged, float card, bool open, int *cell) {
+    pattern_cell(cell);
+    ui_id(dragged);
+    UiPoint at = ui_cursor();
+    ui_invisible_button("##pattern", card, open ? CARD_HEIGHT : 1);
+
+    if (open) {
+        ui_border((UiRect){at.x, at.y, card, CARD_HEIGHT}, DIM, 5, 1);
+    }
+
+    if (ui_drag_pattern(dragged)) {
+        bool selected = e->pattern_highlight && e->selected_pattern == dragged;
+        ui_gesture_cursor(false);
+        UiPoint floating = ui_cursor();
+        ui_dummy(card, CARD_HEIGHT);
+        pattern_card_face(e, dragged, (UiRect){floating.x, floating.y, card, CARD_HEIGHT}, selected,
+                          false);
+        ui_drag_pattern_end();
+    }
+
+    ui_pop_id();
+}
+
+/* The card being dragged in this category, or -1. */
+static int dragged_card(Editor *e) {
+    int i = e->pattern_drag;
+    return i >= 0 && (size_t)i < e->project.pattern_count &&
+                   (e->project.patterns[i].kind != 0) == e->automation_browser
+               ? i
+               : -1;
+}
+
+/* Grid slot under the mouse among the cards left once the dragged card is lifted out. */
+static int drop_slot(UiPoint origin, UiPoint mouse, float card, int count) {
+    float column = card + ui_item_spacing_x(), row = CARD_HEIGHT + ui_item_spacing_y();
+    int y = (int)floorf(fmaxf(0, mouse.y - origin.y) / row);
+    int x = mouse.x - origin.x >= column - ui_item_spacing_x() * .5f ? 1 : 0;
+    return (int)fminf((float)count, (float)(y * 2 + x));
+}
+
+/* Dropping a dragged card in the pattern section moves it to the open slot. */
+static void move_pattern_card(Editor *e, int dragged, int slot) {
+    int before = (int)e->project.pattern_count, seen = 0;
+
+    for (size_t i = 0; i < e->project.pattern_count; ++i) {
+        if ((int)i == dragged || (e->project.patterns[i].kind != 0) != e->automation_browser) {
+            continue;
+        }
+
+        if (seen++ == slot) {
+            before = (int)i;
+            break;
+        }
+    }
+
+    /* Past the last card of this category: after it, ahead of any later pattern. */
+    if (before == (int)e->project.pattern_count) {
+        for (size_t i = e->project.pattern_count; i-- > 0;) {
+            if ((int)i != dragged && (e->project.patterns[i].kind != 0) == e->automation_browser) {
+                before = (int)i + 1;
+                break;
+            }
+        }
+
+        if (before == (int)e->project.pattern_count && seen == 0) {
+            return; /* The only card in its category. */
+        }
+    }
+
+    int to = before > dragged ? before - 1 : before;
+
+    if (to == dragged) {
+        return;
+    }
+
+    ed_checkpoint(e);
+    dm_pattern_move(&e->project, dragged, before);
+    int *refs[] = {&e->selected_pattern, &e->transient_pattern, &e->rename_pattern,
+                   &e->pattern_color_target};
+
+    for (size_t r = 0; r < sizeof(refs) / sizeof(*refs); ++r) {
+        if (*refs[r] >= 0) {
+            *refs[r] = dm_pattern_moved_index(*refs[r], dragged, to);
+        }
+    }
+
+    e->pattern_drag = -1;
+    ed_commit(e);
+}
+
 void ed_pattern_panel(Editor *e, float width, float height) {
     ui_child(DM_TEXT_PATTERNS_TITLE, width, height, true);
 
@@ -181,74 +340,57 @@ void ed_pattern_panel(Editor *e, float width, float height) {
     }
 
     pattern_browser_header(e);
-    int visible = 0;
+    int cell = 0, slot = 0, count = 0;
     float card = (ui_available().x - 8) / 2;
+    UiMouse mouse = ui_mouse();
+    UiPoint origin = ui_cursor();
+    int dragged = dragged_card(e);
 
+    /* While a card is dragged, the others close up behind it; over this section they open a
+       space where it will land. */
     for (size_t i = 0; i < e->project.pattern_count; ++i) {
-        if ((e->project.patterns[i].kind != 0) != e->automation_browser) {
+        count += (int)i != dragged && (e->project.patterns[i].kind != 0) == e->automation_browser;
+    }
+
+    bool over = dragged >= 0 && ed_inside(mouse.pos, ui_window_rect());
+    int gap = over ? drop_slot(origin, mouse.pos, card, count) : -1;
+    bool removed = false;
+
+    for (size_t i = 0; i < e->project.pattern_count && !removed; ++i) {
+        if ((int)i == dragged || (e->project.patterns[i].kind != 0) != e->automation_browser) {
             continue;
         }
 
-        if (visible++ % 2) {
-            ui_same();
+        if (slot++ == gap) {
+            dragged_cell(e, dragged, card, true, &cell);
         }
 
+        pattern_cell(&cell);
         ui_id((int)i);
         UiPoint at = ui_cursor();
-        bool selected = e->pattern_highlight && e->selected_pattern == (int)i;
-        ui_accent(selected);
+        bool hovered;
+        removed = pattern_card_button(e, (int)i, card, CARD_HEIGHT, &hovered);
 
-        if (ui_button("##pattern", card, 92)) {
-            ed_choose_pattern_card(e, (int)i, selected);
-        }
+        if (!removed) {
+            bool selected = e->pattern_highlight && e->selected_pattern == (int)i;
+            pattern_card_face(e, (int)i, (UiRect){at.x, at.y, card, CARD_HEIGHT}, selected,
+                              hovered && dragged < 0);
 
-        ui_accent_end();
-
-        if (ui_drag_pattern((int)i, e->project.patterns[i].name)) {
-            e->pattern_drag = (int)i;
-        }
-
-        bool hovered = ui_hover();
-        UiRect r = {at.x, at.y, card, 92};
-        uint32_t color = ed_pattern_color(e, (int)i);
-
-        /* Cards match playlist placements: the pattern color fills the card. */
-        ui_rect(r, color, 5);
-
-        if (hovered) {
-            ui_rect(r, 0x28ffffffu, 5);
-        }
-
-        ui_border(r, selected ? TEXT : color, 5, selected ? 2 : 1);
-        ui_clip(r);
-        ui_label((UiPoint){at.x + 9, at.y + 10}, BG, e->project.patterns[i].name);
-        DmPattern *p = &e->project.patterns[i];
-
-        ed_note_thumbnail(p, (NoteThumbnail){.visible = r,
-                                             .x = at.x + 9,
-                                             .x_scale = (float)((card - 18) / p->length),
-                                             .y = at.y + 68,
-                                             .y_scale = 1.1f,
-                                             .top = at.y + 32,
-                                             .bottom = at.y + 81});
-
-        if (p->kind) {
-            ed_automation_preview(e, (int)i, (UiRect){at.x + 9, at.y + 33, card - 18, 48}, BG, 0,
-                                  p->length);
-        }
-
-        ui_unclip();
-
-        if (hovered) {
-            ed_hover(e, DM_TEXT_SELECT_PATTERN_CLICK);
-        }
-
-        if (pattern_context(e, i)) {
-            ui_pop_id();
-            break;
+            if (hovered && dragged < 0) {
+                ed_hover(e, DM_TEXT_SELECT_PATTERN_CLICK);
+            }
         }
 
         ui_pop_id();
+    }
+
+    /* The open space after the last card, or a thin row while the card is outside the section. */
+    if (dragged >= 0 && !removed && (!over || gap == count)) {
+        dragged_cell(e, dragged, card, over, &cell);
+    }
+
+    if (dragged >= 0 && !removed && over && mouse.released) {
+        move_pattern_card(e, dragged, gap);
     }
 
     if (ui_background_clicked()) {

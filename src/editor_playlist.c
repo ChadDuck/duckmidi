@@ -979,13 +979,13 @@ void ed_playlist(Editor *e, float width, float height) {
     playlist_rows(e, r, v, label, row, list, count, mouse);
     UiRect grid = {r.x + label, r.y + 28, r.w - label, r.h - 28};
     ui_clip(grid);
-    int start = (int)floor(v->scroll_x / scale);
+    /* Quarter beats appear once they are at least 16 pixels apart. */
+    double step = scale * .25f >= 16 ? .25 : 1;
+    int start = (int)floor(v->scroll_x / (scale * step));
 
-    for (int i = start; i < start + (int)(grid.w / scale) + 3; ++i) {
-        float x = grid.x + i * scale - v->scroll_x;
-        DmMeter meter = dm_meter(&e->project, i);
-        bool bar = fabs(remainder(i - meter.origin, meter.bar)) < .001;
-        ui_line((UiPoint){x, grid.y}, (UiPoint){x, r.y + r.h}, bar ? COLOR(58, 58, 58) : GRID, 1);
+    for (int i = start; i < start + (int)(grid.w / (scale * step)) + 3; ++i) {
+        float x = grid.x + (float)(i * step) * scale - v->scroll_x;
+        ui_line((UiPoint){x, grid.y}, (UiPoint){x, r.y + r.h}, ed_grid_color(e, i * step), 1);
     }
 
     int hit = playlist_clips(e, r, grid, v, scale, row, list, count, mouse);

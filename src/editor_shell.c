@@ -193,6 +193,7 @@ void ed_toolbar(Editor *e) {
     ui_same();
 
     if (ui_icon_button("##Stop", UI_STOP, 52, 32)) {
+        bool take = e->record && playing;
         e->wait_armed = false;
         ed_release_piano(e);
         dm_audio_transport(e->audio, false);
@@ -201,6 +202,10 @@ void ed_toolbar(Editor *e) {
         dm_audio_recording(e->audio, false);
         ed_seek(e, 0);
         ed_release_piano(e);
+
+        if (take) {
+            ed_recording_finished(e);
+        }
 
         if (ui_mouse().shift) {
             ed_stop_edit_feedback(e);

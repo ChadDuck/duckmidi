@@ -44,8 +44,8 @@ static void shortcuts_added(Editor *e) {
     key(e, SDL_SCANCODE_M, 0);
     check(e->project.channels[0].mute && !e->project.channels[0].solo,
           "M mutes selected playlist channel");
-    key(e, SDL_SCANCODE_SLASH, 0);
-    check(!e->project.channels[0].mute && e->project.channels[0].solo, "/ replaces mute with solo");
+    key(e, SDL_SCANCODE_S, 0);
+    check(!e->project.channels[0].mute && e->project.channels[0].solo, "S replaces mute with solo");
     key(e, SDL_SCANCODE_M, 0);
     check(e->project.channels[0].mute && !e->project.channels[0].solo, "M replaces solo with mute");
     e->context = 2;
@@ -128,8 +128,8 @@ static void shortcuts_added(Editor *e) {
     key(e, SDL_SCANCODE_P, 0);
     check(e->preferences && e->preferences_raise, "P opens Preferences over another window");
     e->preferences = e->preferences_raise = e->shortcuts = false;
-    key(e, SDL_SCANCODE_S, 0);
-    check(e->config, "S opens Project settings");
+    key(e, SDL_SCANCODE_SLASH, 0);
+    check(e->config, "/ opens Project settings");
     e->config = false;
     e->piano = true;
     key(e, SDL_SCANCODE_P, 0);
@@ -269,8 +269,9 @@ static void bend_edits(Editor *e) {
     }
 
     check(discrete == 1, "Shift lane click creates one unconnected point");
-    mouse = (UiMouse){.pos = {260, 182}, .clicked = true};
+    mouse = (UiMouse){.pos = {260, 182}, .clicked = true, .shift = true};
     ed_automation_lane_click(e, lane, &e->roll_view, 80, mouse, -1);
+    ed_automation_press(e, lane, &e->roll_view, 80, (UiMouse){.pos = {260, 182}, .released = true});
     int positives = 0, negative = 0;
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
@@ -280,7 +281,7 @@ static void bend_edits(Editor *e) {
     }
 
     check(positives == 2 && negative == 1,
-          "left click connects new point and moves end restoration");
+          "Shift + click connects new point and moves end restoration");
     mouse = (UiMouse){.right_clicked = true, .shift = true};
     ed_automation_lane_click(e, lane, &e->roll_view, 80, mouse, 0);
     check(e->drag == 0, "right click on an existing point cannot strand a left-button drag");

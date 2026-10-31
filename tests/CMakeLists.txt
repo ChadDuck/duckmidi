@@ -74,7 +74,7 @@ foreach(NAME editor recording window transport_shortcuts dialog edit_gestures po
     source_workflow channel_row live_edit_editor interface event_lanes midi_inspector export_plugins backlog)
   desktop_test(${NAME}_test audio)
 endforeach()
-foreach(NAME recording_feedback pattern_workflow channel_routing toolbar_followup todo_b todo_c
+foreach(NAME recording_feedback pattern_workflow channel_routing toolbar_followup todo_b todo_c todo_d
     frame_performance)
   desktop_test(${NAME}_test recording_feedback_audio)
 endforeach()
@@ -132,3 +132,14 @@ set_target_properties(export_registry_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "
 add_dependencies(export_registry_test editor_test export_registry_fixtures)
 add_test(NAME export_registry_test COMMAND export_registry_test)
 set_tests_properties(export_registry_test PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" LABELS plugins RUN_SERIAL TRUE)
+
+# Renders the user guide's screenshots; run through tools/update-guide-images.ps1, not CTest.
+add_executable(guide_captures "${PROJECT_SOURCE_DIR}/tools/guide-captures.cpp"
+  $<TARGET_OBJECTS:editor_test_objects> $<TARGET_OBJECTS:audio_test_objects>)
+test_dependencies(guide_captures)
+set_target_properties(guide_captures PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_BIN}"
+  LINKER_LANGUAGE CXX)
+if(MINGW)
+  target_link_options(guide_captures PRIVATE -static-libgcc -static-libstdc++)
+endif()
+add_dependencies(guide_captures editor_test)

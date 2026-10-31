@@ -61,7 +61,8 @@ bool ed_automation_matches(Editor *e, DmAutomation au) {
 bool ed_same_event(DmAutomation a, DmAutomation b) {
     return a.pattern == b.pattern && a.beat == b.beat && a.type == b.type &&
            a.channel == b.channel && a.a == b.a && a.b == b.b && a.curve == b.curve &&
-           a.anchor == b.anchor && a.bend == b.bend && a.ramp == b.ramp && a.port == b.port;
+           a.anchor == b.anchor && a.bend == b.bend && a.ramp == b.ramp && a.port == b.port &&
+           a.hold == b.hold;
 }
 
 static int event_identity(const void *left, const void *right) {
@@ -193,6 +194,12 @@ static const char *automation_name(int cc) {
 
 bool ed_pedal_event(int cc) {
     return cc == 64 || cc == 66;
+}
+
+/* Events whose values never move between points (program changes select an instrument), so
+   placing them never draws a line. */
+static bool discrete_event(int cc) {
+    return cc == -1;
 }
 
 bool ed_point_only_event(int cc) {
@@ -333,7 +340,7 @@ float ed_curve_units(Editor *e, DmAutomation a, UiRect lane, bool overlay) {
 
 void ed_automation_connection(UiPoint previous, UiPoint point, DmAutomation before, DmAutomation a,
                               float units, uint32_t color) {
-    if (a.curve == before.curve && (a.curve > 0 || before.ramp) && a.type != MIDI_PROGRAM) {
+    if (a.curve == before.curve && dm_automation_curves(before)) {
         UiPoint last = previous;
         int steps = (int)fmax(8, fmin(256, fabsf(point.x - previous.x) / 4));
 
@@ -347,7 +354,8 @@ void ed_automation_connection(UiPoint previous, UiPoint point, DmAutomation befo
             ui_line(last, next, color, 1.5f);
             last = next;
         }
-    } else if (a.curve == 0 && before.curve == 0 && a.type != MIDI_PROGRAM) {
+    } else if (a.curve == before.curve && a.curve >= 0 && a.type != MIDI_PROGRAM) {
+        /* Hold: the value stays until the next point, then steps to it. */
         ui_line(previous, (UiPoint){point.x, previous.y}, color, 1.5f);
         ui_line((UiPoint){point.x, previous.y}, point, color, 1.5f);
     }
@@ -618,6 +626,7 @@ static void curve_drag_update(Editor *e, UiRect lane, UiMouse mouse) {
 
         e->project.automation[left].bend = fmax(-MIDI_BEND_MAX, fmin(MIDI_BEND_MAX, bend));
         e->project.automation[left].ramp = true;
+        e->project.automation[left].hold = false;
         ed_changed(e);
     }
 
@@ -659,6 +668,7 @@ static bool curve_handle_action(Editor *e, size_t index, UiRect lane, UiPoint mi
         ed_checkpoint(e);
         e->project.automation[index].bend = 0;
         e->project.automation[index].ramp = true;
+        e->project.automation[index].hold = false;
         ed_commit(e);
         return true;
     }
@@ -709,7 +719,7 @@ bool ed_curve_handles(Editor *e, UiRect lane, View *v, float scale, UiMouse mous
         UiPoint first = connection_point(e, a, lane, v, scale, overlay),
                 last = connection_point(e, b, lane, v, scale, overlay);
         double linear = (ed_event_value(a) + ed_event_value(b)) * .5;
-        bool step = !a.curve && !a.ramp;
+        bool step = !dm_automation_curves(a);
         UiPoint mid = {(first.x + last.x) * .5f,
                        step
                            ? first.y
@@ -1058,7 +1068,7 @@ static bool events_selected(Editor *e) {
            ed_event_selected(e, (size_t)e->automation_node);
 }
 
-/* A standalone point at the cursor, used when the lane has no point to connect to. */
+/* A standalone point at the cursor: a plain click, or Shift + click with no point to connect to. */
 static void add_cursor_point(Editor *e, UiRect lane, UiMouse mouse, double beat) {
     DmAutomation point = ed_curve_node(e, beat, 0, e->automation_cc, 0, ed_curve_anchor(e, beat));
 
@@ -1075,16 +1085,11 @@ static void add_cursor_point(Editor *e, UiRect lane, UiMouse mouse, double beat)
     ed_commit(e);
 }
 
-/* Adds a point at the cursor's position and value, connected to the nearest point's curve. */
-static void add_connected_point(Editor *e, UiRect lane, UiMouse mouse, double beat) {
-    int nearest = ed_closest_node(e, beat);
-
-    if (nearest < 0) {
-        add_cursor_point(e, lane, mouse, beat);
-        return;
-    }
-
-    ed_checkpoint(e);
+/* Adds a point at beat and the value at y, joined to the curve of the nearest point (index
+   nearest), converting a discrete point into a curve with a restoration node. Returns the added
+   point. The caller owns the undo step and sorts afterwards. */
+static DmAutomation connect_point(Editor *e, UiRect lane, int nearest, float y, double beat,
+                                  bool free) {
     DmAutomation a = e->project.automation[nearest];
     double original_beat = a.beat;
     bool converted = !a.curve && a.type != MIDI_PROGRAM;
@@ -1105,8 +1110,8 @@ static void add_connected_point(Editor *e, UiRect lane, UiMouse mouse, double be
     }
 
     a.beat = beat;
-    a = lane_edited(e, a, lane, mouse.pos.y, false);
-    ed_set_event_value(&a, ed_lane_value(e, lane, mouse.pos.y, a, false));
+    a = lane_edited(e, a, lane, y, free);
+    ed_set_event_value(&a, ed_lane_value(e, lane, y, a, free));
     dm_automation_add(&e->project, a);
     e->last_automation = a;
     e->last_automation_valid = true;
@@ -1124,8 +1129,72 @@ static void add_connected_point(Editor *e, UiRect lane, UiMouse mouse, double be
     }
 
     ed_curve_restore_position(e, a.curve);
+    return a;
+}
+
+/* Shift + click: a point at the cursor connected to the nearest point's curve, or a standalone
+   point when the lane has none. */
+static void add_connected_point(Editor *e, UiRect lane, UiMouse mouse, double beat) {
+    int nearest = ed_closest_node(e, beat);
+
+    if (nearest < 0) {
+        add_cursor_point(e, lane, mouse, beat);
+        return;
+    }
+
+    ed_checkpoint(e);
+    connect_point(e, lane, nearest, mouse.pos.y, beat, mouse.alt);
     ed_sort_automation(e);
     ed_commit(e);
+}
+
+/* Shift + drag: the drag's start joins the nearest point's curve, and the line to the release
+   continues that curve. Returns false when the lane has no point to join. */
+static bool connected_line(Editor *e, UiRect lane, UiMouse mouse, double start, double end) {
+    int nearest = ed_closest_node(e, start);
+
+    if (nearest < 0) {
+        return false;
+    }
+
+    DmAutomation a = connect_point(e, lane, nearest, e->marquee_start.y, start, mouse.alt);
+
+    if (a.curve <= 0 || fabs(end - start) < 1.0 / DM_PPQ) {
+        return true;
+    }
+
+    DmAutomation b = a;
+    b.beat = end;
+    b = lane_edited(e, b, lane, mouse.pos.y, mouse.alt);
+    ed_set_event_value(&b, ed_lane_value(e, lane, mouse.pos.y, b, mouse.alt));
+    dm_automation_add(&e->project, b);
+    e->last_automation = b;
+    e->last_automation_valid = true;
+    ed_curve_restore_position(e, b.curve);
+    return true;
+}
+
+/* The drawn line's end as it will be placed: snapped in time and value unless Alt is held. */
+/* Screen-only: it never builds a point, since range expansion for pitch bends edits the project.
+   Pitch bends snap to semitone rows and other controllers to whole values, as on release. */
+static UiPoint placed_point(Editor *e, UiRect lane, View *v, float scale, UiPoint at, bool free) {
+    double beat = fmax(0, ed_snap((at.x - lane.x + v->scroll_x) / scale, .25, free));
+    float y, middle = lane.y + lane.h * .5f;
+
+    if (ed_pedal_event(e->automation_cc)) {
+        y = middle;
+    } else if (e->automation_cc == -2 && !e->automation_raw) {
+        float step = ed_lane_step(lane);
+        float pitch = ed_clampf(e->automation_center + (middle - at.y) / step, 0, 127);
+        pitch = free ? pitch : roundf(pitch);
+        y = middle - (pitch - e->automation_center) * step;
+    } else {
+        float maximum = e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+        float value = ed_clampf((lane.y + lane.h - 8 - at.y) / (lane.h - 8) * maximum, 0, maximum);
+        y = lane.y + lane.h - 8 - floorf(value) / maximum * (lane.h - 8);
+    }
+
+    return (UiPoint){lane.x + (float)beat * scale - v->scroll_x, y};
 }
 
 /* Shift + right click on a point opens its menu, as notes and placements have: delete it, change
@@ -1157,14 +1226,25 @@ static void point_menu(Editor *e, int hit) {
         ed_commit(e);
     }
 
-    if (!a->curve && a->type != MIDI_PROGRAM) {
-        bool ramp = a->ramp;
+    /* Curve: Line moves smoothly to the next point; Hold keeps this value until it. */
+    if (a->curve >= 0 && a->type != MIDI_PROGRAM && ui_menu(DM_TEXT_CURVE)) {
+        bool line = dm_automation_curves(*a);
 
-        if (ui_toggle(DM_TEXT_CURVE_TO_NEXT_POINT, &ramp)) {
+        if (ui_menu_check(DM_TEXT_CURVE_LINE, line) && !line) {
             ed_checkpoint(e);
-            a->ramp = ramp;
+            a->ramp = !a->curve;
+            a->hold = false;
             ed_commit(e);
         }
+
+        if (ui_menu_check(DM_TEXT_CURVE_HOLD, !line) && line) {
+            ed_checkpoint(e);
+            a->ramp = false;
+            a->hold = a->curve > 0;
+            ed_commit(e);
+        }
+
+        ui_menu_end();
     }
 
     if (ui_menu_item(DM_TEXT_DELETE, NULL, true)) {
@@ -1175,8 +1255,8 @@ static void point_menu(Editor *e, int hit) {
     ui_popup_end();
 }
 
-/* Lane clicks: left adds a connected point at the cursor, Shift+left draws a line or a single
-   point by dragging, and a left click while points are selected only clears the selection. */
+/* Lane clicks: a click adds a single point, Shift + click a point connected to the nearest one,
+   and a drag draws a line. A left click while points are selected only clears the selection. */
 void ed_automation_lane_click(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse,
                               int hit) {
     ed_focus_edit(e, FOCUS_EVENTS);
@@ -1205,17 +1285,60 @@ void ed_automation_lane_click(Editor *e, UiRect lane, View *v, float scale, UiMo
     }
 
     ed_deselect_events(e);
-    double beat = ed_snap((mouse.pos.x - lane.x + v->scroll_x) / scale, .25, mouse.alt);
+    (void)v;
+    (void)scale;
+    e->event_free = mouse.alt;      /* Alt places without snapping, as everywhere else. */
+    e->event_connect = mouse.shift; /* Shift + click connects the point to the nearest one. */
+    e->marquee_start = mouse.pos;
 
-    /* Pedal events are ranges, so a plain click draws one as before. */
-    if (!mouse.shift && !ed_pedal_event(e->automation_cc)) {
-        add_connected_point(e, lane, mouse, beat);
+    /* Pedal events are ranges, so a press always draws one. */
+    if (ed_pedal_event(e->automation_cc)) {
+        ed_checkpoint(e);
+        e->drag = 4;
         return;
     }
 
-    ed_checkpoint(e);
-    e->drag = 4;
-    e->marquee_start = mouse.pos;
+    /* Discrete events such as program changes never form lines: a press places one point. */
+    if (discrete_event(e->automation_cc)) {
+        e->event_connect = false;
+    }
+
+    /* Otherwise the press waits: moving past a small buffer draws a line, releasing adds a
+       single point (connected with Shift); see ed_automation_press. */
+    e->drag = 12;
+    e->event_press_tick = SDL_GetTicks();
+}
+
+/* A quick click may wobble a little before release, so it has a larger buffer than a slow press
+   that starts moving. */
+void ed_automation_press(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse) {
+    if (e->drag != 12) {
+        return;
+    }
+
+    float moved = hypotf(mouse.pos.x - e->marquee_start.x, mouse.pos.y - e->marquee_start.y);
+    float buffer = SDL_GetTicks() - e->event_press_tick < 250 ? 8.f : 4.f;
+
+    if (moved > buffer && !discrete_event(e->automation_cc)) {
+        ed_checkpoint(e);
+        e->drag = 4; /* ed_automation_drag draws the line and places it on release. */
+        return;
+    }
+
+    if (mouse.left && !mouse.released) {
+        return;
+    }
+
+    e->drag = 0;
+    UiMouse at = mouse;
+    at.pos = e->marquee_start;
+    at.alt = e->event_free || mouse.alt;
+    double beat = ed_snap((e->marquee_start.x - lane.x + v->scroll_x) / scale, .25, at.alt);
+    if (e->event_connect) {
+        add_connected_point(e, lane, at, beat);
+    } else {
+        add_cursor_point(e, lane, at, beat);
+    }
 }
 
 void ed_deselect_events(Editor *e) {
@@ -1230,11 +1353,28 @@ void ed_automation_drag(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
         return;
     }
 
+    mouse.alt = mouse.alt || e->event_free; /* Alt at the press or the release disables snapping. */
+
     if (ed_pedal_event(e->automation_cc)) {
         float y = lane.y + lane.h * .5f;
         ui_line((UiPoint){e->marquee_start.x, y}, (UiPoint){mouse.pos.x, y}, GOLD, 4);
     } else {
-        ui_line(e->marquee_start, mouse.pos, GOLD, 2);
+        /* The preview shows the points where they will land: snapped unless Alt is held. With
+           Shift, a dimmer line shows the start joining its nearest point. */
+        UiPoint from = placed_point(e, lane, v, scale, e->marquee_start, mouse.alt);
+        UiPoint to = placed_point(e, lane, v, scale, mouse.pos, mouse.alt);
+        double start_beat =
+            ed_snap((e->marquee_start.x - lane.x + v->scroll_x) / scale, .25, mouse.alt);
+        int nearest = e->event_connect ? ed_closest_node(e, start_beat) : -1;
+
+        if (nearest >= 0) {
+            UiPoint joined = ed_automation_point(e, e->project.automation[nearest], lane, v, scale);
+            ui_line(joined, from, (GOLD & 0xffffffu) | 0x88000000u, 2);
+        }
+
+        ui_line(from, to, GOLD, 2);
+        ui_circle(from, 4, GOLD);
+        ui_circle(to, 4, GOLD);
     }
 
     if (!mouse.released) {
@@ -1253,8 +1393,13 @@ void ed_automation_drag(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
 
     int first = ed_lane_value(e, lane, e->marquee_start.y, a, mouse.alt);
     int last = ed_lane_value(e, lane, mouse.pos.y, a, mouse.alt);
+    bool moved =
+        fabs(mouse.pos.x - e->marquee_start.x) >= 3 || fabs(mouse.pos.y - e->marquee_start.y) >= 3;
 
-    if (ed_pedal_event(e->automation_cc)) {
+    if (e->event_connect && moved && !ed_pedal_event(e->automation_cc) &&
+        !discrete_event(e->automation_cc) && connected_line(e, lane, mouse, start, end)) {
+        ed_sort_automation(e);
+    } else if (ed_pedal_event(e->automation_cc)) {
         if (fabs(end - start) < 1.0 / DM_PPQ) {
             end = start + .25;
         }
@@ -1263,9 +1408,8 @@ void ed_automation_drag(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
     } else if (e->automation_cc == 5 && fabs(mouse.pos.x - e->marquee_start.x) < 3 &&
                fabs(mouse.pos.y - e->marquee_start.y) < 3) {
         ed_automation_line(e, start, start + .25, first, first, 5);
-    } else if ((e->automation_cc < 0 && ed_point_only_event(e->automation_cc)) ||
-               (fabs(mouse.pos.x - e->marquee_start.x) < 3 &&
-                fabs(mouse.pos.y - e->marquee_start.y) < 3)) {
+    } else if (discrete_event(e->automation_cc) || (fabs(mouse.pos.x - e->marquee_start.x) < 3 &&
+                                                    fabs(mouse.pos.y - e->marquee_start.y) < 3)) {
         DmAutomation point = ed_curve_node(e, start, first, e->automation_cc, 0, e->drag_key);
 
         if (point.type == MIDI_PITCH_BEND) {
@@ -1415,6 +1559,7 @@ void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse m
         event_placement_tip(e, lane, mouse, hovered);
     }
 
+    ed_automation_press(e, lane, v, scale, mouse);
     ed_automation_drag(e, lane, v, scale, mouse);
 }
 

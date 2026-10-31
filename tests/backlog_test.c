@@ -61,7 +61,7 @@ static bool bound(Editor *e, int action, SDL_Scancode key, SDL_Keymod mods) {
 static void shortcut_upgrade(Editor *e) {
     load_shortcuts(e, "[application]\nschema=3\n[shortcuts]\nproject_settings=\"P\"\n"
                       "solo_selected_channel=\"S\"\n");
-    assert(bound(e, ACT_CONFIG, SDL_SCANCODE_S, 0) && bound(e, ACT_SOLO, SDL_SCANCODE_SLASH, 0) &&
+    assert(bound(e, ACT_CONFIG, SDL_SCANCODE_SLASH, 0) && bound(e, ACT_SOLO, SDL_SCANCODE_S, 0) &&
            bound(e, ACT_PREFERENCES, SDL_SCANCODE_P, 0) && !*e->status);
 
     load_shortcuts(e, "[application]\nschema=3\n[shortcuts]\nproject_settings=\"O\"\n"
@@ -73,7 +73,7 @@ static void shortcut_upgrade(Editor *e) {
                       "metronome=\"I\"\n");
     assert(bound(e, ACT_METRONOME, SDL_SCANCODE_I, 0) &&
            bound(e, ACT_INSTRUMENT, SDL_SCANCODE_I, SDL_KMOD_SHIFT) &&
-           bound(e, ACT_CONFIG, SDL_SCANCODE_S, 0) && !*e->status);
+           bound(e, ACT_CONFIG, SDL_SCANCODE_SLASH, 0) && !*e->status);
 
     ed_defaults(e);
     e->status[0] = 0;

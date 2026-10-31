@@ -310,6 +310,10 @@ float ui_item_spacing_x() {
     return ImGui::GetStyle().ItemSpacing.x;
 }
 
+float ui_item_spacing_y() {
+    return ImGui::GetStyle().ItemSpacing.y;
+}
+
 void ui_space(float h) {
     ImGui::Dummy({0, h});
 }
@@ -484,7 +488,23 @@ static float segment_distance(float x, float y, float ax, float ay, float bx, fl
     return std::hypot(x - ax - t * dx, y - ay - t * dy);
 }
 
-static SDL_Cursor *make_icon_cursor(UiIcon icon, int size, float hx, float hy) {
+/* Even-odd test against a closed shape's outline. */
+static bool inside_shape(const float *v, int points, float x, float y) {
+    bool inside = false;
+
+    for (int i = 0, j = points - 1; i < points; j = i++) {
+        float xi = v[2 * i], yi = v[2 * i + 1], xj = v[2 * j], yj = v[2 * j + 1];
+
+        if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+            inside = !inside;
+        }
+    }
+
+    return inside;
+}
+
+/* filled paints the inside of closed shapes in the outline color. */
+static SDL_Cursor *make_icon_cursor(UiIcon icon, int size, float hx, float hy, bool filled) {
     SDL_Surface *surface = SDL_CreateSurface(size, size, SDL_PIXELFORMAT_RGBA32);
 
     if (!surface) {
@@ -503,6 +523,11 @@ static SDL_Cursor *make_icon_cursor(UiIcon icon, int size, float hx, float hy) {
                 }
 
                 int points = shape.count / 2;
+
+                if (filled && shape.kind == 1 && inside_shape(shape.values, points, px, py)) {
+                    distance = 0;
+                    break;
+                }
 
                 for (int i = 0; i < points - 1 + shape.kind; ++i) {
                     int next = (i + 1) % points;
@@ -556,9 +581,9 @@ static void cache_cursors() {
         cursor = nullptr;
     }
 
-    icon_cursors[0] = make_icon_cursor(UI_CURSOR, size, 5, 5);
-    icon_cursors[1] = make_icon_cursor(UI_DRAG_HAND, size, 12, 12);
-    icon_cursors[2] = make_icon_cursor(UI_POINT_HAND, size, 10, 2);
+    icon_cursors[0] = make_icon_cursor(UI_CURSOR, size, 5, 5, true);
+    icon_cursors[1] = make_icon_cursor(UI_DRAG_HAND, size, 12, 12, false);
+    icon_cursors[2] = make_icon_cursor(UI_POINT_HAND, size, 10, 2, false);
     cursor_size = size;
 }
 
@@ -994,6 +1019,10 @@ void ui_menu_end() {
 
 bool ui_menu_item(const char *s, const char *key, bool enabled) {
     return ImGui::MenuItem(s, key, false, enabled);
+}
+
+bool ui_menu_check(const char *s, bool checked) {
+    return ImGui::MenuItem(s, nullptr, checked);
 }
 
 void ui_pan_cursor() {
@@ -1557,15 +1586,34 @@ void ui_circle_outline(UiPoint p, float radius, uint32_t color) {
     ImGui::GetWindowDrawList()->AddCircle({p.x, p.y}, radius, color, 0, 1.5f);
 }
 
-bool ui_drag_pattern(int pattern, const char *name) {
+/* The floating preview is drawn without the tooltip frame, so only the card shows. */
+bool ui_drag_pattern(int pattern) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, 0);
+
     if (!ImGui::BeginDragDropSource()) {
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(2);
         return false;
     }
 
     ImGui::SetDragDropPayload(DM_TEXT_DM_PATTERN, &pattern, sizeof(pattern));
-    ImGui::TextUnformatted(name);
-    ImGui::EndDragDropSource();
     return true;
+}
+
+void ui_drag_pattern_end() {
+    ImGui::EndDragDropSource();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+}
+
+bool ui_invisible_button(const char *id, float w, float h) {
+    return ImGui::InvisibleButton(id, {w, h});
+}
+
+void ui_dummy(float w, float h) {
+    ImGui::Dummy({w, h});
 }
 
 int ui_drop_pattern() {

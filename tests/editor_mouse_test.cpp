@@ -332,9 +332,9 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
 
     e->automation_node = -1; /* The moved point stays selected; a click would only deselect it. */
     e->event_selection.size = 0;
-    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, false);
-    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, true);
-    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, false);
+    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, false, false, true);
+    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, true, false, true);
+    mouse_frame(e, lane_x + 3 * 80, lane_y + 50, false, false, true);
     size_t extended = 0;
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
@@ -344,7 +344,7 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     }
 
     check(extended == points + 1,
-          "left click extends the closest event section at the cursor value");
+          "Shift + click extends the closest event section at the cursor value");
     // This fixture extends controllers beyond its two-beat notes. A manual placement
     // extension includes those stored points without changing automatic note sizing.
     for (size_t i = 0; i < e->project.clip_count; ++i) {
@@ -410,6 +410,59 @@ static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, target_x, target_y, false);
     check(e->project.clip_count == count + 1,
           "dragging a pattern card onto the playlist places a clip");
+
+    /* Dragging a card within the pattern section reorders the patterns. */
+    e->automation_browser = false;
+
+    while (e->project.pattern_count < 3) {
+        dm_pattern_add(&e->project, NULL);
+    }
+
+    for (size_t i = 0; i < e->project.pattern_count; ++i) {
+        e->project.patterns[i].kind = 0;
+        char name[64];
+        std::snprintf(name, sizeof(name), "Card %zu", i);
+        std::snprintf(e->project.patterns[i].name, sizeof(e->project.patterns[i].name), "%s", name);
+    }
+
+    int placed = -1;
+
+    for (size_t i = 0; i < e->project.clip_count; ++i) {
+        if (e->project.clips[i].pattern == 0) {
+            placed = (int)i;
+        }
+    }
+
+    size_t patterns_total = e->project.pattern_count;
+    float row = 92 + ImGui::GetStyle().ItemSpacing.y;
+    mouse_frame(e, x, y, false);
+    mouse_frame(e, x, y, true);
+    mouse_frame(e, x + 16, y + 5, true);
+    mouse_frame(e, x + 10, y + row * ((patterns_total - 1) / 2) + 20, true);
+    mouse_frame(e, x + 10, y + row * ((patterns_total - 1) / 2) + 20, true);
+    check(e->pattern_drag == 0, "a dragged card stays held while over the pattern section");
+    SDL_CreateDirectory("agents/reports/pattern-reorder-2026-10-31");
+    SDL_SetRenderDrawColor(e->renderer, 0, 0, 0, 255);
+    SDL_RenderClear(e->renderer);
+    ui_render(e->renderer);
+    auto *drag_shot = SDL_RenderReadPixels(e->renderer, nullptr);
+
+    if (drag_shot) {
+        SDL_SaveBMP(drag_shot, "agents/reports/pattern-reorder-2026-10-31/drag.bmp");
+        SDL_DestroySurface(drag_shot);
+    }
+
+    mouse_frame(e, x + 10, y + row * ((patterns_total - 1) / 2) + 20, false);
+    mouse_frame(e, 0, 0, false);
+    int moved_to = (int)((patterns_total - 1) / 2 * 2);
+    check(std::strcmp(e->project.patterns[moved_to].name, "Card 0") == 0 &&
+              std::strcmp(e->project.patterns[0].name, "Card 1") == 0,
+          "dropping a card in the pattern section moves it to the open space");
+    check(placed < 0 || e->project.clips[placed].pattern == moved_to,
+          "placements follow their moved pattern");
+    direct_key(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
+    check(std::strcmp(e->project.patterns[0].name, "Card 0") == 0,
+          "undo restores the pattern order");
 }
 
 static void layout_and_mixer(Editor *e, void (*check)(bool, const char *)) {
@@ -2096,11 +2149,32 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     middle_frame(e, x, y - 20, false);
     check(e->project.automation[0].bend == 0 && e->project.automation[0].ramp,
           "middle click resets a converted connection to a straight ramp");
-    mouse_frame(e, lane.x + 40, y, false, false, true);
-    mouse_frame(e, lane.x + 40, y, true, false, true);
-    mouse_frame(e, lane.x + 40, y, false, false, true);
+    /* A plain click places one standalone point. */
+    mouse_frame(e, lane.x + 120, y - 30, false);
+    mouse_frame(e, lane.x + 120, y - 30, true);
+    check(e->project.automation_count == 2, "a left press waits for release or movement");
+    mouse_frame(e, lane.x + 120, y - 30, false);
     mouse_frame(e, 0, 0, false);
-    check(e->project.automation_count == 3, "Shift left click inserts an event point");
+    bool single = e->project.automation_count == 3;
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        single &= e->project.automation[i].curve == 0;
+    }
+
+    check(single, "left click inserts one standalone event point");
+    /* Shift + Alt + click connects a point without snapping (43 px is 0.5375 beats). */
+    mouse_frame(e, lane.x + 43, y, false, true, true);
+    mouse_frame(e, lane.x + 43, y, true, true, true);
+    mouse_frame(e, lane.x + 43, y, false, true, true);
+    mouse_frame(e, 0, 0, false);
+    bool unsnapped = false;
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        unsnapped |= e->project.automation[i].curve > 0 &&
+                     fabs(e->project.automation[i].beat - 43.0 / 80) < 1e-6;
+    }
+
+    check(unsnapped, "Shift + Alt + click inserts an unsnapped connected event point");
     p.kind = 1;
     p.mode = 0;
     p.event = 11;

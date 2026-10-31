@@ -18,6 +18,11 @@ static bool schema_10(const Input *in) {
     return in->schema >= 10;
 }
 
+/* The point hold flag was added in schema 11. */
+static bool schema_11(const Input *in) {
+    return in->schema >= 11;
+}
+
 /* Schema 10 stores numbers compactly. Integers are variable-length (7 bits per byte). A real
    that is an exact multiple of 1/REAL_STEPS, as beats on any common MIDI resolution are, is
    stored as that small integer; any other real keeps its full 8 bytes. Schema 9 used fixed
@@ -377,7 +382,7 @@ static bool pack_automation(const DmProject *p, DmBytes *target) {
         ok = time_after(&b, a.beat, i ? p->automation[i - 1].beat : 0) && u32(&b, a.type) &&
              u32(&b, a.channel) && u32(&b, a.a) && u32(&b, a.b) && u32(&b, (uint32_t)a.pattern) &&
              u32(&b, (uint32_t)a.curve) && u32(&b, a.anchor) && real(&b, a.bend) &&
-             u32(&b, a.ramp) && u32(&b, a.port);
+             u32(&b, a.ramp) && u32(&b, a.port) && u32(&b, a.hold);
     }
 
     *target = b;
@@ -765,6 +770,13 @@ static bool unpack_automation(DmProject *p, Input *in) {
         }
 
         a.port = (uint8_t)port;
+        uint32_t hold = schema_11(in) ? get32(in) : 0;
+
+        if (hold > 1) {
+            return false;
+        }
+
+        a.hold = hold != 0;
 
         if (a.pattern >= 0 && (size_t)a.pattern < p->pattern_count && p->patterns[a.pattern].kind &&
             a.beat > p->patterns[a.pattern].length) {
@@ -1118,9 +1130,9 @@ static bool unpack_document(DmProject *p, const unsigned char *data, size_t size
     Input in = {data + 8, size - 8, true, 0};
     uint32_t version = getfixed32(&in), payload = getfixed32(&in), crc = getfixed32(&in);
 
-    if (version != DM_PROJECT_SCHEMA && version != DM_PROJECT_SCHEMA_PREVIOUS) {
-        snprintf(error, cap, DM_TEXT_UNSUPPORTED_PROJECT_SCHEMA, version,
-                 DM_PROJECT_SCHEMA_PREVIOUS, DM_PROJECT_SCHEMA);
+    if (version < DM_PROJECT_SCHEMA_OLDEST || version > DM_PROJECT_SCHEMA) {
+        snprintf(error, cap, DM_TEXT_UNSUPPORTED_PROJECT_SCHEMA, version, DM_PROJECT_SCHEMA_OLDEST,
+                 DM_PROJECT_SCHEMA);
         return false;
     }
 
@@ -1155,8 +1167,8 @@ static bool unpack_document(DmProject *p, const unsigned char *data, size_t size
         return false;
     }
 
-    if (version == DM_PROJECT_SCHEMA_PREVIOUS) {
-        dm_project_upgrade_previous(&next);
+    if (version < DM_PROJECT_SCHEMA) {
+        dm_project_upgrade(&next, version);
     }
 
     dm_project_free(p);

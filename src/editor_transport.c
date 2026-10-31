@@ -10,6 +10,14 @@ void ed_cancel_wait(Editor *e) {
     }
 }
 
+/* After a take, the open pattern editor takes focus so its shortcuts (Ctrl + A, Ctrl + Q) act on
+   the recorded notes straight away. */
+void ed_recording_finished(Editor *e) {
+    if (e->roll && ed_pattern(e) && !ed_pattern(e)->kind) {
+        ed_focus_edit(e, FOCUS_NOTES);
+    }
+}
+
 void ed_play(Editor *e) {
     if (!e->active) {
         return;
@@ -23,8 +31,14 @@ void ed_play(Editor *e) {
     }
 
     if (playing) {
+        bool take = e->record;
         ed_release_piano(e);
         e->recording_take = e->take_snapshot = false;
+
+        if (take) {
+            ed_recording_finished(e);
+        }
+
         double beat = e->record || e->context == 2
                           ? e->start_beat[e->pattern_mode]
                           : dm_seconds_beat(&e->project, dm_audio_position(e->audio));
@@ -224,11 +238,18 @@ void ed_toggle_record(Editor *e) {
         return;
     }
 
+    bool take = e->record && dm_audio_playing(e->audio);
+
     if (e->record) {
         ed_release_piano(e);
     }
 
     e->record = !e->record;
+
+    if (take) {
+        ed_recording_finished(e);
+    }
+
     e->wait_armed = e->take_started = false;
     e->recording_take = e->record && dm_audio_playing(e->audio);
     e->take_snapshot = false;

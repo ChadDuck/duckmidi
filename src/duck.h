@@ -10,8 +10,9 @@
 #define DM_LANES 32
 #define DM_PPQ 960
 #define DM_PIANO_KEYS 37
-#define DM_PROJECT_SCHEMA 10
-#define DM_PROJECT_SCHEMA_PREVIOUS 9 /* Still loaded through src/project_compat.c. */
+#define DM_PROJECT_SCHEMA 11
+#define DM_PROJECT_SCHEMA_PREVIOUS 10 /* Still loaded through src/project_compat.c. */
+#define DM_PROJECT_SCHEMA_OLDEST 9    /* Schema 9 (0.10.1) also loads, converted through 10. */
 #define DM_NOTE_PORTS 128
 #define DM_PATTERN_COLORS 16
 #define DM_DRUM_CHANNEL 9 /* General MIDI channel 10. */
@@ -74,6 +75,7 @@ typedef struct {
     double bend;       /* Midpoint offset in MIDI value units for the outgoing segment. */
     bool ramp;         /* Discrete-source outgoing segment was explicitly converted to a curve. */
     uint8_t port;
+    bool hold; /* Line node: the outgoing segment holds this value until the next point. */
 } DmAutomation;
 
 typedef struct {
@@ -159,6 +161,11 @@ void dm_channel_ports(const DmProject *project, int channel, bool used[DM_NOTE_P
 int dm_pattern_add(DmProject *p, const char *name);
 int dm_pattern_copy(DmProject *p, int source);
 void dm_pattern_remove(DmProject *p, int pattern);
+/* Moves pattern "from" in front of the pattern at "before" (pattern_count moves it to the end),
+   updating placements and event points. Returns its new index. */
+int dm_pattern_move(DmProject *p, int from, int before);
+/* An index after dm_pattern_move moved the pattern at "from" to "to". */
+int dm_pattern_moved_index(int index, int from, int to);
 bool dm_note_add(DmPattern *p, DmNote note);
 bool dm_clip_add(DmProject *p, DmClip clip);
 double dm_clip_length(const DmProject *p, DmClip clip);
@@ -170,6 +177,7 @@ int dm_lfo_value(const DmPattern *pattern, double beat);
 bool dm_automation_later(DmAutomation first, DmAutomation second);
 bool dm_automation_add(DmProject *p, DmAutomation item);
 double dm_curve_value(DmAutomation first, DmAutomation last, double t);
+bool dm_automation_curves(DmAutomation a);
 bool dm_event_add(DmProject *p, double beat, int track, int port, const DmBytes *message);
 bool dm_message_valid(const DmBytes *message);
 bool dm_conductor(const DmBytes *message);
@@ -213,8 +221,9 @@ bool dm_unpack(DmProject *p, const unsigned char *data, size_t size, char *error
 /* LZ77 compression of project bodies; see src/compress.c. */
 bool dm_compress(const uint8_t *data, size_t size, DmBytes *out);
 bool dm_decompress(const uint8_t *data, size_t size, size_t limit, DmBytes *out);
-/* Converts a project loaded from DM_PROJECT_SCHEMA_PREVIOUS; see src/project_compat.c. */
-void dm_project_upgrade_previous(DmProject *p);
+/* Converts a project loaded from an older schema (DM_PROJECT_SCHEMA_OLDEST and later) to the
+   current one; see src/project_compat.c. */
+void dm_project_upgrade(DmProject *p, uint32_t schema);
 bool dm_view_switch(DmProject *p, int port, int sequence, char *error, size_t cap);
 bool dm_read(const char *path, DmBytes *out, char *error, size_t cap);
 bool dm_write(const char *path, const void *data, size_t size, char *error, size_t cap);

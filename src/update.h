@@ -32,6 +32,9 @@ bool dm_update_check(DmUpdate *u);
 bool dm_update_download(DmUpdate *u);
 DmUpdateStatus dm_update_status(DmUpdate *u);
 
+/* Clears a finished check's result (up to date or failed); other states are kept. */
+void dm_update_dismiss(DmUpdate *u);
+
 /* Starts the install script, which waits for this process to exit. sample_hash is the sample
    project's fingerprint when it was first opened (0 if unknown); an edited sample is kept.
    new_sample_hash receives the installed sample's fingerprint, or 0 if it was kept. */
