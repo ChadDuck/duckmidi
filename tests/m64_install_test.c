@@ -1,5 +1,6 @@
-/* Export to Repository and the sequence memory guide, checked against a generated checkout made of
-   the stock SM64 US excerpts the plugin edits. */
+/* Export to Repository, saved packages for each Target and the sequence memory guides, checked
+   against generated SM64, HackerSM64 and sm64coopdx checkouts made of the excerpts the plugin
+   reads and edits. */
 #include "../libraries/m64export/plugin/m64_plugin.h"
 #include <assert.h>
 #include <stdio.h>
@@ -50,14 +51,28 @@ typedef struct {
     const char *path, *data;
 } File;
 
-static File checkout[] = {{"sound/sequences.json", NULL},
-                          {"src/audio/data.c", NULL},
-                          {"src/audio/data.h", NULL},
-                          {"src/buffers/buffers.c", NULL}};
+static File sm64[] = {{"sound/sequences.json", NULL},
+                      {"src/audio/data.c", NULL},
+                      {"src/audio/data.h", NULL},
+                      {"src/buffers/buffers.c", NULL}};
+static File hacker[] = {{"sound/sequences.json", NULL},
+                        {"include/config/config_audio.h", "#define PERSISTENT_CAP_MUSIC\n"},
+                        {"src/audio/data.h", NULL}};
+/* sm64coopdx keeps a stock-style sequences.json that its build does not use. */
+static File coopdx[] = {
+    {"sound/sequences.json", NULL},
+    {"src/pc/lua/utils/smlua_audio_utils.c", "void smlua_audio_utils_reset_all(void);\n"}};
+static File *checkout = sm64;
+static size_t checkout_count = 4;
 static char installed[8][128];
 static char *contents[8];
 static uint32_t flags[8];
 static int installed_count;
+static char artifacts[8][128];
+static char *artifact_data[8];
+static int artifact_count;
+static char warning[512];
+static char pool_warning[512]; /* The stock sequence pool warning, when shown. */
 
 static int32_t DME_CALL cancelled(void *user) {
     (void)user;
@@ -71,16 +86,64 @@ static void DME_CALL progress(void *user, uint32_t percent) {
 
 static void DME_CALL diagnostic(void *user, uint32_t severity, uint32_t f, const char *message) {
     (void)user;
-    (void)severity;
-    (void)f;
-    (void)message;
+
+    if (severity == DME_WARNING && (f & DME_POPUP) && strstr(message, "checkout")) {
+        snprintf(warning, sizeof(warning), "%s", message);
+    }
+
+    if (strstr(message, "temporary sequence memory")) {
+        snprintf(pool_warning, sizeof(pool_warning), "%s", message);
+    }
+}
+
+static const DmeField *ui_field(const DmeUi *ui, const char *id, int *index) {
+    for (uint32_t i = 0; i < ui->count; i++) {
+        if (!strcmp(ui->fields[i].id, id)) {
+            *index = (int)i;
+            return &ui->fields[i];
+        }
+    }
+
+    return NULL;
+}
+
+static int32_t DME_CALL artifact(void *user, const char *name, const uint8_t *data, uint64_t size) {
+    (void)user;
+    assert(artifact_count < 8);
+    snprintf(artifacts[artifact_count], 128, "%s", name);
+    artifact_data[artifact_count] = calloc(size + 1, 1);
+    memcpy(artifact_data[artifact_count++], data, size);
+    return 1;
+}
+
+static const char *artifact_named(const char *name) {
+    for (int i = 0; i < artifact_count; ++i) {
+        if (!strcmp(artifacts[i], name)) {
+            return artifact_data[i];
+        }
+    }
+
+    return NULL;
+}
+
+static void reset_output(void) {
+    for (int i = 0; i < installed_count; ++i) {
+        free(contents[i]);
+    }
+
+    for (int i = 0; i < artifact_count; ++i) {
+        free(artifact_data[i]);
+    }
+
+    installed_count = artifact_count = 0;
+    warning[0] = 0;
 }
 
 static int32_t DME_CALL read_file(void *user, const char *path, const uint8_t **data,
                                   uint64_t *size) {
     (void)user;
 
-    for (size_t i = 0; i < sizeof(checkout) / sizeof(*checkout); ++i) {
+    for (size_t i = 0; i < checkout_count; ++i) {
         if (!strcmp(checkout[i].path, path)) {
             *data = (const uint8_t *)checkout[i].data;
             *size = strlen(checkout[i].data);
@@ -114,28 +177,30 @@ static const char *installed_file(const char *path, uint32_t *f) {
 }
 
 int main(void) {
-    checkout[0].data = sequences;
-    checkout[1].data = data_c;
-    checkout[2].data = data_h;
-    checkout[3].data = buffers_c;
+    sm64[0].data = sequences;
+    sm64[1].data = data_c;
+    sm64[2].data = data_h;
+    sm64[3].data = buffers_c;
+    hacker[0].data = sequences;
+    coopdx[0].data = sequences;
 
     /* Memory plans: a small song needs nothing; a larger one grows the heap by the difference
-       from the smallest stock pool; Emulator Only uses all the free RAM. */
-    M64MemoryPlan small = m64_memory_plan(0x3000, false), large = m64_memory_plan(0xC350, false);
-    M64MemoryPlan maximum = m64_memory_plan(0x3000, true), huge = m64_memory_plan(0x20000, false);
+       from the smallest stock pool; one beyond the free RAM does not fit. */
+    M64MemoryPlan small = m64_memory_plan(0x3000), large = m64_memory_plan(0xC350);
+    M64MemoryPlan larger = m64_memory_plan(0xDF80), huge = m64_memory_plan(0x20000);
     assert(!small.needed && small.fits);
     assert(large.needed && large.pool == 0xC400 && large.growth == 0xC400 - 0x3F00 &&
            large.heap == 0x31150 + large.growth && large.buffer == 0x31200 + large.growth &&
            large.low_rate == 0xC400);
-    assert(maximum.pool == 0x3F00 + 0x114A0 && maximum.growth == 0x114A0);
+    assert(larger.pool == 0xE000 && larger.growth == 0xE000 - 0x3F00);
     assert(huge.needed && !huge.fits);
-    char *guide = m64_memory_guide(0xC350, "03_level_grass", false);
-    assert(guide && strstr(guide, "Console-Compatible") && !strstr(guide, "Emulator Only") &&
-           strstr(guide, "#define AUDIO_HEAP_SIZE 0x39650") && strstr(guide, "HackerSM64"));
+    char *guide = m64_memory_guide(0xC350, "03_level_grass");
+    assert(guide && strstr(guide, "Enlarge: the smallest change") && strstr(guide, "console") &&
+           strstr(guide, "#define AUDIO_HEAP_SIZE 0x39650") && !strstr(guide, "HackerSM64"));
     free(guide);
-    guide = m64_memory_guide(0xC350, "03_level_grass", true);
-    assert(guide && strstr(guide, "Emulator Only") && !strstr(guide, "Console-Compatible") &&
-           strstr(guide, "0x153A0"));
+    guide = m64_hacker_memory_guide(0xC350, "03_level_grass");
+    assert(guide && strstr(guide, "TEMPORARY_SEQ_MEM to at least 0xC400") &&
+           !strstr(guide, "AUDIO_HEAP_SIZE 0x"));
     free(guide);
 
     /* Patching is repeatable: a second pass with another size rewrites the same lines. */
@@ -147,27 +212,27 @@ int main(void) {
            strstr(first.data, "#define DUCKMIDI_US_LOW_RATE_SEQ_MEM 0xC400") &&
            strstr(first.data, "0x5500, DUCKMIDI_US_LOW_RATE_SEQ_MEM, 0x2400") &&
            strstr(first.data, "0x3900, 0x6000, 0x4400, 0x2A00"));
-    assert(m64_patch_data_c((const uint8_t *)first.data, first.size, &maximum, &second, error,
+    assert(m64_patch_data_c((const uint8_t *)first.data, first.size, &larger, &second, error,
                             sizeof(error)));
-    assert(strstr(second.data, "#define DUCKMIDI_US_LOW_RATE_SEQ_MEM 0x153A0") &&
+    assert(strstr(second.data, "#define DUCKMIDI_US_LOW_RATE_SEQ_MEM 0xE000") &&
            !strstr(second.data, "0xC400"));
     assert(strstr(second.data, "{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }"));
     m64_text_free(&first);
     m64_text_free(&second);
     assert(m64_patch_data_h((const uint8_t *)data_h, strlen(data_h), &large, &first, error,
                             sizeof(error)));
-    assert(m64_patch_data_h((const uint8_t *)first.data, first.size, &maximum, &second, error,
+    assert(m64_patch_data_h((const uint8_t *)first.data, first.size, &larger, &second, error,
                             sizeof(error)));
-    assert(strstr(second.data, "#define AUDIO_HEAP_SIZE 0x425F0") &&
+    assert(strstr(second.data, "#define AUDIO_HEAP_SIZE 0x3B250") &&
            strstr(second.data, "#define AUDIO_HEAP_SIZE 0x31150") &&
            strstr(second.data, "#define AUDIO_HEAP_SIZE 0x2c500"));
     m64_text_free(&first);
     m64_text_free(&second);
     assert(m64_patch_buffers_c((const uint8_t *)buffers_c, strlen(buffers_c), &large, &first, error,
                                sizeof(error)));
-    assert(m64_patch_buffers_c((const uint8_t *)first.data, first.size, &maximum, &second, error,
+    assert(m64_patch_buffers_c((const uint8_t *)first.data, first.size, &larger, &second, error,
                                sizeof(error)));
-    assert(strstr(second.data, "DOUBLE_SIZE_ON_64_BIT(0x426A0)") &&
+    assert(strstr(second.data, "DOUBLE_SIZE_ON_64_BIT(0x3B300)") &&
            strstr(second.data, "DOUBLE_SIZE_ON_64_BIT(0x31200)"));
     m64_text_free(&first);
     m64_text_free(&second);
@@ -205,23 +270,42 @@ int main(void) {
                          {10, 5, 0xE9, 0, 64, 0},  {10, 6, 0xE9, 0, 64, 1},
                          {20, 7, 0xB9, 7, 100, 0}, {20, 8, 0xB9, 7, 90, 1}};
     M64PortLayout layout;
-    assert(m64_port_layout(ported, 8, &layout));
+    assert(m64_port_layout(ported, 8, 1u << MIDI_DRUM_CHANNEL, &layout));
     assert(layout.out[0][0] == 0 && layout.out[1][2] == 1 && layout.out[9][1] == 9);
     assert(layout.merged && layout.interference && layout.conflict_count == 1 &&
            strstr(layout.notice, "controller 7") && !strstr(layout.notice, "pitch bend"));
     DmeEvent moved[] = {{0, 1, 0x90, 60, 100, 0}, {0, 2, 0x90, 64, 100, 1}};
-    assert(m64_port_layout(moved, 2, &layout) && !layout.merged && layout.out[0][1] == 1 &&
+    assert(m64_port_layout(moved, 2, 1u << MIDI_DRUM_CHANNEL, &layout) && !layout.merged &&
+           layout.out[0][1] == 1 &&
            strstr(layout.notice, "Port 1 of channel 1 plays on channel 2."));
+
+    /* Percussion parts: channel 11 plays on the drum channel with channel 10 without a notice;
+       a melodic channel 10 moves to a free channel. */
+    DmeEvent kits[] = {{0, 1, 0xC9, 0, 0, 0},
+                       {0, 2, 0xCA, 25, 0, 0},
+                       {0, 3, 0x99, 36, 100, 0},
+                       {0, 4, 0x9A, 38, 100, 0}};
+    uint32_t percussion = 1u << MIDI_DRUM_CHANNEL | 1u << 10;
+    assert(m64_port_layout(kits, 4, percussion, &layout) && layout.out[10][0] == 9 &&
+           layout.out[9][0] == 9 && !layout.interference && !layout.merged && !*layout.notice);
+    assert(m64_port_layout(kits, 4, 1u << 10, &layout) && layout.out[10][0] == 9 &&
+           layout.out[9][0] == 0 &&
+           strstr(layout.notice, "Port 0 of channel 10 plays on channel 1."));
 
     /* Install through the plugin: the song replaces 03_level_grass and its bank entry. */
     const DmeExporter *exporter = duckmidi_export_plugin(DME_ABI)->exporter(0);
     assert(exporter->install && !strcmp(exporter->install_label, "Export to Repository"));
     void *settings = exporter->create();
     DmeEvent events[] = {{0, 1, 0x90, 60, 100, 0}, {960, 2, 0x80, 60, 0, 0}};
-    DmeContext context = {.events = events, .event_count = 2, .duration = 960, .ppq = 960};
+    DmeContext context = {.events = events,
+                          .event_count = 2,
+                          .duration = 960,
+                          .ppq = 960,
+                          .percussion_channels = 1u << MIDI_DRUM_CHANNEL};
     void *job = exporter->create_job(settings, error, sizeof(error));
     DmeHost host = {NULL, cancelled, progress, diagnostic, NULL, read_file, install_file};
     assert(job && exporter->install(job, &context, &host, error, sizeof(error)) == DME_OK);
+    assert(!*warning);
     uint32_t f = 0;
     const char *entry = installed_file("sound/sequences.json", &f);
     assert(entry && strstr(entry, "\"03_level_grass\": [\"26_custom_duckmidi\"],") &&
@@ -240,6 +324,208 @@ int main(void) {
     assert(exporter->install(job, &context, &host, error, sizeof(error)) == DME_INVALID &&
            strstr(error, "99_custom_song") && !installed_count);
     exporter->destroy_job(job);
+
+    /* sm64coopdx checkouts are detected by their Lua audio utilities. The song becomes a mod
+       in mods/, which the build copies; the unused sequences.json and audio memory stay as they
+       are. A Target other than the checkout's game is reported, and the checkout wins. */
+    DmeValue grass = {DME_CHOICE, 3, NULL};
+    assert(exporter->set(settings, "sequence", &grass, error, sizeof(error)) == DME_OK);
+    checkout = coopdx;
+    checkout_count = 2;
+    reset_output();
+    job = exporter->create_job(settings, error, sizeof(error));
+    assert(job && exporter->install(job, &context, &host, error, sizeof(error)) == DME_OK);
+    assert(strstr(warning, "sm64coopdx checkout") && installed_count == 2);
+    const char *lua = installed_file("mods/duckmidi_03_level_grass/main.lua", &f);
+    assert(lua && strstr(lua, "-- name: duckmidi 03_level_grass\n") &&
+           strstr(lua, "smlua_audio_utils_replace_sequence(0x03, 0x2A, 75, \"03_level_grass\")"));
+    assert(installed_file("mods/duckmidi_03_level_grass/sound/03_level_grass.m64", &f) && !f);
+    assert(!installed_file("sound/sequences.json", &f));
+    exporter->destroy_job(job);
+
+    /* A song that replaces no stock sequence gets a new sequence ID. */
+    reset_output();
+    DmeValue sm64coopdx = {DME_CHOICE, 2, NULL};
+    assert(exporter->set(settings, "target", &sm64coopdx, error, sizeof(error)) == DME_OK &&
+           exporter->set(settings, "sequence", &custom, error, sizeof(error)) == DME_OK);
+    job = exporter->create_job(settings, error, sizeof(error));
+    assert(job && exporter->install(job, &context, &host, error, sizeof(error)) == DME_OK);
+    assert(!*warning);
+    lua = installed_file("mods/duckmidi_99_custom_song/main.lua", &f);
+    assert(lua && strstr(lua, "SEQ_99_CUSTOM_SONG = smlua_audio_utils_allocate_sequence()") &&
+           strstr(lua, "replace_sequence(SEQ_99_CUSTOM_SONG, 0x2A, 75, \"99_custom_song\")"));
+    exporter->destroy_job(job);
+
+    /* HackerSM64 is still detected, ahead of the stock layout; a small song keeps its pool. */
+    assert(exporter->set(settings, "sequence", &grass, error, sizeof(error)) == DME_OK);
+    checkout = hacker;
+    checkout_count = 3;
+    hacker[2].data = hacker_h;
+    reset_output();
+    job = exporter->create_job(settings, error, sizeof(error));
+    assert(job && exporter->install(job, &context, &host, error, sizeof(error)) == DME_OK);
+    assert(strstr(warning, "HackerSM64 checkout") && installed_count == 3);
+    assert(installed_file("sound/sequences/us/03_level_grass.m64", &f) &&
+           installed_file("sound/sound_banks/26_custom_duckmidi.json", &f) &&
+           installed_file("sound/sequences.json", &f) && !installed_file("src/audio/data.h", &f));
+    exporter->destroy_job(job);
+
+    /* Saved packages follow Target: file layout, names and the manifest's game. */
+    const char *const sm64_files[] = {"03_level_grass.m64", "26_custom_duckmidi.json",
+                                      "sequences-entry.json", "manifest.json"};
+    const char *const coopdx_files[] = {"duckmidi_03_level_grass/main.lua",
+                                        "duckmidi_03_level_grass/sound/03_level_grass.m64",
+                                        "manifest.json"};
+    const char *const games[] = {"\"target\": \"n64decomp/sm64 US\"", "\"target\": \"HackerSM64\"",
+                                 "\"target\": \"sm64coopdx\""};
+    host.artifact = artifact;
+
+    for (int game = 0; game < 3; ++game) {
+        DmeValue target = {DME_CHOICE, game, NULL};
+        assert(exporter->set(settings, "target", &target, error, sizeof(error)) == DME_OK);
+        reset_output();
+        job = exporter->create_job(settings, error, sizeof(error));
+        assert(job && exporter->run(job, &context, &host, error, sizeof(error)) == DME_OK);
+        int expected = game == 2 ? 3 : 4;
+        assert(artifact_count == expected);
+
+        for (int i = 0; i < expected; ++i) {
+            assert(artifact_named(game == 2 ? coopdx_files[i] : sm64_files[i]));
+        }
+
+        assert(strstr(artifact_named("manifest.json"), games[game]));
+
+        if (game < 2) {
+            assert(!strcmp(artifact_named("sequences-entry.json"),
+                           "{\"03_level_grass\": [\"26_custom_duckmidi\"]}\n"));
+        } else {
+            assert(strstr(artifact_named(coopdx_files[0]), "replace_sequence(0x03, 0x2A, 75"));
+        }
+
+        exporter->destroy_job(job);
+    }
+
+    /* Sequence memory: Enlarge and Stock, then Loop song; HackerSM64 offers the same choices. */
+    DmeUi ui;
+    int at_memory = -1, at_loop = -1;
+    DmeValue sm64_target = {DME_CHOICE, 0, NULL}, hacker_target = {DME_CHOICE, 1, NULL};
+    assert(exporter->set(settings, "target", &sm64_target, error, sizeof(error)) == DME_OK &&
+           exporter->describe(settings, &ui) == DME_OK);
+    const DmeField *memory = ui_field(&ui, "memory", &at_memory);
+    assert(memory && memory->choice_count == 2 && !strcmp(memory->choices[0].label, "Enlarge") &&
+           !strcmp(memory->choices[1].label, "Stock"));
+    assert(!strcmp(ui_field(&ui, "loop", &at_loop)->label, "Loop song") &&
+           at_loop == at_memory + 1);
+    assert(exporter->set(settings, "target", &hacker_target, error, sizeof(error)) == DME_OK &&
+           exporter->describe(settings, &ui) == DME_OK);
+    memory = ui_field(&ui, "memory", &at_memory);
+    assert(memory && memory->choice_count == 2 && !strcmp(memory->choices[0].label, "Enlarge"));
+    assert(exporter->set(settings, "target", &sm64_target, error, sizeof(error)) == DME_OK);
+
+    /* A large song: Enlarge edits the memory files without the pool warning; Stock writes only
+       the song and its entries, and warns. */
+    enum { NOTES = 8000 };
+
+    DmeEvent *big = calloc(NOTES * 2, sizeof(*big));
+    uint32_t seed = 1;
+    assert(big);
+
+    for (uint32_t i = 0; i < NOTES; i++) {
+        seed = seed * 1103515245u + 12345u;
+        uint32_t key = 40 + (seed >> 16) % 40, ch = (seed >> 8) % 8;
+        big[i * 2] = (DmeEvent){(uint64_t)i * 37, i * 2 + 1, 0x90 | ch, key, 100, 0};
+        big[i * 2 + 1] = (DmeEvent){(uint64_t)i * 37 + 30, i * 2 + 2, 0x80 | ch, key, 0, 0};
+    }
+
+    DmeContext large_song = {.events = big,
+                             .event_count = NOTES * 2,
+                             .duration = NOTES * 37,
+                             .ppq = 96,
+                             .percussion_channels = 1u << MIDI_DRUM_CHANNEL};
+    checkout = sm64;
+    checkout_count = 4;
+    host.artifact = NULL;
+    reset_output();
+    pool_warning[0] = 0;
+    assert(exporter->inspect(settings, &large_song, error, sizeof(error)) == DME_OK);
+    job = exporter->create_job(settings, error, sizeof(error));
+    assert(job && exporter->install(job, &large_song, &host, error, sizeof(error)) == DME_OK);
+    assert(installed_file("src/audio/data.c", &f) && !*pool_warning);
+    exporter->destroy_job(job);
+    DmeValue stock = {DME_CHOICE, M64_MEMORY_STOCK, NULL};
+    assert(exporter->set(settings, "memory", &stock, error, sizeof(error)) == DME_OK);
+    reset_output();
+    job = exporter->create_job(settings, error, sizeof(error));
+    assert(job && exporter->install(job, &large_song, &host, error, sizeof(error)) == DME_OK);
+    assert(!installed_file("src/audio/data.c", &f) && !installed_file("src/audio/data.h", &f) &&
+           !installed_file("src/buffers/buffers.c", &f) &&
+           installed_file("sound/sequences/us/03_level_grass.m64", &f) && *pool_warning);
+    exporter->destroy_job(job);
+
+    /* Similar instruments: other stock samples, each one a choice of the mapping. */
+    assert(exporter->describe(settings, &ui) == DME_OK);
+    const DmeField *mapping = ui_field(&ui, "mapping", &at_memory);
+    assert(mapping && mapping->row_count);
+
+    for (uint32_t r = 0; r < mapping->row_count; r++) {
+        const DmeMappingRow *row = &mapping->rows[r];
+        assert(row->similar_count <= 8);
+
+        for (uint32_t i = 0; i < row->similar_count; i++) {
+            bool listed = false;
+
+            for (uint32_t j = 0; j < mapping->choice_count; j++) {
+                listed |= mapping->choices[j].value == row->similar[i].value;
+            }
+
+            assert(listed && row->similar[i].value != row->default_value);
+        }
+    }
+
+    /* The list follows the default mapping, so choosing from it leaves it unchanged. */
+    const DmeMappingRow *top = &mapping->rows[0];
+    uint32_t similar_count = top->similar_count;
+    int similar[8];
+    assert(similar_count > 0);
+
+    for (uint32_t i = 0; i < similar_count; i++) {
+        similar[i] = top->similar[i].value;
+    }
+
+    DmeValue pick = {DME_CHOICE, similar[similar_count - 1], NULL};
+    assert(exporter->set(settings, top->id, &pick, error, sizeof(error)) == DME_OK &&
+           exporter->describe(settings, &ui) == DME_OK);
+    top = &ui_field(&ui, "mapping", &at_memory)->rows[0];
+    assert(top->value == pick.integer && top->similar_count == similar_count);
+
+    for (uint32_t i = 0; i < similar_count; i++) {
+        assert(top->similar[i].value == similar[i]);
+    }
+    free(big);
+    reset_output();
+    exporter->destroy(settings);
+
+    /* Custom offers the project's name, or the MIDI file's name without a project name. */
+    settings = exporter->create();
+    DmeContext named = {.events = events,
+                        .event_count = 2,
+                        .duration = 960,
+                        .ppq = 960,
+                        .project_session = 1,
+                        .percussion_channels = 1u << MIDI_DRUM_CHANNEL,
+                        .project_name = "My Tune!",
+                        .source_name = ""};
+    DmeValue custom_choice = {DME_CHOICE, 35, NULL};
+    assert(exporter->inspect(settings, &named, error, sizeof(error)) == DME_OK &&
+           exporter->set(settings, "sequence", &custom_choice, error, sizeof(error)) == DME_OK &&
+           exporter->describe(settings, &ui) == DME_OK);
+    assert(!strcmp(ui_field(&ui, "sequence_name", &at_memory)->value.text, "my_tune"));
+    named.project_name = "";
+    named.source_name = "C:/midi/Boss Theme.mid";
+    named.project_session = 2;
+    assert(exporter->inspect(settings, &named, error, sizeof(error)) == DME_OK &&
+           exporter->describe(settings, &ui) == DME_OK);
+    assert(!strcmp(ui_field(&ui, "sequence_name", &at_memory)->value.text, "boss_theme"));
     exporter->destroy(settings);
     puts("PASS M64 repository install and sequence memory guide");
     return 0;

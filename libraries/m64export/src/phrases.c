@@ -61,7 +61,10 @@ bool emit_layers(Compile *c, Buffer *b, size_t fixes[16][4]) {
             if (fixes[ch][l]) {
                 uint64_t now = 0;
                 unsigned chunk = 0;
-                int transpose = 0, program = -1, entry_transpose = 0, entry_program = -1;
+                /* sm64coopdx layers start with their channel's instrument. */
+                int start_program = c->coopdx ? c->layer_instrument[ch] : -1;
+                int transpose = 0, program = start_program, entry_transpose = 0,
+                    entry_program = start_program;
                 Buffer phrase = {0};
 
                 for (size_t i = 0; i <= c->count && ok; i++) {
@@ -70,6 +73,21 @@ bool emit_layers(Compile *c, Buffer *b, size_t fixes[16][4]) {
                     if (n && (n->output != ch || n->layer != l || n->end <= n->start ||
                               !in_section(c, n))) {
                         continue;
+                    }
+
+                    int instrument = -1;
+                    unsigned pitch = 0;
+
+                    if (n && c->coopdx) {
+                        coopdx_note(c, n, &instrument, &pitch);
+
+                        if (instrument < 0) {
+                            continue;
+                        }
+                    } else if (n) {
+                        pitch = n->channel == MIDI_DRUM_CHANNEL
+                                    ? (unsigned)c->drums[n->key]
+                                    : (n->key >= 117 ? n->key - 12 : n->key);
                     }
 
                     uint64_t start = n ? section_start(c, n) : 0;
@@ -81,9 +99,6 @@ bool emit_layers(Compile *c, Buffer *b, size_t fixes[16][4]) {
                         }
 
                         delay(&phrase, 0xc0, start - now);
-                        unsigned pitch = n->channel == MIDI_DRUM_CHANNEL
-                                             ? (unsigned)c->drums[n->key]
-                                             : (n->key >= 117 ? n->key - 12 : n->key);
                         int shift = (int)(pitch & ~63u);
 
                         if (shift != transpose) {
@@ -96,7 +111,12 @@ bool emit_layers(Compile *c, Buffer *b, size_t fixes[16][4]) {
                             transpose = shift;
                         }
 
-                        if (n->channel != MIDI_DRUM_CHANNEL && program != c->slots[n->program]) {
+                        if (c->coopdx && program != instrument) {
+                            program = instrument;
+                            put(&phrase, 0xc6);
+                            put(&phrase, (unsigned)program);
+                        } else if (!c->coopdx && n->channel != MIDI_DRUM_CHANNEL &&
+                                   program != c->slots[n->program]) {
                             program = c->slots[n->program];
                             put(&phrase, 0xc6);
                             put(&phrase, (unsigned)program);
@@ -111,6 +131,16 @@ bool emit_layers(Compile *c, Buffer *b, size_t fixes[16][4]) {
                             if (other->output != ch || other->layer != l ||
                                 other->end <= other->start || !in_section(c, other)) {
                                 continue;
+                            }
+
+                            if (c->coopdx) {
+                                int other_instrument;
+                                unsigned other_pitch;
+                                coopdx_note(c, other, &other_instrument, &other_pitch);
+
+                                if (other_instrument < 0) {
+                                    continue;
+                                }
                             }
 
                             uint64_t interval = other->start - n->start,

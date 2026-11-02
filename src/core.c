@@ -84,9 +84,18 @@ void dm_project_init(DmProject *p) {
     p->port_count = 1;
 
     for (int c = 0; c < 16; ++c) {
-        p->channels[c] = (DmChannel){c == 0 || c == MIDI_DRUM_CHANNEL, false, false,
-                                     c == MIDI_DRUM_CHANNEL ? 0 : -1,  100,   64};
+        p->channels[c] = dm_channel_default(c);
+        p->channels[c].enabled = c == 0 || c == MIDI_DRUM_CHANNEL;
+        p->channels[c].program = c == MIDI_DRUM_CHANNEL ? 0 : -1;
     }
+}
+
+DmChannel dm_channel_default(int channel) {
+    return (DmChannel){false, false, false, -1, 100, 64, channel == MIDI_DRUM_CHANNEL};
+}
+
+bool dm_channel_drums(const DmProject *p, int channel) {
+    return channel >= 0 && channel < 16 && p->channels[channel].drums;
 }
 
 DmPortMix dm_port_mix(const DmProject *p, int port, int channel) {

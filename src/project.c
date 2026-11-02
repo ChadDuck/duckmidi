@@ -23,6 +23,11 @@ static bool schema_11(const Input *in) {
     return in->schema >= 11;
 }
 
+/* The channel percussion flag was added in schema 12. */
+static bool schema_12(const Input *in) {
+    return in->schema >= 12;
+}
+
 /* Schema 10 stores numbers compactly. Integers are variable-length (7 bits per byte). A real
    that is an exact multiple of 1/REAL_STEPS, as beats on any common MIDI resolution are, is
    stored as that small integer; any other real keeps its full 8 bytes. Schema 9 used fixed
@@ -343,7 +348,7 @@ static bool pack_channels(const DmProject *p, DmBytes *target) {
     for (int i = 0; i < 16 && ok; ++i) {
         DmChannel c = p->channels[i];
         ok = u32(&b, c.enabled) && u32(&b, c.mute) && u32(&b, c.solo) && u32(&b, c.program) &&
-             u32(&b, c.volume) && u32(&b, c.pan);
+             u32(&b, c.volume) && u32(&b, c.pan) && u32(&b, c.drums);
     }
 
     for (int c = 0; c < 16 && ok; ++c) {
@@ -828,15 +833,15 @@ static bool unpack_events(DmProject *p, Input *in) {
 static bool unpack_channels(DmProject *p, Input *in) {
     for (int i = 0; i < 16; ++i) {
         uint32_t enabled = get32(in), mute = get32(in), solo = get32(in), program = get32(in),
-                 volume = get32(in), pan = get32(in);
+                 volume = get32(in), pan = get32(in), drums = schema_12(in) ? get32(in) : 0;
 
         if (enabled > 1 || mute > 1 || solo > 1 || (program > 127 && program != UINT32_MAX) ||
-            volume > 127 || pan > 127) {
+            volume > 127 || pan > 127 || drums > 1) {
             return false;
         }
 
-        p->channels[i] = (DmChannel){enabled != 0,     mute != 0,   solo != 0,
-                                     (int32_t)program, (int)volume, (int)pan};
+        p->channels[i] = (DmChannel){enabled != 0, mute != 0, solo != 0, (int32_t)program,
+                                     (int)volume,  (int)pan,  drums != 0};
     }
 
     for (int c = 0; c < 16; ++c) {

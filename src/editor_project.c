@@ -121,6 +121,9 @@ void ed_dialog(Editor *e, int kind) {
         }
 
         SDL_ShowOpenFolderDialog(dialog_callback, (void *)(intptr_t)kind, e->window, start, false);
+    } else if (kind == DIALOG_PLUGIN_FOLDER) {
+        SDL_ShowOpenFolderDialog(dialog_callback, (void *)(intptr_t)kind, e->window,
+                                 ed_export_folder_start(e), false);
     } else if (kind == DIALOG_EXPORT_PLUGIN) {
         const SDL_DialogFileFilter *filter;
         const char *suggested;

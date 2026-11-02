@@ -1,6 +1,6 @@
 # Export plugin API reference
 
-The public interface is [`duckmidi_export_plugin.h`](../include/duckmidi_export_plugin.h). The current registration ABI is **4**. A plugin is a native library placed in `plugins/` beside the application. Its formats appear in Export's dropdown, and duckmidi draws their declared settings and review controls. Plugins require no editor, SDL, or UI toolkit headers. [`duckmidi_midi.h`](../include/duckmidi_midi.h) names the MIDI status bytes, meta types and controller numbers used in events.
+The public interface is [`duckmidi_export_plugin.h`](../include/duckmidi_export_plugin.h). The current registration ABI is **5**. A plugin is a native library placed in `plugins/` beside the application. Its formats appear in Export's dropdown, and duckmidi draws their declared settings and review controls. Plugins require no editor, SDL, or UI toolkit headers. [`duckmidi_midi.h`](../include/duckmidi_midi.h) names the MIDI status bytes, meta types and controller numbers used in events.
 
 Plugins run inside the application; use trusted libraries that match its architecture and ABI. Settings last for the session. Restart the application after adding or replacing a plugin.
 
@@ -12,7 +12,7 @@ Descriptors and function tables live until module unload. Instances and jobs are
 
 | Constant | Meaning |
 | --- | --- |
-| `DME_ABI` | Required registration ABI, currently 4. |
+| `DME_ABI` | Required registration ABI, currently 5. |
 | `DME_OK` | Operation succeeded. |
 | `DME_INVALID` | Invalid input or setting. |
 | `DME_CANCELLED` | Work was cancelled. |
@@ -38,7 +38,7 @@ DmeEvent note = { .tick=0, .source_id=1, .status=0x90,
 
 ### `DmeContext`
 
-The context borrows `events` and `event_count`, supplies `duration` in ticks, `ppq`, a `project_session` identifier, project/source names, and 128 program/drum name pointers. `loop_points` says which of `loop_start` and `loop_end` (in the same ticks as events) the arrangement marks with its **M64 - Loop Start** and **M64 - Loop End** events. Use the session identifier to reset source-specific settings when another project opens. A job receives the same frozen arrangement for preflight and conversion even if the live editor changes.
+The context borrows `events` and `event_count`, supplies `duration` in ticks, `ppq`, a `project_session` identifier, project/source names (the project name is empty for an unnamed project; the source name is the imported MIDI file's path, or empty), and 128 program/drum name pointers. Bit `c` of `percussion_channels` is set when MIDI channel `c + 1` is a percussion part; channel 10 usually is, and imported GS, XG or GM2 files can add others or make channel 10 melodic. `loop_points` says which of `loop_start` and `loop_end` (in the same ticks as events) the arrangement marks with its **M64 - Loop Start** and **M64 - Loop End** events. Use the session identifier to reset source-specific settings when another project opens. A job receives the same frozen arrangement for preflight and conversion even if the live editor changes.
 
 ```c
 double beats = (double)context->duration / context->ppq;
@@ -47,7 +47,7 @@ const char *name = context->program_names[40];
 
 ### `DmeValue`, `DmeChoice`, `DmeMappingRow`
 
-`DmeValue` carries a setting's `type` and either `integer` or borrowed `text`. `DmeChoice` pairs an integer value with its label. A `DmeMappingRow` has a stable `id`, label, selected `value` and `default_value`; its choices come from the parent mapping field. IDs identify settings independently of visible labels.
+`DmeValue` carries a setting's `type` and either `integer` or borrowed `text`. `DmeChoice` pairs an integer value with its label. A `DmeMappingRow` has a stable `id`, label, selected `value` and `default_value`; its choices come from the parent mapping field. Optional `similar` and `similar_count` list choices close to the default value that still suit the source, best first, and stay the same when the user picks one of them; the host shows them as **Similar instruments** above the full **Manual selection** list. Each similar value must be one of the field's choices. IDs identify settings independently of visible labels.
 
 ```c
 DmeValue enabled = { DME_BOOL, 1, NULL };
@@ -294,7 +294,7 @@ host->diagnostic(host->user,DME_WARNING,DME_DISPLAY|DME_POPUP,
 
 ### `artifact(host->user, name, data, size)`
 
-Provide a unique leaf filename and bytes; the host copies the buffer before returning, so temporary conversion memory can then be reused. Return zero means failure or cancellation. Paths, duplicate names and excessive output are rejected; an ignored rejection still prevents publication. Preflight must not call this.
+Provide a unique filename and bytes. In a ZIP, `/` places the file in a folder, as in `"mod/sound/song.m64"`, and each part follows the filename rules; the host copies the buffer before returning, so temporary conversion memory can then be reused. Return zero means failure or cancellation. Paths, duplicate names and excessive output are rejected; an ignored rejection still prevents publication. Preflight must not call this.
 
 ```c
 if (!host->artifact(host->user,"bank.json",buffer,length)) return DME_FAILED;
@@ -327,6 +327,6 @@ static const DmeExporter format = {
 
 IDs contain ASCII letters, digits, `.`, `_`, `/` or `-` and are at most 96 bytes. Extensions contain lowercase ASCII letters/digits, without a dot, and are at most 16 bytes. The host accepts up to 64 modules/formats, 32 exporters per module, 64 setting fields, 512 choices per field, 4,096 mapping rows, 2,048 review rows, and text fields with capacities up to 4,096 bytes. A review selection must appear in its manual choices, and recommendations must be a subset of those choices. Setting IDs and row IDs must be unique in their scope.
 
-Output is limited to 64 artifacts, each no larger than 512 MiB, with leaf names shorter than 256 bytes. SINGLE_FILE requires exactly one artifact. ZIP packages the returned artifacts together. The host supplies Save As, remembered folders, workers, cancellation, validation, temporary writes and atomic publication.
+Output is limited to 64 artifacts, each no larger than 512 MiB, with names shorter than 256 bytes. SINGLE_FILE requires exactly one artifact. ZIP packages the returned artifacts together. The host supplies Save As, remembered folders, workers, cancellation, validation, temporary writes and atomic publication.
 
 For a complete independent example, see [`export_plugin_fixture.c`](../tests/export_plugin_fixture.c). For a real plugin with separate settings, review policy and conversion code, see [`libraries/m64export/plugin/`](../libraries/m64export/plugin/).

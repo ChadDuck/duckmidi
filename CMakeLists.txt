@@ -1,13 +1,21 @@
 cmake_minimum_required(VERSION 3.22)
-project(duckmidi VERSION 0.11.0 LANGUAGES C CXX)
-# The version comes from project() above; a cached value from an earlier configure is replaced.
-unset(DUCKMIDI_DELIVERY_VERSION CACHE)
-unset(DUCKMIDI_PROJECT_VERSION_SEEN CACHE)
-set(DUCKMIDI_DELIVERY_VERSION "${PROJECT_VERSION}")
-if(NOT DUCKMIDI_DELIVERY_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+project(duckmidi LANGUAGES C CXX)
+# The version is set for each build, as build-menu.bat and the release workflow do. Without one,
+# the build is named after its UTC build time (YYYY.MM.DD.HHMM); tools/version.cmake writes it
+# before every build. Nothing in the source names a version.
+set(DUCKMIDI_DELIVERY_VERSION "" CACHE STRING "Version for this build and its delivery, such as 0.11.1; empty uses the build time")
+if(NOT DUCKMIDI_DELIVERY_VERSION STREQUAL "" AND
+   NOT DUCKMIDI_DELIVERY_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
   message(FATAL_ERROR "DUCKMIDI_DELIVERY_VERSION must contain three numeric parts, such as 0.10.0.")
 endif()
-add_compile_definitions(DM_APP_VERSION="${DUCKMIDI_DELIVERY_VERSION}")
+set(DUCKMIDI_GENERATED "${CMAKE_BINARY_DIR}/generated")
+add_custom_target(duckmidi_version
+  COMMAND "${CMAKE_COMMAND}" "-DVERSION=${DUCKMIDI_DELIVERY_VERSION}"
+    "-DOUTPUT_DIR=${DUCKMIDI_GENERATED}" "-DREADME_IN=${CMAKE_BINARY_DIR}/docs/README.txt.in"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/version.cmake"
+  BYPRODUCTS "${DUCKMIDI_GENERATED}/duckmidi_version.h" "${DUCKMIDI_GENERATED}/version.txt"
+    "${DUCKMIDI_GENERATED}/README.txt"
+  VERBATIM)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -25,8 +33,12 @@ else()
   pkg_check_modules(FLUID REQUIRED IMPORTED_TARGET fluidsynth>=2.5.4)
   add_library(fluidsynth ALIAS PkgConfig::FLUID)
 endif()
+add_library(duckversion STATIC src/version.c)
+target_include_directories(duckversion PRIVATE "${DUCKMIDI_GENERATED}" src)
+add_dependencies(duckversion duckmidi_version)
 add_library(duckcore STATIC shared/spectrum.c src/core.c src/midi.c src/import_ports.c src/project.c src/project_compat.c src/compress.c src/instruments.c)
 add_subdirectory(libraries/m64export)
+add_subdirectory(libraries/ootexport)
 include(tools/ffmpeg.cmake)
 add_library(duckmedia STATIC shared/audio_export.c)
 target_link_libraries(duckmedia PUBLIC duckcore ${FFMPEG_LIBRARIES})
@@ -68,15 +80,17 @@ else()
 endif()
 add_executable(duckmidi src/main.c src/editor.c src/editor_browser.c src/editor_dialogs.c src/editor_event_view.c src/editor_events.c src/editor_input.c src/editor_midi_inspector.c src/editor_notes.c src/editor_pitch.c src/editor_playlist.c src/editor_preferences.c src/editor_project.c src/editor_selection.c src/editor_shell.c src/editor_song_events.c src/editor_state.c src/editor_timeline.c src/editor_transport.c src/audio.c src/preferences.c)
 target_sources(duckmidi PRIVATE shared/pattern_generation.c src/editor_generate.c src/editor_percussion.c src/editor_note_ports.c src/editor_pattern_colors.c src/editor_save.c src/export_plugins.c src/editor_export.c src/editor_export_ui.c src/editor_update.c src/update.c)
-add_dependencies(duckmidi m64export)
+add_dependencies(duckmidi m64export ootexport)
 add_custom_command(TARGET duckmidi POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:duckmidi>/plugins"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:m64export>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:m64export>")
-target_link_libraries(duckmidi PRIVATE duckcore duckgui duckmidi_io fluidsynth duckmedia)
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:m64export>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:m64export>"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:ootexport>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:ootexport>")
+target_link_libraries(duckmidi PRIVATE duckversion duckcore duckgui duckmidi_io fluidsynth duckmedia)
 set_target_properties(duckmidi PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(duckmidi PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
 if(MINGW)
   target_link_options(duckmidi PRIVATE -static-libgcc -static-libstdc++)
   target_link_options(m64export PRIVATE -static-libgcc)
+  target_link_options(ootexport PRIVATE -static-libgcc)
 endif()
 if(WIN32)
   set_target_properties(duckmidi PROPERTIES WIN32_EXECUTABLE TRUE)
@@ -110,12 +124,24 @@ if(BUILD_TESTING)
   add_executable(m64export_api_test tests/m64export_api_test.c)
   target_link_libraries(m64export_api_test PRIVATE m64export_static)
   add_test(NAME native_m64_export_api COMMAND m64export_api_test)
+  add_executable(m64_coopdx_test tests/m64_coopdx_test.c)
+  target_link_libraries(m64_coopdx_test PRIVATE m64export_static)
+  add_test(NAME m64_coopdx_target COMMAND m64_coopdx_test)
   add_executable(m64_install_test tests/m64_install_test.c libraries/m64export/plugin/ui.c
     libraries/m64export/plugin/review.c libraries/m64export/plugin/samples.c
     libraries/m64export/plugin/memory.c libraries/m64export/plugin/ports.c
+    libraries/m64export/plugin/coopdx.c
     libraries/m64export/plugin/exporter.c)
   target_link_libraries(m64_install_test PRIVATE m64export_static)
   add_test(NAME m64_repository_install COMMAND m64_install_test)
+  add_executable(oot_export_test tests/oot_export_test.c)
+  target_link_libraries(oot_export_test PRIVATE ootexport_static)
+  add_test(NAME oot_export_conversion COMMAND oot_export_test)
+  add_executable(oot_install_test tests/oot_install_test.c libraries/ootexport/plugin/ui.c
+    libraries/ootexport/plugin/review.c libraries/ootexport/plugin/ports.c
+    libraries/ootexport/plugin/exporter.c)
+  target_link_libraries(oot_install_test PRIVATE ootexport_static)
+  add_test(NAME oot_repository_install COMMAND oot_install_test)
   add_executable(core_test tests/core_test.c)
   target_link_libraries(core_test PRIVATE duckcore)
   add_test(NAME midi_project_core COMMAND core_test)
@@ -139,7 +165,7 @@ if(BUILD_TESTING)
   target_link_libraries(update_test PRIVATE duckcore SDL3::SDL3 $<$<BOOL:${WIN32}>:winhttp>)
   add_test(NAME update_check COMMAND update_test)
   set_tests_properties(midi_project_core PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  foreach(TEST_TARGET audio_export_test m64export_api_test m64_install_test core_test spectrum_test ports_test project_compat_test release_export_test update_test)
+  foreach(TEST_TARGET audio_export_test m64export_api_test m64_coopdx_test m64_install_test oot_export_test oot_install_test core_test spectrum_test ports_test project_compat_test release_export_test update_test)
     if(MSVC)
       target_compile_options(${TEST_TARGET} PRIVATE /UNDEBUG)
     else()

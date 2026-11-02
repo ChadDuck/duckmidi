@@ -543,6 +543,35 @@ static void mixer_peak_update(Editor *e, uint64_t now) {
     }
 }
 
+/* The color of the pattern on the channel's arrangement row at the song position (or the row's
+   first pattern before it starts), so the mixer label matches the row; the application color
+   when the row has no patterns or they use the default color. */
+static uint32_t channel_row_color(Editor *e, int channel) {
+    double now = dm_audio_playing(e->audio) && !e->pattern_mode
+                     ? dm_seconds_beat(&e->project, dm_audio_position(e->audio))
+                     : e->cursor_beat[0];
+    const DmClip *current = NULL, *first = NULL;
+
+    for (size_t i = 0; i < e->project.clip_count; i++) {
+        const DmClip *clip = &e->project.clips[i];
+
+        if (clip->channel != channel || clip->lane) {
+            continue;
+        }
+
+        if (!first || clip->beat < first->beat) {
+            first = clip;
+        }
+
+        if (clip->beat <= now && (!current || clip->beat >= current->beat)) {
+            current = clip;
+        }
+    }
+
+    current = current ? current : first;
+    return current ? ed_pattern_color(e, current->pattern) : e->accent;
+}
+
 void ed_mixer(Editor *e, float width, float height) {
     mixer_peak_update(e, SDL_GetTicks());
     ui_child(DM_TEXT_MIXER, width, height, false);
@@ -584,13 +613,15 @@ void ed_mixer(Editor *e, float width, float height) {
         }
 
         float group_width = count * 64.0f + 12;
+        uint32_t row_color = channel_row_color(e, c);
         ui_id(c);
-        ui_channel_color(ed_track_color(c));
+        ui_channel_color(row_color);
         ui_position(x, start.y);
         ui_mixer_child("channel group", group_width, strip_height, true);
-        ui_rect((UiRect){x + 6, start.y, group_width - 12, 2}, ed_track_color(c), 1);
+        ui_rect((UiRect){x + 6, start.y, group_width - 12, 2}, row_color, 1);
         char text[32];
-        snprintf(text, sizeof(text), "%02d%s", c + 1, c == MIDI_DRUM_CHANNEL ? DM_TEXT_DR : "");
+        snprintf(text, sizeof(text), "%02d%s", c + 1,
+                 dm_channel_drums(&e->project, c) ? DM_TEXT_DR : "");
 
         if (ui_mixer_header(text, group_width - 12)) {
             ed_release_piano(e);
@@ -605,8 +636,8 @@ void ed_mixer(Editor *e, float width, float height) {
             ed_commit(e);
         }
 
-        ui_tip(c == MIDI_DRUM_CHANNEL ? DM_TEXT_GENERAL_MIDI_PERCUSSION
-                                      : dm_program_name(e->project.channels[c].program));
+        ui_tip(dm_channel_drums(&e->project, c) ? DM_TEXT_GENERAL_MIDI_PERCUSSION
+                                                : dm_program_name(e->project.channels[c].program));
         UiPoint row = ui_cursor();
         unsigned column = 0;
 

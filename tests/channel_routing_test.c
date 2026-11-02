@@ -345,7 +345,7 @@ static void imports(void) {
     dm_project_init(&loaded);
 
     for (int c = 0; c < 16; ++c) {
-        source.channels[c] = (DmChannel){true, false, false, c, 100, 64};
+        source.channels[c] = (DmChannel){true, false, false, c, 100, 64, c == MIDI_DRUM_CHANNEL};
     }
 
     int id = dm_pattern_add(&source, "Used channel");

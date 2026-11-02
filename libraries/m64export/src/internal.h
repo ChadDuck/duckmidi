@@ -52,6 +52,24 @@ typedef struct {
     unsigned family;
 } StockRegister;
 
+/* sm64coopdx plays mod music with one existing bank, the extended bank 0x2A; see coopdx.c.
+   sample is an index in SM64's "instruments" sample bank, or -1. */
+typedef struct {
+    int sample;
+    double tuning;
+} CoopdxSound;
+
+typedef struct {
+    int present, release_rate, attack, sustained, range_lo, range_hi;
+    CoopdxSound lo, normal, hi;
+} CoopdxInstrument;
+
+#define COOPDX_BANK 0x2A
+#define COOPDX_INSTRUMENTS 204
+#define COOPDX_PERCUSSION 127 /* Layer instrument that plays the bank's percussion. */
+extern const CoopdxInstrument coopdx_instruments[COOPDX_INSTRUMENTS];
+extern const CoopdxSound coopdx_drums[64];
+
 typedef struct {
     uint32_t volume, expression, pan, reverb, program, pedal;
     uint32_t rpn_msb, rpn_lsb, range, cents;
@@ -79,6 +97,11 @@ typedef struct {
     bool region;                   /* Request loop 2: intro plus repeated region. */
     uint64_t loop_start, loop_end; /* Region bounds in 48-tick units. */
     uint32_t emit_section;         /* Section being written by sequence() and emit_layers(). */
+    /* sm64coopdx: bank 0x2A instruments per program slot and drum note; see coopdx.c. */
+    bool coopdx;
+    int fixed[127], fixed_layer[127], drum_instrument[128], drum_pitch[128];
+    int channel_instrument[16], layer_instrument[16];
+    bool switches[16];
 } Compile;
 
 bool reserve(void **p, size_t *cap, size_t count, size_t width);
@@ -103,4 +126,6 @@ bool timeline(Compile *c);
 bool sequence(Compile *c);
 bool emit_layers(Compile *c, Buffer *b, size_t fixes[16][4]);
 bool bank_json(Compile *c);
+bool coopdx_resolve(Compile *c);
+void coopdx_note(const Compile *c, const Note *n, int *instrument, unsigned *pitch);
 #endif

@@ -284,7 +284,7 @@ bool ed_remove_empty_channel(Editor *e, int channel) {
 
     ed_checkpoint(e);
     ed_release_piano(e);
-    e->project.channels[channel] = (DmChannel){false, false, false, -1, 100, 64};
+    e->project.channels[channel] = dm_channel_default(channel);
     e->channel_expanded[channel] = false;
 
     if (e->selected_channel == channel) {
@@ -305,8 +305,10 @@ static bool move_channel(Editor *e, int from, int to) {
 
     ed_checkpoint(e);
     ed_release_piano(e);
+    /* A part moved to channel 10 plays drums there; one moved elsewhere plays an instrument. */
     p->channels[to] = p->channels[from];
-    p->channels[from] = (DmChannel){false, false, false, -1, 100, 64};
+    p->channels[to].drums = to == DM_DRUM_CHANNEL;
+    p->channels[from] = dm_channel_default(from);
     p->lane_count[to] = p->lane_count[from];
     p->lane_count[from] = 0;
     memcpy(p->lane_names[to], p->lane_names[from], sizeof(p->lane_names[to]));
@@ -348,7 +350,7 @@ static bool move_channel(Editor *e, int from, int to) {
 }
 
 void ed_choose_drums(Editor *e, int channel) {
-    if (channel == DM_DRUM_CHANNEL) {
+    if (dm_channel_drums(&e->project, channel)) {
         return;
     }
 
@@ -361,11 +363,11 @@ void ed_choose_drums(Editor *e, int channel) {
     e->instrument_channel = DM_DRUM_CHANNEL;
 }
 
-/* Moves the drum channel's part to a free melodic channel playing program. */
-static void choose_melodic(Editor *e, int program) {
+/* Moves a percussion channel's part to a free melodic channel playing program. */
+static void choose_melodic(Editor *e, int from, int program) {
     int to = ed_available_channel(e);
 
-    if (to < 0 || to == DM_DRUM_CHANNEL || !move_channel(e, DM_DRUM_CHANNEL, to)) {
+    if (to < 0 || to == DM_DRUM_CHANNEL || !move_channel(e, from, to)) {
         ed_message(e, DM_TEXT_NO_FREE_INSTRUMENT_CHANNEL);
         return;
     }
@@ -380,7 +382,7 @@ static void choose_melodic(Editor *e, int program) {
 static void instrument_combo(Editor *e, int c) {
     char text[128];
     int program = e->project.channels[c].program;
-    bool drums = c == DM_DRUM_CHANNEL;
+    bool drums = dm_channel_drums(&e->project, c);
     const char *kit = dm_drum_kit_name(program);
 
     if (drums) {
@@ -389,6 +391,9 @@ static void instrument_combo(Editor *e, int c) {
     } else {
         snprintf(text, sizeof(text), DM_TEXT_PROGRAM_NUMBERED, dm_program_name(program), program);
     }
+
+    /* The dropdown fills the row beside its label. */
+    ui_width(ui_available().x - ui_text_width(DM_TEXT_PROGRAM) - ui_item_spacing_x());
 
     if (!ui_combo(DM_TEXT_PROGRAM, text)) {
         return;
@@ -421,7 +426,7 @@ static void instrument_combo(Editor *e, int c) {
             ui_id(1000 + i);
 
             if (ui_select(text, false, 0, 0)) {
-                choose_melodic(e, i);
+                choose_melodic(e, c, i);
             }
 
             ui_pop_id();
@@ -443,12 +448,15 @@ void ed_instrument(Editor *e) {
     if (show) {
         char text[128];
         snprintf(text, sizeof(text), DM_TEXT_CHANNEL_NUMBER, c + 1,
-                 c == MIDI_DRUM_CHANNEL ? DM_TEXT_GM_PERCUSSION_SUFFIX : "");
+                 c == MIDI_DRUM_CHANNEL && dm_channel_drums(&e->project, c)
+                     ? DM_TEXT_GM_PERCUSSION_SUFFIX
+                 : dm_channel_drums(&e->project, c) ? DM_TEXT_PERCUSSION_SUFFIX
+                                                    : "");
         ui_text(text);
         ui_separator();
         instrument_combo(e, c);
 
-        if (c == MIDI_DRUM_CHANNEL) {
+        if (c == MIDI_DRUM_CHANNEL && dm_channel_drums(&e->project, c)) {
             ui_dim(DM_TEXT_CHANNEL_10_USES);
         }
 
@@ -508,6 +516,54 @@ static void midi_preferences(Editor *e) {
         }
 
         ui_combo_end();
+    }
+}
+
+/* Every exporter with Export to Repository gets a folder row; the picker sets it too. */
+static void export_plugin_preferences(Editor *e) {
+    ui_separator();
+    ui_text(DM_TEXT_EXPORT_PLUGINS);
+    ui_separator();
+    bool any = false;
+
+    for (size_t i = 0; i < ed_export_count(e); i++) {
+        if (!ed_export_installs(e, i)) {
+            continue;
+        }
+
+        char label[256], folder[DM_PATH];
+        snprintf(label, sizeof(label), DM_TEXT_REPOSITORY_FOLDER, ed_export_name(e, i));
+        snprintf(folder, sizeof(folder), "%s", ed_export_repository(e, i));
+        any = true;
+        ui_id((int)i);
+        ui_text(label);
+        float buttons = 2 * 80 + 2 * ui_item_spacing_x();
+        ui_width(fmaxf(120, ui_available().x - buttons));
+
+        if (ui_input("##repository", folder, sizeof(folder))) {
+            ed_export_set_repository(e, i, folder);
+        }
+
+        ui_tip(DM_TEXT_REPOSITORY_FOLDER_HELP);
+        ui_same();
+        ui_disabled(e->dialog_busy);
+
+        if (ui_button(DM_TEXT_BROWSE, 80, 0) && ed_export_folder_picker(e, i)) {
+            ed_dialog(e, DIALOG_PLUGIN_FOLDER);
+        }
+
+        ui_disabled_end();
+        ui_same();
+
+        if (ui_button(DM_TEXT_CLEAR, 80, 0)) {
+            ed_export_set_repository(e, i, "");
+        }
+
+        ui_pop_id();
+    }
+
+    if (!any) {
+        ui_dim(DM_TEXT_NO_REPOSITORY_EXPORTERS);
     }
 }
 
@@ -573,6 +629,7 @@ void ed_preferences(Editor *e) {
             }
         }
 
+        export_plugin_preferences(e);
         ui_separator();
 
         if (ui_button(DM_TEXT_CLOSE, ui_available().x, 0)) {

@@ -10,8 +10,8 @@
 #define DM_LANES 32
 #define DM_PPQ 960
 #define DM_PIANO_KEYS 37
-#define DM_PROJECT_SCHEMA 11
-#define DM_PROJECT_SCHEMA_PREVIOUS 10 /* Still loaded through src/project_compat.c. */
+#define DM_PROJECT_SCHEMA 12
+#define DM_PROJECT_SCHEMA_PREVIOUS 11 /* Still loaded through src/project_compat.c. */
 #define DM_PROJECT_SCHEMA_OLDEST 9    /* Schema 9 (0.10.1) also loads, converted through 10. */
 #define DM_NOTE_PORTS 128
 #define DM_PATTERN_COLORS 16
@@ -21,6 +21,9 @@
 #define DM_LOOP_END_MARKER "loopEnd"
 #define DM_PARTS (DM_NOTE_PORTS * 16)
 #define DM_PATH 4096
+
+/* This build's version: the one set for the build, or its UTC build time (src/version.c). */
+extern const char dm_app_version[];
 #define DM_BPM_MIN (60000000.0 / 16777215.0)
 #define DM_BPM_MAX 60000000.0
 
@@ -81,6 +84,9 @@ typedef struct {
 typedef struct {
     bool enabled, mute, solo;
     int program, volume, pan;
+    /* A percussion part: programs select drum kits and keys select drums. New projects use
+       channel 10; imported files may mark others (GS rhythm parts, XG/GM2 drum banks). */
+    bool drums;
 } DmChannel;
 
 typedef struct {
@@ -224,6 +230,9 @@ bool dm_decompress(const uint8_t *data, size_t size, size_t limit, DmBytes *out)
 /* Converts a project loaded from an older schema (DM_PROJECT_SCHEMA_OLDEST and later) to the
    current one; see src/project_compat.c. */
 void dm_project_upgrade(DmProject *p, uint32_t schema);
+/* An unused channel's settings; only channel 10 starts as a percussion part. */
+DmChannel dm_channel_default(int channel);
+bool dm_channel_drums(const DmProject *p, int channel);
 bool dm_view_switch(DmProject *p, int port, int sequence, char *error, size_t cap);
 bool dm_read(const char *path, DmBytes *out, char *error, size_t cap);
 bool dm_write(const char *path, const void *data, size_t size, char *error, size_t cap);

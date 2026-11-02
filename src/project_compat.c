@@ -25,6 +25,13 @@ static void upgrade_10_to_11(DmProject *p) {
     }
 }
 
+/* Schema 12 marks percussion channels. Earlier projects played drums on channel 10 only. */
+static void upgrade_11_to_12(DmProject *p) {
+    for (int c = 0; c < 16; ++c) {
+        p->channels[c].drums = c == MIDI_DRUM_CHANNEL;
+    }
+}
+
 void dm_project_upgrade(DmProject *p, uint32_t schema) {
     if (schema <= 9) {
         upgrade_9_to_10(p);
@@ -32,5 +39,9 @@ void dm_project_upgrade(DmProject *p, uint32_t schema) {
 
     if (schema <= 10) {
         upgrade_10_to_11(p);
+    }
+
+    if (schema <= 11) {
+        upgrade_11_to_12(p);
     }
 }

@@ -98,12 +98,6 @@ static void event_editing(Editor *e) {
     e->midi_draft.data[2] = 80;
     check(ed_midi_apply_draft(e) && e->project.channels[2].volume == volume,
           "editing pattern-local controller does not overwrite global mixer default");
-
-    for (int c = 0; c < 16; ++c) {
-        if (c != 9) {
-            check(ed_track_color(c) != ed_track_color(9), "percussion color is reserved");
-        }
-    }
 }
 
 static void cursor_preferences(Editor *e) {

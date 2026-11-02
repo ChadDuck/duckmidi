@@ -146,6 +146,11 @@ bool dm_release_parse(const char *json, bool full, char *version, size_t version
         const char *name = strrchr(candidate, '/');
         name = name ? name + 1 : candidate;
 
+        /* The macOS app is also a ZIP. */
+        if (contains_word(name, "macos")) {
+            continue;
+        }
+
         if (contains_word(name, full ? "full" : "core")) {
             snprintf(url, url_capacity, "%s", candidate);
             return true;

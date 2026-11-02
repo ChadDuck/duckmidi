@@ -19,6 +19,7 @@ static void pitch_underlay(Editor *e, UiRect grid, View *v, float scale);
 static int piano_notes(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, float scale,
                        float row, UiMouse mouse, UiRect *hit_result);
 static int bend_hit(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse, bool segment);
+static int bend_search(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse, bool segment);
 static int insert_bend_node(Editor *e, int segment, UiRect grid, View *v, float scale,
                             UiMouse mouse);
 static void move_bend_node(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse);
@@ -80,7 +81,8 @@ static void piano_keys(Editor *e, UiRect r, View *v, float label, float row, UiM
             char text[32];
             snprintf(text, sizeof(text), "%s%d", note_names[step], key / 12 - 1);
             ui_label_fit((UiPoint){r.x + 9, y + 3}, label - 18, ed_sounding(e, key) ? BG : TEXT,
-                         e->pattern_channel == MIDI_DRUM_CHANNEL ? dm_drum_name(key) : text);
+                         dm_channel_drums(&e->project, e->pattern_channel) ? dm_drum_name(key)
+                                                                           : text);
         }
 
         if (piano_mouse_active(e, mouse) && ed_inside(mouse.pos, (UiRect){r.x, y, label, row}) &&
@@ -585,8 +587,8 @@ static void piano_header(Editor *e, DmPattern *p) {
         }
 
         /* Shown for percussion: the drum channel's pattern, or the Percussion preview. */
-        if ((e->preview_program == 128 || e->pattern_channel == MIDI_DRUM_CHANNEL ||
-             (e->channel_selected && e->selected_channel == MIDI_DRUM_CHANNEL)) &&
+        if ((e->preview_program == 128 || dm_channel_drums(&e->project, e->pattern_channel) ||
+             (e->channel_selected && dm_channel_drums(&e->project, e->selected_channel))) &&
             ui_menu_item(DM_TEXT_PERCUSSION_KEYBOARD_MAPPING, NULL, true)) {
             ed_percussion_open(e);
         }
@@ -615,6 +617,7 @@ static void pitch_underlay(Editor *e, UiRect grid, View *v, float scale) {
     UiPoint previous = {0};
     bool has = false;
     DmAutomation before = {0};
+    ed_pitch_cache_begin(e);
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
@@ -640,6 +643,8 @@ static void pitch_underlay(Editor *e, UiRect grid, View *v, float scale) {
         has = true;
         before = a;
     }
+
+    ed_pitch_cache_end(e);
 }
 
 static int piano_notes(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, float scale,
@@ -691,6 +696,13 @@ UiPoint ed_bend_point(Editor *e, DmAutomation a, UiRect grid, View *v, float sca
 }
 
 static int bend_hit(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse, bool segment) {
+    ed_pitch_cache_begin(e);
+    int hit = bend_search(e, grid, v, scale, mouse, segment);
+    ed_pitch_cache_end(e);
+    return hit;
+}
+
+static int bend_search(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse, bool segment) {
     int previous = -1;
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
@@ -987,7 +999,7 @@ void ed_roll(Editor *e, float width, float height) {
     }
 
     View *v = &e->roll_view;
-    float label = e->pattern_channel == MIDI_DRUM_CHANNEL ? 160 : 64, row = 20,
+    float label = dm_channel_drums(&e->project, e->pattern_channel) ? 160 : 64, row = 20,
           scale = 80 * v->zoom, total = fmaxf((float)p->length * scale, r.w - label);
     ed_focus_first_note(e, p, (UiRect){r.x + label, r.y + 28, r.w - label, r.h - 28});
     bool velocity_wheel = ed_note_velocity_wheel(e, p, r, v, label, row, scale, mouse, hovered);

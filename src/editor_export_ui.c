@@ -31,7 +31,7 @@ static void mapping(Editor *e, DmExportFormat *format, const DmeField *field, un
 
     float width = ui_available().x, left = width * .47f;
 
-    if (ui_child("sources", left, 180, true)) {
+    if (ui_child("sources", left, 206, true)) {
         for (uint32_t i = 0; i < field->row_count; i++) {
             if (ui_select(field->rows[i].label, *selected == (int)i, 0, 0)) {
                 *selected = (int)i;
@@ -42,13 +42,43 @@ static void mapping(Editor *e, DmExportFormat *format, const DmeField *field, un
     ui_child_end();
     ui_same();
 
-    if (ui_child("mapping", width - left - 10, 180, true)) {
+    if (ui_child("mapping", width - left - 10, 206, true)) {
         const DmeMappingRow *row = &field->rows[*selected];
-        ui_wrap(row->label);
-        ui_separator();
         ui_dim(DM_TEXT_DEFAULT_MAPPING);
         ui_wrap(choice_label(field, row->default_value));
-        ui_space(6);
+
+        /* Similar instruments: the plugin's closest choices to the default mapping that still
+           reach the source's notes, as the export review recommends. The list stays the same
+           while the user picks from it; the picked one is the label. Manual selection shows the
+           same value, so it follows a pick here. */
+        ui_separator();
+        ui_space(4);
+        ui_text(DM_TEXT_SIMILAR_INSTRUMENTS);
+        const char *similar =
+            row->similar_count ? DM_TEXT_CHOOSE_SIMILAR : DM_TEXT_NO_SIMILAR_INSTRUMENT;
+
+        for (uint32_t i = 0; i < row->similar_count; i++) {
+            if (row->similar[i].value == row->value) {
+                similar = row->similar[i].label;
+            }
+        }
+
+        ui_width(ui_available().x);
+        ui_disabled(!row->similar_count);
+
+        if (ui_combo("##similar-instrument", similar)) {
+            for (uint32_t i = 0; i < row->similar_count; i++) {
+                if (ui_select(row->similar[i].label, row->similar[i].value == row->value, 0, 0)) {
+                    ed_export_set(e, (size_t)(e->export_type - 1), row->id,
+                                  (DmeValue){DME_CHOICE, row->similar[i].value, NULL});
+                }
+            }
+
+            ui_combo_end();
+        }
+
+        ui_disabled_end();
+        ui_text(DM_TEXT_MANUAL_SELECTION);
         ui_width(ui_available().x);
 
         if (ui_combo("##mapped-instrument", choice_label(field, row->value))) {
@@ -98,7 +128,7 @@ void ed_export_render_fields(Editor *e, DmExportFormat *format, const DmeUi *ui)
         }
         case DME_TEXT:
             snprintf(text, sizeof(text), "%s", f->value.text);
-            ui_width(280);
+            ui_width(300);
             changed = ui_input(f->label, text, f->text_capacity);
             value.text = text;
             break;
@@ -144,17 +174,10 @@ bool ed_export_busy(Editor *e) {
            (e->export_plugins->work.thread || e->export_plugins->review_pending);
 }
 
-/* Repository installs: after a folder is chosen, the window shows it and the Keep original files
-   choice above the action row. */
+/* Repository installs: Keep original files sits above the action row. */
 static void repository_settings(DmExportPlugins *h) {
-    if (!*h->repository) {
-        return;
-    }
-
-    ui_dim(h->repository);
     ui_check(DM_TEXT_KEEP_ORIGINAL_FILES, &h->keep_originals);
-    ui_same();
-    ui_dim(DM_TEXT_KEEP_ORIGINAL_FILES_HELP);
+    ui_tip(DM_TEXT_KEEP_ORIGINAL_FILES_HELP);
 }
 
 void ed_export_controls(Editor *e) {
@@ -227,7 +250,7 @@ void ed_export_controls(Editor *e) {
         ui_same();
 
         if (ui_button(f->api->install_label, button_width, 0)) {
-            ed_dialog(e, DIALOG_REPOSITORY);
+            ed_export_to_repository(e);
         }
 
         ui_tip(DM_TEXT_EXPORT_REPOSITORY_HELP);

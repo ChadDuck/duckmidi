@@ -16,15 +16,17 @@ int main(void) {
         "{\"tag_name\": \"v0.12.0\", \"name\": \"duckmidi 0.12.0\", \"assets\": ["
         "{\"name\": \"notes.txt\", \"browser_download_url\": "
         "\"https://github.com/ChadDuck/duckmidi/releases/download/v0.12.0/notes.txt\"},"
-        "{\"name\": \"duckmidi-v0.12.0-Core.zip\", \"browser_download_url\": "
-        "\"https://github.com/ChadDuck/duckmidi/releases/download/v0.12.0/duckmidi-v0.12.0-Core.zip\"},"
-        "{\"name\": \"duckmidi-v0.12.0-Full.zip\", \"browser_download_url\": "
-        "\"https://github.com/ChadDuck/duckmidi/releases/download/v0.12.0/duckmidi-v0.12.0-Full.zip\"}]}";
+        "{\"name\": \"duckmidi-v0.12.0-macOS-arm64.zip\", \"browser_download_url\": "
+        "\"https://github.com/ChadDuck/duckmidi/releases/download/v0.12.0/duckmidi-v0.12.0-macOS-arm64.zip\"},"
+        "{\"name\": \"duckmidi-v0.12.0-Windows-x86_64-Core.zip\", \"browser_download_url\": "
+        "\"https://github.com/ChadDuck/duckmidi/releases/download/v0.12.0/duckmidi-v0.12.0-Windows-x86_64-Core.zip\"},"
+        "{\"name\": \"duckmidi-v0.12.0-Windows-x86_64-Full.zip\", \"browser_download_url\": "
+        "\"https://github.com/ChadDuck/duckmidi/releases/download/v0.12.0/duckmidi-v0.12.0-Windows-x86_64-Full.zip\"}]}";
     char version[32], url[1024];
     assert(dm_release_parse(release, true, version, sizeof(version), url, sizeof(url)));
-    assert(!strcmp(version, "0.12.0") && strstr(url, "-Full.zip"));
+    assert(!strcmp(version, "0.12.0") && strstr(url, "Windows-x86_64-Full.zip"));
     assert(dm_release_parse(release, false, version, sizeof(version), url, sizeof(url)));
-    assert(strstr(url, "-Core.zip"));
+    assert(strstr(url, "Windows-x86_64-Core.zip"));
 
     /* A single ZIP serves both builds; a release without one has nothing to install. */
     const char *single = "{\"tag_name\": \"0.12.1\", \"assets\": [{\"browser_download_url\": "

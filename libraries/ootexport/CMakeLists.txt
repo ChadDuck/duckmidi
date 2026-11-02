@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.22)
+project(ootexport LANGUAGES C)
+set(OOT_SOURCES src/catalog.c src/catalog_data.c src/sequence.c src/repository.c)
+set(OOT_PLUGIN_SOURCES plugin/ui.c plugin/review.c plugin/ports.c plugin/exporter.c)
+add_library(ootexport SHARED ${OOT_SOURCES} ${OOT_PLUGIN_SOURCES})
+target_compile_features(ootexport PRIVATE c_std_17)
+target_include_directories(ootexport PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
+set_target_properties(ootexport PROPERTIES OUTPUT_NAME OoT PREFIX "" C_VISIBILITY_PRESET hidden)
+# Converter and repository patches without the plugin entry point, for tests.
+add_library(ootexport_static STATIC ${OOT_SOURCES})
+target_compile_features(ootexport_static PRIVATE c_std_17)
+target_include_directories(ootexport_static PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src")
+if(NOT WIN32)
+  target_link_libraries(ootexport PRIVATE m)
+  target_link_libraries(ootexport_static PUBLIC m)
+endif()

@@ -104,8 +104,15 @@ bool dm_export_ui_valid(const DmeUi *ui, char *error, size_t cap) {
                 const DmeMappingRow *r = &f->rows[j];
 
                 if (!identifier(r->id) || !text(r->label, 512) || !choices(f, r->value) ||
-                    !choices(f, r->default_value)) {
+                    !choices(f, r->default_value) || r->similar_count > 512 ||
+                    (r->similar_count && !r->similar)) {
                     goto fail;
+                }
+
+                for (uint32_t k = 0; k < r->similar_count; k++) {
+                    if (!text(r->similar[k].label, 512) || !choices(f, r->similar[k].value)) {
+                        goto fail;
+                    }
                 }
 
                 for (uint32_t k = 0; k < j; k++) {

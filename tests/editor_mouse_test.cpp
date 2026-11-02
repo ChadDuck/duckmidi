@@ -437,10 +437,22 @@ static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
     float row = 92 + ImGui::GetStyle().ItemSpacing.y;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
+    ImVec2 grab = ImGui::GetCurrentContext()->ActiveIdClickOffset; /* Press point on the card. */
     mouse_frame(e, x + 16, y + 5, true);
     mouse_frame(e, x + 10, y + row * ((patterns_total - 1) / 2) + 20, true);
     mouse_frame(e, x + 10, y + row * ((patterns_total - 1) / 2) + 20, true);
     check(e->pattern_drag == 0, "a dragged card stays held while over the pattern section");
+    bool held_spot = false;
+    ImVec2 card = {x + 10 - grab.x, y + row * ((patterns_total - 1) / 2) + 20 - grab.y};
+
+    for (auto *t : ImGui::GetCurrentContext()->Windows) {
+        if (t->Active && std::strstr(t->Name, "##Tooltip")) {
+            held_spot = std::fabs(t->Pos.x - card.x) < .5f && std::fabs(t->Pos.y - card.y) < .5f;
+        }
+    }
+
+    check(grab.x > 0 && grab.y > 0 && held_spot,
+          "a dragged card keeps the clicked spot under the mouse");
     SDL_CreateDirectory("agents/reports/pattern-reorder-2026-10-31");
     SDL_SetRenderDrawColor(e->renderer, 0, 0, 0, 255);
     SDL_RenderClear(e->renderer);

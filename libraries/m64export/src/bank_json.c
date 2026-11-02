@@ -18,7 +18,7 @@ static void envelope(Buffer *b, const M64Instrument *d) {
     format(b, "[[%u,32700],[%u,%u],\"hang\"]", d->attack, d->decay, d->sustain);
 }
 
-bool bank_json(Compile *c) {
+static void generated_bank(Compile *c) {
     Buffer *b = &c->result->files[M64_BANK_JSON];
     format(b, "{\n  \"sample_bank\": \"instruments\",\n  \"envelopes\": {\n");
     unsigned total = c->program_count + c->drum_count;
@@ -81,17 +81,42 @@ bool bank_json(Compile *c) {
     format(b, "]\n}\n");
     format(&c->result->files[M64_SEQUENCE_JSON], "{\"%s\": [\"%s\"]}\n", c->request->sequence_name,
            c->request->bank_name);
+}
+
+/* sm64coopdx writes no bank or sequence table entry: the mod names bank 0x2A. */
+bool bank_json(Compile *c) {
+    if (!c->coopdx) {
+        generated_bank(c);
+    }
+
     Buffer *m = &c->result->files[M64_MANIFEST];
+    const char *target = c->coopdx                                     ? "sm64coopdx"
+                         : c->request->target == M64_TARGET_HACKERSM64 ? "HackerSM64"
+                                                                       : "n64decomp/sm64 US";
+
+    if (c->coopdx) {
+        format(m,
+               "{\n  \"target\": \"%s\",\n  \"sound_bank\": \"30_extended\",\n  \"bank_id\": %u,\n",
+               target, COOPDX_BANK);
+    } else {
+        format(m, "{\n  \"target\": \"%s\",\n  \"sample_bank\": \"instruments\",\n", target);
+    }
+
     format(
         m,
-        "{\n  \"target\": \"n64decomp/sm64 US\",\n  \"sample_bank\": \"instruments\",\n  \"sample_assets_included\": false,\n  \"sequence_bytes\": %llu,\n  \"sequence_memory_warning_bytes\": 16128,\n  \"sequence_address_max_offset\": 65535,\n  \"additional_timing_grid_ticks\": %u,\n  \"tempo_scale\": ",
+        "  \"sample_assets_included\": false,\n  \"sequence_bytes\": %llu,\n  \"sequence_address_max_offset\": 65535,\n  \"additional_timing_grid_ticks\": %u,\n  \"tempo_scale\": ",
         (unsigned long long)c->result->files[M64_SEQUENCE].size, c->quality_grid);
     number(m, c->tempo_scale);
-    format(
-        m,
-        ",\n  \"sequence_load_bytes\": %llu,\n  \"minimum_temporary_sequence_pool_bytes\": %llu,\n  \"programs\": [\n",
-        (unsigned long long)sequence_load_bytes(c),
-        (unsigned long long)(sequence_load_bytes(c) + 16));
+
+    if (!c->coopdx) {
+        format(
+            m,
+            ",\n  \"sequence_memory_warning_bytes\": 16128,\n  \"sequence_load_bytes\": %llu,\n  \"minimum_temporary_sequence_pool_bytes\": %llu",
+            (unsigned long long)sequence_load_bytes(c),
+            (unsigned long long)(sequence_load_bytes(c) + 16));
+    }
+
+    format(m, ",\n  \"programs\": [\n");
     bool comma = false;
 
     for (unsigned p = 0; p < 4096; p++) {
@@ -105,7 +130,9 @@ bool bank_json(Compile *c) {
             number(m, d->tuning);
             const Register *r = &c->registers[c->slots[p]];
 
-            if (r->enabled) {
+            if (c->coopdx) {
+                format(m, ", \"bank_instrument\": %d", c->fixed[c->slots[p]]);
+            } else if (r->enabled) {
                 format(
                     m,
                     ", \"register\": {\"normal_range_hi\": %d, \"sample\": \"%s\", \"c4_tuning\": ",
@@ -127,6 +154,12 @@ bool bank_json(Compile *c) {
         format(m, "%s    {\"gm_note\": %u, \"slot\": %u, \"sample\": \"%s\", \"tuning\": ",
                i ? ",\n" : "", key, i, d->sample);
         number(m, d->tuning);
+
+        if (c->coopdx) {
+            format(m, ", \"bank_instrument\": %d, \"note\": %d", c->drum_instrument[key],
+                   c->drum_pitch[key]);
+        }
+
         format(m, "}");
     }
 

@@ -637,6 +637,7 @@ static void import_init(DmProject *p, ImportState *state) {
     for (int c = 0; c < 16; ++c) {
         state->pattern[c] = -1;
         p->channels[c].enabled = false;
+        p->channels[c].drums = c == MIDI_DRUM_CHANNEL;
 
         for (int k = 0; k < 128; ++k) {
             state->head[c][k] = state->tail[c][k] = -1;
@@ -747,6 +748,70 @@ static bool import_meta(DmProject *p, const Midi *m, const Raw *r, double beat) 
     return dm_event_add(p, beat, r->track, 0, &r->bytes); /* Event ports name note ports. */
 }
 
+/* The body of a stored SysEx message: after F0 and its length. */
+static bool sysex_body(const uint8_t *b, size_t size, const uint8_t **body, uint32_t *length) {
+    if (!size || (b[0] != MIDI_SYSEX && b[0] != MIDI_SYSEX_END)) {
+        return false;
+    }
+
+    Reader r = {b + 1, b + size, true};
+    *length = read_vlq(&r);
+    *body = r.p;
+    return r.ok && *length <= (size_t)(r.end - r.p);
+}
+
+/* Roland GS "use for rhythm part" (address 40 1x 15): the MIDI channel of part block x and
+   whether it now plays a drum map. Block 0 is channel 10, 1-9 channels 1-9, A-F channels 11-16. */
+static bool gs_rhythm_part(const uint8_t *b, size_t size, int *channel, bool *drums) {
+    const uint8_t *d;
+    uint32_t n;
+
+    if (!sysex_body(b, size, &d, &n) || n < 8 || d[0] != 0x41 || d[2] != 0x42 || d[3] != 0x12 ||
+        d[4] != 0x40 || (d[5] & 0xF0) != 0x10 || d[6] != 0x15) {
+        return false;
+    }
+
+    int block = d[5] & 0x0F;
+    *channel = block == 0 ? MIDI_DRUM_CHANNEL : block <= 9 ? block - 1 : block;
+    *drums = d[7] != 0;
+    return true;
+}
+
+/* GM System On and GS Reset return every part to the General MIDI layout. */
+static bool layout_reset(const uint8_t *b, size_t size) {
+    const uint8_t *d;
+    uint32_t n;
+
+    if (!sysex_body(b, size, &d, &n) || n < 4) {
+        return false;
+    }
+
+    bool gm = d[0] == 0x7E && d[2] == 0x09 && (d[3] == 0x01 || d[3] == 0x03);
+    bool gs = n >= 8 && d[0] == 0x41 && d[2] == 0x42 && d[3] == 0x12 && d[4] == 0x40 &&
+              d[5] == 0x00 && d[6] == 0x7F;
+    return gm || gs;
+}
+
+/* Percussion parts from the file's setup: GS rhythm parts, and XG (bank 127) or GM2 (bank 120)
+   drum banks selected before a channel's first note. */
+static void import_drum_parts(DmProject *p, const ImportState *state, const uint8_t *b,
+                              size_t size) {
+    int channel;
+    bool drums;
+
+    if (gs_rhythm_part(b, size, &channel, &drums)) {
+        p->channels[channel].drums = drums;
+    } else if (layout_reset(b, size)) {
+        for (int c = 0; c < 16; ++c) {
+            p->channels[c].drums = c == MIDI_DRUM_CHANNEL;
+        }
+    } else if (b[0] < MIDI_SYSTEM && (b[0] & MIDI_STATUS_MASK) == MIDI_CONTROL &&
+               b[1] == MIDI_CC_BANK && (b[2] == 127 || b[2] == 120) &&
+               state->pattern[b[0] & MIDI_CHANNEL_MASK] < 0) {
+        p->channels[b[0] & MIDI_CHANNEL_MASK].drums = true;
+    }
+}
+
 static bool import_one(DmProject *p, const Midi *m, ImportState *state, const Raw *r) {
     if (!active_raw(p, r)) {
         return true;
@@ -768,6 +833,8 @@ static bool import_one(DmProject *p, const Midi *m, ImportState *state, const Ra
     if (b[0] == MIDI_META) {
         return import_meta(p, m, r, beat);
     }
+
+    import_drum_parts(p, state, b, r->bytes.size);
 
     if (b[0] < MIDI_SYSTEM) {
         p->channels[c].enabled = true;
@@ -2140,6 +2207,48 @@ static bool collect_initial_sysex(const DmProject *p, Midi *m) {
     return true;
 }
 
+/* A percussion part other than channel 10, or a melodic channel 10, is announced with a GS
+   "use for rhythm part" message after the opening SysEx, unless the source already sends it. The
+   synthesizer, an external device and exported files then agree with the channel's setting. */
+static bool collect_drum_parts(const DmProject *p, Midi *m) {
+    for (int c = 0; c < 16; ++c) {
+        bool drums = p->channels[c].drums, sent = false;
+
+        if (!p->channels[c].enabled || drums == (c == MIDI_DRUM_CHANNEL)) {
+            continue;
+        }
+
+        for (size_t i = 0; i < p->event_count && p->events[i].beat == 0; ++i) {
+            int channel;
+            bool value;
+            const DmBytes *message = &p->events[i].message;
+            sent |= gs_rhythm_part(message->data, message->size, &channel, &value) &&
+                    channel == c && value == drums;
+        }
+
+        if (sent) {
+            continue;
+        }
+
+        uint8_t block = (uint8_t)(c == MIDI_DRUM_CHANNEL ? 0 : c < MIDI_DRUM_CHANNEL ? c + 1 : c);
+        uint8_t message[] = {MIDI_SYSEX, 10,           0x41, 0x10,          0x42, 0x12,
+                             0x40,       0x10 | block, 0x15, drums ? 1 : 0, 0,    MIDI_SYSEX_END};
+        unsigned sum = 0;
+
+        for (int i = 6; i < 10; ++i) {
+            sum += message[i];
+        }
+
+        message[10] = (uint8_t)((128 - sum % 128) & 0x7F);
+
+        if (!add_message(m, 0, 0, message, sizeof(message))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool collect_timing(const DmProject *p, Midi *m) {
     uint32_t us = (uint32_t)llround(60000000.0 / p->bpm);
     uint8_t tempo[] = {MIDI_META, MIDI_META_TEMPO, 3, us >> 16, us >> 8, us};
@@ -2168,7 +2277,7 @@ static bool collect_single(const DmProject *p, Midi *m, bool mixer) {
         return false;
     }
 
-    if (!collect_initial_sysex(p, m) || !collect_channels(p, m)) {
+    if (!collect_initial_sysex(p, m) || !collect_drum_parts(p, m) || !collect_channels(p, m)) {
         return false;
     }
 

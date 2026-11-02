@@ -203,6 +203,11 @@ uint64_t sequence_load_bytes(const Compile *c) {
 }
 
 static void sequence_memory_warning(Compile *c) {
+    /* sm64coopdx plays mod sequences from their own buffer, not the sequence pool. */
+    if (c->coopdx) {
+        return;
+    }
+
     uint64_t temporary = sequence_load_bytes(c) + 16;
 
     if (temporary > 0x4400) {
@@ -410,16 +415,18 @@ static int32_t compile_common(const M64Request *q, const M64Hooks *h, M64Result 
     c.hooks = h;
     c.result = r;
     c.tempo_scale = 1;
+    c.coopdx = q && q->target == M64_TARGET_SM64COOPDX;
 
-    if (!q || q->target != M64_TARGET_SM64_US || !q->ppq || q->ppq > 1000000 || !q->voice_limit ||
-        q->voice_limit > 64 || q->loop > 2 ||
+    if (!q ||
+        (q->target != M64_TARGET_SM64_US && q->target != M64_TARGET_HACKERSM64 &&
+         q->target != M64_TARGET_SM64COOPDX) ||
+        !q->ppq || q->ppq > 1000000 || !q->voice_limit || q->voice_limit > 64 || q->loop > 2 ||
         (q->loop == 2 && (q->loop_start >= (q->loop_end ? q->loop_end : q->duration) ||
                           q->loop_end > q->duration)) ||
         q->event_count > 2000000 || (q->event_count && !q->events) || q->duration > UINT32_MAX ||
         !name_valid(q->sequence_name) || !name_valid(q->bank_name)) {
         r->status = M64_INVALID;
-        diagnose(&c, M64_ERROR, 1, NULL,
-                 "Invalid request, names, limits, or target (SM64 US required).");
+        diagnose(&c, M64_ERROR, 1, NULL, "Invalid request, names, limits, or target.");
         return r->status;
     }
 
@@ -465,8 +472,8 @@ static int32_t compile_common(const M64Request *q, const M64Hooks *h, M64Result 
             "High tempos are represented with a reduced tick resolution to preserve playback speed.");
     }
 
-    if (!cancelled(&c, 0, 0) && timeline(&c) && (analysis || fit_sequence(&c)) &&
-        select_registers(&c) && !analysis) {
+    if (!cancelled(&c, 0, 0) && timeline(&c) && (!c.coopdx || coopdx_resolve(&c)) &&
+        (analysis || fit_sequence(&c)) && select_registers(&c) && !analysis) {
         r->compiled = bank_json(&c);
     }
 

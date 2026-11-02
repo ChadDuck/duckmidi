@@ -708,6 +708,85 @@ static void midi_metadata_views(void) {
     }
 }
 
+/* A one-track file from raw track bytes (delta times included). */
+static DmBytes one_track(const unsigned char *track, size_t size) {
+    DmBytes file = {0};
+    const unsigned char header[] = {
+        'M', 'T', 'h', 'd', 0,   0,   0,   6, 0, 0, 0,
+        1,   0,   96,  'M', 'T', 'r', 'k', 0, 0, 0, (unsigned char)size};
+    CHECK(size < 256 && dm_bytes(&file, header, sizeof(header)) && dm_bytes(&file, track, size));
+    return file;
+}
+
+static size_t count_bytes(const DmBytes *b, const unsigned char *pattern, size_t size) {
+    size_t found = 0;
+
+    for (size_t i = 0; i + size <= b->size; ++i) {
+        found += !memcmp(b->data + i, pattern, size);
+    }
+
+    return found;
+}
+
+/* Percussion parts other than channel 10: a GS rhythm part (channel 11), XG and GM2 drum banks
+   before the first note (channels 12 and 13), and a drum bank after the first note, which does
+   not count (channel 14). Saved files announce every percussion part with a GS message. */
+static void percussion_parts(void) {
+    const unsigned char track[] = {
+        0,    0xF0, 10,  0x41, 0x10, 0x42, 0x12, 0x40, 0x1A, 0x15, 0x02, 0x0F, 0xF7, /* Ch 11. */
+        0,    0xBB, 0,   127,                                                        /* Ch 12 XG. */
+        0,    0xBC, 0,   120, /* Ch 13 GM2. */
+        0,    0x99, 36,  100,  0,    0x9A, 38,   100,  0,    0x9B, 42,   100,  0,
+        0x9C, 46,   100, 0,    0x9D, 60,   100,  1,    0xBD, 0,    127, /* Ch 14: too late. */
+        95,   0x89, 36,  0,    0,    0x8A, 38,   0,    0,    0x8B, 42,   0,    0,
+        0x8C, 46,   0,   0,    0x8D, 60,   0,    0,    0xFF, 0x2F, 0};
+    DmBytes file = one_track(track, sizeof(track)), saved = {0};
+    DmProject p, again;
+    dm_project_init(&p);
+    dm_project_init(&again);
+    char error[256] = {0};
+    CHECK(dm_import(&p, file.data, file.size, 0, 0, error, sizeof(error)));
+
+    for (int c = 0; c < 16; ++c) {
+        CHECK(p.channels[c].drums == (c >= 9 && c <= 12));
+        CHECK(dm_channel_drums(&p, c) == p.channels[c].drums);
+    }
+
+    /* The source's own GS message is kept once; channels 12 and 13 gain one each. */
+    CHECK(dm_midi(&p, &saved, error, sizeof(error)));
+    const unsigned char part11[] = {0x40, 0x1A, 0x15, 0x02}, part12[] = {0x40, 0x1B, 0x15, 0x01},
+                        part13[] = {0x40, 0x1C, 0x15, 0x01}, part14[] = {0x40, 0x1D, 0x15};
+    CHECK(count_bytes(&saved, part11, 4) == 1 && count_bytes(&saved, part12, 4) == 1 &&
+          count_bytes(&saved, part13, 4) == 1 && count_bytes(&saved, part14, 3) == 0);
+    CHECK(dm_import(&again, saved.data, saved.size, 0, 0, error, sizeof(error)));
+
+    for (int c = 0; c < 16; ++c) {
+        CHECK(again.channels[c].drums == p.channels[c].drums);
+    }
+
+    /* A melodic channel 10 is announced too. */
+    p.channels[MIDI_DRUM_CHANNEL].drums = false;
+    dm_bytes_free(&saved);
+    CHECK(dm_midi(&p, &saved, error, sizeof(error)));
+    const unsigned char melodic10[] = {0xF0, 10,   0x41, 0x10, 0x42, 0x12,
+                                       0x40, 0x10, 0x15, 0x00, 0x1B, 0xF7};
+    CHECK(count_bytes(&saved, melodic10, sizeof(melodic10)) == 1);
+
+    /* A GS reset afterwards returns to the General MIDI layout. */
+    const unsigned char reset[] = {0,    0xF0, 10,   0x41, 0x10, 0x42, 0x12, 0x40, 0x1A, 0x15,
+                                   0x02, 0x0F, 0xF7, 0,    0xF0, 10,   0x41, 0x10, 0x42, 0x12,
+                                   0x40, 0x00, 0x7F, 0x00, 0x41, 0xF7, 0,    0x9A, 38,   100,
+                                   96,   0x8A, 38,   0,    0,    0xFF, 0x2F, 0};
+    DmBytes later = one_track(reset, sizeof(reset));
+    CHECK(dm_import(&again, later.data, later.size, 0, 0, error, sizeof(error)));
+    CHECK(!again.channels[10].drums && again.channels[MIDI_DRUM_CHANNEL].drums);
+    dm_bytes_free(&file);
+    dm_bytes_free(&later);
+    dm_bytes_free(&saved);
+    dm_project_free(&p);
+    dm_project_free(&again);
+}
+
 int main(void) {
     midi_metadata();
     midi_metadata_views();
@@ -721,6 +800,7 @@ int main(void) {
     advanced();
     independent_sequences();
     mutated_files();
+    percussion_parts();
     printf("PASS: %d checks (MIDI, editor metadata, tempo, projects, corruption, ports, malformed "
            "data)\n",
            checks);

@@ -156,7 +156,7 @@ static void navigation(Editor *e) {
     int list[16];
 
     for (int c = 0; c < 16; ++c) {
-        e->project.channels[c] = (DmChannel){false, false, false, -1, 100, 64};
+        e->project.channels[c] = dm_channel_default(c);
     }
 
     e->project.clip_count = 0;
@@ -167,7 +167,8 @@ static void navigation(Editor *e) {
           "enabled channel is followed by one spare");
 
     for (int c = 0; c < 16; ++c) {
-        e->project.channels[c] = (DmChannel){true, false, false, 0, 100, 64};
+        e->project.channels[c] =
+            (DmChannel){true, false, false, 0, 100, 64, c == MIDI_DRUM_CHANNEL};
     }
 
     check(ed_channels(e, list) == 16,

@@ -41,7 +41,7 @@ typedef struct {
 typedef struct {
     const M64Event *events;
     uint64_t event_count, duration;
-    uint32_t ppq, target; /* target must be M64_TARGET_SM64_US */
+    uint32_t ppq, target; /* M64_TARGET_*; see below */
     uint32_t loop;        /* 0 one shot, 1 restart the complete song, 2 repeat a loop region */
     uint32_t voice_limit; /* expected game voice budget, 1..64; excess gates warn */
     const char *sequence_name, *bank_name; /* ASCII letters/digits/_/- only */
@@ -61,7 +61,10 @@ typedef struct {
     void(M64_CALL *progress)(void *user, uint32_t stage, uint32_t percent);
 } M64Hooks;
 
-enum { M64_TARGET_SM64_US = 1 };
+/* SM64_US and HACKERSM64 generate a bank from the "instruments" sample bank; they differ only in
+   the manifest. SM64COOPDX plays the existing sm64coopdx extended bank 0x2A, writes no bank or
+   sequences.json entry, and maps each instrument to the bank instrument with its sample. */
+enum { M64_TARGET_SM64_US = 1, M64_TARGET_SM64COOPDX = 2, M64_TARGET_HACKERSM64 = 3 };
 
 enum { M64_OK, M64_INVALID, M64_UNSUPPORTED, M64_LIMIT, M64_CANCELLED, M64_NOMEM };
 

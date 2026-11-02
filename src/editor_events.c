@@ -282,12 +282,88 @@ float ed_lane_step(UiRect lane) {
     return 20;
 }
 
+/* Drawing pitch bends asks for each point's bend range and anchor note, and each lookup scans the
+   whole project. Between begin and end, lookups read a copy of the pattern's RPN and data entry
+   controllers gathered once, and the anchor note is found once. The automation must not change
+   in between; edits that only touch a point's curve shape (bend, ramp, hold) are fine. */
+void ed_pitch_cache_begin(Editor *e) {
+    e->pitch_cache = true;
+    e->pitch_cache_ready = false;
+    e->pitch_cache_anchored = false;
+}
+
+void ed_pitch_cache_end(Editor *e) {
+    e->pitch_cache = false;
+}
+
+static bool range_controller(DmAutomation a) {
+    return a.type == MIDI_CONTROL && (a.a == MIDI_CC_RPN_MSB || a.a == MIDI_CC_RPN_LSB ||
+                                      a.a == MIDI_CC_DATA || a.a == MIDI_CC_DATA_LSB);
+}
+
+/* The pattern's range controllers in project order, or NULL to scan the whole project. */
+static const DmAutomation *range_controllers(Editor *e, int pattern, size_t *count) {
+    if (!e->pitch_cache) {
+        return NULL;
+    }
+
+    if (!e->pitch_cache_ready || e->pitch_cache_pattern != pattern) {
+        size_t n = 0;
+        e->pitch_cache_ready = false;
+
+        for (size_t i = 0; i < e->project.automation_count; ++i) {
+            n += e->project.automation[i].pattern == pattern &&
+                 range_controller(e->project.automation[i]);
+        }
+
+        if (!dm_reserve((void **)&e->pitch_controls.data, &e->pitch_controls.capacity, n + 1,
+                        sizeof(DmAutomation))) {
+            return NULL;
+        }
+
+        DmAutomation *items = (DmAutomation *)e->pitch_controls.data;
+        n = 0;
+
+        for (size_t i = 0; i < e->project.automation_count; ++i) {
+            DmAutomation a = e->project.automation[i];
+
+            if (a.pattern == pattern && range_controller(a)) {
+                items[n++] = a;
+            }
+        }
+
+        e->pitch_controls.size = n * sizeof(DmAutomation);
+        e->pitch_cache_pattern = pattern;
+        e->pitch_cache_ready = true;
+    }
+
+    *count = e->pitch_controls.size / sizeof(DmAutomation);
+    return (const DmAutomation *)e->pitch_controls.data;
+}
+
+/* The note a discrete pitch bend is drawn around. */
+static int bend_anchor(Editor *e) {
+    if (!e->pitch_cache) {
+        return ed_nearest_note(e, 0);
+    }
+
+    if (!e->pitch_cache_anchored) {
+        e->pitch_cache_anchor = ed_nearest_note(e, 0);
+        e->pitch_cache_anchored = true;
+    }
+
+    return e->pitch_cache_anchor;
+}
+
 float ed_automation_range(Editor *e, DmAutomation a) {
-    PitchState state = ed_pattern_pitch_state(&e->project, a.pattern, a.beat, a.port);
+    size_t count = e->project.automation_count;
+    const DmAutomation *items = range_controllers(e, a.pattern, &count);
+    items = items ? items : e->project.automation;
+    PitchState state = ed_pitch_state_in(items, count, a.pattern, a.beat, a.port);
 
     if (a.curve > 0) {
-        for (size_t i = 0; i < e->project.automation_count; ++i) {
-            DmAutomation item = e->project.automation[i];
+        for (size_t i = 0; i < count; ++i) {
+            DmAutomation item = items[i];
 
             if (item.pattern != a.pattern || item.port != a.port || item.curve != a.curve ||
                 item.type != MIDI_CONTROL) {
@@ -309,7 +385,7 @@ float ed_automation_range(Editor *e, DmAutomation a) {
 
 float ed_automation_pitch(Editor *e, DmAutomation a) {
     float range = ed_automation_range(e, a);
-    int anchor = a.curve ? a.anchor : ed_nearest_note(e, 0);
+    int anchor = a.curve ? a.anchor : bend_anchor(e);
     return anchor + (ed_event_value(a) - MIDI_BEND_CENTER) * range / MIDI_BEND_CENTER;
 }
 
@@ -366,6 +442,7 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
     bool has = false;
     int hit = -1;
     DmAutomation before = {0};
+    ed_pitch_cache_begin(e);
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
@@ -421,6 +498,7 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
         before = a;
     }
 
+    ed_pitch_cache_end(e);
     return hit;
 }
 
@@ -664,6 +742,7 @@ static bool curve_handle_action(Editor *e, size_t index, UiRect lane, UiPoint mi
     }
 
     if (mouse.middle_clicked) {
+        ed_pitch_cache_end(e);
         e->pan_context = 0;
         ed_checkpoint(e);
         e->project.automation[index].bend = 0;
@@ -674,6 +753,7 @@ static bool curve_handle_action(Editor *e, size_t index, UiRect lane, UiPoint mi
     }
 
     if (mouse.clicked) {
+        ed_pitch_cache_end(e);
         ed_focus_edit(e, FOCUS_EVENTS);
         e->curve_drag = true;
         e->drag = 0;
@@ -699,6 +779,8 @@ bool ed_curve_handles(Editor *e, UiRect lane, View *v, float scale, UiMouse mous
 
         return true;
     }
+
+    ed_pitch_cache_begin(e);
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
@@ -734,10 +816,11 @@ bool ed_curve_handles(Editor *e, UiRect lane, View *v, float scale, UiMouse mous
 
         if (curve_handle_action(e, i, lane, mid, mouse, overlay,
                                 step ? ed_event_value(a) - linear : a.bend, hovered)) {
-            return true;
+            return true; /* The action ended the pitch cache before editing. */
         }
     }
 
+    ed_pitch_cache_end(e);
     return false;
 }
 

@@ -50,21 +50,37 @@ static void transform(float *real, float *imaginary) {
     }
 }
 
-float dm_spectrum_band_edge(int edge) {
+float dm_spectrum_band_edge(int edge, float top) {
     /* Start at the second resolved bin so every logarithmic band owns at least
        one distinct bin, including the lowest bands. */
     const float bin_hz = 48000.f / DM_SPECTRUM_FRAMES, low = 2 * bin_hz;
     int bin = 2;
 
     for (int i = 1; i <= edge; i++) {
-        int next = (int)ceilf(low * powf(18000 / low, (float)i / DM_SPECTRUM_BANDS) / bin_hz);
+        int next = (int)ceilf(low * powf(top / low, (float)i / DM_SPECTRUM_BANDS) / bin_hz);
         bin = next > bin ? next : bin + 1;
     }
 
     return bin * bin_hz;
 }
 
-void dm_spectrum_analyze(const float *stereo, float *bands) {
+float dm_spectrum_follow_top(float top, float content, float seconds) {
+    if (content <= 0) {
+        return top; /* Silence says nothing about the sound's range. */
+    }
+
+    float target = fmaxf(DM_SPECTRUM_MIN_TOP, fminf(DM_SPECTRUM_TOP, content * 1.1f));
+    return dm_visual_smooth(top, target, seconds, .05f, 3);
+}
+
+/* Bar height of a bin's power, 0 at -72 dB and 1 at -12 dB. */
+static float level(float power) {
+    float magnitude = sqrtf(power) * 4 / DM_SPECTRUM_FRAMES;
+    float decibels = 20 * log10f(fmaxf(magnitude, .000001f));
+    return fmaxf(0, fminf(1, (decibels + 72) / 60));
+}
+
+void dm_spectrum_analyze(const float *stereo, float top, float *bands, float *content) {
     float real[DM_SPECTRUM_FRAMES], imaginary[DM_SPECTRUM_FRAMES];
     float power[DM_SPECTRUM_FRAMES / 2 + 1] = {0};
 
@@ -83,9 +99,19 @@ void dm_spectrum_analyze(const float *stereo, float *bands) {
         }
     }
 
+    /* The highest bin that would draw at least a tenth of a bar. */
+    *content = 0;
+
+    for (int i = DM_SPECTRUM_FRAMES / 2; i > 0; --i) {
+        if (level(power[i]) >= .1f) {
+            *content = i * 48000.f / DM_SPECTRUM_FRAMES;
+            break;
+        }
+    }
+
     for (int band = 0; band < DM_SPECTRUM_BANDS; ++band) {
-        float low = dm_spectrum_band_edge(band);
-        float high = dm_spectrum_band_edge(band + 1);
+        float low = dm_spectrum_band_edge(band, top);
+        float high = dm_spectrum_band_edge(band + 1, top);
         int first = (int)fmaxf(1, ceilf(low * DM_SPECTRUM_FRAMES / 48000));
         int last = (int)fminf(DM_SPECTRUM_FRAMES / 2 + 1, ceilf(high * DM_SPECTRUM_FRAMES / 48000));
         float peak = 0;
@@ -94,8 +120,6 @@ void dm_spectrum_analyze(const float *stereo, float *bands) {
             peak = fmaxf(peak, power[i]);
         }
 
-        float magnitude = sqrtf(peak) * 4 / DM_SPECTRUM_FRAMES;
-        float decibels = 20 * log10f(fmaxf(magnitude, .000001f));
-        bands[band] = fmaxf(0, fminf(1, (decibels + 72) / 60));
+        bands[band] = level(peak);
     }
 }

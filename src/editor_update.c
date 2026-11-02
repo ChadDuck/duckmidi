@@ -9,7 +9,7 @@
 
 static DmUpdate *updater(Editor *e) {
     if (!e->update) {
-        e->update = dm_update_create(e->base_path, DM_APP_VERSION);
+        e->update = dm_update_create(e->base_path, dm_app_version);
     }
 
     return e->update;
@@ -62,7 +62,7 @@ static void status_section(Editor *e, float width) {
         ui_wrap(DM_TEXT_UPDATE_CHECKING);
         break;
     case DM_UPDATE_CURRENT:
-        snprintf(text, sizeof(text), DM_TEXT_UPDATE_CURRENT, DM_APP_VERSION);
+        snprintf(text, sizeof(text), DM_TEXT_UPDATE_CURRENT, dm_app_version);
         ui_wrap(text);
         break;
     case DM_UPDATE_AVAILABLE:

@@ -85,6 +85,7 @@ typedef struct {
     float mixer_peak_targets[DM_PARTS];
     uint64_t spectrum_tick;
     float spectrum[DM_SPECTRUM_BANDS], spectrum_targets[DM_SPECTRUM_BANDS];
+    float spectrum_top; /* Highest analyzer band edge; follows the sound's treble. */
     bool active, dirty, running, piano, roll, shortcuts, config, preferences, about, export_window,
         confirm, dialog_busy, record, wait_input, overwrite, metronome;
     bool smoke;
@@ -202,6 +203,11 @@ typedef struct {
     uint64_t project_session, clipboard_session;
     int clipboard_port, clipboard_sequence;
     DmBytes event_drag, clip_drag;
+    /* Bend-range controllers of one pattern, kept while a pitch-bend drawing loop runs; see
+       ed_pitch_cache_begin. */
+    DmBytes pitch_controls;
+    int pitch_cache_pattern, pitch_cache_anchor;
+    bool pitch_cache, pitch_cache_ready, pitch_cache_anchored;
     float sidebar, roll_height;
     View playlist_view, roll_view;
     UiPoint marquee_start;

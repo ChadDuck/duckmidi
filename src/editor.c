@@ -155,6 +155,7 @@ void editor_free(Editor *e) {
     dm_bytes_free(&e->midi_text);
     dm_bytes_free(&e->event_drag);
     dm_bytes_free(&e->clip_drag);
+    dm_bytes_free(&e->pitch_controls);
     dm_project_free(&e->project);
 }
 
@@ -273,10 +274,11 @@ static void right_workspace(Editor *e, float right, float body, UiPoint origin) 
     if (e->roll && !e->roll_auto_hidden) {
         float section = ed_events_section_height(e), limit = fmaxf(110, body - 100);
         float height = ed_clampf(e->roll_height + section, 110, limit);
-        float top = fmaxf(80, body - height - 8);
+        /* The divider matches the mixer's, so equal heights line both dividers up. */
+        float top = fmaxf(80, body - height - 10);
         ed_playlist(e, right, top);
         ui_position(origin.x + e->sidebar + 10, origin.y + top + 1);
-        ui_canvas(DM_TEXT_ROLL_DIVIDER, right, 8);
+        ui_canvas(DM_TEXT_ROLL_DIVIDER, right, 10);
 
         if (ui_hover() || ui_active()) {
             ui_resize_cursor(true);
@@ -288,7 +290,7 @@ static void right_workspace(Editor *e, float right, float body, UiPoint origin) 
             e->roll_height = fmaxf(110, height - section);
         }
 
-        ui_position(origin.x + e->sidebar + 10, origin.y + top + 8);
+        ui_position(origin.x + e->sidebar + 10, origin.y + top + 10);
 
         if (ed_pattern(e) && ed_pattern(e)->kind) {
             ed_event_editor(e, right, height);

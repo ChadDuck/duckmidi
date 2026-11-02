@@ -6,10 +6,17 @@ static void replace_curve_range(Editor *e, double start, double end, int cc);
 static bool curve_overlaps(Editor *e, double start, double end, int cc);
 
 PitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat, unsigned port) {
+    return ed_pitch_state_in(p->automation, p->automation_count, pattern_id, beat, port);
+}
+
+/* The bend range at beat from a list of automation points in project order: the whole project's,
+   or a subset holding at least the pattern's RPN and data entry controllers. */
+PitchState ed_pitch_state_in(const DmAutomation *items, size_t count, int pattern_id, double beat,
+                             unsigned port) {
     PitchState state = {2, 0, 127, 127};
 
-    for (size_t i = 0; i < p->automation_count; ++i) {
-        DmAutomation a = p->automation[i];
+    for (size_t i = 0; i < count; ++i) {
+        DmAutomation a = items[i];
 
         if (a.beat > beat) {
             continue;

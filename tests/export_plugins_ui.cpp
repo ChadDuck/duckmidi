@@ -82,7 +82,16 @@ extern "C" void test_m64_sequence_dropdown(Editor *e, int target) {
     frame(e, -100, -100, false);
     auto *w = ImGui::FindWindowByName("Export");
     assert(w && w->Active);
+    auto *format = ed_export_selected(e);
+    DmeUi ui = {};
+    assert(format && format->api->describe(format->instance, &ui) == DME_OK);
     int field = 0;
+
+    while (field < (int)ui.count && std::strcmp(ui.fields[field].id, "sequence")) {
+        field++;
+    }
+
+    assert(field < (int)ui.count);
     ImGuiID scope = ImHashData(&field, sizeof(field), w->IDStack.back());
     ImGuiID id = ImHashStr("Sequence name", 0, scope);
     float x = w->WorkRect.Min.x + 70, y = 0;
@@ -117,15 +126,43 @@ extern "C" void test_m64_sequence_dropdown(Editor *e, int target) {
     frame(e, px, py, true);
     frame(e, px, py, false);
     frame(e, -100, -100, false);
-    auto *format = ed_export_selected(e);
-    DmeUi ui = {};
-    assert(format && format->api->describe(format->instance, &ui) == DME_OK);
-    assert(!std::strcmp(ui.fields[0].id, "sequence") && ui.fields[0].value.integer == target);
+    assert(format->api->describe(format->instance, &ui) == DME_OK);
+    assert(!std::strcmp(ui.fields[field].id, "sequence") &&
+           ui.fields[field].value.integer == target);
     SDL_Surface *capture = SDL_RenderReadPixels(e->renderer, nullptr);
     assert(capture);
     SDL_SaveBMP(capture, target == 35 ? "agents/reports/m64-export-ui/custom.bmp"
                                       : "agents/reports/m64-export-ui/preset.bmp");
     SDL_DestroySurface(capture);
+
+    if (target != 35) {
+        return;
+    }
+
+    /* A similar instrument picked for the first row shows in both dropdowns. */
+    const DmeField *mapping = nullptr;
+
+    for (uint32_t i = 0; i < ui.count; i++) {
+        if (!std::strcmp(ui.fields[i].id, "mapping")) {
+            mapping = &ui.fields[i];
+        }
+    }
+
+    assert(mapping && mapping->row_count && mapping->rows[0].similar_count);
+    char row[64];
+    SDL_snprintf(row, sizeof(row), "%s", mapping->rows[0].id);
+    int before = mapping->rows[0].value, pick = mapping->rows[0].similar[0].value;
+    size_t index = (size_t)(e->export_type - 1);
+    assert(ed_export_set(e, index, row, DmeValue{DME_CHOICE, pick, nullptr}));
+
+    for (int i = 0; i < 6; i++) {
+        frame(e, -100, -100, false);
+    }
+    capture = SDL_RenderReadPixels(e->renderer, nullptr);
+    assert(capture);
+    SDL_SaveBMP(capture, "agents/reports/m64-export-ui/similar-picked.bmp");
+    SDL_DestroySurface(capture);
+    assert(ed_export_set(e, index, row, DmeValue{DME_CHOICE, before, nullptr}));
 }
 
 extern "C" void test_export_warning(Editor *e) {

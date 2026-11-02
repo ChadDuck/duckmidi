@@ -17,8 +17,9 @@ static void check(int ok, const char *label) {
 }
 
 int main(void) {
-    float stereo[DM_SPECTRUM_FRAMES * 2] = {0}, bands[DM_SPECTRUM_BANDS];
-    dm_spectrum_analyze(stereo, bands);
+    float stereo[DM_SPECTRUM_FRAMES * 2] = {0}, bands[DM_SPECTRUM_BANDS], content;
+    dm_spectrum_analyze(stereo, DM_SPECTRUM_TOP, bands, &content);
+    check(content == 0, "silence has no highest frequency");
 
     for (int i = 0; i < DM_SPECTRUM_BANDS; ++i) {
         check(bands[i] == 0, "silence stays invisible");
@@ -33,7 +34,9 @@ int main(void) {
             stereo[i * 2 + 1] = -sample;
         }
 
-        dm_spectrum_analyze(stereo, bands);
+        dm_spectrum_analyze(stereo, DM_SPECTRUM_TOP, bands, &content);
+        check(content >= tones[tone] * .98f && content < tones[tone] * 1.3f,
+              "highest frequency follows the tone");
         int peak = 0;
 
         for (int i = 0; i < DM_SPECTRUM_BANDS; ++i) {
@@ -45,21 +48,43 @@ int main(void) {
             }
         }
 
-        float frequency = sqrtf(dm_spectrum_band_edge(peak) * dm_spectrum_band_edge(peak + 1));
+        float frequency = sqrtf(dm_spectrum_band_edge(peak, DM_SPECTRUM_TOP) *
+                                dm_spectrum_band_edge(peak + 1, DM_SPECTRUM_TOP));
         check(fabsf(logf(frequency / tones[tone])) < .22f,
               "stereo tone appears at its actual frequency");
         check(bands[peak] > .6f, "opposite-phase stereo does not cancel in the analyzer");
     }
 
-    int previous_end = -1;
+    const float tops[] = {DM_SPECTRUM_MIN_TOP, 11025, DM_SPECTRUM_TOP};
 
-    for (int band = 0; band < DM_SPECTRUM_BANDS; ++band) {
-        int first = (int)ceilf(dm_spectrum_band_edge(band) * DM_SPECTRUM_FRAMES / 48000);
-        int end = (int)ceilf(dm_spectrum_band_edge(band + 1) * DM_SPECTRUM_FRAMES / 48000);
-        check(end > first, "each bar owns at least one FFT bin");
-        check(band == 0 || first == previous_end, "adjacent bars have no shared FFT bins or gaps");
-        previous_end = end;
+    for (int t = 0; t < 3; ++t) {
+        int previous_end = -1;
+
+        for (int band = 0; band < DM_SPECTRUM_BANDS; ++band) {
+            int first =
+                (int)ceilf(dm_spectrum_band_edge(band, tops[t]) * DM_SPECTRUM_FRAMES / 48000);
+            int end =
+                (int)ceilf(dm_spectrum_band_edge(band + 1, tops[t]) * DM_SPECTRUM_FRAMES / 48000);
+            check(end > first, "each bar owns at least one FFT bin");
+            check(band == 0 || first == previous_end,
+                  "adjacent bars have no shared FFT bins or gaps");
+            previous_end = end;
+        }
+
+        check(fabsf(dm_spectrum_band_edge(DM_SPECTRUM_BANDS, tops[t]) / tops[t] - 1) < .01f,
+              "the last bar ends at the top frequency");
     }
+
+    /* Audio without treble (a low-rate SoundFont) narrows the bars to the range it has. */
+    float top = DM_SPECTRUM_TOP;
+
+    for (int i = 0; i < 1200; ++i) {
+        top = dm_spectrum_follow_top(top, 8000, 1.f / 60);
+    }
+
+    check(fabsf(top - 8800) < 50, "the top edge settles just above the highest content");
+    check(dm_spectrum_follow_top(top, 0, 1) == top, "silence keeps the top edge");
+    check(dm_spectrum_follow_top(top, 30000, 1) <= DM_SPECTRUM_TOP, "the top edge stays bounded");
 
     float at60 = 0, at120 = 0;
 
@@ -79,7 +104,7 @@ int main(void) {
     clock_t start = clock();
 
     for (int i = 0; i < 1000; ++i) {
-        dm_spectrum_analyze(stereo, bands);
+        dm_spectrum_analyze(stereo, DM_SPECTRUM_TOP, bands, &content);
     }
 
     printf("Spectrum analysis: %.3f ms/frame (1000 stereo FFTs)\n",

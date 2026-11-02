@@ -1,18 +1,36 @@
 # M64 export
 
-The bundled M64 plugin exports music for the SM64 US audio engine, in stock [n64decomp/sm64](https://github.com/n64decomp/sm64) and [HackerSM64](https://github.com/HackerN64/HackerSM64) checkouts. It creates a sequence and sound-bank definitions using SM64's existing samples.
+The bundled M64 plugin exports music for the SM64 US audio engine: stock [n64decomp/sm64](https://github.com/n64decomp/sm64), [HackerSM64](https://github.com/HackerN64/HackerSM64) and [sm64coopdx](https://github.com/coop-deluxe/sm64coopdx). For SM64 and HackerSM64 it creates a sequence and sound-bank definitions using SM64's existing samples. For sm64coopdx it creates a mod that plays the sequence with the game's own instruments.
 
 ## Export a song
 
 1. Press **Ctrl + E** and select **M64**.
-2. Choose a **Sequence name** from the dropdown, or choose **Custom** and enter a filename stem.
-3. Set a **Bank name** that does not conflict with another bank in your SM64 checkout.
-4. Enable **Loop the complete song** if you want it to repeat, or **Use M64 loop points** to repeat part of it (see [Loop points](#loop-points)).
-5. Choose **Sequence memory**: **Console-Compatible** makes the smallest memory change and still runs on console; **Emulator Only** uses all free RAM so later songs fit without new changes.
-6. Review the instrument mappings, then click **Save M64 Package**, or **Export to Repository** to install into your SM64 checkout.
-7. Choose a filename and extract the saved ZIP.
+2. Choose the **Target** game: **SM64** (the default), **HackerSM64** or **sm64coopdx**. See [Targets](#targets).
+3. Choose a **Sequence name** from the dropdown, or choose **Custom** and enter a filename stem. Custom starts with the project's name, or the MIDI file's name for an unnamed project.
+4. Set a **Bank name** that does not conflict with another bank in your checkout. sm64coopdx has no bank name.
+5. For SM64 and HackerSM64, choose **Sequence memory**: **Enlarge** makes the smallest memory change the song needs and still runs on console; **Stock** changes no game files besides the export itself.
+6. Enable **Loop song** if you want it to repeat, or **Use M64 loop points** to repeat part of it (see [Loop points](#loop-points)).
+7. Review the instrument mappings, then click **Save M64 Package**, or **Export to Repository** to install into your checkout.
+8. Choose a filename and extract the saved ZIP.
 
 The export uses the active arrangement, including mute and solo. The last save folder is remembered. Keep `m64.dll` in the application's `plugins/` directory.
+
+## Targets
+
+| | SM64 | HackerSM64 | sm64coopdx |
+| --- | --- | --- | --- |
+| Song files | `sound/sequences/us/`, built into the ROM | Same as SM64 | A mod folder, loaded by the game |
+| Instruments | A new bank in `sound/sound_banks/` | Same as SM64 | The game's extended bank, 0x2A; mods cannot add banks |
+| Sequence table | An entry in `sound/sequences.json` | Same as SM64 | `smlua_audio_utils_replace_sequence` in the mod's `main.lua` |
+| Sequence memory | Audio presets, heap and buffer, set by **Sequence memory** | `TEMPORARY_SEQ_MEM` in `src/audio/data.h`, unless **Stock** | No limit: mod songs play from their own memory |
+
+sm64coopdx builds its music from prebuilt audio data and your ROM, so it ignores `sound/sequences.json` and `sound/sound_banks/`. A mod replaces a song with `smlua_audio_utils_replace_sequence`, which plays the sequence with one existing bank. The export uses the extended bank (0x2A), which collects the instruments of SM64's music banks:
+
+- Each mapping plays with the bank instrument that has the same sample and the closest envelope, so its sound and note range follow that stock instrument.
+- Grand piano, the sawtooth and square synths, pan flute and harmonica exist only in bank instruments that a channel can hold but cannot switch to. A channel that changes instruments plays them with bright piano, organ, alto flute or accordion instead, with a warning.
+- Drums use the bank's percussion where it has the sample. Snares, hi-hats, cymbals, triangles and cabasa exist only as instruments with fixed note ranges, so they can sound higher or lower than mapped, as in SM64's own songs. The same applies when one of these sounds is mapped to a melodic channel. The manifest lists each change.
+
+A stock **Sequence name** replaces that song. Any other name adds a new song: `main.lua` gives it a new sequence ID, `SEQ_<NAME>`, and shows how to play it.
 
 ## Choose instrument mappings
 
@@ -32,29 +50,45 @@ M64 has one set of controls per channel. Colored note ports move to unused chann
 
 ## Package contents
 
+The package follows **Target**. SM64 and HackerSM64 packages contain:
+
 | File | Use |
 | --- | --- |
 | `<sequence>.m64` | Compiled music sequence |
 | `<bank>.json` | Instrument and drum bank definitions |
 | `sequences-entry.json` | Entry to merge into `sound/sequences.json` |
 | `manifest.json` | Used samples, mappings, memory requirements, and warnings |
-| `sequence-memory.txt` | Included when the song needs more sequence memory: the source edits for the chosen **Sequence memory** option, with what each file is and why it changes |
+| `sequence-memory.txt` | Included when the song needs more sequence memory: for SM64, the source edits for the chosen **Sequence memory** option, with what each file is and why it changes; for HackerSM64, the `TEMPORARY_SEQ_MEM` value to set |
 
-Sequence and bank names control the files inside the ZIP; the ZIP itself can have any name. Game sample audio is not included. Your SM64 checkout must supply the samples referenced by the bank.
+An sm64coopdx package contains a mod folder and a manifest:
+
+| File | Use |
+| --- | --- |
+| `duckmidi_<sequence>/main.lua` | Mod script that plays the song with bank 0x2A |
+| `duckmidi_<sequence>/sound/<sequence>.m64` | Compiled music sequence |
+| `manifest.json` | The bank instrument chosen for each mapping, and warnings |
+
+Sequence and bank names control the files inside the ZIP; the ZIP itself can have any name. Game sample audio is not included. Your checkout or ROM supplies the samples.
 
 ## Export to Repository
 
-**Export to Repository** installs the song straight into an SM64 decomp checkout:
+**Export to Repository** installs the song straight into a checkout:
 
-1. Choose an existing song as the **Sequence name**; the export replaces it.
+1. Choose an existing song as the **Sequence name**; the export replaces it. sm64coopdx also accepts a new name.
 2. Click **Export to Repository** and choose the checkout's root folder (it contains `sound/sequences.json`).
 3. Rebuild the checkout as described below.
 
-The export writes `sound/sequences/us/<sequence>.m64` and `sound/sound_banks/<bank>.json`, points the song's entry in `sound/sequences.json` at the new bank, and applies the chosen **Sequence memory** changes when the song needs them. Exporting again to the same checkout updates those changes.
+The export recognizes the checkout's game and installs for it, whatever **Target** is set to; **Target** chooses the game of saved packages. When they differ, a warning names the game it installed for. sm64coopdx checkouts are recognized by `src/pc/lua/utils/smlua_audio_utils.c`, and HackerSM64 checkouts by `include/config/config_audio.h`.
 
-HackerSM64 checkouts are recognized automatically. There, the export raises `TEMPORARY_SEQ_MEM` in `src/audio/data.h` when the song needs more than the current setting.
+For SM64, the export writes `sound/sequences/us/<sequence>.m64` and `sound/sound_banks/<bank>.json`, points the song's entry in `sound/sequences.json` at the new bank, and applies the chosen **Sequence memory** changes when the song needs them. Exporting again to the same checkout updates those changes. With **Stock**, the memory files are left alone and the export warns when the song is too large for the stock pools; with either **Enlarge** choice it does not warn, because the export makes room.
 
-**Keep original files** (on by default) saves each replaced file beside it as `<file>.bkp`. With it off, files are replaced directly, except stock audio memory files, which are always kept. **Revert repository export** restores every changed file and removes the backups the exports created, for all exports to that folder since the last revert during this session.
+For HackerSM64, it writes the same files and raises `TEMPORARY_SEQ_MEM` in `src/audio/data.h` when the song needs more than the current setting, unless **Sequence memory** is **Stock**, which warns instead.
+
+For sm64coopdx, it writes `mods/duckmidi_<sequence>/main.lua` and `mods/duckmidi_<sequence>/sound/<sequence>.m64`. The build copies `mods/` beside the game; enable the mod when you host a game.
+
+The first export asks for the checkout folder; later exports install there without asking. Change it in **Edit > Preferences** under **Export plugins**.
+
+**Keep original files** (on by default, above the export buttons) saves a copy of each checkout file before the export changes it, as `<file>.bkp` beside it. With it off, files are replaced directly, except stock audio memory files, which are always kept. **Revert repository export** restores every changed file and removes the backups the exports created, for all exports to that folder since the last revert during this session.
 
 ## Install into an SM64 checkout manually
 
@@ -67,7 +101,11 @@ HackerSM64 checkouts are recognized automatically. There, the export raises `TEM
    make VERSION=us COMPARE=0
    ```
 
-Keep the sequence and its generated bank together. Adding a new song instead of replacing one also requires choosing its position in the sequence table and updating game references. Refer to your [SM64 checkout's build instructions](https://github.com/n64decomp/sm64) for setup.
+Keep the sequence and its generated bank together. Adding a new song instead of replacing one also requires choosing its position in the sequence table and updating game references. Refer to your [SM64 checkout's build instructions](https://github.com/n64decomp/sm64) for setup. HackerSM64 packages install the same way.
+
+## Install an sm64coopdx mod manually
+
+Extract the `duckmidi_<sequence>` folder into sm64coopdx's `mods` folder: the one in your sm64coopdx user folder, or `mods/` in a source checkout before building. Enable the mod when you host a game; players who join receive it.
 
 ## Understand export warnings
 
@@ -77,7 +115,8 @@ An **Export warnings** popup lists engine limitations after a successful save. T
 | --- | --- |
 | Sample pitch range | Try a supported mapping from the review, or provide a suitable sample in your ROM. Stock playback caps near 4x sample speed. |
 | More than 16 simultaneous notes | Listen for voice stealing. Notes are retained at this advisory threshold; release tails and sound effects also consume game voices. |
-| Sequence memory | Apply `sequence-memory.txt` from a saved package, or use **Export to Repository**, which applies the chosen **Sequence memory** option. Insufficient memory can cause missing instruments. |
+| Sequence memory (SM64 and HackerSM64) | Apply `sequence-memory.txt` from a saved package, or use **Export to Repository**, which applies the chosen **Sequence memory** option. Insufficient memory can cause missing instruments. |
+| sm64coopdx instruments | A channel that changes instruments plays a substitute, or a drum sound plays at another pitch. Keep the instrument alone on its channel, or choose another mapping. |
 | Unsupported controls | Check the affected effect in-game; the warning identifies what was omitted or approximated. |
 | Timing or note changes | Review the affected passage. Native tick rounding and hard engine limits can require changes that are reported explicitly. |
 
@@ -87,7 +126,7 @@ Whole-song looping restores the initial tempo, instruments, and controller state
 
 ## Loop points
 
-Add **M64 - Loop Start** and, optionally, **M64 - Loop End** from the Song event dialog (**Shift + E**), or from a playlist click on the event row. Each song has one of each; adding another moves it. With **Use M64 loop points** enabled in the export window, the song plays once from the start and then repeats from Loop Start to Loop End, or to the song end without a Loop End. This overrides **Loop the complete song**.
+Add **M64 - Loop Start** and, optionally, **M64 - Loop End** from the Song event dialog (**Shift + E**), or from a playlist click on the event row. Each song has one of each; adding another moves it. With **Use M64 loop points** enabled in the export window, the song plays once from the start and then repeats from Loop Start to Loop End, or to the song end without a Loop End. This overrides **Loop song**.
 
 Notes sounding across Loop Start are restarted there on every repeat, and notes crossing Loop End are cut at it. Tempo and controller values at Loop Start are restored on each repeat. Loop points are saved as `loopStart` and `loopEnd` marker events, so they survive MIDI export.
 

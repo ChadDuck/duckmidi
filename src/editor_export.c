@@ -4,6 +4,87 @@
 
 static bool begin(Editor *e, bool inspection, int index, const char *path, bool install);
 
+/* duckmidi-plugins.ini sits beside the preferences file. */
+static bool folders_path(const Editor *e, char *out, size_t capacity) {
+    const char *slash = strrchr(e->settings_path, '/'),
+               *backslash = strrchr(e->settings_path, '\\');
+    const char *leaf = backslash > slash ? backslash + 1 : slash ? slash + 1 : e->settings_path;
+    int folder = (int)(leaf - e->settings_path);
+    return *e->settings_path && snprintf(out, capacity, "%.*s%s", folder, e->settings_path,
+                                         DM_TEXT_PLUGIN_SETTINGS_INI) < (int)capacity;
+}
+
+static int folder_entry(DmExportPlugins *h, const char *id, bool add) {
+    for (size_t i = 0; i < h->folder_count; i++) {
+        if (!strcmp(h->folders[i].id, id)) {
+            return (int)i;
+        }
+    }
+
+    if (!add || h->folder_count == DM_EXPORT_MAX_FORMATS ||
+        strlen(id) >= sizeof(h->folders[0].id)) {
+        return -1;
+    }
+
+    snprintf(h->folders[h->folder_count].id, sizeof(h->folders[0].id), "%s", id);
+    h->folders[h->folder_count].repository[0] = 0;
+    return (int)h->folder_count++;
+}
+
+/* Lines are "[exporter id]" and "repository=folder"; anything else is ignored. */
+static void load_folders(Editor *e, DmExportPlugins *h) {
+    char path[DM_PATH], error[256];
+    DmBytes b = {0};
+
+    if (!folders_path(e, path, sizeof(path)) || !dm_read(path, &b, error, sizeof(error))) {
+        return;
+    }
+
+    int entry = -1;
+    char *text = malloc(b.size + 1);
+
+    if (text) {
+        memcpy(text, b.data, b.size);
+        text[b.size] = 0;
+
+        for (char *line = strtok(text, "\r\n"); line; line = strtok(NULL, "\r\n")) {
+            size_t length = strlen(line);
+
+            if (*line == '[' && length > 2 && line[length - 1] == ']') {
+                line[length - 1] = 0;
+                entry = folder_entry(h, line + 1, true);
+            } else if (entry >= 0 && !strncmp(line, "repository=", 11)) {
+                snprintf(h->folders[entry].repository, DM_PATH, "%s", line + 11);
+            }
+        }
+    }
+
+    free(text);
+    dm_bytes_free(&b);
+}
+
+static void save_folders(Editor *e, DmExportPlugins *h) {
+    char path[DM_PATH], error[256];
+    DmBytes b = {0};
+    bool ok = folders_path(e, path, sizeof(path));
+
+    for (size_t i = 0; ok && i < h->folder_count; i++) {
+        const char *id = h->folders[i].id, *folder = h->folders[i].repository;
+
+        if (*folder) {
+            ok = dm_bytes(&b, "[", 1) && dm_bytes(&b, id, strlen(id)) &&
+                 dm_bytes(&b, "]\nrepository=", 13) && dm_bytes(&b, folder, strlen(folder)) &&
+                 dm_bytes(&b, "\n", 1);
+        }
+    }
+
+    if (ok && !dm_write(path, b.data ? (const void *)b.data : "", b.size, error, sizeof(error))) {
+        ed_message(e, error);
+    }
+
+    dm_bytes_free(&b);
+}
+
 DmExportPlugins *ed_export_host(Editor *e) {
     if (e->export_plugins) {
         return e->export_plugins;
@@ -17,6 +98,7 @@ DmExportPlugins *ed_export_host(Editor *e) {
 
     h->pending_format = -1;
     h->message_format = -1;
+    h->folder_format = -1;
     h->keep_originals = true;
     const char *base = SDL_GetBasePath();
     char directory[DM_PATH];
@@ -30,6 +112,7 @@ DmExportPlugins *ed_export_host(Editor *e) {
     }
 
     e->export_plugins = h;
+    load_folders(e, h);
     return h;
 }
 
@@ -121,6 +204,32 @@ static bool artifact_name(const char *name) {
     return true;
 }
 
+/* ZIP artifacts may place files in folders with "/"; each part follows the name rules. */
+static bool artifact_path(const char *name, bool folders) {
+    if (!folders || !name || SDL_strnlen(name, 256) >= 256) {
+        return artifact_name(name);
+    }
+
+    char part[256];
+
+    for (const char *s = name;;) {
+        const char *slash = strchr(s, '/');
+        size_t length = slash ? (size_t)(slash - s) : strlen(s);
+        memcpy(part, s, length);
+        part[length] = 0;
+
+        if (!artifact_name(part)) {
+            return false;
+        }
+
+        if (!slash) {
+            return true;
+        }
+
+        s = slash + 1;
+    }
+}
+
 static int32_t DME_CALL artifact(void *user, const char *name, const uint8_t *data, uint64_t size) {
     DmPluginWork *w = user;
 
@@ -133,8 +242,9 @@ static int32_t DME_CALL artifact(void *user, const char *name, const uint8_t *da
         return 0;
     }
 
-    if (!artifact_name(name) || (!data && size) || size > 512ULL * 1024 * 1024 ||
-        w->artifact_count == 64 || size > SIZE_MAX - w->total_bytes) {
+    if (!artifact_path(name, w->api->container == DME_ZIP) || (!data && size) ||
+        size > 512ULL * 1024 * 1024 || w->artifact_count == 64 ||
+        size > SIZE_MAX - w->total_bytes) {
         snprintf(w->message, sizeof(w->message), DM_TEXT_EXPORTER_RETURNED_INVALID_ARTIFACT);
         return 0;
     }
@@ -253,7 +363,9 @@ static bool resolve(DmPluginWork *w) {
                                       events[i].a,    events[i].b,         events[i].port};
         }
 
-        snprintf(w->project_name, sizeof(w->project_name), "%s", p.name);
+        /* An unnamed project gives no name, so exporters fall back to the source file's. */
+        snprintf(w->project_name, sizeof(w->project_name), "%s",
+                 strcmp(p.name, DM_TEXT_UNTITLED) ? p.name : "");
         w->context = (DmeContext){.events = w->events,
                                   .event_count = count,
                                   .duration = duration,
@@ -261,6 +373,10 @@ static bool resolve(DmPluginWork *w) {
                                   .ppq = DM_PPQ,
                                   .project_name = w->project_name,
                                   .source_name = w->source_name};
+
+        for (int c = 0; c < 16; c++) {
+            w->context.percussion_channels |= dm_channel_drums(&p, c) ? 1u << c : 0;
+        }
 
         for (unsigned i = 0; i < 128; i++) {
             w->context.program_names[i] = dm_program_name((int)i);
@@ -375,6 +491,55 @@ static int32_t DME_CALL install_file(void *user, const char *path, const uint8_t
     return 1;
 }
 
+/* Cuts path to its parent folder; false when it has none. */
+static bool parent_folder(char *path) {
+    char *slash = strrchr(path, '/'), *backslash = strrchr(path, '\\');
+    char *cut = slash > backslash ? slash : backslash;
+
+    if (!cut) {
+        return false;
+    }
+
+    *cut = 0;
+    return true;
+}
+
+/* Finds the highest missing folder between the repository root and folder, or leaves out empty
+   when folder already exists. */
+static void missing_folder(const char *root, const char *folder, char *out, size_t capacity) {
+    char current[DM_PATH];
+    snprintf(current, sizeof(current), "%s", folder);
+    out[0] = 0;
+
+    while (strlen(current) > strlen(root) && !SDL_GetPathInfo(current, NULL)) {
+        snprintf(out, capacity, "%s", current);
+
+        if (!parent_folder(current)) {
+            break;
+        }
+    }
+}
+
+/* Removes the folders an install created for path, deepest first, while they are empty. */
+static void remove_created_folders(const DmRepositoryChange *change) {
+    if (!*change->created) {
+        return;
+    }
+
+    char folder[DM_PATH];
+    snprintf(folder, sizeof(folder), "%s", change->path);
+
+    while (parent_folder(folder) && strlen(folder) >= strlen(change->created)) {
+        if (!SDL_RemovePath(folder)) {
+            return; /* Not empty: something else lives there now. */
+        }
+
+        if (!strcmp(folder, change->created)) {
+            return;
+        }
+    }
+}
+
 /* Writes the queued files. Each change is recorded before it is made, so a failure part way can
    still be reverted. Originals are kept beside their files as .bkp when the user keeps originals
    or the exporter asks for it; an existing .bkp is never overwritten. */
@@ -412,15 +577,14 @@ static bool commit_install(DmPluginWork *w) {
             change->backup_created = true;
         }
 
-        /* A new file may go in a folder the checkout has not created yet. */
+        /* A new file may go in a folder the checkout has not created yet. The highest folder
+           created is recorded so Revert can remove the folders again. */
         if (!change->existed) {
             char folder[DM_PATH];
             snprintf(folder, sizeof(folder), "%s", change->path);
-            char *slash = strrchr(folder, '/'), *backslash = strrchr(folder, '\\');
-            char *cut = slash > backslash ? slash : backslash;
 
-            if (cut) {
-                *cut = 0;
+            if (parent_folder(folder)) {
+                missing_folder(w->destination, folder, change->created, sizeof(change->created));
                 SDL_CreateDirectory(folder);
             }
         }
@@ -524,16 +688,23 @@ static void keep_changes(DmExportPlugins *h, DmPluginWork *w) {
 
     for (size_t i = 0; i < w->change_count; i++) {
         DmRepositoryChange *change = &w->changes[i];
-        bool known = false;
+        DmRepositoryChange *known = NULL;
 
         for (size_t j = 0; j < h->change_count && !known; j++) {
-            known = !strcmp(h->changes[j].path, change->path);
+            known = !strcmp(h->changes[j].path, change->path) ? &h->changes[j] : NULL;
+        }
+
+        /* The file keeps its first original, but a backup a later export made (of an earlier
+           export's output) is still duckmidi's to remove on Revert. */
+        if (known) {
+            known->backup_created |= change->backup_created;
+            continue;
         }
 
         DmRepositoryChange *grown =
-            known ? h->changes : realloc(h->changes, (h->change_count + 1) * sizeof(*h->changes));
+            realloc(h->changes, (h->change_count + 1) * sizeof(*h->changes));
 
-        if (known || !grown) {
+        if (!grown) {
             continue;
         }
 
@@ -570,6 +741,10 @@ void ed_export_revert(Editor *e) {
             ok = SDL_RemovePath(backup);
         }
 
+        if (ok && !change->existed) {
+            remove_created_folders(change);
+        }
+
         failed += !ok;
     }
 
@@ -596,7 +771,8 @@ bool ed_export_repository_picker(Editor *e, const char **start) {
     }
 
     h->pending_format = e->export_type - 1;
-    *start = *h->repository ? h->repository : NULL;
+    const char *folder = ed_export_repository(e, (size_t)h->pending_format);
+    *start = *folder ? folder : NULL;
     return true;
 }
 
@@ -611,8 +787,91 @@ void ed_export_repository_done(Editor *e, const char *folder) {
     h->pending_format = -1;
 
     if (folder && index >= 0) {
-        snprintf(h->repository, sizeof(h->repository), "%s", folder);
+        ed_export_set_repository(e, (size_t)index, folder);
         begin(e, false, index, folder, true);
+    }
+}
+
+/* Export to Repository: installs into the exporter's saved folder when it still exists, and
+   asks for a folder otherwise. Preferences changes the saved folder. */
+void ed_export_to_repository(Editor *e) {
+    DmExportFormat *f = ed_export_selected(e);
+    const char *saved = f ? ed_export_repository(e, (size_t)(e->export_type - 1)) : "";
+    SDL_PathInfo info;
+
+    if (!*saved || !SDL_GetPathInfo(saved, &info) || info.type != SDL_PATHTYPE_DIRECTORY) {
+        ed_dialog(e, DIALOG_REPOSITORY);
+        return;
+    }
+
+    char folder[DM_PATH];
+    const char *start;
+    snprintf(folder, sizeof(folder), "%s", saved);
+
+    if (ed_export_repository_picker(e, &start)) {
+        ed_export_repository_done(e, folder);
+    }
+}
+
+bool ed_export_installs(Editor *e, size_t index) {
+    DmExportPlugins *h = ed_export_host(e);
+    return h && index < h->registry.count && h->registry.formats[index].api->install;
+}
+
+const char *ed_export_repository(Editor *e, size_t index) {
+    DmExportPlugins *h = ed_export_host(e);
+
+    if (!h || index >= h->registry.count) {
+        return "";
+    }
+
+    int entry = folder_entry(h, h->registry.formats[index].api->id, false);
+    return entry >= 0 ? h->folders[entry].repository : "";
+}
+
+void ed_export_set_repository(Editor *e, size_t index, const char *folder) {
+    DmExportPlugins *h = ed_export_host(e);
+
+    if (!h || index >= h->registry.count || strlen(folder) >= DM_PATH) {
+        return;
+    }
+
+    int entry = folder_entry(h, h->registry.formats[index].api->id, true);
+
+    if (entry >= 0 && strcmp(h->folders[entry].repository, folder)) {
+        snprintf(h->folders[entry].repository, DM_PATH, "%s", folder);
+        save_folders(e, h);
+    }
+}
+
+/* Preferences: choose an exporter's repository folder without exporting. */
+bool ed_export_folder_picker(Editor *e, size_t index) {
+    DmExportPlugins *h = ed_export_host(e);
+
+    if (!h || !ed_export_installs(e, index)) {
+        return false;
+    }
+
+    h->folder_format = (int)index;
+    return true;
+}
+
+const char *ed_export_folder_start(Editor *e) {
+    DmExportPlugins *h = e->export_plugins;
+    const char *folder =
+        h && h->folder_format >= 0 ? ed_export_repository(e, (size_t)h->folder_format) : "";
+    return *folder ? folder : NULL;
+}
+
+void ed_export_folder_done(Editor *e, const char *folder) {
+    DmExportPlugins *h = ed_export_host(e);
+
+    if (h && folder && h->folder_format >= 0) {
+        ed_export_set_repository(e, (size_t)h->folder_format, folder);
+    }
+
+    if (h) {
+        h->folder_format = -1;
     }
 }
 

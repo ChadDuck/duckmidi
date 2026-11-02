@@ -3,7 +3,13 @@ include("${CMAKE_CURRENT_LIST_DIR}/delivery-time.cmake")
 
 # Deliveries go to build/duckmidi-vVERSION-TYPE, replacing an earlier delivery of the same version
 # and type. Files are staged first, so a failed install leaves the earlier delivery in place.
-if(NOT DEFINED SOURCE_DIR OR NOT DEFINED BUILD_DIR OR NOT VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+# The version is the one set for the build, or its build time (tools/version.cmake).
+if(DEFINED VERSION_FILE AND EXISTS "${VERSION_FILE}")
+  file(READ "${VERSION_FILE}" VERSION)
+endif()
+
+if(NOT DEFINED SOURCE_DIR OR NOT DEFINED BUILD_DIR OR
+   NOT VERSION MATCHES "^([0-9]+\\.[0-9]+\\.[0-9]+|[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)$")
   message(FATAL_ERROR "Use the CMake deliver target from a configured build.")
 endif()
 

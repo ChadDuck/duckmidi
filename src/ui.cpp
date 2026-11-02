@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 static float interface_scale = 1;
 static SDL_Window *cursor_window;
@@ -322,6 +323,14 @@ void ui_separator() {
     ImGui::Separator();
 }
 
+void ui_gap_separator() {
+    /* Drawn in the spacing above the next item, so the layout keeps its height. */
+    ImGuiWindow *window = ImGui::GetCurrentWindow();
+    float y = IM_ROUND(window->DC.CursorPos.y - ImGui::GetStyle().ItemSpacing.y * .5f);
+    window->DrawList->AddLine({window->WorkRect.Min.x, y}, {window->WorkRect.Max.x, y},
+                              ImGui::GetColorU32(ImGuiCol_Separator));
+}
+
 void ui_text(const char *t) {
     ImGui::TextUnformatted(t);
 }
@@ -503,9 +512,13 @@ static bool inside_shape(const float *v, int points, float x, float y) {
     return inside;
 }
 
-/* filled paints the inside of closed shapes in the outline color. */
+/* filled paints the inside of closed shapes in the outline color. A soft shadow, offset down and
+   right, sits under the icon; the bitmap extends past the icon to hold it. */
 static SDL_Cursor *make_icon_cursor(UiIcon icon, int size, float hx, float hy, bool filled) {
-    SDL_Surface *surface = SDL_CreateSurface(size, size, SDL_PIXELFORMAT_RGBA32);
+    int offset = ImMax(1, (int)std::lround(size / 24.0)), blur = ImMax(1, size / 32);
+    int full = size + offset + blur;
+    std::vector<float> white((size_t)size * size), alpha((size_t)size * size);
+    SDL_Surface *surface = SDL_CreateSurface(full, full, SDL_PIXELFORMAT_RGBA32);
 
     if (!surface) {
         return nullptr;
@@ -539,11 +552,34 @@ static SDL_Cursor *make_icon_cursor(UiIcon icon, int size, float hx, float hy, b
             }
 
             distance *= scale;
-            float white = ImClamp(.75f * scale + .5f - distance, 0.f, 1.f);
-            float alpha = ImClamp(.75f * scale + 1.5f - distance, 0.f, 1.f);
-            Uint8 shade = alpha > 0 ? (Uint8)(255 * white / alpha) : 0;
-            auto *row = (Uint32 *)((Uint8 *)surface->pixels + y * surface->pitch);
-            row[x] = SDL_MapSurfaceRGBA(surface, shade, shade, shade, (Uint8)(255 * alpha));
+            white[(size_t)y * size + x] = ImClamp(.75f * scale + .5f - distance, 0.f, 1.f);
+            alpha[(size_t)y * size + x] = ImClamp(.75f * scale + 1.5f - distance, 0.f, 1.f);
+        }
+    }
+
+    /* The shadow is the icon's coverage, box-blurred and shifted, at 35% opacity. The icon is
+       drawn over it: its light fill and dark outline keep their colors where they are opaque. */
+    auto coverage = [&](int x, int y) {
+        return x >= 0 && y >= 0 && x < size && y < size ? alpha[(size_t)y * size + x] : 0.f;
+    };
+
+    for (int y = 0; y < full; ++y) {
+        auto *row = (Uint32 *)((Uint8 *)surface->pixels + y * surface->pitch);
+
+        for (int x = 0; x < full; ++x) {
+            float sum = 0;
+
+            for (int dy = -blur; dy <= blur; ++dy) {
+                for (int dx = -blur; dx <= blur; ++dx) {
+                    sum += coverage(x - offset + dx, y - offset + dy);
+                }
+            }
+
+            float shadow = .35f * sum / (float)((2 * blur + 1) * (2 * blur + 1));
+            float a = coverage(x, y), light = a > 0 ? white[(size_t)y * size + x] : 0;
+            float out = a + shadow * (1 - a);
+            Uint8 shade = out > 0 ? (Uint8)(255 * light / out) : 0;
+            row[x] = SDL_MapSurfaceRGBA(surface, shade, shade, shade, (Uint8)(255 * out));
         }
     }
 
@@ -716,7 +752,11 @@ bool ui_float(const char *s, float *v, float lo, float hi) {
 }
 
 bool ui_input(const char *s, char *v, size_t n) {
-    ImGui::SetNextItemWidth(240);
+    /* 240 px unless ui_width chose a width for this field. */
+    if (!(GImGui->NextItemData.HasFlags & ImGuiNextItemDataFlags_HasWidth)) {
+        ImGui::SetNextItemWidth(240);
+    }
+
     return ImGui::InputText(s, v, n);
 }
 
@@ -1251,6 +1291,33 @@ bool ui_dialog(const char *s, bool *open, float w, float h) {
     return ImGui::Begin(s, open, ImGuiWindowFlags_NoCollapse);
 }
 
+bool ui_growing_dialog(const char *s, bool *open, float w, float h) {
+    /* The height follows last frame's contents, limited to the work area so the options and the
+       resize corner stay visible; the width stays the user's. */
+    ImGuiWindow *window = ImGui::FindWindowByName(s);
+    const ImGuiViewport *view = ImGui::GetMainViewport();
+
+    if (window && window->WasActive && !window->Collapsed) {
+        float fit = window->ContentSizeIdeal.y + window->WindowPadding.y * 2 +
+                    window->DecoOuterSizeY1 + window->DecoOuterSizeY2;
+        float height = ImMin(fit, view->WorkSize.y);
+
+        float top =
+            ImClamp(window->Pos.y, view->WorkPos.y, view->WorkPos.y + view->WorkSize.y - height);
+        ImGui::SetNextWindowSize({window->SizeFull.x, height}, ImGuiCond_Always);
+
+        if (top != window->Pos.y) {
+            ImGui::SetNextWindowPos({window->Pos.x, top}, ImGuiCond_Always);
+        }
+    } else {
+        float width = window ? window->SizeFull.x : w;
+        ImGui::SetNextWindowSize({width, ImMin(h, view->WorkSize.y)}, ImGuiCond_Always);
+        ImGui::SetNextWindowPos(view->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
+    }
+
+    return ImGui::Begin(s, open, ImGuiWindowFlags_NoCollapse);
+}
+
 bool ui_context(const char *s) {
     return ImGui::BeginPopupContextItem(s, ImGuiPopupFlags_MouseButtonRight);
 }
@@ -1591,8 +1658,14 @@ bool ui_drag_pattern(int pattern) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
     ImGui::PushStyleColor(ImGuiCol_PopupBg, 0);
+    /* The dragged card keeps the spot that was clicked under the mouse, rather than hanging
+       below and to the right of it. */
+    auto &g = *ImGui::GetCurrentContext();
+    ImGui::SetNextWindowPos(
+        {g.IO.MousePos.x - g.ActiveIdClickOffset.x, g.IO.MousePos.y - g.ActiveIdClickOffset.y});
 
     if (!ImGui::BeginDragDropSource()) {
+        g.NextWindowData.HasFlags &= ~ImGuiNextWindowDataFlags_HasPos;
         ImGui::PopStyleColor();
         ImGui::PopStyleVar(2);
         return false;

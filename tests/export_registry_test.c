@@ -36,7 +36,7 @@ int main(void) {
     dm_export_registry_load(&r, "build/development/export-registry-fixtures");
     printf("registered=%zu\n%s\n", r.count, r.errors);
     assert(r.count == 2);
-    assert(strstr(r.errors, "ABI 4"));
+    assert(strstr(r.errors, "ABI 5"));
     assert(strstr(r.errors, "Duplicate exporter ID"));
     assert(strstr(r.errors, "settings schema"));
     assert(strstr(r.errors, "entry point"));

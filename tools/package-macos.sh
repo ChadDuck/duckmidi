@@ -7,6 +7,9 @@ set -euo pipefail
 build=$1
 version=$2
 output=$3
+# Full builds bundle the SoundFont and sample project (DUCKMIDI_PRODUCTION); Core builds do not.
+type=Core
+grep -Eqi '^DUCKMIDI_PRODUCTION:[A-Z]*=(ON|TRUE|YES|Y|1)$' "$build/CMakeCache.txt" && type=Full
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -44,4 +47,5 @@ codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"
 
 mkdir -p "$output"
-ditto -c -k --keepParent "$app" "$output/duckmidi-v${version}-macos-$(uname -m).zip"
+# Release files are named duckmidi-vVERSION-OS-ARCHITECTURE-TYPE.extension.
+ditto -c -k --keepParent "$app" "$output/duckmidi-v${version}-macOS-$(uname -m)-${type}.zip"

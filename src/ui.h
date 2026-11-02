@@ -75,6 +75,8 @@ void ui_newline(void);
 void ui_width(float width);
 void ui_space(float h);
 void ui_separator(void);
+/* A separator line in the gap above the next item; adds no height. */
+void ui_gap_separator(void);
 void ui_text(const char *text);
 void ui_wrap(const char *text);
 void ui_love_text(const char *text);
@@ -153,6 +155,8 @@ int ui_welcome_content(void);
 void ui_confirmation_message(const char *text);
 void ui_center_row(float width);
 bool ui_dialog(const char *title, bool *open, float width, float height);
+/* Resizable width; the height fits the contents within the work area. */
+bool ui_growing_dialog(const char *title, bool *open, float width, float height);
 bool ui_modal(const char *title, bool *open, float width, float height);
 void ui_close_popup(void);
 bool ui_context(const char *id);

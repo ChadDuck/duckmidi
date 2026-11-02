@@ -13,17 +13,6 @@ static void ui_size_menu(Editor *e);
 static void view_menu(Editor *e);
 static void help_menu(Editor *e);
 
-uint32_t ed_track_color(int channel) {
-    if (channel == MIDI_DRUM_CHANNEL) {
-        return COLOR(231, 211, 101);
-    }
-
-    static const uint32_t colors[] = {
-        COLOR(83, 193, 156),  COLOR(102, 169, 224), COLOR(191, 144, 223), COLOR(235, 175, 108),
-        COLOR(118, 201, 206), COLOR(221, 132, 154), COLOR(160, 193, 109), COLOR(167, 160, 232)};
-    return colors[channel % 8];
-}
-
 bool ed_inside(UiPoint p, UiRect r) {
     return p.x >= r.x && p.y >= r.y && p.x < r.x + r.w && p.y < r.y + r.h;
 }

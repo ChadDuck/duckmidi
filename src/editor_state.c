@@ -131,7 +131,7 @@ void ed_reset_layout(Editor *e) {
     e->mixer_height = 420;
     e->label_width = 154;
     e->automation_height = 360;
-    e->roll_height = 320;
+    e->roll_height = 420; /* Matches mixer_height, so both dividers meet in a cross. */
 }
 
 void ed_toggle_roll(Editor *e) {
@@ -143,7 +143,9 @@ void ed_toggle_roll(Editor *e) {
 }
 
 int ed_channel_program(Editor *e, int channel) {
-    return channel == MIDI_DRUM_CHANNEL ? 128 : (int)fmax(0, e->project.channels[channel].program);
+    return dm_channel_drums(&e->project, channel)
+               ? 128
+               : (int)fmax(0, e->project.channels[channel].program);
 }
 
 void ed_preview_channel(Editor *e, int channel, bool placed) {

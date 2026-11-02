@@ -1,14 +1,14 @@
 # A local portable layout: the editor locates plugins/preferences/assets beside itself.
 option(DUCKMIDI_PRODUCTION "Include the supplied SoundFont and first-launch sample" OFF)
 install(TARGETS duckmidi RUNTIME DESTINATION .)
-install(TARGETS m64export RUNTIME DESTINATION plugins LIBRARY DESTINATION plugins)
+install(TARGETS m64export ootexport RUNTIME DESTINATION plugins LIBRARY DESTINATION plugins)
 if(WIN32)
   install(FILES ${FLUID_DLLS} ${FFMPEG_DLLS} "$<TARGET_FILE:SDL3::SDL3>" DESTINATION .)
   if(EXISTS "${COMPILER_BIN}/libwinpthread-1.dll")
     install(FILES "${COMPILER_BIN}/libwinpthread-1.dll" DESTINATION .)
   endif()
 endif()
-install(FILES docs/user-guide.md docs/sm64-export.md docs/plugin-api.md DESTINATION docs)
+install(FILES docs/user-guide.md docs/sm64-export.md docs/oot-export.md docs/plugin-api.md DESTINATION docs)
 install(DIRECTORY docs/images DESTINATION docs)
 install(FILES LICENSE DESTINATION licenses RENAME duckmidi-MIT.txt)
 install(DIRECTORY vendor/licenses/ DESTINATION licenses FILES_MATCHING PATTERN "*.txt")
@@ -66,13 +66,15 @@ if(DUCKMIDI_PRODUCTION)
   install(FILES assets/funky-beat.duck DESTINATION projects)
   set(BUNDLE_HELP "Includes a default SoundFont and projects/funky-beat.duck, opened on first launch.")
 endif()
-file(WRITE "${PACKAGE_DOCS}/README.txt"
-  "duckmidi ${DUCKMIDI_DELIVERY_VERSION}\n\nKeep the runtime libraries and plugins/ beside the executable. ${BUNDLE_HELP}\n\nSee user-guide.md, sm64-export.md and plugin-api.md in this docs/ folder.\n\nduckmidi uses the MIT license; see ../licenses/duckmidi-MIT.txt and ../licenses/THIRD_PARTY_NOTICES.md.\n")
-install(FILES "${PACKAGE_DOCS}/README.txt" DESTINATION docs)
+# The duckmidi_version target fills in the version when it builds.
+file(WRITE "${PACKAGE_DOCS}/README.txt.in"
+  "duckmidi @DUCKMIDI_VERSION@\n\nKeep the runtime libraries and plugins/ beside the executable. ${BUNDLE_HELP}\n\nSee user-guide.md, sm64-export.md, oot-export.md and plugin-api.md in this docs/ folder.\n\nduckmidi uses the MIT license; see ../licenses/duckmidi-MIT.txt and ../licenses/THIRD_PARTY_NOTICES.md.\n")
+install(FILES "${DUCKMIDI_GENERATED}/README.txt" DESTINATION docs)
 install(FILES "${PACKAGE_DOCS}/THIRD_PARTY_NOTICES.md" DESTINATION licenses)
 add_custom_target(deliver
   COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
-    "-DBUILD_DIR=${CMAKE_BINARY_DIR}" "-DVERSION=${DUCKMIDI_DELIVERY_VERSION}" "-DCONFIG=$<CONFIG>"
+    "-DBUILD_DIR=${CMAKE_BINARY_DIR}" "-DVERSION_FILE=${DUCKMIDI_GENERATED}/version.txt"
+    "-DCONFIG=$<CONFIG>"
     "-DDELIVERY_TYPE=${DELIVERY_TYPE_NAME}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/deliver.cmake"
   DEPENDS duckmidi

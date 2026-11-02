@@ -17,7 +17,7 @@ extern "C" {
 #define DME_CALL
 #define DME_PUBLIC __attribute__((visibility("default")))
 #endif
-#define DME_ABI 4u
+#define DME_ABI 5u
 
 enum { DME_OK, DME_INVALID, DME_CANCELLED, DME_FAILED, DME_NOMEM };
 
@@ -50,6 +50,9 @@ typedef struct {
     /* Loop points marked in the arrangement, in the same ticks as events. */
     uint64_t loop_start, loop_end;
     uint32_t loop_points; /* DME_LOOP_START and/or DME_LOOP_END */
+    /* Bit c set: MIDI channel c + 1 is a percussion part. Channel 10 usually is; imported GS, XG
+       or GM2 files can add others or make channel 10 melodic. */
+    uint32_t percussion_channels;
 } DmeContext;
 
 typedef struct {
@@ -66,6 +69,10 @@ typedef struct {
 typedef struct {
     const char *id, *label;
     int32_t value, default_value;
+    /* Optional choices similar to default_value that cover the source's notes, best first;
+       each value must appear in the parent field's choices. */
+    const DmeChoice *similar;
+    uint32_t similar_count;
 } DmeMappingRow;
 
 typedef struct {

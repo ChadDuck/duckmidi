@@ -47,12 +47,12 @@ bool m64_stock_memory_file(const char *path, const uint8_t *data, uint64_t size)
            (!strcmp(path, M64_BUFFERS_C) && hash == STOCK_BUFFERS_C);
 }
 
-M64MemoryPlan m64_memory_plan(uint64_t required, bool maximum) {
+M64MemoryPlan m64_memory_plan(uint64_t required) {
     M64MemoryPlan plan = {0};
-    uint64_t pool = maximum ? SMALLEST_POOL + SPARE_RAM : (required + 0xFF) & ~(uint64_t)0xFF;
+    uint64_t pool = (required + 0xFF) & ~(uint64_t)0xFF;
     plan.required = required;
     plan.fits = required <= SMALLEST_POOL + SPARE_RAM;
-    plan.needed = maximum || required > SMALLEST_POOL;
+    plan.needed = required > SMALLEST_POOL;
 
     if (!plan.needed || !plan.fits) {
         return plan;
@@ -157,9 +157,9 @@ static void guide_steps(M64Text *t, const M64MemoryPlan *plan) {
               "   The linker reports an overflow if other changes already use the free RAM.\n");
 }
 
-char *m64_memory_guide(uint64_t required, const char *sequence, bool maximum) {
+char *m64_memory_guide(uint64_t required, const char *sequence) {
     M64Text t = {0};
-    M64MemoryPlan plan = m64_memory_plan(required, maximum);
+    M64MemoryPlan plan = m64_memory_plan(required);
     append(&t, "SM64 sequence memory for %s.m64\n\n", sequence);
     append(&t,
            "This song needs 0x%llX bytes of temporary sequence memory. Some stock US audio\n"
@@ -173,19 +173,26 @@ char *m64_memory_guide(uint64_t required, const char *sequence, bool maximum) {
                "the song, or move other data out of main RAM in your ROM.\n",
                SMALLEST_POOL + SPARE_RAM);
     } else {
-        append(&t, "%s\n\n",
-               maximum ? "Emulator Only: every US preset gets the largest pool the stock layout\n"
-                         "can hold, using all of the free RAM. Later songs up to that size fit\n"
-                         "without new edits, but other mods may no longer have room in main RAM."
-                       : "Console-Compatible: the smallest change for this song. It uses part of\n"
-                         "the RAM the stock build leaves free, so the ROM still runs on console.");
+        append(&t, "Enlarge: the smallest change for this song. It uses part of the RAM the\n"
+                   "stock build leaves free, so the ROM still runs on console.\n\n");
         guide_steps(&t, &plan);
     }
 
+    return t.failed ? (m64_text_free(&t), NULL) : t.data;
+}
+
+/* HackerSM64 sizes the audio heap from one TEMPORARY_SEQ_MEM per EXPAND_AUDIO_HEAP branch. */
+char *m64_hacker_memory_guide(uint64_t required, const char *sequence) {
+    M64Text t = {0};
+    append(&t, "HackerSM64 sequence memory for %s.m64\n\n", sequence);
     append(&t,
-           "\nHackerSM64 checkouts use one setting instead of the steps above:\n\n"
-           "  src/audio/data.h - in the EXPAND_AUDIO_HEAP branch your config uses, make sure\n"
-           "  TEMPORARY_SEQ_MEM is at least 0x%llX. The audio heap grows with it.\n",
+           "This song needs 0x%llX bytes of temporary sequence memory. HackerSM64 provides\n"
+           "0x%X by default, or 0xE800 when include/config/config_audio.h defines\n"
+           "EXPAND_AUDIO_HEAP; a song larger than the pool overwrites instrument data and\n"
+           "loses instruments.\n\n"
+           "src/audio/data.h - in the EXPAND_AUDIO_HEAP branch your config uses, set\n"
+           "TEMPORARY_SEQ_MEM to at least 0x%llX. The audio heap grows with it.\n",
+           (unsigned long long)required, M64_HACKER_POOL,
            (unsigned long long)((required + 0xFF) & ~(uint64_t)0xFF));
     return t.failed ? (m64_text_free(&t), NULL) : t.data;
 }

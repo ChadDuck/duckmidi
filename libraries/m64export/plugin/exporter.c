@@ -8,6 +8,14 @@
 
 typedef M64PluginJob ExportJob;
 
+static const char *const game_names[M64_GAME_COUNT] = {"SM64", "HackerSM64", "sm64coopdx"};
+
+static uint32_t library_target(int game) {
+    return game == M64_GAME_COOPDX       ? M64_TARGET_SM64COOPDX
+           : game == M64_GAME_HACKERSM64 ? M64_TARGET_HACKERSM64
+                                         : M64_TARGET_SM64_US;
+}
+
 static void *DME_CALL create_job(const void *instance, char *error, uint64_t cap) {
     const M64PluginUi *s = instance;
     const M64Api *api = m64_get_api_3();
@@ -18,8 +26,9 @@ static void *DME_CALL create_job(const void *instance, char *error, uint64_t cap
         bank_lower[i] = (char)(c >= 'A' && c <= 'Z' ? c + ('a' - 'A') : c);
     }
 
-    if (!strcmp(bank_lower, "manifest") || !strcmp(bank_lower, "sequences-entry") ||
-        !strcmp(bank_lower, "sequence-memory")) {
+    if (s->target != M64_GAME_COOPDX &&
+        (!strcmp(bank_lower, "manifest") || !strcmp(bank_lower, "sequences-entry") ||
+         !strcmp(bank_lower, "sequence-memory"))) {
         snprintf(error, (size_t)cap,
                  "Choose a bank name other than manifest, sequences-entry or sequence-memory.");
         return NULL;
@@ -48,12 +57,14 @@ static void *DME_CALL create_job(const void *instance, char *error, uint64_t cap
     memcpy(j->presets, s->melodic, sizeof(j->presets));
     memcpy(j->drum_presets, s->drums, sizeof(j->drum_presets));
     j->loop_points = s->loop_points && s->has_loop_points;
-    j->memory_maximum = s->memory == 1;
-    j->request.target = M64_TARGET_SM64_US;
+    j->memory_stock = s->memory == M64_MEMORY_STOCK;
+    j->target = s->target;
+    j->request.target = library_target(s->target);
     j->request.loop = (uint32_t)s->loop;
     j->request.voice_limit = 16;
     j->request.sequence_name = j->sequence;
-    j->request.bank_name = j->bank;
+    /* sm64coopdx songs name no bank of their own. */
+    j->request.bank_name = s->target == M64_GAME_COOPDX ? "extended" : j->bank;
     j->request.channel_programs = j->melodic;
     j->request.drums = j->drums;
     return j;
@@ -83,7 +94,8 @@ static M64Event *prepare(ExportJob *j, const DmeContext *c, char *error, uint64_
     M64Event *events = calloc((size_t)c->event_count + 1, sizeof(*events));
     M64PortLayout *layout = calloc(1, sizeof(*layout));
 
-    if (!events || !layout || !m64_port_layout(c->events, c->event_count, layout)) {
+    if (!events || !layout ||
+        !m64_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
         snprintf(error, (size_t)cap, "Cannot allocate SM64 timeline.");
         *status = DME_NOMEM;
         free(events);
@@ -138,13 +150,21 @@ static M64Event *prepare(ExportJob *j, const DmeContext *c, char *error, uint64_
     return events;
 }
 
-static void report(const DmeHost *host, const M64Result *result, char *error, uint64_t cap) {
+/* Hides the stock pool warning (57) when Sequence memory is Enlarge, and for HackerSM64, whose
+   pool the plugin checks itself. */
+static const char hacker_stock_warning[] =
+    "The song needs more temporary sequence memory than HackerSM64's TEMPORARY_SEQ_MEM provides "
+    "and Sequence memory is Stock, so it may not play. Choose Enlarge to raise it.";
+
+static void report(const ExportJob *j, const DmeHost *host, const M64Result *result, char *error,
+                   uint64_t cap) {
     const M64Api *api = m64_get_api_3();
+    bool pool_warning = j->memory_stock && j->request.target != M64_TARGET_HACKERSM64;
 
     for (uint64_t i = 0; i < api->diagnostic_count(result); i++) {
         M64DiagnosticView d;
 
-        if (api->diagnostic_at(result, i, &d) != M64_OK) {
+        if (api->diagnostic_at(result, i, &d) != M64_OK || (d.code == 57 && !pool_warning)) {
             continue;
         }
 
@@ -195,7 +215,7 @@ static int32_t compile(ExportJob *j, const DmeContext *c, const DmeHost *host, c
 
     M64Hooks hooks = {(void *)host, cancel, progress};
     int compiled = m64_get_api_3()->compile(&j->request, &hooks, result);
-    report(host, *result, error, cap);
+    report(j, host, *result, error, cap);
     free(events);
     j->request.events = NULL;
 
@@ -214,6 +234,24 @@ static int32_t compile(ExportJob *j, const DmeContext *c, const DmeHost *host, c
     return DME_OK;
 }
 
+/* An sm64coopdx package is a mod folder, ready for the game's mods folder. */
+static bool coopdx_package(ExportJob *j, const DmeHost *host, const M64Result *result) {
+    const M64Api *api = m64_get_api_3();
+    char folder[128], path[256];
+    M64ArtifactView sequence, manifest;
+    m64_coopdx_folder(j->sequence, folder, sizeof(folder));
+    char *lua = m64_coopdx_main_lua(j->sequence);
+    snprintf(path, sizeof(path), "%s/main.lua", folder);
+    bool ok = lua && host->artifact(host->user, path, (const uint8_t *)lua, strlen(lua));
+    snprintf(path, sizeof(path), "%s/sound/%s.m64", folder, j->sequence);
+    ok = ok && api->artifact_at(result, M64_SEQUENCE, &sequence) == M64_OK &&
+         host->artifact(host->user, path, sequence.data, sequence.size);
+    ok = ok && api->artifact_at(result, M64_MANIFEST, &manifest) == M64_OK &&
+         host->artifact(host->user, "manifest.json", manifest.data, manifest.size);
+    free(lua);
+    return ok;
+}
+
 static int32_t DME_CALL run(void *job, const DmeContext *c, const DmeHost *host, char *error,
                             uint64_t cap) {
     ExportJob *j = job;
@@ -221,6 +259,18 @@ static int32_t DME_CALL run(void *job, const DmeContext *c, const DmeHost *host,
     M64Result *result = NULL;
     int32_t status = compile(j, c, host, error, cap, &result);
     bool ok = status == DME_OK;
+
+    if (j->target == M64_GAME_COOPDX) {
+        ok = ok && coopdx_package(j, host, result);
+        api->result_free(result);
+
+        if (status == DME_OK && !ok) {
+            status = host->cancelled(host->user) ? DME_CANCELLED : DME_FAILED;
+        }
+
+        return status;
+    }
+
     char names[M64_ARTIFACT_COUNT][128];
     snprintf(names[0], 128, "%s.m64", j->sequence);
     snprintf(names[1], 128, "%s.json", j->bank);
@@ -236,10 +286,17 @@ static int32_t DME_CALL run(void *job, const DmeContext *c, const DmeHost *host,
     /* When the song needs source edits for its sequence memory, the package explains them for
        the chosen memory option. */
     uint64_t required = ok ? required_memory(result) : 0;
-    M64MemoryPlan plan = m64_memory_plan(required, j->memory_maximum);
+    M64MemoryPlan plan = m64_memory_plan(required);
+    bool hacker = j->target == M64_GAME_HACKERSM64;
 
-    if (ok && (plan.needed || !plan.fits)) {
-        char *guide = m64_memory_guide(required, j->sequence, j->memory_maximum);
+    if (ok && j->memory_stock && hacker && required > M64_HACKER_POOL) {
+        host->diagnostic(host->user, DME_WARNING, DME_DISPLAY | DME_POPUP, hacker_stock_warning);
+    }
+
+    if (ok && !j->memory_stock &&
+        (hacker ? required > M64_HACKER_POOL : plan.needed || !plan.fits)) {
+        char *guide = hacker ? m64_hacker_memory_guide(required, j->sequence)
+                             : m64_memory_guide(required, j->sequence);
         ok = guide && host->artifact(host->user, "sequence-memory.txt", (const uint8_t *)guide,
                                      strlen(guide));
         free(guide);
@@ -296,8 +353,9 @@ static bool install_memory(const DmeHost *host, const M64MemoryPlan *plan, char 
     return true;
 }
 
-/* Raises HackerSM64's temporary sequence pool when the song needs more than it has. */
-static bool install_hacker_memory(const DmeHost *host, uint64_t required, bool expanded,
+/* Raises HackerSM64's temporary sequence pool when the song needs more than it has. With Stock,
+   only warns. */
+static bool install_hacker_memory(const DmeHost *host, uint64_t required, bool expanded, bool stock,
                                   char *error, uint64_t cap) {
     const uint8_t *data;
     uint64_t size;
@@ -316,8 +374,14 @@ static bool install_hacker_memory(const DmeHost *host, uint64_t required, bool e
         return false;
     }
 
-    if (!changed) {
+    if (!changed || stock) {
         m64_text_free(&text);
+
+        if (changed) {
+            host->diagnostic(host->user, DME_WARNING, DME_DISPLAY | DME_POPUP,
+                             hacker_stock_warning);
+        }
+
         return true;
     }
 
@@ -329,15 +393,66 @@ static bool install_hacker_memory(const DmeHost *host, uint64_t required, bool e
     return true;
 }
 
-/* Installs into an SM64 decomp checkout: the sequence replaces the chosen song, the bank is
-   added, the song's entry in sound/sequences.json points at the bank, and the audio memory grows
-   when the song needs it. */
+/* sm64coopdx checkouts copy mods/ into the build: the song goes in as a mod folder. */
+static int32_t install_coopdx(ExportJob *j, const DmeContext *c, const DmeHost *host, char *error,
+                              uint64_t cap) {
+    const M64Api *api = m64_get_api_3();
+    M64Result *result = NULL;
+    int32_t status = compile(j, c, host, error, cap, &result);
+    M64ArtifactView sequence;
+    char folder[128], path[256];
+    m64_coopdx_folder(j->sequence, folder, sizeof(folder));
+    char *lua = status == DME_OK ? m64_coopdx_main_lua(j->sequence) : NULL;
+    bool ok = lua && api->artifact_at(result, M64_SEQUENCE, &sequence) == M64_OK;
+    snprintf(path, sizeof(path), "mods/%s/sound/%s.m64", folder, j->sequence);
+    ok = ok && host->install_file(host->user, path, sequence.data, sequence.size, 0);
+    snprintf(path, sizeof(path), "mods/%s/main.lua", folder);
+    ok = ok && host->install_file(host->user, path, (const uint8_t *)lua, strlen(lua), 0);
+
+    if (!ok && status == DME_OK) {
+        status = DME_FAILED;
+
+        if (!*error) {
+            snprintf(error, (size_t)cap, "Cannot prepare the repository files.");
+        }
+    }
+
+    free(lua);
+    api->result_free(result);
+    return status;
+}
+
+/* Installs into the checkout of the game it detects. The song compiles for that game; Target
+   only chooses the game of saved packages.
+
+   SM64: the sequence replaces the chosen song, the bank is added, the song's entry in
+   sound/sequences.json points at the bank, and the audio memory grows when the song needs it. */
 static int32_t DME_CALL install(void *job, const DmeContext *c, const DmeHost *host, char *error,
                                 uint64_t cap) {
     ExportJob *j = job;
     const M64Api *api = m64_get_api_3();
-    const uint8_t *sequences;
-    uint64_t sequences_size;
+    const uint8_t *sequences, *marker;
+    uint64_t sequences_size, marker_size;
+    bool coopdx = host->read_file(host->user, M64_COOPDX_MARKER, &marker, &marker_size) != 0;
+    bool hacker =
+        !coopdx && host->read_file(host->user, M64_HACKER_CONFIG, &marker, &marker_size) != 0;
+    int game = coopdx ? M64_GAME_COOPDX : hacker ? M64_GAME_HACKERSM64 : M64_GAME_SM64;
+    j->request.target = library_target(game);
+    /* The converter checks the bank name the install writes. */
+    j->request.bank_name = game == M64_GAME_COOPDX ? "extended" : j->bank;
+
+    if (game != j->target) {
+        char notice[256];
+        snprintf(notice, sizeof(notice),
+                 "This folder is a %s checkout, so Export to Repository installs for %s. Target "
+                 "applies to saved packages.",
+                 game_names[game], game_names[game]);
+        host->diagnostic(host->user, DME_WARNING, DME_DISPLAY | DME_POPUP, notice);
+    }
+
+    if (coopdx) {
+        return install_coopdx(j, c, host, error, cap);
+    }
 
     if (!host->read_file(host->user, M64_SEQUENCES_JSON, &sequences, &sequences_size)) {
         snprintf(error, (size_t)cap,
@@ -372,18 +487,15 @@ static int32_t DME_CALL install(void *job, const DmeContext *c, const DmeHost *h
               api->artifact_at(result, M64_BANK_JSON, &bank) == M64_OK;
 
     /* HackerSM64 keeps its audio settings in include/config/; its sequence pool is one macro. */
-    const uint8_t *config;
-    uint64_t config_size;
-    bool hacker = host->read_file(host->user, M64_HACKER_CONFIG, &config, &config_size) != 0;
-
     if (ok && hacker) {
-        bool expanded = m64_hacker_expanded(config, config_size);
+        bool expanded = m64_hacker_expanded(marker, marker_size);
         snprintf(path, sizeof(path), "sound/sequences/us/%s.m64", j->sequence);
         ok = host->install_file(host->user, path, sequence.data, sequence.size, 0);
         snprintf(path, sizeof(path), "sound/sound_banks/%s.json", j->bank);
         ok = ok && host->install_file(host->user, path, bank.data, bank.size, 0);
         ok = ok && install_text(host, M64_SEQUENCES_JSON, &entry, 0);
-        ok = ok && install_hacker_memory(host, required_memory(result), expanded, error, cap);
+        ok = ok && install_hacker_memory(host, required_memory(result), expanded, j->memory_stock,
+                                         error, cap);
 
         if (!ok && status == DME_OK) {
             status = DME_FAILED;
@@ -393,7 +505,9 @@ static int32_t DME_CALL install(void *job, const DmeContext *c, const DmeHost *h
             }
         }
     } else if (ok) {
-        M64MemoryPlan plan = m64_memory_plan(required_memory(result), j->memory_maximum);
+        /* Stock leaves the memory settings alone; the pool warning says where it may not fit. */
+        M64MemoryPlan plan = m64_memory_plan(required_memory(result));
+        plan.needed = plan.needed && !j->memory_stock;
 
         if (plan.needed && !plan.fits) {
             snprintf(error, (size_t)cap,
@@ -477,7 +591,7 @@ static const DmeExporter exporter = {"org.duckmidi.sm64",
                                      "zip",
                                      "M64 sequence package",
                                      "Save M64 Package",
-                                     "Native SM64 US sequence and sound-bank export.",
+                                     "SM64, HackerSM64 and sm64coopdx sequence export.",
                                      DME_ZIP,
                                      m64_ui_create,
                                      m64_ui_destroy,

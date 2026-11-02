@@ -2,6 +2,7 @@
 #include "m64_plugin.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 /* Stock US stems from n64decomp/sm64 sound/sequences.json. */
 static const DmeChoice sequences[] = {{0, "00_sound_player"},
@@ -42,7 +43,21 @@ static const DmeChoice sequences[] = {{0, "00_sound_player"},
                                       {35, "Custom"}};
 #define CUSTOM_SEQUENCE 35
 
-static const DmeChoice memory_choices[] = {{0, "Console-Compatible"}, {1, "Emulator Only"}};
+static const DmeChoice memory_choices[] = {{M64_MEMORY_ENLARGE, "Enlarge"},
+                                           {M64_MEMORY_STOCK, "Stock"}};
+
+static const DmeChoice target_choices[] = {
+    {M64_GAME_SM64, "SM64"}, {M64_GAME_HACKERSM64, "HackerSM64"}, {M64_GAME_COOPDX, "sm64coopdx"}};
+
+int m64_stock_sequence(const char *name) {
+    for (int i = 0; i < CUSTOM_SEQUENCE; i++) {
+        if (!strcmp(sequences[i].label, name)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
 
 static void reset_maps(M64PluginUi *s) {
     for (unsigned ch = 0; ch < 16; ch++) {
@@ -54,6 +69,8 @@ static void reset_maps(M64PluginUi *s) {
     for (unsigned p = 0; p < 128; p++) {
         s->drums[p] = (int)p;
     }
+
+    s->similar_stale = true;
 }
 
 void DME_CALL m64_ui_reset(void *instance) {
@@ -61,11 +78,12 @@ void DME_CALL m64_ui_reset(void *instance) {
     snprintf(s->sequence, sizeof(s->sequence), "03_level_grass");
     snprintf(s->bank, sizeof(s->bank), "26_custom_duckmidi");
     s->sequence_choice = 3;
-    s->custom_sequence[0] = 0;
+    snprintf(s->custom_sequence, sizeof(s->custom_sequence), "%s", s->project_sequence);
     s->custom_sequence_set = false;
+    s->target = M64_GAME_SM64;
     s->loop = 0;
     s->loop_points = 1;
-    s->memory = 0;
+    s->memory = M64_MEMORY_ENLARGE;
     s->percussion = 0;
     reset_maps(s);
 }
@@ -91,6 +109,45 @@ void DME_CALL m64_ui_destroy(void *instance) {
     free(instance);
 }
 
+/* A sequence file stem from the project name, or the MIDI file name without its folder and
+   extension; empty when neither gives one. */
+static void project_sequence_name(const DmeContext *c, char *out) {
+    char source[256];
+    const char *from = c->project_name;
+
+    if (!from || !*from) {
+        const char *path = c->source_name ? c->source_name : "";
+        const char *slash = strrchr(path, '/'), *backslash = strrchr(path, '\\');
+        path = backslash > slash ? backslash + 1 : slash ? slash + 1 : path;
+        snprintf(source, sizeof(source), "%s", path);
+        char *dot = strrchr(source, '.');
+
+        if (dot) {
+            *dot = 0;
+        }
+
+        from = source;
+    }
+
+    size_t n = 0;
+
+    for (const char *p = from; *p && n < 96; p++) {
+        char ch = *p >= 'A' && *p <= 'Z' ? (char)(*p - 'A' + 'a') : *p;
+
+        if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+            out[n++] = ch;
+        } else if (n && out[n - 1] != '_') {
+            out[n++] = '_';
+        }
+    }
+
+    while (n && out[n - 1] == '_') {
+        n--;
+    }
+
+    out[n] = 0;
+}
+
 int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error, uint64_t cap) {
     (void)error;
     (void)cap;
@@ -102,8 +159,22 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
 
     if (s->session_known && s->session != c->project_session) {
         reset_maps(s);
+        s->custom_sequence_set = false;
     }
 
+    project_sequence_name(c, s->project_sequence);
+
+    /* Until the user types or picks a custom name, Custom offers the project's name. */
+    if (!s->custom_sequence_set) {
+        snprintf(s->custom_sequence, sizeof(s->custom_sequence), "%s", s->project_sequence);
+
+        if (s->sequence_choice == CUSTOM_SEQUENCE) {
+            snprintf(s->sequence, sizeof(s->sequence), "%s", s->custom_sequence);
+        }
+    }
+
+    s->similar_stale = true;
+    memset(s->demand, 0, sizeof(s->demand));
     s->session = c->project_session;
     s->session_known = true;
     s->has_loop_points = c->loop_points != 0;
@@ -122,7 +193,7 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
 
     M64PortLayout *layout = calloc(1, sizeof(*layout));
 
-    if (!layout || !m64_port_layout(c->events, c->event_count, layout)) {
+    if (!layout || !m64_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
         free(layout);
         return DME_NOMEM;
     }
@@ -150,7 +221,11 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
             if (ch == MIDI_DRUM_CHANNEL) {
                 s->used_drums[e->a] = true;
             } else {
-                s->used[ch][program[ch]] = true;
+                /* Pitch bends can raise the rate further; the export review checks those. */
+                unsigned p = program[ch];
+                double rate = pow(2.0, ((double)e->a - 60) / 12.0);
+                s->used[ch][p] = true;
+                s->demand[ch][p] = rate > s->demand[ch][p] ? rate : s->demand[ch][p];
             }
         }
     }
@@ -182,19 +257,44 @@ int32_t DME_CALL m64_ui_describe(void *instance, DmeUi *ui) {
             snprintf(s->row_labels[count], 180, "Ch %u: %s%s%u", ch + 1,
                      drums ? s->drum_names[p] : s->program_names[p], drums ? " / note " : " / GM ",
                      p);
-            int value = m64_canonical_preset(drums, drums ? s->drums[p] : s->melodic[ch][p]);
-            s->rows[count] = (DmeMappingRow){s->row_ids[count], s->row_labels[count], value,
-                                             m64_canonical_preset(drums, (int)p)};
+            int mapped = drums ? s->drums[p] : s->melodic[ch][p];
+            int value = m64_canonical_preset(drums, mapped);
+
+            if (s->similar_stale) {
+                M64RangeIssue notes = {.channel = ch,
+                                       .program = p,
+                                       .percussion = drums,
+                                       .demand = drums ? 1 : s->demand[ch][p]};
+                s->similar_count[count] =
+                    m64_similar(&notes, (int)p, s->choices, choices, s->similar[count], 8);
+            }
+
+            s->rows[count] = (DmeMappingRow){s->row_ids[count],
+                                             s->row_labels[count],
+                                             value,
+                                             m64_canonical_preset(drums, (int)p),
+                                             s->similar[count],
+                                             s->similar_count[count]};
             count++;
         }
     }
 
+    s->similar_stale = false;
     unsigned f = 0;
 
     if (*s->port_notice) {
         s->fields[f++] = (DmeField){.id = "ports", .label = s->port_notice, .type = DME_NOTICE};
     }
 
+    s->fields[f++] = (DmeField){
+        .id = "target",
+        .label = "Target",
+        .help =
+            "The game the saved package is made for. Export to Repository detects the checkout and installs for its game.",
+        .type = DME_CHOICE,
+        .value = {DME_CHOICE, s->target, NULL},
+        .choices = target_choices,
+        .choice_count = M64_GAME_COUNT};
     s->fields[f++] = (DmeField){.id = "sequence",
                                 .label = "Sequence name",
                                 .type = DME_CHOICE,
@@ -210,35 +310,43 @@ int32_t DME_CALL m64_ui_describe(void *instance, DmeUi *ui) {
                                     .text_capacity = 97};
     }
 
-    s->fields[f++] = (DmeField){.id = "bank_name",
-                                .label = "Bank name",
-                                .type = DME_TEXT,
-                                .value = {DME_TEXT, 0, s->bank},
-                                .text_capacity = 97};
-    s->fields[f++] = (DmeField){.id = "loop",
-                                .label = "Loop the complete song",
-                                .type = DME_BOOL,
-                                .value = {DME_BOOL, s->loop, NULL}};
+    /* sm64coopdx songs use its existing extended bank. */
+    if (s->target != M64_GAME_COOPDX) {
+        s->fields[f++] = (DmeField){.id = "bank_name",
+                                    .label = "Bank name",
+                                    .type = DME_TEXT,
+                                    .value = {DME_TEXT, 0, s->bank},
+                                    .text_capacity = 97};
+    }
+    /* sm64coopdx mods use no sequence pool. */
+    if (s->target != M64_GAME_COOPDX) {
+        bool hacker = s->target == M64_GAME_HACKERSM64;
+        s->fields[f++] = (DmeField){
+            .id = "memory",
+            .label = "Sequence memory",
+            .help =
+                hacker
+                    ? "Enlarge raises TEMPORARY_SEQ_MEM when the song needs more. Stock changes no game files besides the export itself."
+                    : "Enlarge makes the smallest memory change the song needs, and the ROM still runs on console. Stock changes no game files besides the export itself.",
+            .type = DME_CHOICE,
+            .value = {DME_CHOICE, s->memory, NULL},
+            .choices = memory_choices,
+            .choice_count = 2};
+    }
+
+    s->fields[f++] = (DmeField){
+        .id = "loop", .label = "Loop song", .type = DME_BOOL, .value = {DME_BOOL, s->loop, NULL}};
 
     if (s->has_loop_points) {
         s->fields[f++] = (DmeField){
             .id = "loop_points",
             .label = "Use M64 loop points",
             .help =
-                "Play once, then repeat from M64 - Loop Start to M64 - Loop End. Overrides Loop the complete song.",
+                "Play once, then repeat from M64 - Loop Start to M64 - Loop End. Overrides Loop song.",
             .type = DME_BOOL,
             .value = {DME_BOOL, s->loop_points, NULL}};
     }
 
-    s->fields[f++] = (DmeField){
-        .id = "memory",
-        .label = "Sequence memory",
-        .help =
-            "Console-Compatible makes the smallest memory change and runs on console. Emulator Only uses all free RAM so later songs fit too.",
-        .type = DME_CHOICE,
-        .value = {DME_CHOICE, s->memory, NULL},
-        .choices = memory_choices,
-        .choice_count = 2};
     s->fields[f++] = (DmeField){.id = "percussion",
                                 .label = "Edit percussion mappings",
                                 .type = DME_BOOL,
@@ -268,12 +376,14 @@ int32_t DME_CALL m64_ui_set(void *instance, const char *id, const DmeValue *v, c
         goto invalid;
     }
 
+    s->similar_stale = true;
+
     if (!strcmp(id, "sequence") && v->type == DME_CHOICE && v->integer >= 0 &&
         v->integer <= CUSTOM_SEQUENCE) {
         if (v->integer == CUSTOM_SEQUENCE) {
-            if (!s->custom_sequence_set) {
+            /* Without a project name, Custom starts from the chosen stock name. */
+            if (!*s->custom_sequence) {
                 memmove(s->custom_sequence, s->sequence, strlen(s->sequence) + 1);
-                s->custom_sequence_set = true;
             }
 
             memmove(s->sequence, s->custom_sequence, strlen(s->custom_sequence) + 1);
@@ -285,7 +395,14 @@ int32_t DME_CALL m64_ui_set(void *instance, const char *id, const DmeValue *v, c
         return DME_OK;
     }
 
-    if (!strcmp(id, "memory") && v->type == DME_CHOICE && (v->integer == 0 || v->integer == 1)) {
+    if (!strcmp(id, "target") && v->type == DME_CHOICE && v->integer >= 0 &&
+        v->integer < M64_GAME_COUNT) {
+        s->target = v->integer;
+        return DME_OK;
+    }
+
+    if (!strcmp(id, "memory") && v->type == DME_CHOICE && v->integer >= M64_MEMORY_ENLARGE &&
+        v->integer <= M64_MEMORY_STOCK) {
         s->memory = v->integer;
         return DME_OK;
     }
@@ -301,6 +418,7 @@ int32_t DME_CALL m64_ui_set(void *instance, const char *id, const DmeValue *v, c
 
             if (dest == s->sequence) {
                 memmove(s->custom_sequence, s->sequence, strlen(s->sequence) + 1);
+                s->custom_sequence_set = true;
             }
 
             return DME_OK;

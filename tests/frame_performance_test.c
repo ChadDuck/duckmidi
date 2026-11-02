@@ -1,6 +1,6 @@
 /* Editor frame times for a large arrangement. The fixture is generated: 15 channels with about
-   47,000 notes and 46,000 controller points, similar to a dense orchestral MIDI file. Set
-   DUCKMIDI_FRAME_FILE to time another file instead. */
+   47,000 notes, 46,000 controller points and 3,000 pitch bends, similar to a dense orchestral MIDI
+   file. Set DUCKMIDI_FRAME_FILE to time another file instead. */
 #include "editor_internal.h"
 #include <windows.h>
 
@@ -58,6 +58,36 @@ static void fixture(Editor *e) {
             check(dm_automation_add(&e->project, point), "automation");
         }
 
+        if (c == 0) {
+            /* Dense pitch bends with bend range changes, as in MIDI files with vibrato. Each
+               drawn point needs its bend range, which once rescanned all automation per point. */
+            int range[][3] = {{0, MIDI_CC_RPN_MSB, 0},
+                              {0, MIDI_CC_RPN_LSB, 0},
+                              {0, MIDI_CC_DATA, 12},
+                              {400, MIDI_CC_DATA, 5}};
+
+            for (int k = 0; k < 4; ++k) {
+                DmAutomation point = {.beat = range[k][0],
+                                      .type = MIDI_CONTROL,
+                                      .channel = channel,
+                                      .a = range[k][1],
+                                      .b = range[k][2],
+                                      .pattern = id};
+                check(dm_automation_add(&e->project, point), "bend range");
+            }
+
+            for (int a = 0; a < 3000; ++a) {
+                int value = MIDI_BEND_CENTER + (a * 211) % 3000 - 1500;
+                DmAutomation point = {.beat = a * .25 + .125,
+                                      .type = MIDI_PITCH_BEND,
+                                      .channel = channel,
+                                      .a = value & MIDI_DATA_MASK,
+                                      .b = value >> 7,
+                                      .pattern = id};
+                check(dm_automation_add(&e->project, point), "pitch bend");
+            }
+        }
+
         dm_pattern_fit(&e->project, p);
         check(dm_clip_add(&e->project, (DmClip){0, id, channel, 0, 0, 0}), "placement");
         e->project.channels[channel].enabled = true;
@@ -107,13 +137,36 @@ int main(void) {
     e->automation_open = true;
     e->automation_cc = 11;
     double events = average_frame(e, 20);
+    e->automation_cc = -2;
+    double bends = average_frame(e, 20);
+    size_t compared = 0;
+
+    /* Drawing reads bend ranges from a cache; it must match a full scan for every point. */
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+
+        if (a.type != MIDI_PITCH_BEND) {
+            continue;
+        }
+
+        float plain = ed_automation_pitch(e, a);
+        ed_pitch_cache_begin(e);
+        ed_automation_pitch(e, e->project.automation[0]);
+        float cached = ed_automation_pitch(e, a);
+        ed_pitch_cache_end(e);
+        check(plain == cached, "cached bend range matches a full scan");
+        ++compared;
+    }
+
+    check(compared > 0, "pitch bends compared");
     double start = now();
     ed_checkpoint(e);
     ed_commit(e);
     double edit = now() - start;
-    printf("notes=%zu automation=%zu frame_ms=%.2f events_frame_ms=%.2f edit_ms=%.2f\n", notes,
-           e->project.automation_count, arrangement, events, edit);
-    check(arrangement < 20 && events < 20, "frames stay under 20 ms");
+    printf("notes=%zu automation=%zu frame_ms=%.2f events_frame_ms=%.2f bends_frame_ms=%.2f "
+           "edit_ms=%.2f\n",
+           notes, e->project.automation_count, arrangement, events, bends, edit);
+    check(arrangement < 20 && events < 20 && bends < 20, "frames stay under 20 ms");
     editor_free(e);
     free(e);
     ui_shutdown();

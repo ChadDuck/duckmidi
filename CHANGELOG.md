@@ -1,5 +1,45 @@
 # duckmidi changelog
 
+## 0.11.1
+
+New export plugin/option: OoT (`OoT.dll`): Save an *Ocarina of Time* sequence package, or use 'Export to Repository' to export directly to a [zeldaret/oot](https://github.com/zeldaret/oot) checkout.
+    - Still testing it right now, but initial results are promising.
+
+1. 'Revert repository export' also removes the backups and new folders left by repeated exports to the same local repo.
+2. The piano roll no longer lags on patterns with thousands of pitch bends.
+    - This bug made me laugh. Each frame, the drawing pass would work out every bend point's position.
+    - For a single point, this would scan the project's entire event list once, or twice for a curved bend. Single-point bends also rescanned the pattern's notes each time, only to find the same note for every point.
+    - Editing made it worse: Alt- or Shift-clicking repeated the work, so one point's position could be worked out **up to four times in a single frame**.
+    - So, with each frame, every bend point would make the program scan *all* events in the project; with thousands of bends, that's **millions** of steps per frame.
+3. The default layout raises the piano roll to the height of the mixer; the four sections meeting by default.
+4. A dragged pattern card stays held at the spot you started dragging from instead of hanging to the bottom-right of the cursor.
+5. OoT export maps each General MIDI instrument to the closest OoT equivalent, or uses one of the game's soundfonts, and offers substitutes when an instrument cannot reach the register range.
+6. OoT export can enlarge the game's audio memory automatically when a song is too large.
+7. The M64 export window has a Target option: 'SM64', 'HackerSM64' or [sm64coopdx](https://github.com/coop-deluxe/sm64coopdx).
+    - The program will always export to the right repository, this is mainly for zipped exports.
+8. Saved M64 packages follow the Target: HackerSM64 packages explain its sequence memory setting, and sm64coopdx packages are a ready-to-use mod folder.
+    - This needs testing from romhack creators.
+9. 'Export to Repository' installs sm64coopdx songs as a mod in the checkout's 'mods' folder, with the usual backups and 'Revert repository export'.
+    - This may need adjustment, I'm not sure if this is the intended behavior (as sm64coopdx treats romhacks as mods rather than core modifications).
+    - Like I said, it needs testing from romhack creators. I'll test it myself, eventually.
+10. sm64coopdx songs play with SM64's samples as expected. The export warns where an instrument or drum will sound different.
+    - sm64coopdx also has a different way of mapping instruments together so things may not be the same if switching ports.
+    - From what I understood, sm64coopdx also doesn't support custom samples?
+    - I need to investigate these two claims further and address them in a future release if it's a problem.
+11. Plugin sequence names default to the project's name, or the MIDI file's name for an unnamed project.
+12. 'Sequence memory' in both exports now offer a 'Stock' option: This exports just the song data.
+13. With an 'Enlarge' choice, exports no longer warn that the song exceeds the game's memory pools, since 'Export to Repository' makes room.
+14. Shortened 'Loop the complete song'; now just 'Loop song'.
+15. The instrument mapping panel has a 'Similar instruments' dropdown, listing instruments close to the default mapping that reach the source's notes; above the full 'Manual selection' list.
+16. 'Keep original files' checkbox now shows before an export.
+17. 'Export to Repository' asks for the local repository folder once instead of every time; the folder can be set or cleared in Preferences under 'Export plugins'.
+18. Mixer channel labels use the color of the pattern on that channel's arrangement row, or the application color.
+19. Export plugins now use plugin ABI 5.
+20. Imported MIDI files that play drums on channels other than 10 show those channels as percussion, and M64 and OoT plugins export them as drums.
+21. Projects save which channels play percussion (project schema 12); older projects keep channel 10 as their drum channel, as do new projects.
+22. M64 'Sequence memory' offers 'Enlarge' and 'Stock' for SM64 and HackerSM64; the 'Emulator Only' option is removed, and 'Enlarge' always makes the smallest change needed to fit the sequence.
+23. The custom mouse cursor now has a soft drop shadow.
+
 ## 0.11.0
 
 1. *duckmidi* can now check for updates on launch or from 'Help' > 'Check for Update'. **Disabled by default.**
@@ -28,21 +68,21 @@
 24. Clicking in an event lane adds a single point and dragging draws a line.
 25. 'Shift + click' in an event lane adds a point connected to its nearest neighbor; 'Shift + drag' draws a line - both points connecting to its nearest neighbor.
 26. Event lane grid line previews now snap by default while dragging.
-26. The 'Events Editor' right-click menu has a 'Curve' option.
+27. The 'Events Editor' right-click menu has a 'Curve' option.
     - 'Line' is a straight line to the next point
     - 'Hold' holds the value until it reaches the next point - forming a 90 degree angle.
-27. '.duck' format schema is now 11; new value added to track held notes.
-28. Fixed an issue with the drum channel not showing with it selected; 'Enter' now applies drum changes, like with the regular 'instruments' window.
-29. Added an option to the drums dropdown after clicking 'Drum kit' to return to regular instruments.
-30. An unsaved percussion mapping no longer carries over into a new or opened project.
-31. The percussion keyboard mapping and 'Instrument' windows fit their contents.
-32. Right-dragging the ruler to loop part of a short pattern works again.
-33. After recording, the piano roll is automatically focused so its shortcuts work.
-34. Beat grid lines are now darker than bar grid lines, and the playlist shows quarter beats when zoomed in.
-35. Mouse cursor changed solid instead of an outline.
-37. The user guide has been rewritten with imagery to make it less boring.
-38. Program changes are placed as single points; dragging in their lane no longer draws a line.
-39. Channel pressure and key pressure lanes draw lines, and channel pressure lines play their changing values.
+30. '.duck' format schema is now 11; new value added to track held notes.
+31. Fixed an issue with the drum channel not showing with it selected; 'Enter' now applies drum changes, like with the regular 'instruments' window.
+32. Added an option to the drums dropdown after clicking 'Drum kit' to return to regular instruments.
+33. An unsaved percussion mapping no longer carries over into a new or opened project.
+34. The percussion keyboard mapping and 'Instrument' windows fit their contents.
+35. Right-dragging the ruler to loop part of a short pattern works again.
+36. After recording, the piano roll is automatically focused so its shortcuts work.
+37. Beat grid lines are now darker than bar grid lines, and the playlist shows quarter beats when zoomed in.
+38. Mouse cursor changed solid instead of an outline.
+39. The user guide has been rewritten with imagery to make it less boring.
+40. Program changes are placed as single points; dragging in their lane no longer draws a line.
+41. Channel pressure and key pressure lanes draw lines, and channel pressure lines play their changing values.
 
 ## 0.10.2
 

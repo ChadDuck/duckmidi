@@ -247,8 +247,9 @@ void ed_playlist_label_text(Editor *e, UiRect r, float label, float row, const i
             snprintf(text, capacity, "%02d  %s", c + 1,
                      !e->project.channels[c].enabled || e->project.channels[c].program < 0
                          ? DM_TEXT_CHOOSE_INSTRUMENT
-                     : c == MIDI_DRUM_CHANNEL ? DM_TEXT_PERCUSSION
-                                              : dm_program_name(e->project.channels[c].program));
+                     : dm_channel_drums(&e->project, c)
+                         ? DM_TEXT_PERCUSSION
+                         : dm_program_name(e->project.channels[c].program));
         }
 
         if (e->channel_selected && c == e->selected_channel) {

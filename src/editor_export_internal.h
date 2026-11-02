@@ -18,6 +18,7 @@ typedef struct {
 /* What a folder install changed, so it can be reverted. */
 typedef struct {
     char path[DM_PATH];
+    char created[DM_PATH]; /* Highest folder the install created for this file, or empty. */
     DmBytes original;
     bool existed, backup_created;
 } DmRepositoryChange;
@@ -65,7 +66,13 @@ typedef struct DmExportPlugins {
     int pending_format;
     int message_format;
     SDL_DialogFileFilter filter;
-    char repository[DM_PATH];    /* Folder chosen for Export to Repository. */
+    /* Export to Repository folders by exporter ID, kept in duckmidi-plugins.ini. Entries of
+       exporters that are not installed are kept too. */
+    struct {
+        char id[97], repository[DM_PATH];
+    } folders[DM_EXPORT_MAX_FORMATS];
+    size_t folder_count;
+    int folder_format; /* Exporter whose folder the Preferences picker sets, or -1. */
     bool keep_originals;         /* Keep original files; on until the user turns it off. */
     DmRepositoryChange *changes; /* Changes made to repository since the last revert. */
     size_t change_count;

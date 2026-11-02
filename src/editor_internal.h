@@ -35,7 +35,8 @@ enum {
     DIALOG_WAVE,
     DIALOG_FONT,
     DIALOG_EXPORT_PLUGIN,
-    DIALOG_REPOSITORY
+    DIALOG_REPOSITORY,
+    DIALOG_PLUGIN_FOLDER /* Preferences: an exporter's repository folder */
 };
 
 #include "../include/duckmidi_export_plugin.h"
@@ -63,6 +64,13 @@ bool ed_export_has_changes(Editor *e);
 void ed_export_revert(Editor *e);
 bool ed_export_repository_picker(Editor *e, const char **start);
 void ed_export_repository_done(Editor *e, const char *folder);
+void ed_export_to_repository(Editor *e);
+bool ed_export_installs(Editor *e, size_t index);
+const char *ed_export_repository(Editor *e, size_t index);
+void ed_export_set_repository(Editor *e, size_t index, const char *folder);
+bool ed_export_folder_picker(Editor *e, size_t index);
+const char *ed_export_folder_start(Editor *e);
+void ed_export_folder_done(Editor *e, const char *folder);
 bool ed_export_picker(Editor *e, const SDL_DialogFileFilter **filter, const char **suggested);
 const char *ed_export_extension(Editor *e);
 void ed_export_picker_done(Editor *e, const char *path);
@@ -183,7 +191,6 @@ int ed_keyboard_channel(Editor *e);
 void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat);
 void ed_shortcut(Editor *e, SDL_Scancode key, SDL_Keymod raw, bool repeat);
 bool ed_instrument_note(Editor *e, const SDL_KeyboardEvent *key);
-uint32_t ed_track_color(int channel);
 bool ed_inside(UiPoint p, UiRect r);
 float ed_clampf(float n, float lo, float hi);
 double ed_snap(double beat, double grid, bool free);
@@ -250,6 +257,8 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
 void ed_playlist_remove(Editor *e, int hit);
 void ed_playlist(Editor *e, float width, float height);
 PitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat, unsigned port);
+PitchState ed_pitch_state_in(const DmAutomation *items, size_t count, int pattern_id, double beat,
+                             unsigned port);
 PitchState ed_pitch_state(Editor *e, double beat);
 int ed_curve_id(Editor *e);
 int ed_nearest_note(Editor *e, double beat);
@@ -273,6 +282,8 @@ bool ed_point_only_event(int cc);
 bool ed_automation_option(Editor *e, int cc);
 void ed_automation_selector(Editor *e);
 float ed_lane_step(UiRect lane);
+void ed_pitch_cache_begin(Editor *e);
+void ed_pitch_cache_end(Editor *e);
 float ed_automation_range(Editor *e, DmAutomation a);
 float ed_automation_pitch(Editor *e, DmAutomation a);
 UiPoint ed_automation_point(Editor *e, DmAutomation a, UiRect lane, View *v, float scale);

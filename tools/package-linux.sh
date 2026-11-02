@@ -12,6 +12,9 @@ build=$2
 version=$3
 output=$(realpath -m "$4")
 source=$(cd "$(dirname "$0")/.." && pwd)
+# Full builds bundle the SoundFont and sample project (DUCKMIDI_PRODUCTION); Core builds do not.
+type=Core
+grep -Eqi '^DUCKMIDI_PRODUCTION:[A-Z]*=(ON|TRUE|YES|Y|1)$' "$build/CMakeCache.txt" && type=Full
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 root="$work/root"
@@ -49,7 +52,11 @@ package() {
   cp -a "${root}/." "\$pkgdir/"
 }
 EOF
-  (cd "$work" && PKGDEST="$output" makepkg --force --nodeps)
+  # makepkg names the package itself; the release uses duckmidi-vVERSION-OS-ARCHITECTURE-TYPE.
+  mkdir -p "$work/package"
+  (cd "$work" && PKGDEST="$work/package" makepkg --force --nodeps)
+  built=("$work"/package/duckmidi-*.pkg.tar.*)
+  mv "${built[0]}" "$output/duckmidi-v${version}-Arch-$(uname -m)-${type}.pkg.tar.${built[0]##*.pkg.tar.}"
   ;;
 deb)
   if [ -z "${FLUIDSYNTH_LIB:-}" ]; then
@@ -61,7 +68,7 @@ deb)
   cp -a "$FLUIDSYNTH_LIB"/libfluidsynth.so.3* "$app/lib/"
   strip --strip-unneeded "$app"/lib/libfluidsynth.so.3.*
   . /etc/os-release
-  distro="${ID}${VERSION_ID}"
+  distro="${ID^}" # Debian or Ubuntu
   mkdir -p "$work/debian" "$root/DEBIAN"
   echo "Source: duckmidi" > "$work/debian/control"
   depends=$(cd "$work" && dpkg-shlibdeps -O --ignore-missing-info -l"$app/lib" "$app/duckmidi" "$app"/lib/libfluidsynth.so.3.* "$app"/plugins/*.so)
@@ -78,7 +85,7 @@ Homepage: https://github.com/ChadDuck/duckmidi
 Description: MIDI editor
  duckmidi edits, plays and exports MIDI projects.
 EOF
-  dpkg-deb --root-owner-group --build "$root" "$output/duckmidi_${version}_${distro}_amd64.deb"
+  dpkg-deb --root-owner-group --build "$root" "$output/duckmidi-v${version}-${distro}-$(uname -m)-${type}.deb"
   ;;
 *)
   echo "Unknown format: $format (use arch or deb)" >&2

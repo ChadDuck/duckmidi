@@ -26,6 +26,8 @@ A new project starts with two channels ready to go:
 - Channel 1 shows MIDI Instrument #0, 'Acoustic Grand Piano'
 - Channel 10 shows the 'Percussion' channel, a MIDI 1.0 convention
 
+Imported MIDI files can play drums on other channels too, when they set them up as Roland GS rhythm parts or select XG or GM2 drum banks. Those channels also show as **Percussion**, use the drum keyboard mapping, and export as drums.
+
 Open **Project settings** (**/**) to change the song's name, tempo or time signature, then click **Apply** or press **Enter**.
 
 If you can't hear anything, open **Edit > Preferences** (**P**) and choose an SF2/SF3 SoundFont or an external MIDI output. 
@@ -227,7 +229,13 @@ Audio is rendered with your SoundFont at 48 kHz stereo. A progress bar shows whi
 
 ### M64
 
-Choose **M64** in the format dropdown, review the instrument mappings, then click **Save M64 Package** or **Export to Repository** to install it into your SM64 project. Add **M64 - Loop Start** and **M64 - Loop End** song events to repeat part of the song. The [M64 guide](sm64-export.md) covers the details.
+Choose **M64** in the format dropdown, review the instrument mappings (**Similar instruments** suggests close matches to the default that reach your notes; **Manual selection** lists them all), then click **Save M64 Package** or **Export to Repository** to install it into your SM64, HackerSM64 or sm64coopdx project. **Target** chooses the game of the saved package. Add **M64 - Loop Start** and **M64 - Loop End** song events to repeat part of the song. The [M64 guide](sm64-export.md) covers the details.
+
+### OoT
+
+Choose **OoT** in the format dropdown, pick the **Area** whose song to replace (or add a new song) and a **Sample Set**, review the instrument mappings, then click **Save OoT Package** or **Export to Repository** to install it into a zeldaret/oot checkout. The M64 loop events also set the OoT loop. The [OoT guide](oot-export.md) covers the details.
+
+**Export to Repository** asks for the checkout folder once per exporter and then installs there directly. To set or change it, open **Edit > Preferences** and use **Browse** under **Export plugins**; **Clear** forgets it, so the next export asks again. The folders are saved in `duckmidi-plugins.ini` beside your preferences.
 
 ## Check for updates
 

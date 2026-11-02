@@ -167,7 +167,8 @@ static void t10(DmBytes *b, const char *s) {
 }
 
 /* A schema-10 automation point; schema 11 adds the hold flag after the port. */
-static void point10(DmBytes *b, double beat, double previous, int value, int curve, int ramp) {
+static void point10(DmBytes *b, uint32_t schema, double beat, double previous, int value, int curve,
+                    int ramp) {
     r10(b, beat - previous); /* Time delta from the previous point. */
     v10(b, MIDI_CONTROL);
     v10(b, 0);
@@ -179,11 +180,16 @@ static void point10(DmBytes *b, double beat, double previous, int value, int cur
     r10(b, 0);  /* Bend. */
     v10(b, (uint32_t)ramp);
     v10(b, 0); /* Port. */
+
+    if (schema >= 11) {
+        v10(b, 0); /* Hold. */
+    }
 }
 
 /* One pattern with one note, one placement, a modulation line (two nodes of curve 1 and its
-   restoration node) and a discrete point curving toward the next discrete point. */
-static DmBytes schema_10_project(void) {
+   restoration node) and a discrete point curving toward the next discrete point, saved as schema
+   10 or 11 (which differ only by the point hold flag). */
+static DmBytes line_project(uint32_t schema) {
     DmBytes body = {0}, stored = {0}, file = {0};
     t10(&body, "Line song");
     t10(&body, "");
@@ -254,17 +260,17 @@ static DmBytes schema_10_project(void) {
     v10(&body, 0);
     r10(&body, 0); /* Offset. */
     v10(&body, 4); /* Automation count. */
-    point10(&body, 0, 0, 0, 1, 0);
-    point10(&body, 2, 0, 127, 1, 0);
-    point10(&body, 2, 2, 0, (int)-1, 0);
-    point10(&body, 3, 2, 40, 0, 1);
+    point10(&body, schema, 0, 0, 0, 1, 0);
+    point10(&body, schema, 2, 0, 127, 1, 0);
+    point10(&body, schema, 2, 2, 0, (int)-1, 0);
+    point10(&body, schema, 3, 2, 40, 0, 1);
     v10(&body, 0); /* Events. */
     v10(&body, 0); /* Views. */
     v10(&body, 0); /* Port mixer. */
 
     check(dm_compress(body.data, body.size, &stored), "fixture memory");
     check(dm_bytes(&file, "DUCKMIDI", 8), "fixture memory");
-    u32(&file, 10);
+    u32(&file, schema);
     u32(&file, (uint32_t)stored.size);
     u32(&file, crc32(stored.data, stored.size));
     check(dm_bytes(&file, stored.data, stored.size), "fixture memory");
@@ -303,7 +309,7 @@ int main(void) {
     /* Schema 10 to 11: points gain the hold flag, off, so lines keep curving. */
     DmProject line;
     dm_project_init(&line);
-    DmBytes previous = schema_10_project(), saved = {0};
+    DmBytes previous = line_project(10), saved = {0};
     check(dm_unpack(&line, previous.data, previous.size, error, sizeof(error)), error);
     check(!strcmp(line.name, "Line song") && line.pattern_count == 1 && line.clip_count == 1 &&
               line.automation_count == 4,
@@ -332,6 +338,44 @@ int main(void) {
     dm_bytes_free(&previous);
     dm_bytes_free(&saved);
     dm_project_free(&line);
+
+    /* Schema 11 to 12: channels gain the percussion flag, and channel 10 stays the drum part. */
+    DmProject drums;
+    dm_project_init(&drums);
+    previous = line_project(11);
+    saved = (DmBytes){0};
+    check(dm_unpack(&drums, previous.data, previous.size, error, sizeof(error)), error);
+    check(!strcmp(drums.name, "Line song") && drums.automation_count == 4,
+          "schema-11 content loads");
+
+    for (int c = 0; c < 16; ++c) {
+        check(drums.channels[c].drums == (c == MIDI_DRUM_CHANNEL),
+              "schema-11 projects play percussion on channel 10 only");
+    }
+
+    drums.channels[10].drums = true;
+    drums.channels[MIDI_DRUM_CHANNEL].drums = false;
+    check(dm_pack(&drums, &saved) && saved.data[8] == DM_PROJECT_SCHEMA,
+          "converted schema-11 projects save as the current schema");
+    dm_project_free(&drums);
+    dm_project_init(&drums);
+    check(dm_unpack(&drums, saved.data, saved.size, error, sizeof(error)) &&
+              drums.channels[10].drums && !drums.channels[MIDI_DRUM_CHANNEL].drums,
+          "the percussion flag is saved and reloaded");
+    dm_bytes_free(&previous);
+    dm_bytes_free(&saved);
+    dm_project_free(&drums);
+
+    /* New projects keep the General MIDI layout. */
+    dm_project_init(&drums);
+
+    for (int c = 0; c < 16; ++c) {
+        check(drums.channels[c].drums == (c == MIDI_DRUM_CHANNEL) &&
+                  dm_channel_default(c).drums == (c == MIDI_DRUM_CHANNEL),
+              "new projects play percussion on channel 10");
+    }
+
+    dm_project_free(&drums);
 
     printf("PASS project compat: %d checks\n", checks);
     dm_bytes_free(&old);

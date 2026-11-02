@@ -939,6 +939,8 @@ static void dialog_output(Editor *e, int kind, const char *path) {
         ed_export_picker_done(e, output);
     } else if (kind == DIALOG_REPOSITORY) {
         ed_export_repository_done(e, path);
+    } else if (kind == DIALOG_PLUGIN_FOLDER) {
+        ed_export_folder_done(e, path);
     }
 }
 
@@ -960,6 +962,8 @@ static void dialog_result(Editor *e, const SDL_Event *event) {
         ed_export_picker_done(e, NULL);
     } else if (event->user.code == DIALOG_REPOSITORY) {
         ed_export_repository_done(e, NULL);
+    } else if (event->user.code == DIALOG_PLUGIN_FOLDER) {
+        ed_export_folder_done(e, NULL);
     } else if (event->user.code == DIALOG_SAVE) {
         e->pending_action = 0;
     }
@@ -1086,7 +1090,8 @@ static bool file_drop(Editor *e, const SDL_Event *event) {
 bool ed_instrument_note(Editor *e, const SDL_KeyboardEvent *key) {
     int c = e->instrument_channel, route = c;
     int base = ed_piano_key(key->scancode),
-        note = ed_keyboard_note(e, key->scancode, c == MIDI_DRUM_CHANNEL ? MIDI_DRUM_CHANNEL : 0);
+        note = ed_keyboard_note(e, key->scancode,
+                                dm_channel_drums(&e->project, c) ? MIDI_DRUM_CHANNEL : 0);
 
     if (base < 0 || key->repeat || note < 0 || note > 127) {
         return false;

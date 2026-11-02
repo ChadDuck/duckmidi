@@ -31,7 +31,7 @@ int main(void) {
     e->project.clip_count = 0;
 
     for (int c = 0; c < 16; ++c) {
-        e->project.channels[c] = (DmChannel){false, false, false, -1, 100, 64};
+        e->project.channels[c] = dm_channel_default(c);
     }
 
     int list[16 * (DM_LANES + 1)];
@@ -91,7 +91,8 @@ int main(void) {
     }
 
     for (int c = 0; c < 10; ++c) {
-        e->project.channels[c] = (DmChannel){true, false, false, 0, 100, 64};
+        e->project.channels[c] =
+            (DmChannel){true, false, false, 0, 100, 64, c == MIDI_DRUM_CHANNEL};
     }
 
     check(ed_channels(e, list) == 11 && list[9] == 9 && list[10] == 10,

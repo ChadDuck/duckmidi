@@ -220,7 +220,7 @@ void ed_export_dialog(Editor *e) {
     e->export_shown = e->export_window;
 
     if (e->export_window) {
-        if (ui_dialog(DM_TEXT_EXPORT, &e->export_window, 650, 650)) {
+        if (ui_growing_dialog(DM_TEXT_EXPORT, &e->export_window, 760, 400)) {
             ui_text(DM_TEXT_EXPORT_COMPOSITION);
             ui_separator();
             size_t count = ed_export_count(e);
@@ -311,7 +311,15 @@ static void about_spectrum(Editor *e) {
         float stereo[DM_SPECTRUM_FRAMES * 2];
 
         if (dm_audio_analyzer_read(e->audio, stereo)) {
-            dm_spectrum_analyze(stereo, e->spectrum_targets);
+            float content;
+
+            if (e->spectrum_top <= 0) {
+                e->spectrum_top = DM_SPECTRUM_TOP;
+            }
+
+            dm_spectrum_analyze(stereo, e->spectrum_top, e->spectrum_targets, &content);
+            float elapsed = e->spectrum_tick ? (now - e->spectrum_tick) / 1000.f : 0;
+            e->spectrum_top = dm_spectrum_follow_top(e->spectrum_top, content, elapsed);
         }
 
         e->spectrum_tick = now;
@@ -355,7 +363,9 @@ void ed_dialogs(Editor *e) {
             about_spectrum(e);
             UiPoint at = ui_cursor();
             ui_piano_icon((UiRect){at.x + ui_available().x - 72, at.y + 2, 66, 36});
-            ui_text(DM_TEXT_ABOUT_APP_VERSION);
+            char version[64];
+            snprintf(version, sizeof(version), DM_TEXT_ABOUT_APP_VERSION, dm_app_version);
+            ui_text(version);
             ui_love_text(DM_TEXT_ABOUT_TAGLINE);
             ui_separator();
             ui_text(DM_TEXT_C17_CORE_DEAR);

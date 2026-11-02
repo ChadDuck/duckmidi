@@ -32,10 +32,10 @@ While the design, usability, UI, and goals of this program were dictated by a hu
 
 ## Performance
 
-Estimates; tested against *Release* v0.10.2 using a complex midi composition.
-- RAM Usage: ~150 MiB
-- CPU Usage (All threads): ~3%
-- GPU Usage: ~8%
+Estimates; tested against a *Release* candidate v0.11.1 using a complex midi composition.
+- RAM Usage: ~350 MiB
+- CPU Usage (All threads): ~5%
+- GPU Usage: ~16% (Lower for simpler songs, around ~8%)
 
 ## Planned
 

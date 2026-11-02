@@ -336,7 +336,9 @@ static bool channel_scripts(Compile *c, Buffer *b, const size_t channel_fix[16])
             address(b, channel_fix[ch], b->size);
             put(b, 0xc4);
             put(b, 0xc1);
-            put(b, c->sources[ch] == MIDI_DRUM_CHANNEL ? 127 : 0);
+            put(b, c->coopdx                             ? (unsigned)c->channel_instrument[ch]
+                   : c->sources[ch] == MIDI_DRUM_CHANNEL ? 127
+                                                         : 0);
             put(b, 0xdb);
             put(b, 0);
             put(b, 0xdf);

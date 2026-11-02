@@ -67,6 +67,55 @@ static int score(int original, int preset, bool percussion) {
     return value;
 }
 
+unsigned m64_similar(const M64RangeIssue *issue, int original, const DmeChoice *choices,
+                     unsigned count, DmeChoice *out, unsigned capacity) {
+    const M64Api *api = m64_get_api_3();
+    bool percussion = issue->percussion != 0, visited[128] = {0};
+    int current = m64_canonical_preset(percussion, original);
+    unsigned found = 0;
+
+    for (unsigned pass = 0; pass < 128 && found < capacity; pass++) {
+        int best = -1, best_score = INT_MAX;
+
+        for (int candidate = 0; candidate < 128; candidate++) {
+            if (visited[candidate] || (percussion && (candidate < 35 || candidate > 81)) ||
+                !api->preset_supported(issue, (uint32_t)candidate)) {
+                continue;
+            }
+
+            int rank = score(original, candidate, percussion);
+
+            if (rank < best_score) {
+                best = candidate;
+                best_score = rank;
+            }
+        }
+
+        if (best < 0) {
+            break;
+        }
+
+        visited[best] = true;
+
+        /* Presets sharing a sample and its settings are one choice. */
+        int canonical = m64_canonical_preset(percussion, best);
+        bool skip = canonical == current;
+
+        for (unsigned n = 0; n < found; n++) {
+            skip |= out[n].value == canonical;
+        }
+
+        for (unsigned c = 0; !skip && c < count; c++) {
+            if (choices[c].value == canonical) {
+                out[found++] = choices[c];
+                break;
+            }
+        }
+    }
+
+    return found;
+}
+
 static DmeChoice choice_for(const M64ReviewUi *ui, bool percussion, int value) {
     const DmeChoice *choices = percussion ? ui->drums : ui->melodic;
     unsigned count = percussion ? ui->drum_count : ui->melodic_count;
@@ -145,46 +194,9 @@ bool m64_review_build(M64PluginJob *job, const DmeContext *context, const M64Res
             item->description, 384,
             "The current stock mapping cannot cover MIDI keys %u-%u (%u notes; up to %.3fx playback, limit near 4x). Choose a supported substitute, or export unchanged and accept possible pitch clipping.",
             issue->note_low, issue->note_high, issue->note_count, issue->maximum_rate);
-        bool visited[128] = {0};
-
-        for (unsigned pass = 0; pass < 128 && item->recommended_count < 8; pass++) {
-            int best = -1, best_score = INT_MAX;
-
-            for (int candidate = 0; candidate < 128; candidate++) {
-                if (visited[candidate] ||
-                    (issue->percussion && (candidate < 35 || candidate > 81)) ||
-                    !api->preset_supported(issue, (uint32_t)candidate)) {
-                    continue;
-                }
-
-                int rank = score(original, candidate, issue->percussion != 0);
-
-                if (rank < best_score) {
-                    best = candidate;
-                    best_score = rank;
-                }
-            }
-
-            if (best < 0) {
-                break;
-            }
-
-            visited[best] = true;
-
-            /* Presets sharing a sample and its settings are one recommendation. */
-            int canonical = m64_canonical_preset(issue->percussion != 0, best);
-            bool duplicate = false;
-
-            for (unsigned n = 0; n < item->recommended_count; n++) {
-                duplicate |= item->recommended[n].value == canonical;
-            }
-
-            if (!duplicate) {
-                item->recommended[item->recommended_count++] =
-                    choice_for(ui, issue->percussion != 0, canonical);
-            }
-        }
-
+        item->recommended_count = m64_similar(
+            issue, original, issue->percussion ? ui->drums : ui->melodic,
+            issue->percussion ? ui->drum_count : ui->melodic_count, item->recommended, 8);
         item->selected = item->recommended_count
                              ? item->recommended[0].value
                              : m64_canonical_preset(issue->percussion != 0, original);
