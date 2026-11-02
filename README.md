@@ -54,7 +54,8 @@ Estimates; tested against a *Release* candidate v0.11.1 using a complex midi com
    - ~~M64 - Export to repo~~
    - ~~M64 - Automatic adjustment of sequence memory code to match export requirements~~
    - ~~M64 - Loop Points~~
-   - ~~OoT/MM Exporting~~
+   - ~~OoT Exporting~~
+   - MM Exporting
 - Probably a lot more
 
 
