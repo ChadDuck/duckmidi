@@ -664,6 +664,25 @@ static void shortcut_row(Editor *e, int i) {
     ui_pop_id();
 }
 
+static void gesture_row(Editor *e, int i) {
+    ui_id(ACT_COUNT + i);
+    ui_text(i == GESTURE_COPY_PLACEMENTS ? DM_TEXT_COPY_PLACEMENTS_DRAG : DM_TEXT_COPY_NOTES_DRAG);
+    ui_same();
+    UiPoint cursor = ui_cursor(), window = ui_window();
+    ui_position(window.x + 360, cursor.y);
+    char label[128] = "";
+    ed_gesture_format(e->gestures[i], label, sizeof(label));
+
+    if (ui_button(e->gesture_capture == i ? DM_TEXT_PRESS_MOUSE : label, 190, 0)) {
+        e->capture = -1;
+        e->gesture_capture = i;
+        e->gesture_capture_armed = false;
+    }
+
+    ui_tip(label);
+    ui_pop_id();
+}
+
 void ed_shortcuts(Editor *e) {
     if (!e->shortcuts) {
         return;
@@ -699,6 +718,14 @@ void ed_shortcuts(Editor *e) {
         }
 
         ui_separator();
+        ui_dim(DM_TEXT_MOUSE_GESTURES);
+        ed_gesture_capture(e, ui_mouse());
+
+        for (int i = 0; i < GESTURE_COUNT; ++i) {
+            gesture_row(e, i);
+        }
+
+        ui_separator();
         ui_dim(DM_TEXT_FIXED_SHORTCUTS);
         ui_wrap(DM_TEXT_ESCAPE_CLOSE_UNFOCUS_ENTER);
         ui_wrap(DM_TEXT_CTRL_SELECT_ALL_DELETE);
@@ -713,5 +740,6 @@ void ed_shortcuts(Editor *e) {
 
     if (!e->shortcuts) {
         e->capture = -1;
+        e->gesture_capture = -1;
     }
 }

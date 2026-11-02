@@ -207,8 +207,18 @@ static void recording(Editor *e) {
     e->recording_take = true;
     dm_clip_add(&e->project, (DmClip){.beat = 120, .pattern = 0, .channel = 0});
     e->selected_clip = 0;
-    check(ed_recording_origin(e, 120.25) == 120 && ed_recording_origin(e, 124) == 120,
-          "recording origin follows placement even beyond its current size");
+    e->context = 1;
+    e->edit_focus = FOCUS_PLAYLIST;
+    check(ed_recording_origin(e, 120.25) == 120,
+          "with the playlist focused on a placement, recording starts at the playhead");
+    check(ed_recording_origin(e, 125.5) == 124,
+          "past the placement, recording starts at the pattern's beginning with the bar offset");
+    e->context = 2;
+    e->edit_focus = FOCUS_NOTES;
+    check(ed_recording_origin(e, 120.25) == 120 && ed_recording_origin(e, 131.75) == 128,
+          "without playlist focus, recording keeps only the position within the bar");
+    e->context = 1;
+    e->edit_focus = FOCUS_PLAYLIST;
     char error[256];
     dm_audio_publish(e->audio, &e->project, 61, false, error, sizeof(error));
     e->record_start[60] = 120.25;

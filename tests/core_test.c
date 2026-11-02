@@ -102,6 +102,44 @@ static void model(void) {
     dm_project_free(&p);
 }
 
+static int scheduled_control(const DmSchedule *s, int controller, double seconds) {
+    int value = -1;
+
+    for (size_t i = 0; i < s->count; ++i) {
+        if (s->items[i].status == 0xb0 && s->items[i].a == controller &&
+            s->items[i].seconds <= seconds + 1e-9) {
+            value = s->items[i].b;
+        }
+    }
+
+    return value;
+}
+
+/* Files often set volume and pan shortly after the start. Import makes them the mixer settings,
+   so a mixer change is what plays until the song's next change. */
+static void opening_controls(void) {
+    const uint8_t source[] = {'M',  'T',  'h',  'd',  0,    0,    0,    6,    0,    0,    0,
+                              1,    0,    0x60, 'M',  'T',  'r',  'k',  0,    0,    0,    33,
+                              0x60, 0xb0, 10,   40,   0,    0xb0, 7,    80,   0x60, 0x90, 60,
+                              100,  0x60, 0x80, 60,   0,    0x81, 0x40, 0xb0, 10,   127,  0x60,
+                              0x90, 62,   100,  0x60, 0x80, 62,   0,    0,    0xff, 0x2f, 0};
+    DmProject p;
+    dm_project_init(&p);
+    char err[256];
+    CHECK(dm_import(&p, source, sizeof(source), 0, 0, err, sizeof(err)));
+    CHECK(p.channels[0].pan == 40 && p.channels[0].volume == 80);
+    p.channels[0].pan = 100;
+    p.channels[0].volume = 30;
+    DmSchedule s = {0};
+    CHECK(dm_schedule(&p, &s));
+    double note = dm_beat_seconds(&p, 2.5), later = dm_beat_seconds(&p, 5.5);
+    CHECK(scheduled_control(&s, 10, note) == 100);
+    CHECK(scheduled_control(&s, 7, note) == 30);
+    CHECK(scheduled_control(&s, 10, later) == 127);
+    dm_schedule_free(&s);
+    dm_project_free(&p);
+}
+
 static void multiport(void) {
     const uint8_t source[] = {'M',  'T', 'h', 'd',  0,    0,    0,  6,  0, 0,    0,    1, 1, 0xe0,
                               'M',  'T', 'r', 'k',  0,    0,    0,  32, 0, 0xff, 0x21, 1, 1, 0,
@@ -796,6 +834,7 @@ int main(void) {
     roundtrip();
     model();
     multiport();
+    opening_controls();
     malformed();
     advanced();
     independent_sequences();

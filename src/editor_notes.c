@@ -234,6 +234,46 @@ static void fit_dragged_notes(Editor *e, DmPattern *p) {
     }
 }
 
+/* The copy gesture's first movement places copies of the selected notes over them, then drags
+   the copies. Copies keep each note's length, velocity and color; pitch bends stay with the
+   originals. One undo step covers both. */
+static void make_note_copies(Editor *e, DmPattern *p) {
+    ed_begin_edit_move(e);
+    size_t originals = p->count;
+    int dragged = e->drag_index;
+
+    for (size_t i = 0; i < originals; ++i) {
+        if (!p->notes[i].selected) {
+            continue;
+        }
+
+        DmNote copy = p->notes[i];
+        p->notes[i].selected = 0;
+
+        if (!dm_note_add(p, copy)) {
+            ed_message(e, DM_TEXT_CANNOT_ALLOCATE_NOTE);
+            break;
+        }
+
+        if ((int)i == dragged) {
+            e->drag_index = (int)p->count - 1;
+        }
+    }
+
+    e->copy_pending = false;
+    free(e->drag_notes);
+    e->drag_notes = malloc(p->count * sizeof(*p->notes));
+    e->drag_note_count = e->drag_notes ? p->count : 0;
+
+    if (!e->drag_notes) {
+        e->drag = 0;
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_NOTE);
+        return;
+    }
+
+    memcpy(e->drag_notes, p->notes, p->count * sizeof(*p->notes));
+}
+
 static void note_drag(Editor *e, DmPattern *p, float scale, float row, UiMouse mouse) {
     if (e->drag == 2 && e->drag_index >= 0 && (size_t)e->drag_index < p->count) {
         if (e->drag_edge) {
@@ -241,8 +281,18 @@ static void note_drag(Editor *e, DmPattern *p, float scale, float row, UiMouse m
         }
 
         double delta = (mouse.pos.x - e->marquee_start.x) / scale;
+        bool copying = e->copy_button >= 0;
+        bool held = copying ? ed_mouse_down(mouse, e->copy_button) : mouse.left;
 
-        if (mouse.left && ed_gesture_moved(e, mouse)) {
+        if (held && ed_gesture_moved(e, mouse)) {
+            if (e->copy_pending) {
+                make_note_copies(e, p);
+
+                if (e->drag != 2) {
+                    return;
+                }
+            }
+
             ed_begin_edit_move(e);
 
             if (e->drag_edge) {
@@ -279,11 +329,14 @@ static void note_drag(Editor *e, DmPattern *p, float scale, float row, UiMouse m
             ed_changed(e);
         }
 
-        if (mouse.released) {
+        if (copying ? !held : mouse.released) {
             e->drag = 0;
+            e->copy_button = -1;
+            e->copy_pending = false;
 
             if (e->edit_moved) {
-                if (!e->drag_edge) {
+                /* Copies leave pitch bends with the notes they were copied from. */
+                if (!e->drag_edge && !copying) {
                     ed_follow_note_curves(e, e->selected_pattern, e->drag_notes,
                                           e->drag_note_count);
                 }
@@ -310,8 +363,14 @@ static void note_bend(Editor *e, UiRect grid, View *v, float scale, float row, U
             e->bend_range = (int)fmax(12, abs(semitones));
             int value = (int)ed_clampf(
                 MIDI_BEND_CENTER + semitones * MIDI_BEND_CENTER / e->bend_range, 0, MIDI_BEND_MAX);
-            ed_automation_line(e, start, end, MIDI_BEND_CENTER, value, -2);
             e->drag = 0;
+
+            /* Its own undo step, separate from the note the line starts on. */
+            if (!ed_automation_line_overlaps(e, start, end, -2)) {
+                ed_checkpoint(e);
+            }
+
+            ed_automation_line(e, start, end, MIDI_BEND_CENTER, value, -2);
             ed_commit(e);
         }
     }
@@ -394,7 +453,6 @@ static void piano_hit_click(Editor *e, DmPattern *p, UiRect grid, View *v, float
                 v->scroll_x;
             e->marquee_start.y = grid.y + (127 - n->key) * row - v->scroll_y + row * .5f;
             e->drag = 3;
-            e->automation_open = true;
             e->automation_cc = -2;
             e->automation_center = n->key;
         }
@@ -463,8 +521,34 @@ void ed_brush_begin(Editor *e, DmPattern *p, UiRect grid, View *v, float scale, 
     ed_brush_drag(e, p, grid, v, scale, row, mouse);
 }
 
+/* The copy gesture on a note selects it (keeping a selection it belongs to) and holds the
+   group; the copies are made once the mouse moves. */
+static bool start_note_copy(Editor *e, DmPattern *p, UiMouse mouse, int hit) {
+    if (!p->notes[hit].selected) {
+        ed_deselect(e);
+        p->notes[hit].selected = 1;
+    }
+
+    if (!start_note_drag(e, p, hit, mouse, 0)) {
+        return false;
+    }
+
+    e->pan_context = 0;
+    e->copy_button = e->gestures[GESTURE_COPY_NOTES].button;
+    e->copy_pending = true;
+    ed_edit_feedback(e, p->notes[hit].key); /* Sounds at the press, like a left-drag. */
+    return true;
+}
+
 void ed_piano_click(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, float scale, float row,
                     UiMouse mouse, int hit, UiRect hit_box) {
+    if (hit >= 0 && ed_inside(mouse.pos, grid) && e->tool != 2 && e->tool != 3 &&
+        ed_gesture_pressed(e, GESTURE_COPY_NOTES, mouse)) {
+        e->automation_node = -1;
+        start_note_copy(e, p, mouse, hit);
+        return;
+    }
+
     if (mouse.clicked && ed_inside(mouse.pos, grid)) {
         if (e->tool == 4) {
             ed_brush_begin(e, p, grid, v, scale, row, mouse);
@@ -523,42 +607,49 @@ void ed_select_preview_instrument(Editor *e, int program) {
     }
 }
 
+enum { PREVIEW_RESET_WIDTH = 72 };
+
 static void preview_instrument(Editor *e, float right) {
     if (!e->preview_override && e->preview_source_channel >= 0) {
         e->preview_program = ed_channel_program(e, e->preview_source_channel);
     }
 
+    /* Shows the instrument playing at the current position; choosing one still sets the
+       preview instrument, which overrides program changes in pattern playback. */
+    int shown = !e->preview_override && e->preview_source_channel >= 0 ? ed_placed_program(e)
+                                                                       : e->preview_program;
+
     float ports = ed_port_buttons_width(e);
-    float width = fminf(220, fmaxf(100, ui_available().x - 190 - ports));
+    float buttons = 188 + PREVIEW_RESET_WIDTH + 8;
+    float width = fminf(220, fmaxf(100, ui_available().x - buttons - 2 - ports));
     UiPoint at = ui_cursor();
 
-    if (ui_available().x < width + 188 + ports) {
+    if (ui_available().x < width + buttons + ports) {
         ui_newline();
         at = ui_cursor();
     }
 
-    if (ui_available().x < width + 188 + ports && ports) {
+    if (ui_available().x < width + buttons + ports && ports) {
         ed_port_buttons(e);
         ui_newline();
         at = ui_cursor();
         ports = 0;
     }
 
-    ui_position(fmaxf(at.x, right - width - 188 - ports), at.y);
+    ui_position(fmaxf(at.x, right - width - buttons - ports), at.y);
 
     if (ports) {
         ed_port_buttons(e);
     }
 
     ui_width(width);
-    const char *name =
-        e->preview_program == 128 ? DM_TEXT_PERCUSSION : dm_program_name(e->preview_program);
+    const char *name = shown == 128 ? DM_TEXT_PERCUSSION : dm_program_name(shown);
 
     if (ui_bar_combo("##Preview instrument", name)) {
         for (int i = 0; i <= 128; ++i) {
             const char *label = i == 128 ? DM_TEXT_PERCUSSION : dm_program_name(i);
 
-            if (ui_select(label, e->preview_program == i, 0, 0)) {
+            if (ui_select(label, shown == i, 0, 0)) {
                 ed_select_preview_instrument(e, i);
             }
         }
@@ -571,6 +662,14 @@ static void preview_instrument(Editor *e, float right) {
 
     if (ui_button(DM_TEXT_USE_SELECTED_CHANNEL, 180, 32)) {
         ed_select_preview_instrument(e, ed_channel_program(e, e->selected_channel));
+    }
+
+    ui_disabled_end();
+    ui_same();
+    ui_disabled(!e->preview_override);
+
+    if (ui_button(DM_TEXT_RESET_PREVIEW_INSTRUMENT, PREVIEW_RESET_WIDTH, 32)) {
+        ed_reset_preview_instrument(e);
     }
 
     ui_disabled_end();
@@ -901,7 +1000,8 @@ void ed_piano_mouse(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, flo
         ed_piano_click(e, p, r, grid, v, scale, row, mouse, hit, hit_box);
     }
 
-    if (hovered && mouse.right && !mouse.shift && hit >= 0 && ed_inside(mouse.pos, grid)) {
+    if (hovered && mouse.right && !mouse.shift && hit >= 0 && e->copy_button < 0 &&
+        ed_inside(mouse.pos, grid)) {
         if (!e->erase_active) {
             ed_checkpoint(e);
         }

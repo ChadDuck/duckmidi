@@ -224,9 +224,13 @@ static bool pattern_card_button(Editor *e, int i, float card, float height, bool
     if (ui_drag_pattern(i)) {
         e->pattern_drag = i;
         ui_gesture_cursor(false);
-        UiPoint at = ui_cursor();
-        ui_dummy(card, CARD_HEIGHT);
-        pattern_card_face(e, i, (UiRect){at.x, at.y, card, CARD_HEIGHT}, selected, false);
+
+        if (!e->pattern_drag_on_playlist) {
+            UiPoint at = ui_cursor();
+            ui_dummy(card, CARD_HEIGHT);
+            pattern_card_face(e, i, (UiRect){at.x, at.y, card, CARD_HEIGHT}, selected, false);
+        }
+
         ui_drag_pattern_end();
     }
 
@@ -255,10 +259,14 @@ static void dragged_cell(Editor *e, int dragged, float card, bool open, int *cel
     if (ui_drag_pattern(dragged)) {
         bool selected = e->pattern_highlight && e->selected_pattern == dragged;
         ui_gesture_cursor(false);
-        UiPoint floating = ui_cursor();
-        ui_dummy(card, CARD_HEIGHT);
-        pattern_card_face(e, dragged, (UiRect){floating.x, floating.y, card, CARD_HEIGHT}, selected,
-                          false);
+
+        if (!e->pattern_drag_on_playlist) {
+            UiPoint floating = ui_cursor();
+            ui_dummy(card, CARD_HEIGHT);
+            pattern_card_face(e, dragged, (UiRect){floating.x, floating.y, card, CARD_HEIGHT},
+                              selected, false);
+        }
+
         ui_drag_pattern_end();
     }
 
@@ -431,6 +439,17 @@ static void mixer_controls(Editor *e, int c, int port) {
     }
 
     int part = port * 16 + c;
+    DmPortMix shown = mix;
+
+    if (e->mixer_live && e->mixer_live_volume[part] < 128) {
+        shown.volume = e->mixer_live_volume[part];
+    }
+
+    if (e->mixer_live && e->mixer_live_pan[part] < 128) {
+        shown.pan = e->mixer_live_pan[part];
+    }
+
+    DmPortMix displayed = shown;
     char text[32];
     UiPoint start = ui_cursor(), area = ui_available();
     float width = area.x, height = fmaxf(40, area.y - 110);
@@ -441,10 +460,10 @@ static void mixer_controls(Editor *e, int c, int port) {
     ui_rect((UiRect){start.x + (width - 16) * .5f, start.y + 19, 16, 2}, ed_port_color(e, port), 1);
     UiPoint v = {start.x + (width - 34) * .5f, start.y + 28};
     ui_position(v.x, v.y);
-    ui_vslider("##volume", &mix.volume, height);
+    ui_vslider("##volume", &shown.volume, height);
 
     if (ui_item_middle()) {
-        mix.volume = reset.volume;
+        shown.volume = reset.volume;
     }
 
     ui_tip(DM_TEXT_INITIAL_VOLUME_MIDDLE_CLICK);
@@ -481,16 +500,25 @@ static void mixer_controls(Editor *e, int c, int port) {
 
     ui_tip(DM_TEXT_SOLO_THIS_PORT);
     ui_position(start.x, v.y + height + 32);
-    ui_mixer_pan(&mix.pan, width);
+    ui_mixer_pan(&shown.pan, width);
 
     if (ui_item_middle()) {
-        mix.pan = reset.pan;
+        shown.pan = reset.pan;
     }
 
-    snprintf(text, sizeof(text), DM_TEXT_PAN_MIDDLE_CLICK_RESET, mix.pan);
+    snprintf(text, sizeof(text), DM_TEXT_PAN_MIDDLE_CLICK_RESET, shown.pan);
     ui_tip(text);
     ui_position(start.x, v.y + height + 58);
-    ui_mixer_value(&mix.volume, width);
+    ui_mixer_value(&shown.volume, width);
+
+    /* During playback the controls show the song's values; an edit sets the channel's own. */
+    if (shown.volume != displayed.volume) {
+        mix.volume = shown.volume;
+    }
+
+    if (shown.pan != displayed.pan) {
+        mix.pan = shown.pan;
+    }
 
     if (mix.volume != original.volume || mix.pan != original.pan || mix.mute != original.mute ||
         mix.solo != original.solo) {
@@ -574,6 +602,8 @@ static uint32_t channel_row_color(Editor *e, int channel) {
 
 void ed_mixer(Editor *e, float width, float height) {
     mixer_peak_update(e, SDL_GetTicks());
+    e->mixer_live =
+        !e->pattern_mode && dm_audio_mix_state(e->audio, e->mixer_live_volume, e->mixer_live_pan);
     ui_child(DM_TEXT_MIXER, width, height, false);
 
     if (ui_panel_clicked()) {

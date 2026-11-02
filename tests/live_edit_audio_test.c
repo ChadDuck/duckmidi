@@ -62,7 +62,7 @@ static void await_font(DmAudio *a) {
 
 static void update(DmAudio *a, DmProject *p) {
     char error[512];
-    check(dm_audio_update(a, p, -1, 0, -1, 0, error, sizeof(error)), "live schedule update");
+    check(dm_audio_update(a, p, NULL, error, sizeof(error)), "live schedule update");
 }
 
 static void continuity(DmAudio *a, DmProject *p) {

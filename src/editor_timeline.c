@@ -25,7 +25,8 @@ uint32_t ed_grid_color(Editor *e, double beat) {
 }
 
 static void grid_pan(Editor *e, View *v, UiRect canvas, UiMouse mouse, int context) {
-    if (mouse.middle_clicked && ui_hover() && ed_inside(mouse.pos, canvas)) {
+    /* A copy drag on the middle button does not pan. */
+    if (mouse.middle_clicked && ui_hover() && ed_inside(mouse.pos, canvas) && e->copy_button < 0) {
         e->pan_context = context;
     }
 
@@ -257,6 +258,17 @@ double ed_pattern_seek_origin(Editor *e) {
     }
 
     return clip_origin(clips[following >= 0 ? following : current]);
+}
+
+/* Song beat where pattern playback takes its song events: the selected placement, otherwise the
+   placement nearest the song position. */
+double ed_pattern_region_origin(Editor *e) {
+    if (e->selected_clip >= 0 && (size_t)e->selected_clip < e->project.clip_count &&
+        pattern_copy(e, e->project.clips[e->selected_clip])) {
+        return fmax(0, clip_origin(e->project.clips[e->selected_clip]));
+    }
+
+    return fmax(0, ed_pattern_seek_origin(e));
 }
 
 void ed_scrub_publish(Editor *e, double beat, int context, bool playing) {

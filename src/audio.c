@@ -93,6 +93,8 @@ struct DmAudio {
     DmSchedule render_schedule;
     SDL_AtomicInt progress, cancel;
     ChaseState state, loop_state;
+    /* Volume and pan each part plays with now, shown by the mixer (255: not set). */
+    uint8_t mix_volume[DM_PARTS], mix_pan[DM_PARTS];
     double loop_start, loop_end;
     bool loop_enabled, loop_wait;
     size_t loop_cursor, loop_beat_cursor;
@@ -600,6 +602,23 @@ static void render_click(DmAudio *a, float *out, int offset, int n) {
     }
 }
 
+static void mix_from_state(DmAudio *a) {
+    for (int part = 0; part < DM_PARTS; ++part) {
+        a->mix_volume[part] = a->state.cc[part][MIDI_CC_VOLUME];
+        a->mix_pan[part] = a->state.cc[part][MIDI_CC_PAN];
+    }
+}
+
+static void mix_track(DmAudio *a, int part, int status, int controller, int value) {
+    if ((status & MIDI_STATUS_MASK) == MIDI_CONTROL && part >= 0 && part < DM_PARTS) {
+        if (controller == MIDI_CC_VOLUME) {
+            a->mix_volume[part] = (uint8_t)value;
+        } else if (controller == MIDI_CC_PAN) {
+            a->mix_pan[part] = (uint8_t)value;
+        }
+    }
+}
+
 static bool dispatch_note(DmAudio *a, const DmScheduled *event) {
     int type = event->status & MIDI_STATUS_MASK;
 
@@ -641,6 +660,11 @@ static void dispatch_due(DmAudio *a) {
 
         if (!dispatch_note(a, event)) {
             continue;
+        }
+
+        if (event->status < MIDI_SYSTEM) {
+            mix_track(a, event->port * 16 + (event->status & MIDI_CHANNEL_MASK), event->status,
+                      event->a, event->b);
         }
 
         if (a->monitor) {
@@ -746,6 +770,7 @@ static void wrap_playback(DmAudio *a) {
         a->cursor = a->loop_cursor;
         a->beat_cursor = a->loop_beat_cursor;
         copy_chase(&a->state, &a->loop_state, a->used_ports);
+        mix_from_state(a);
         copy_part_rows(a->seek_end, a->loop_note_end, sizeof(a->seek_end[0]), a->used_ports);
         a->chase = a->loop_start > 0;
         a->click_frames = 0;
@@ -788,8 +813,12 @@ static void preview_commands(DmAudio *a) {
 
     while (queue_get(&a->preview, &cmd, NULL)) {
         if (cmd.live_only) {
-            send_live(a, cmd.port * 16 + (cmd.status & MIDI_CHANNEL_MASK), cmd.status, cmd.a,
-                      cmd.b);
+            int part = cmd.port * 16 + (cmd.status & MIDI_CHANNEL_MASK);
+
+            /* Mixer volume and pan hold until the song changes them, and the mixer shows them. */
+            mix_track(a, part, cmd.status, cmd.a, cmd.b);
+
+            send_live(a, part, cmd.status, cmd.a, cmd.b);
             queue_put(&a->midi, cmd);
             continue;
         }
@@ -1118,6 +1147,9 @@ DmAudio *dm_audio_create(char *error, size_t cap) {
     if (!a) {
         return NULL;
     }
+
+    memset(a->mix_volume, 255, sizeof(a->mix_volume));
+    memset(a->mix_pan, 255, sizeof(a->mix_pan));
 
     a->device_index = -1;
     a->preview_mask = UINT16_MAX;
@@ -1689,6 +1721,7 @@ static bool publish_schedule(DmAudio *a, const DmProject *p, DmSchedule next, do
 
     copy_part_rows(a->seek_end, scratch->seek_end, sizeof(a->seek_end[0]), a->used_ports);
     copy_chase(&a->state, &scratch->state, a->used_ports);
+    mix_from_state(a);
     a->preview_mask = project_preview_mask(p);
     memcpy(a->keyboard_channels, p->channels, sizeof(a->keyboard_channels));
     a->keyboard_config = true;
@@ -1747,38 +1780,169 @@ bool dm_audio_publish(DmAudio *a, const DmProject *p, double seconds, bool playi
     return publish_schedule(a, p, next, seconds, playing, false, error, cap);
 }
 
-static bool preview_event(const DmEvent *event, int channel, double length) {
-    if (event->beat > length || !event->message.size) {
-        return false;
-    }
-
-    unsigned status = event->message.data[0];
-    return status >= MIDI_SYSTEM || (int)(status & MIDI_CHANNEL_MASK) == channel;
-}
-
-static void preview_channels(DmProject *view, int channel, int program) {
+static void preview_channels(DmProject *view, const DmPatternPreview *v) {
     for (int c = 0; c < 16; ++c) {
         view->channels[c].mute = false;
         view->channels[c].solo = false;
 
-        if (program >= 0) {
+        if (v->program >= 0) {
             view->channels[c].enabled = false;
         }
     }
 
-    view->channels[channel].enabled = true;
+    view->channels[v->channel].enabled = true;
 
-    if (program >= 0) {
-        view->channels[channel].program = program == 128 ? 0 : program;
+    if (v->program >= 0 && !v->follow) {
+        view->channels[v->channel].program = v->program == 128 ? 0 : v->program;
     }
 }
 
-static void preview_schedule_program(DmSchedule *next, int program) {
-    if (program < 0) {
+/* One remembered value per channel message type and controller. */
+enum { PREVIEW_CHASE_KEYS = 8 * 128 };
+
+typedef struct {
+    bool set;
+    double beat;
+    const DmEvent *event;
+    const DmAutomation *automation;
+} PreviewChase;
+
+static PreviewChase *preview_chase_slot(PreviewChase *chase, int type, int a) {
+    bool keyed = type == MIDI_CONTROL || type == MIDI_KEY_PRESSURE;
+    return &chase[((type >> 4) & 7) * 128 + (keyed ? a & 127 : 0)];
+}
+
+static void preview_remember(PreviewChase *slot, double beat, const DmEvent *event,
+                             const DmAutomation *automation) {
+    if (!slot->set || beat >= slot->beat) {
+        *slot = (PreviewChase){true, beat, event, automation};
+    }
+}
+
+/* Song beat 0 values replaced by the channel settings during playback. */
+static bool preview_channel_setting(const uint8_t *m, double beat) {
+    int type = m[0] & MIDI_STATUS_MASK;
+    return beat == 0 && (type == MIDI_PROGRAM ||
+                         (type == MIDI_CONTROL && (m[1] == MIDI_CC_VOLUME || m[1] == MIDI_CC_PAN)));
+}
+
+static void preview_chase_raw(PreviewChase *chase, const DmEvent *event) {
+    const uint8_t *m = event->message.data;
+    int type = m[0] & MIDI_STATUS_MASK;
+
+    if (type != MIDI_NOTE_ON && type != MIDI_NOTE_OFF && !preview_channel_setting(m, event->beat)) {
+        preview_remember(preview_chase_slot(chase, type, event->message.size > 1 ? m[1] : 0),
+                         event->beat, event, NULL);
+    }
+}
+
+/* Applies the channel state at the region start: programs, volume and pan become the
+   channel settings; other messages are sent at the pattern start. */
+static void preview_apply_chase(DmProject *view, const PreviewChase *chase,
+                                const DmPatternPreview *v, size_t *automation) {
+    DmChannel *channel = &view->channels[v->channel];
+
+    for (int i = 0; i < PREVIEW_CHASE_KEYS; ++i) {
+        if (!chase[i].set) {
+            continue;
+        }
+
+        const DmEvent *event = chase[i].event;
+        const DmAutomation *a = chase[i].automation;
+        int type = event ? event->message.data[0] & MIDI_STATUS_MASK : a->type;
+        int first = event ? (event->message.size > 1 ? event->message.data[1] : 0) : a->a;
+        int second = event ? (event->message.size > 2 ? event->message.data[2] : 0) : a->b;
+
+        if (type == MIDI_PROGRAM) {
+            if (v->follow) {
+                channel->program = first;
+            }
+        } else if (type == MIDI_CONTROL && first == MIDI_CC_VOLUME) {
+            channel->volume = second;
+        } else if (type == MIDI_CONTROL && first == MIDI_CC_PAN) {
+            channel->pan = second;
+        } else if (event) {
+            DmEvent moved = *event;
+            moved.beat = 0;
+            view->events[view->event_count++] = moved;
+        } else {
+            DmAutomation moved = *a;
+            moved.beat = 0;
+            moved.curve = 0;
+            view->automation[(*automation)++] = moved;
+        }
+    }
+}
+
+/* Plays the channel's song events from the pattern's placement region, starting from the state
+   in effect at that point. Tempo and other system events keep their song timing. */
+static bool preview_region(DmProject *view, const DmProject *p, const DmPatternPreview *v) {
+    PreviewChase *chase = calloc(PREVIEW_CHASE_KEYS, sizeof(*chase));
+    view->events = calloc(p->event_count + 1, sizeof(*view->events));
+    view->automation = calloc(p->automation_count + 1, sizeof(*view->automation));
+
+    if (!chase || !view->events || !view->automation) {
+        free(chase);
+        return false;
+    }
+
+    double origin = v->origin, end = v->origin + v->length;
+    view->event_count = 0;
+
+    for (size_t i = 0; i < p->event_count; ++i) {
+        const DmEvent *event = &p->events[i];
+
+        if (!event->message.size) {
+            continue;
+        }
+
+        unsigned status = event->message.data[0];
+
+        if (status >= MIDI_SYSTEM) {
+            if (event->beat <= v->length) {
+                view->events[view->event_count++] = *event;
+            }
+        } else if ((int)(status & MIDI_CHANNEL_MASK) != v->channel || event->beat > end) {
+            continue;
+        } else if (event->beat > origin) {
+            DmEvent moved = *event;
+            moved.beat -= origin;
+            view->events[view->event_count++] = moved;
+        } else {
+            preview_chase_raw(chase, event);
+        }
+    }
+
+    size_t automation = 0;
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        const DmAutomation *a = &p->automation[i];
+
+        if (a->pattern >= 0) {
+            view->automation[automation++] = *a;
+        } else if (a->channel != v->channel || a->beat > end) {
+            continue;
+        } else if (a->beat > origin) {
+            DmAutomation moved = *a;
+            moved.beat -= origin;
+            view->automation[automation++] = moved;
+        } else {
+            preview_remember(preview_chase_slot(chase, a->type, a->a), a->beat, NULL, a);
+        }
+    }
+
+    preview_apply_chase(view, chase, v, &automation);
+    view->automation_count = automation;
+    free(chase);
+    return true;
+}
+
+static void preview_schedule_program(DmSchedule *next, const DmPatternPreview *v) {
+    if (v->program < 0) {
         return;
     }
 
-    int route = program == 128 ? MIDI_DRUM_CHANNEL : 0;
+    int route = v->program == 128 ? MIDI_DRUM_CHANNEL : 0;
 
     for (size_t i = 0; i < next->count; ++i) {
         DmScheduled *event = &next->items[i];
@@ -1787,8 +1951,12 @@ static void preview_schedule_program(DmSchedule *next, int program) {
             int type = event->status & MIDI_STATUS_MASK;
             event->status = type | route;
 
+            if (v->follow) {
+                continue;
+            }
+
             if (type == MIDI_PROGRAM) {
-                event->a = program == 128 ? 0 : program;
+                event->a = v->program == 128 ? 0 : v->program;
             } else if (type == MIDI_CONTROL &&
                        (event->a == MIDI_CC_BANK || event->a == MIDI_CC_BANK_LSB)) {
                 event->b = 0;
@@ -1797,56 +1965,54 @@ static void preview_schedule_program(DmSchedule *next, int program) {
     }
 }
 
-static bool publish_pattern(DmAudio *a, const DmProject *p, int pattern, int channel, int program,
-                            double length, double seconds, bool playing, bool editing, char *error,
-                            size_t cap) {
-    if (!a || pattern < 0 || (size_t)pattern >= p->pattern_count || channel < 0 || channel > 15 ||
-        program < -1 || program > 128 || !isfinite(length) || length <= 0 || length > 10000000) {
+bool dm_pattern_schedule(const DmProject *p, const DmPatternPreview *v, DmSchedule *next) {
+    if (!v || v->pattern < 0 || (size_t)v->pattern >= p->pattern_count || v->channel < 0 ||
+        v->channel > 15 || v->program < -1 || v->program > 128 || !isfinite(v->length) ||
+        v->length <= 0 || v->length > 10000000 || !isfinite(v->origin) || v->origin < 0) {
         return false;
     }
 
     DmProject view = *p;
-    preview_channels(&view, channel, program);
-    DmClip clip = {0, pattern, channel, 0, length, 0};
+    preview_channels(&view, v);
+    DmClip clip = {0, v->pattern, v->channel, 0, v->length, 0};
     view.clips = &clip;
     view.clip_count = 1;
-    view.events = calloc(p->event_count + 1, sizeof(*view.events));
+    *next = (DmSchedule){0};
+    bool ok = preview_region(&view, p, v) && dm_schedule(&view, next);
+    free(view.events);
+    free(view.automation);
 
-    if (!view.events) {
+    if (ok) {
+        preview_schedule_program(next, v);
+        next->duration = dm_beat_seconds(p, v->length);
+    }
+
+    return ok;
+}
+
+static bool publish_pattern(DmAudio *a, const DmProject *p, const DmPatternPreview *v,
+                            double seconds, bool playing, bool editing, char *error, size_t cap) {
+    DmSchedule next;
+
+    if (!a || !v) {
         return false;
     }
 
-    view.event_count = 0;
-
-    for (size_t i = 0; i < p->event_count; ++i) {
-        if (preview_event(&p->events[i], channel, length)) {
-            view.events[view.event_count++] = p->events[i];
-        }
-    }
-
-    DmSchedule next = {0};
-    bool ok = dm_schedule(&view, &next);
-    free(view.events);
-
-    if (!ok) {
+    if (!dm_pattern_schedule(p, v, &next)) {
         snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_PATTERN);
         return false;
     }
 
-    preview_schedule_program(&next, program);
-    next.duration = dm_beat_seconds(p, length);
     return publish_schedule(a, p, next, seconds, playing, editing, error, cap);
 }
 
-bool dm_audio_publish_pattern(DmAudio *a, const DmProject *p, int pattern, int channel, int program,
-                              double length, double seconds, bool playing, char *error,
-                              size_t cap) {
-    return publish_pattern(a, p, pattern, channel, program, length, seconds, playing, false, error,
-                           cap);
+bool dm_audio_publish_pattern(DmAudio *a, const DmProject *p, const DmPatternPreview *pattern,
+                              double seconds, bool playing, char *error, size_t cap) {
+    return publish_pattern(a, p, pattern, seconds, playing, false, error, cap);
 }
 
-bool dm_audio_update(DmAudio *a, const DmProject *p, int pattern, int channel, int program,
-                     double length, char *error, size_t cap) {
+bool dm_audio_update(DmAudio *a, const DmProject *p, const DmPatternPreview *pattern, char *error,
+                     size_t cap) {
     if (!a) {
         return false;
     }
@@ -1854,9 +2020,8 @@ bool dm_audio_update(DmAudio *a, const DmProject *p, int pattern, int channel, i
     double seconds = dm_audio_position(a);
     bool playing = dm_audio_playing(a);
 
-    if (pattern >= 0) {
-        return publish_pattern(a, p, pattern, channel, program, length, seconds, playing, true,
-                               error, cap);
+    if (pattern) {
+        return publish_pattern(a, p, pattern, seconds, playing, true, error, cap);
     }
 
     DmSchedule next = {0};
@@ -2048,6 +2213,27 @@ void dm_audio_part_control(DmAudio *a, int port, int channel, int controller, in
                                          .port = (uint8_t)port,
                                          .live_only = true});
     }
+}
+
+bool dm_audio_mix_state(DmAudio *a, uint8_t volume[DM_PARTS], uint8_t pan[DM_PARTS]) {
+    if (!a || !SDL_GetAtomicInt(&a->playing_flag)) {
+        return false;
+    }
+
+    if (a->stream) {
+        SDL_LockAudioStream(a->stream);
+    }
+
+    for (int part = 0; part < DM_PARTS; ++part) {
+        volume[part] = a->mix_volume[part];
+        pan[part] = a->mix_pan[part];
+    }
+
+    if (a->stream) {
+        SDL_UnlockAudioStream(a->stream);
+    }
+
+    return true;
 }
 
 float dm_audio_peak(DmAudio *a, int c) {

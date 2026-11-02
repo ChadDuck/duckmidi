@@ -78,10 +78,24 @@ void ed_decode_source_event(Editor *e, DmEvent *event) {
     e->event_beat = (float)event->beat;
     e->event_source_kind = 3;
 
+    e->event_message_size = 0;
+
     if (event->message.size < 3 || m[0] != MIDI_META) {
-        if (event->message.size >= 2 && m[0] < MIDI_SYSTEM) {
+        if (event->message.size >= 2 && event->message.size <= 3 && m[0] < MIDI_SYSTEM) {
+            int type = m[0] & MIDI_STATUS_MASK, c = m[0] & MIDI_CHANNEL_MASK;
+            memcpy(e->event_message, m, event->message.size);
+            e->event_message_size = event->message.size;
             e->event_program = m[1];
-            e->event_channel = m[0] & MIDI_CHANNEL_MASK;
+            e->event_channel = c;
+
+            /* Song beat 0 programs, volume and pan play the channel settings. */
+            if (event->beat == 0 && type == MIDI_PROGRAM) {
+                e->event_message[1] = (uint8_t)fmax(0, e->project.channels[c].program);
+            } else if (event->beat == 0 && type == MIDI_CONTROL && m[1] == MIDI_CC_VOLUME) {
+                e->event_message[2] = (uint8_t)e->project.channels[c].volume;
+            } else if (event->beat == 0 && type == MIDI_CONTROL && m[1] == MIDI_CC_PAN) {
+                e->event_message[2] = (uint8_t)e->project.channels[c].pan;
+            }
         }
 
         return;
@@ -148,6 +162,61 @@ int ed_channel_program(Editor *e, int channel) {
                : (int)fmax(0, e->project.channels[channel].program);
 }
 
+/* Song beat the pattern editor is at: the pattern position within its region in pattern
+   playback, otherwise the song position. */
+static double placed_song_beat(Editor *e) {
+    bool playing = dm_audio_playing(e->audio);
+    double now = playing ? dm_seconds_beat(&e->project, dm_audio_position(e->audio)) : 0;
+
+    if (e->pattern_mode && ed_pattern(e)) {
+        return ed_pattern_region_origin(e) + (playing ? now : e->cursor_beat[1]);
+    }
+
+    return playing ? now : e->cursor_beat[0];
+}
+
+/* The instrument the placed pattern's channel plays at the current position: the channel
+   program, then the latest program change from imported events, song events or the open
+   pattern's own events. */
+int ed_placed_program(Editor *e) {
+    int channel = e->preview_source_channel;
+
+    if (channel < 0 || channel > 15 || dm_channel_drums(&e->project, channel)) {
+        return channel < 0 || channel > 15 ? e->preview_program : 128;
+    }
+
+    double at = placed_song_beat(e) + 1e-7, latest = -1;
+    int program = (int)fmax(0, e->project.channels[channel].program);
+
+    for (size_t i = 0; i < e->project.event_count; ++i) {
+        const DmEvent *event = &e->project.events[i];
+        const uint8_t *m = event->message.data;
+
+        if (event->message.size == 2 && m[0] == (MIDI_PROGRAM | channel) && event->beat > 0 &&
+            event->beat <= at && event->beat >= latest) {
+            latest = event->beat;
+            program = m[1];
+        }
+    }
+
+    double origin = ed_pattern(e) ? ed_pattern_region_origin(e) : 0;
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+        /* Pattern events play on the channel of the placement they belong to. */
+        bool song = a.pattern < 0 && a.channel == channel,
+             local = a.pattern >= 0 && a.pattern == e->selected_pattern;
+        double beat = song ? a.beat : origin + a.beat;
+
+        if ((song || local) && a.type == MIDI_PROGRAM && beat <= at && beat >= latest) {
+            latest = beat;
+            program = a.a;
+        }
+    }
+
+    return program;
+}
+
 void ed_preview_channel(Editor *e, int channel, bool placed) {
     e->preview_source_channel = placed ? channel : -1;
     e->preview_override = false;
@@ -175,6 +244,17 @@ static void preview_open_pattern(Editor *e, int id) {
     }
 
     ed_preview_channel(e, e->selected_channel, false);
+}
+
+/* Drops a chosen preview instrument so the pattern follows its placement's channel again. */
+void ed_reset_preview_instrument(Editor *e) {
+    ed_release_piano(e);
+    preview_open_pattern(e, e->selected_pattern);
+    ed_keyboard_channel(e);
+
+    if (e->pattern_mode) {
+        ed_publish(e);
+    }
 }
 
 void ed_open_pattern(Editor *e, int id, bool created) {
@@ -224,10 +304,103 @@ SDL_Keymod ed_normalized(SDL_Keymod m) {
                         ((m & SDL_KMOD_GUI) ? SDL_KMOD_GUI : 0));
 }
 
+const char *ed_gesture_names[GESTURE_COUNT] = {"copy_placements_drag", "copy_notes_drag"};
+
+static SDL_Keymod mouse_mods(UiMouse mouse) {
+    return (SDL_Keymod)((mouse.ctrl ? SDL_KMOD_CTRL : 0) | (mouse.shift ? SDL_KMOD_SHIFT : 0) |
+                        (mouse.alt ? SDL_KMOD_ALT : 0));
+}
+
+bool ed_mouse_down(UiMouse mouse, int button) {
+    return button == MOUSE_LEFT    ? mouse.left
+           : button == MOUSE_RIGHT ? mouse.right
+                                   : button == MOUSE_MIDDLE && mouse.middle;
+}
+
+bool ed_gesture_pressed(Editor *e, Gesture gesture, UiMouse mouse) {
+    MouseBinding b = e->gestures[gesture];
+    bool pressed = b.button == MOUSE_LEFT    ? mouse.clicked
+                   : b.button == MOUSE_RIGHT ? mouse.right_clicked
+                                             : mouse.middle_clicked;
+    return pressed && mouse_mods(mouse) == b.mods;
+}
+
+/* Plain left and right drags select, move and erase, so a gesture needs another button or a
+   modifier. */
+bool ed_gesture_allowed(MouseBinding b) {
+    return b.button == MOUSE_MIDDLE || b.mods;
+}
+
+bool ed_gesture_capture(Editor *e, UiMouse mouse) {
+    if (e->gesture_capture < 0) {
+        return false;
+    }
+
+    if (!e->gesture_capture_armed) {
+        e->gesture_capture_armed = !mouse.left && !mouse.right && !mouse.middle;
+        return true;
+    }
+
+    MouseBinding b = {mouse.clicked         ? MOUSE_LEFT
+                      : mouse.right_clicked ? MOUSE_RIGHT
+                                            : MOUSE_MIDDLE,
+                      mouse_mods(mouse)};
+
+    if (!mouse.clicked && !mouse.right_clicked && !mouse.middle_clicked) {
+        return true;
+    }
+
+    if (!ed_gesture_allowed(b)) {
+        ed_message(e, DM_TEXT_GESTURE_NEEDS_MODIFIER);
+    } else {
+        e->gestures[e->gesture_capture] = b;
+        ed_preference_save(e);
+    }
+
+    e->gesture_capture = -1;
+    return true;
+}
+
+bool ed_gesture_format(MouseBinding b, char *out, size_t cap) {
+    static const char *buttons[MOUSE_BUTTONS] = {DM_TEXT_MOUSE_LEFT, DM_TEXT_MOUSE_RIGHT,
+                                                 DM_TEXT_MOUSE_MIDDLE};
+
+    if (b.button < 0 || b.button >= MOUSE_BUTTONS) {
+        return false;
+    }
+
+    int n = snprintf(out, cap, "%s%s%s%s", b.mods & SDL_KMOD_CTRL ? DM_TEXT_CTRL : "",
+                     b.mods & SDL_KMOD_SHIFT ? DM_TEXT_SHIFT : "",
+                     b.mods & SDL_KMOD_ALT ? DM_TEXT_ALT : "", buttons[b.button]);
+    return n > 0 && (size_t)n < cap;
+}
+
+bool ed_gesture_parse(const char *text, MouseBinding *out) {
+    for (int button = 0; button < MOUSE_BUTTONS; ++button) {
+        for (int mods = 0; mods < 8; ++mods) {
+            MouseBinding b = {(MouseButton)button, (SDL_Keymod)((mods & 1 ? SDL_KMOD_CTRL : 0) |
+                                                                (mods & 2 ? SDL_KMOD_SHIFT : 0) |
+                                                                (mods & 4 ? SDL_KMOD_ALT : 0))};
+            char name[64];
+
+            if (ed_gesture_format(b, name, sizeof(name)) && !strcmp(name, text) &&
+                ed_gesture_allowed(b)) {
+                *out = b;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 void ed_defaults(Editor *e) {
     for (int i = 0; i < ACT_COUNT; ++i) {
         e->bindings[i] = (Binding){default_keys[i], (SDL_Keymod)0};
     }
+
+    e->gestures[GESTURE_COPY_PLACEMENTS] = (MouseBinding){MOUSE_LEFT, SDL_KMOD_SHIFT};
+    e->gestures[GESTURE_COPY_NOTES] = (MouseBinding){MOUSE_MIDDLE, (SDL_Keymod)0};
 
     e->bindings[ACT_QUANTIZE].mods = SDL_KMOD_CTRL;
     e->bindings[ACT_DUPLICATE].mods = SDL_KMOD_CTRL;
@@ -361,17 +534,26 @@ static void publish_loop(Editor *e) {
                   dm_beat_seconds(&e->project, e->loop_end[mode]));
 }
 
+/* A placed pattern follows its region's program changes unless a preview instrument is chosen. */
+static DmPatternPreview pattern_preview(Editor *e) {
+    bool placed = !e->preview_override && e->preview_source_channel >= 0;
+
+    if (placed) {
+        e->preview_program = ed_channel_program(e, e->preview_source_channel);
+    }
+
+    return (DmPatternPreview){e->selected_pattern,         e->pattern_channel,
+                              e->preview_program,          placed,
+                              ed_pattern_region_origin(e), ed_pattern_length(e)};
+}
+
 bool ed_transport_publish(Editor *e, double seconds, bool playing) {
     bool ok;
 
     if (e->pattern_mode && ed_pattern(e)) {
-        if (!e->preview_override && e->preview_source_channel >= 0) {
-            e->preview_program = ed_channel_program(e, e->preview_source_channel);
-        }
-
-        ok = dm_audio_publish_pattern(e->audio, &e->project, e->selected_pattern,
-                                      e->pattern_channel, e->preview_program, ed_pattern_length(e),
-                                      seconds, playing, e->status, sizeof(e->status));
+        DmPatternPreview preview = pattern_preview(e);
+        ok = dm_audio_publish_pattern(e->audio, &e->project, &preview, seconds, playing, e->status,
+                                      sizeof(e->status));
     } else {
         ok =
             dm_audio_publish(e->audio, &e->project, seconds, playing, e->status, sizeof(e->status));
@@ -392,13 +574,16 @@ void ed_publish(Editor *e) {
     ++e->export_revision;
 
     if (e->active) {
-        if (!e->preview_override && e->preview_source_channel >= 0) {
+        bool pattern = e->pattern_mode && ed_pattern(e);
+        DmPatternPreview preview = {0};
+
+        if (pattern) {
+            preview = pattern_preview(e);
+        } else if (!e->preview_override && e->preview_source_channel >= 0) {
             e->preview_program = ed_channel_program(e, e->preview_source_channel);
         }
 
-        if (dm_audio_update(e->audio, &e->project,
-                            e->pattern_mode && ed_pattern(e) ? e->selected_pattern : -1,
-                            e->pattern_channel, e->preview_program, ed_pattern_length(e), e->status,
+        if (dm_audio_update(e->audio, &e->project, pattern ? &preview : NULL, e->status,
                             sizeof(e->status))) {
             publish_loop(e);
         }
@@ -579,6 +764,12 @@ void ed_undo(Editor *e, bool redo) {
         }
 
         e->automation_node = -1;
+
+        /* The event editor shows the restored controller of an automation pattern. */
+        if (ed_pattern(e) && ed_pattern(e)->kind) {
+            e->automation_cc = ed_pattern(e)->event;
+        }
+
         ed_commit(e);
 
         if (strcmp(old_font, e->project.soundfont)) {

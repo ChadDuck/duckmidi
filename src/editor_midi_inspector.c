@@ -64,7 +64,6 @@ static bool midi_format_bytes(Editor *e);
 static const char *controller_name(int cc);
 static void midi_event_list(Editor *e, size_t count);
 static bool midi_selection_valid(Editor *e);
-static void midi_channel_fields(Editor *e);
 static void midi_meta_fields(Editor *e);
 static void midi_event_inspector(Editor *e);
 
@@ -383,8 +382,8 @@ bool ed_midi_replace_payload(Editor *e, const uint8_t *payload, size_t size) {
     return true;
 }
 
-static void midi_channel_fields(Editor *e) {
-    uint8_t *m = e->midi_draft.data;
+/* Named fields for a channel message, shared by the MIDI Events and song event windows. */
+void ed_midi_channel_fields(uint8_t *m, size_t size) {
     int type = m[0] & MIDI_STATUS_MASK, channel = (m[0] & MIDI_CHANNEL_MASK) + 1;
 
     if (ui_int(DM_TEXT_MIDI_CHANNEL, &channel, 1, 16)) {
@@ -474,7 +473,7 @@ static void midi_channel_fields(Editor *e) {
 
         ui_dim(DM_TEXT_8192_NEUTRAL_SEMITONE);
     } else {
-        int first = m[1], second = e->midi_draft.size > 2 ? m[2] : 0;
+        int first = m[1], second = size > 2 ? m[2] : 0;
 
         if (type == MIDI_CHANNEL_PRESSURE) {
             if (ui_int(DM_TEXT_CHANNEL_PRESSURE, &first, 0, 127)) {
@@ -739,7 +738,7 @@ static void midi_event_inspector(Editor *e) {
         ui_multiline("##Message bytes", (char *)e->midi_text.data, e->midi_text.capacity, 100);
         ui_dim(DM_TEXT_INCLUDES_STATUS_BYTE);
     } else if (e->midi_draft.size && e->midi_draft.data[0] < MIDI_SYSTEM) {
-        midi_channel_fields(e);
+        ed_midi_channel_fields(e->midi_draft.data, e->midi_draft.size);
     } else {
         midi_meta_fields(e);
     }

@@ -8,13 +8,27 @@ DmAudio *dm_audio_create(char *error, size_t cap);
 void dm_audio_destroy(DmAudio *audio);
 bool dm_audio_publish(DmAudio *audio, const DmProject *project, double seconds, bool playing,
                       char *error, size_t cap);
-bool dm_audio_publish_pattern(DmAudio *audio, const DmProject *project, int pattern, int channel,
-                              int program, double length, double seconds, bool playing, char *error,
-                              size_t cap);
+
+/* Pattern playback. The channel's song events come from the placement region starting at song
+   beat origin. program -1 keeps the project's channels; 0..127 or 128 (percussion) plays only
+   the channel with that instrument. With follow, the region's program changes still apply. */
+typedef struct {
+    int pattern, channel, program;
+    bool follow;
+    double origin, length;
+} DmPatternPreview;
+
+/* Builds the pattern playback schedule without publishing it. */
+bool dm_pattern_schedule(const DmProject *project, const DmPatternPreview *pattern,
+                         DmSchedule *schedule);
+bool dm_audio_publish_pattern(DmAudio *audio, const DmProject *project,
+                              const DmPatternPreview *pattern, double seconds, bool playing,
+                              char *error, size_t cap);
 void dm_audio_loop(DmAudio *audio, bool enabled, double start, double end);
-/* Replace future events at the current audio position, retaining sounding note releases. */
-bool dm_audio_update(DmAudio *audio, const DmProject *project, int pattern, int channel,
-                     int program, double length, char *error, size_t cap);
+/* Replace future events at the current audio position, retaining sounding note releases.
+   pattern NULL plays the song. */
+bool dm_audio_update(DmAudio *audio, const DmProject *project, const DmPatternPreview *pattern,
+                     char *error, size_t cap);
 void dm_audio_transport(DmAudio *audio, bool playing);
 void dm_audio_panic(DmAudio *audio);
 double dm_audio_position(DmAudio *audio);
@@ -27,6 +41,8 @@ void dm_audio_program(DmAudio *audio, int channel, int program);
 void dm_audio_keyboard_program(DmAudio *audio, int channel, int program);
 void dm_audio_control(DmAudio *audio, int channel, int controller, int value);
 float dm_audio_peak(DmAudio *audio, int channel);
+/* Volume and pan each part is playing with (255 when not yet set); false when stopped. */
+bool dm_audio_mix_state(DmAudio *audio, uint8_t volume[DM_PARTS], uint8_t pan[DM_PARTS]);
 void dm_audio_part_control(DmAudio *audio, int port, int channel, int controller, int value);
 void dm_audio_keyboard_mix(DmAudio *audio, int route, int part, int volume, int pan);
 void dm_audio_analyzer_enable(DmAudio *audio, bool enabled);

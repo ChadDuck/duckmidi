@@ -29,7 +29,69 @@ static void await_job(DmAudio *a) {
     }
 }
 
+static int scheduled_program(const DmSchedule *s, double seconds) {
+    int program = -1;
+
+    for (size_t i = 0; i < s->count; ++i) {
+        if ((s->items[i].status & 0xf0) == 0xc0 && s->items[i].seconds <= seconds + 1e-6) {
+            program = s->items[i].a;
+        }
+    }
+
+    return program;
+}
+
+static int scheduled_volume(const DmSchedule *s) {
+    int volume = -1;
+
+    for (size_t i = 0; i < s->count; ++i) {
+        if ((s->items[i].status & 0xf0) == 0xb0 && s->items[i].a == 7 && s->items[i].seconds == 0) {
+            volume = s->items[i].b;
+        }
+    }
+
+    return volume;
+}
+
+/* Pattern playback takes program changes and channel state from the placement's region. */
+static void pattern_region_programs(void) {
+    DmProject p;
+    dm_project_init(&p);
+    p.channels[0].enabled = true;
+    int id = dm_pattern_add(&p, "Region");
+    dm_note_add(&p.patterns[id], (DmNote){0, 4, 60, 100, 0});
+    dm_clip_add(&p, (DmClip){8, id, 0, 0, 0, 0});
+    DmBytes before = {0}, volume = {0}, outside = {0};
+    dm_bytes(&before, (uint8_t[]){0xc0, 40}, 2);
+    dm_bytes(&volume, (uint8_t[]){0xb0, 7, 50}, 3);
+    dm_bytes(&outside, (uint8_t[]){0xc0, 90}, 2);
+    check(dm_event_add(&p, 4, 1, 0, &before), "add program before region");
+    check(dm_event_add(&p, 6, 1, 0, &volume), "add volume before region");
+    check(dm_event_add(&p, 20, 1, 0, &outside), "add program after region");
+    dm_bytes_free(&before);
+    dm_bytes_free(&volume);
+    dm_bytes_free(&outside);
+    check(dm_automation_add(&p, (DmAutomation){10, 0xc0, 0, 56, 0, -1, 0, 0, 0, false, 0, false}),
+          "add song program inside region");
+    DmPatternPreview follow = {id, 0, 0, true, 8, 4};
+    DmSchedule s = {0};
+    check(dm_pattern_schedule(&p, &follow, &s), "schedule placed pattern");
+    check(scheduled_program(&s, 0) == 40, "pattern starts with the region's program");
+    check(scheduled_program(&s, dm_beat_seconds(&p, 2)) == 56,
+          "pattern plays program changes inside its region");
+    check(scheduled_program(&s, 1000) == 56, "program changes after the region are left out");
+    check(scheduled_volume(&s) == 50, "pattern starts with the region's volume");
+    dm_schedule_free(&s);
+    DmPatternPreview chosen = {id, 0, 12, false, 8, 4};
+    check(dm_pattern_schedule(&p, &chosen, &s), "schedule chosen preview instrument");
+    check(scheduled_program(&s, 0) == 12 && scheduled_program(&s, 1000) == 12,
+          "a chosen preview instrument overrides the region's programs");
+    dm_schedule_free(&s);
+    dm_project_free(&p);
+}
+
 int main(void) {
+    pattern_region_programs();
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "wasapi");
     check(SDL_Init(SDL_INIT_AUDIO), "audio initialization");
     char error[512] = {0};
@@ -135,8 +197,8 @@ int main(void) {
     dm_note_add(&p.patterns[preview], (DmNote){5, 1, 69, 110, 0});
     p.channels[0].mute = true;
     p.channels[1].solo = true;
-    check(dm_audio_publish_pattern(a, &p, preview, 0, -1, p.patterns[preview].length, 2.5, true,
-                                   error, sizeof(error)),
+    DmPatternPreview unplaced = {preview, 0, -1, false, 0, p.patterns[preview].length};
+    check(dm_audio_publish_pattern(a, &p, &unplaced, 2.5, true, error, sizeof(error)),
           "preview unplaced pattern");
     SDL_Delay(120);
     check(dm_audio_peak(a, 0) > .001f && dm_audio_position(a) > 2.54,
@@ -158,8 +220,8 @@ int main(void) {
     dm_note_add(&p.patterns[held], (DmNote){0, .2, 69, 110, 0});
     dm_automation_add(&p, (DmAutomation){.1, 0xb0, 0, 64, 127, held, 0, 0, 0, false});
     dm_automation_add(&p, (DmAutomation){3, 0xb0, 0, 64, 0, held, 0, 0, 0, false});
-    check(dm_audio_publish_pattern(a, &p, held, 0, -1, p.patterns[held].length, .5, true, error,
-                                   sizeof(error)),
+    DmPatternPreview sustain = {held, 0, -1, false, 0, p.patterns[held].length};
+    check(dm_audio_publish_pattern(a, &p, &sustain, .5, true, error, sizeof(error)),
           "seek under sustain pedal");
     SDL_Delay(300);
     check(dm_audio_peak(a, 0) > .001f, "seek restores pedal-held released voice");
@@ -168,7 +230,7 @@ int main(void) {
           "enable keyboard fixture channel");
     dm_audio_preview(a, 2, 73, 100, true);
     SDL_Delay(100);
-    check(dm_audio_update(a, &p, -1, 0, -1, 0, error, sizeof(error)),
+    check(dm_audio_update(a, &p, NULL, error, sizeof(error)),
           "publish without resetting live voices");
     SDL_Delay(250);
     check(dm_audio_peak(a, 2) > .001f,
@@ -234,6 +296,29 @@ int main(void) {
     dm_audio_peak(a, 0); /* A peak read clears the accumulated maximum. */
     SDL_Delay(50);
     check(dm_audio_peak(a, 0) < .001f, "instrument audition releases without GUI frames");
+    uint8_t live_volume[DM_PARTS], live_pan[DM_PARTS];
+    check(!dm_audio_mix_state(a, live_volume, live_pan), "stopped mixer shows channel settings");
+    check(dm_automation_add(&p, (DmAutomation){.25, 0xb0, 0, 10, 30, -1, 0, 0, 0, false, 0, false}),
+          "add song pan change");
+    p.channels[0].pan = 64;
+    check(dm_audio_publish(a, &p, 0, true, error, sizeof(error)), "play before the pan change");
+    SDL_Delay(30);
+    check(dm_audio_mix_state(a, live_volume, live_pan) && live_pan[0] == 64,
+          "mixer state starts with the channel pan");
+    SDL_Delay(250);
+    check(dm_audio_mix_state(a, live_volume, live_pan) && live_pan[0] == 30,
+          "mixer state follows a pan change as the song plays through it");
+    check(dm_automation_add(&p, (DmAutomation){.5, 0xb0, 0, 7, 40, -1, 0, 0, 0, false, 0, false}),
+          "add song volume change");
+    check(dm_audio_publish(a, &p, 1, true, error, sizeof(error)), "seek after volume change");
+    SDL_Delay(60);
+    check(dm_audio_mix_state(a, live_volume, live_pan) && live_volume[0] == 40,
+          "mixer state follows the song's volume after seeking");
+    dm_audio_part_control(a, 0, 0, 10, 20);
+    SDL_Delay(60);
+    check(dm_audio_mix_state(a, live_volume, live_pan) && live_pan[0] == 20,
+          "a mixer pan change during playback holds in the mixer state");
+    dm_audio_transport(a, false);
     printf("Device buffer: %d frames (%.2f ms; not round-trip latency)\n",
            dm_audio_buffer_frames(a), dm_audio_buffer_ms(a));
     printf("PASS audio: WASAPI, background SF2/WAV, valid non-silent WAV, transport, meters, "

@@ -30,6 +30,8 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->selected_clip = -1;
     e->context_note = -1;
     e->capture = -1;
+    e->gesture_capture = -1;
+    e->copy_button = -1;
     e->drag_index = -1;
     e->automation_cc = -2;
     e->bend_range = 12;
@@ -242,6 +244,7 @@ void ed_welcome(Editor *e, float width, float body) {
 static void finish_frame(Editor *e) {
     if (!ui_mouse().left) {
         e->pattern_drag = -1;
+        e->pattern_drag_on_playlist = false;
     }
 
     if (e->pending_save && !e->drag && !e->marquee) {

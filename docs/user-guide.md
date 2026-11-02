@@ -65,14 +65,16 @@ If a note ever gets stuck, **Shift-click on Stop** to silence everything.
 ![Pattern cards](images/patterns.png)
 
 1. Click **+ New** in the pattern section, or pick an existing card.
-2. Click a playlist row to place the pattern there, or drag its card into the arrangement.
+2. Drag its card into a playlist row to place it in the arrangement.
 3. Double-click a placement to open its notes in the piano roll.
 
 Every placement of a pattern shares the same notes, so a change to one changes them all. To make a separate version, click the card and press **Ctrl + D**, or right-click it and choose **Duplicate**. The same menu renames, recolors (**Alt + C**) and deletes patterns. With the pattern section focused, **Ctrl + C** and **Ctrl + V** copy a pattern and paste it as a new one.
 
 **Rearrange the cards** by dragging one within the pattern section. The card follows your mouse, the others close up behind it, and a space opens where it will land. Drop it there to move it. Placements in the song are not affected.
 
-Select several placements to move them together. Drag a placement's edge to change how long it plays. The slice tool splits a placement into two linked parts of the same pattern.
+Select several placements to move them together. **Shift + drag** a placement to drag a linked copy of it (or of all selected placements) to another spot; the original stays put. Drag a placement's edge to change how long it plays. The slice tool splits a placement into two linked parts of the same pattern.
+
+The copy drags can be changed in **Keyboard Shortcuts** under **Mouse**: click the gesture, then press the mouse button you want while holding any of Ctrl, Shift or Alt. Left and right drags need one of those keys.
 
 ### Choose instruments
 
@@ -97,7 +99,8 @@ The piano roll's own instrument dropdown only changes what you hear while editin
 | Right-click / right-drag | Erase notes |
 | Alt + move or resize | Ignore snapping |
 | Shift + drag inside a note | Draw a pitch bend |
-| Middle-drag | Pan around |
+| Middle-drag a note | Drag a copy of it, or of all selected notes; pitch bends stay with the originals |
+| Middle-drag empty space | Pan around |
 
 **Ctrl + C / X / V** copies, cuts and pastes in the focused area. **Ctrl + D** duplicates the selection, **Delete** removes it, and **Ctrl + Z / Y** undoes and redoes. **Ctrl + Q** snaps the selected notes to quarter beats.
 
@@ -112,6 +115,8 @@ Your computer keyboard can play notes like a piano. The highlighted keys below a
 3. Play the bottom row (**Z** to **/**) for the lower octave and the top row (**Q** to **]**) for the upper octave. The keys just above each row play the sharps.
 4. Press **Keypad 1** or **Keypad 2** to move down or up an octave.
 5. Press **F5** to arm recording, then **Space** to start. Press **Space** again to stop.
+
+During song playback, notes land where the playhead is when the playlist is focused and its playhead is on a placement of the pattern. Otherwise a take starts at the pattern's beginning, keeping the beat within the bar where you started playing. In pattern playback, notes land at the pattern's own position.
 
 When a take ends, the piano roll is focused, so **Ctrl + A** and **Ctrl + Q** work on your new notes straight away.
 

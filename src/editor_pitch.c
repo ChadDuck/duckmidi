@@ -255,6 +255,12 @@ static bool curve_overlaps(Editor *e, double start, double end, int cc) {
     return false;
 }
 
+/* Whether a drawn section would overlap an existing one; the order of start and end is free. */
+bool ed_automation_line_overlaps(Editor *e, double start, double end, int cc) {
+    double low = fmin(start, end), high = fmax(fmax(start, end), low + 1.0 / DM_PPQ);
+    return curve_overlaps(e, low, high, cc);
+}
+
 void ed_automation_line(Editor *e, double start, double end, int first, int last, int cc) {
     if (end < start) {
         double b = start;

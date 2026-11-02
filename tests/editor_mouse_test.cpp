@@ -173,6 +173,48 @@ static void group_drag(Editor *e, void (*check)(bool, const char *)) {
           "pasted note group keeps relative timing");
 }
 
+/* Middle drag on a note drags a copy with the note's own properties; the original stays. */
+static void note_copy_drag(Editor *e, void (*check)(bool, const char *)) {
+    auto &p = e->project.patterns[0];
+    p.count = 0;
+    p.length = 4;
+    e->project.automation_count = 0;
+    e->selected_pattern = 0;
+    e->context = 2;
+    e->edit_focus = FOCUS_NOTES;
+    e->tool = 0;
+    e->roll_view.scroll_x = 0;
+    e->roll_view.scroll_y = (127 - 70) * 20;
+    e->roll_view.zoom = 1;
+    dm_note_add(&p, {0, .5, 64, 77, 0, 1});
+    mouse_frame(e, 0, 0, false);
+    auto grid = roll_origin();
+    float x = grid.x + 20, y = grid.y + (70 - 64) * 20 + 10;
+    int history = e->undo_count;
+    mouse_frame(e, x, y, false);
+    ImGui::GetIO().AddMouseButtonEvent(2, true);
+    mouse_frame(e, x, y, false);
+    bool pressed = e->edit_feedback;
+    mouse_frame(e, x + 80, y - 20, false);
+    mouse_frame(e, x + 80, y - 20, false);
+    bool held = e->edit_feedback;
+    ImGui::GetIO().AddMouseButtonEvent(2, false);
+    mouse_frame(e, x + 80, y - 20, false);
+    mouse_frame(e, x + 80, y - 20, false);
+    check(pressed && held && !e->edit_feedback,
+          "a note copy drag sounds from the press until release, like a left drag");
+    check(p.count == 2 && std::fabs(p.notes[0].beat) < 1e-6 && p.notes[0].key == 64 &&
+              std::fabs(p.notes[1].beat - 1) < 1e-6 && p.notes[1].key == 65,
+          "middle drag on a note drags a copy and leaves the original");
+    check(p.notes[1].velocity == 77 && p.notes[1].port == 1 && p.notes[1].length == .5 &&
+              p.notes[1].selected && !p.notes[0].selected,
+          "a copied note keeps its length, velocity and color");
+    check(e->undo_count == history + 1 && e->pan_context == 0,
+          "a note copy drag is one undo step and does not pan the view");
+    direct_key(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
+    check(e->project.patterns[0].count == 1, "undo removes the dragged note copy");
+}
+
 static void quantized_alignment(Editor *e, void (*check)(bool, const char *)) {
     auto &ed_pattern = e->project.patterns[0];
     ed_pattern.count = 0;
@@ -229,10 +271,19 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, 0, 0, false);
     auto grid = roll_origin();
     float x = grid.x + 20, y = grid.y + (70 - 64) * 20 + 10;
+    int history = e->undo_count;
+    size_t notes = p.count;
     mouse_frame(e, x, y, false, false, true);
     mouse_frame(e, x, y, true, false, true);
     mouse_frame(e, x + 80, y - 40, true, false, true);
+    check(!e->automation_open, "drawing a pitch bend on a note leaves the events section closed");
     mouse_frame(e, x + 80, y - 40, false);
+    check(e->project.automation_count && e->undo_count == history + 1,
+          "a drawn pitch bend is its own undo step");
+    direct_key(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
+    check(!e->project.automation_count && p.count == notes,
+          "undoing a drawn pitch bend keeps the note it was drawn on");
+    direct_key(e, SDL_SCANCODE_Y, SDL_KMOD_CTRL);
     e->automation_open = false;
     mouse_frame(e, 0, 0, false);
     float before = underlay_min_y(e);
@@ -399,6 +450,12 @@ static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
     y = patterns->Pos.y + patterns->WindowPadding.y + ImGui::GetFrameHeight() +
         ImGui::GetStyle().ItemSpacing.y + 10 + 25;
     size_t count = e->project.clip_count;
+
+    for (size_t i = 0; i < count; ++i) {
+        e->project.clips[i].selected = 1;
+    }
+
+    e->linked_highlight = true;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
     mouse_frame(e, x + 16, y + 5, true);
@@ -407,9 +464,50 @@ static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
                      ImGui::GetStyle().ItemSpacing.y + 28 + 64 + 32;
     mouse_frame(e, target_x, target_y, true);
     mouse_frame(e, target_x, target_y, true);
+    mouse_frame(e, target_x, target_y, true);
+    float floating = 0; /* Height of the floating card. */
+
+    for (auto *t : ImGui::GetCurrentContext()->Windows) {
+        if (t->Active && std::strstr(t->Name, "##Tooltip")) {
+            floating = ImMax(floating, t->Size.y);
+        }
+    }
+
+    check(e->pattern_drag_on_playlist && floating < 10,
+          "the dragged card hides over the playlist so the drop outline shows");
     mouse_frame(e, target_x, target_y, false);
     check(e->project.clip_count == count + 1,
           "dragging a pattern card onto the playlist places a clip");
+    size_t selected = 0;
+
+    for (size_t i = 0; i < e->project.clip_count; ++i) {
+        selected += e->project.clips[i].selected != 0;
+    }
+
+    check(selected == 1 && e->project.clips[e->selected_clip].selected && !e->linked_highlight,
+          "a dropped pattern selects only its new placement, without linked copies");
+
+    /* Shift + drag on a placement drags a linked copy; the original stays. */
+    int source = e->selected_clip, history = e->undo_count;
+    DmClip original_clip = e->project.clips[source];
+    size_t placements = e->project.clip_count;
+    mouse_frame(e, target_x + 4, target_y, false, false, true);
+    mouse_frame(e, target_x + 4, target_y, true, false, true);
+    mouse_frame(e, target_x + 4 + 80, target_y, true, false, true);
+    mouse_frame(e, target_x + 4 + 80, target_y, true, false, true);
+    mouse_frame(e, target_x + 4 + 80, target_y, false, false, true);
+    mouse_frame(e, target_x + 4 + 80, target_y, false);
+    DmClip copied = e->project.clips[e->project.clip_count - 1];
+    check(e->project.clip_count == placements + 1 &&
+              e->project.clips[source].beat == original_clip.beat &&
+              copied.pattern == original_clip.pattern && copied.beat > original_clip.beat &&
+              copied.selected && !e->project.clips[source].selected && e->undo_count == history + 1,
+          "Shift + drag on a placement drags a linked copy in one undo step");
+    mouse_frame(e, target_x + 4, target_y, true, false, true);
+    mouse_frame(e, target_x + 4, target_y, false, false, true);
+    mouse_frame(e, target_x + 4, target_y, false);
+    check(e->project.clip_count == placements + 1 && e->project.clips[source].selected,
+          "Shift + click without dragging still adds a placement to the selection");
 
     /* Dragging a card within the pattern section reorders the patterns. */
     e->automation_browser = false;
@@ -880,6 +978,7 @@ static void metadata_export_ui(Editor *e, void (*check)(bool, const char *)) {
 extern "C" void test_editor_updates(Editor *e, void (*check)(bool, const char *)) {
     editor_smoke(e);
     group_drag(e, check);
+    note_copy_drag(e, check);
     quantized_alignment(e, check);
     curve_edits(e, check);
     labels_and_drop(e, check);
@@ -953,8 +1052,9 @@ extern "C" void test_visualizers_ui(Editor *e, void (*check)(bool, const char *)
 
     check(maximum == 0, "About spectrum stays hidden before playback");
     char error[512];
+    DmPatternPreview generated = {0, 0, 0, false, 0, 16};
     check(
-        dm_audio_publish_pattern(e->audio, &e->project, 0, 0, 0, 16, 0, true, error, sizeof(error)),
+        dm_audio_publish_pattern(e->audio, &e->project, &generated, 0, true, error, sizeof(error)),
         "start generated playback");
     bool interpolated = false;
     float previous = 0, previous_target = 0;
@@ -1041,7 +1141,7 @@ extern "C" void test_visualizers_ui(Editor *e, void (*check)(bool, const char *)
 
     check(maximum == 0, "stopped bars disappear completely after their fall");
     check(
-        dm_audio_publish_pattern(e->audio, &e->project, 0, 0, 0, 16, 0, true, error, sizeof(error)),
+        dm_audio_publish_pattern(e->audio, &e->project, &generated, 0, true, error, sizeof(error)),
         "restart generated playback");
     mouse_frame(e, 0, 0, false);
     recording_feedback_audio_render(e->audio, 4096);
@@ -1939,13 +2039,26 @@ extern "C" void test_lfo_shapes_ui(Editor *e, void (*check)(bool, const char *))
     mouse_frame(e, 0, 0, false);
     check(e->automation_center < view && p.pitch_center == pitch,
           "vertical scrollbar changes pitch view without changing LFO center");
-    e->roll_view.zoom = 2;
+    view = e->automation_center;
+    mouse_frame(e, x, y, false, false, false, false, 1);
     mouse_frame(e, 0, 0, false);
-    check(e->roll_view.zoom == 1, "entering LFO uses standard scale");
+    check(e->automation_center != view && p.pitch_center == pitch,
+          "wheel in the LFO pitch view scrolls pitches");
+    e->automation_raw = true;
+    view = e->automation_center;
+    mouse_frame(e, x, y, false, false, false, false, 1);
+    mouse_frame(e, 0, 0, false);
+    check(e->automation_center == view, "MIDI values LFO view does not scroll");
+    e->automation_raw = false;
+    e->roll_view.zoom = 2;
+    e->roll_view.scroll_x = 300;
+    mouse_frame(e, x, y, false, false, false, false, 1);
     mouse_frame(e, x, y, false, false, false, true, 1);
-    check(e->roll_view.zoom == 1, "Ctrl wheel cannot zoom LFO");
     mouse_frame(e, x, gy - 15, false, false, false, false, 1);
-    check(e->roll_view.zoom == 1, "ruler wheel cannot zoom LFO");
+    check(e->roll_view.zoom == 2 && e->roll_view.scroll_x == 300,
+          "LFO view fits its pattern without scrolling or zooming the piano roll");
+    e->roll_view.zoom = 1;
+    e->roll_view.scroll_x = 0;
     mouse_frame(e, 0, 0, false);
     p.event = 11;
     e->automation_cc = 11;

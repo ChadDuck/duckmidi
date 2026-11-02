@@ -110,6 +110,94 @@ static void test_shortcuts(Editor *e) {
     check(e->selected_pattern == (int)count - 1, "previous pattern");
     check(e->project.pattern_count == count,
           "unused newly-created pattern is removed when stepping back");
+    int created = -1;
+
+    for (int i = 0; i < 64 && e->project.pattern_count == count; ++i) {
+        press(e, SDL_SCANCODE_KP_PLUS, SDL_KMOD_SHIFT);
+        frame(e);
+        created = e->selected_pattern;
+    }
+
+    check(e->project.pattern_count == count + 1 && ed_pattern(e)->kind,
+          "next automation creates an automation pattern at end");
+    press(e, SDL_SCANCODE_KP_PLUS, SDL_KMOD_SHIFT);
+    frame(e);
+    check(e->project.pattern_count == count + 1 && e->selected_pattern == created,
+          "stepping on from an unused automation pattern adds no second one");
+    press(e, SDL_SCANCODE_KP_MINUS, SDL_KMOD_SHIFT);
+    frame(e);
+    check(e->project.pattern_count == count && ed_pattern(e),
+          "unused newly-created automation pattern is removed when stepping back");
+
+    /* Controller switches of an automation pattern undo and redo, in both modes. */
+    for (int mode = 0; mode < 2; ++mode) {
+        press(e, SDL_SCANCODE_KP_PLUS, SDL_KMOD_SHIFT);
+        frame(e);
+        DmPattern *automation = ed_pattern(e);
+        check(automation && automation->kind, "automation pattern for controller undo");
+        automation->mode = mode;
+        e->context = 2;
+        e->edit_focus = FOCUS_EVENTS;
+        int before = automation->event, history = e->undo_count;
+        e->automation_cc = before == 1 ? 7 : 1;
+        int chosen = e->automation_cc;
+        frame(e);
+        check(ed_pattern(e)->event == chosen && e->undo_count == history + 1,
+              "switching an automation pattern's controller is an undo step");
+        press(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
+        frame(e);
+        check(ed_pattern(e)->event == before && e->automation_cc == before && e->redo_count,
+              "undo restores the automation pattern's controller");
+        press(e, SDL_SCANCODE_Y, SDL_KMOD_CTRL);
+        frame(e);
+        check(ed_pattern(e)->event == chosen && e->automation_cc == chosen,
+              "redo switches the automation pattern's controller again");
+        press(e, SDL_SCANCODE_KP_MINUS, 0);
+        frame(e);
+    }
+}
+
+/* The pattern editor's instrument follows program changes at the current position. */
+static void placed_instrument(Editor *e) {
+    int index = -1;
+
+    for (size_t i = 0; i < e->project.clip_count && index < 0; ++i) {
+        DmClip c = e->project.clips[i];
+
+        if (!c.lane && !e->project.patterns[c.pattern].kind &&
+            !dm_channel_drums(&e->project, c.channel)) {
+            index = (int)i;
+        }
+    }
+
+    check(index >= 0, "melodic placement for instrument display");
+    DmClip clip = e->project.clips[index];
+    ed_open_pattern(e, clip.pattern, false);
+    ed_select_placement_route(e, index);
+    double change = clip.beat + clip.offset + 1;
+    check(dm_automation_add(&e->project, (DmAutomation){change, MIDI_PROGRAM, clip.channel, 113, 0,
+                                                        -1, 0, 0, 0, false, 0, false}),
+          "add song program change inside the placement");
+    e->pattern_mode = false;
+    e->cursor_beat[0] = change - .5;
+    check(ed_placed_program(e) != 113, "instrument before the program change");
+    e->cursor_beat[0] = change;
+    check(ed_placed_program(e) == 113, "instrument follows the song position's program change");
+    e->pattern_mode = true;
+    e->cursor_beat[1] = change - ed_pattern_region_origin(e);
+    check(ed_placed_program(e) == 113, "instrument follows the program change in pattern playback");
+    e->pattern_mode = false;
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+
+        if (a.pattern < 0 && a.type == MIDI_PROGRAM && a.a == 113 && a.beat == change) {
+            memmove(e->project.automation + i, e->project.automation + i + 1,
+                    (e->project.automation_count - i - 1) * sizeof(DmAutomation));
+            --e->project.automation_count;
+            break;
+        }
+    }
 }
 
 static void save_load(Editor *e) {
@@ -152,6 +240,7 @@ int main(void) {
     notes(e);
     clips(e);
     test_shortcuts(e);
+    placed_instrument(e);
     save_load(e);
     test_editor_updates(e, check);
     frame(e);

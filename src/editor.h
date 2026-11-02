@@ -61,6 +61,16 @@ typedef struct {
     SDL_Keymod mods;
 } Binding;
 
+/* Mouse drags that can be rebound in Keyboard Shortcuts. */
+typedef enum { GESTURE_COPY_PLACEMENTS, GESTURE_COPY_NOTES, GESTURE_COUNT } Gesture;
+
+typedef enum { MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE, MOUSE_BUTTONS } MouseButton;
+
+typedef struct {
+    MouseButton button;
+    SDL_Keymod mods; /* Ctrl, Shift and Alt only. */
+} MouseBinding;
+
 typedef struct {
     float zoom, scroll_x, scroll_y;
     int focus;
@@ -83,6 +93,9 @@ typedef struct {
     uint64_t mixer_peak_tick;
     float mixer_peaks[DM_PARTS];
     float mixer_peak_targets[DM_PARTS];
+    /* Volume and pan the song is playing with, shown by the mixer during song playback. */
+    uint8_t mixer_live_volume[DM_PARTS], mixer_live_pan[DM_PARTS];
+    bool mixer_live;
     uint64_t spectrum_tick;
     float spectrum[DM_SPECTRUM_BANDS], spectrum_targets[DM_SPECTRUM_BANDS];
     float spectrum_top; /* Highest analyzer band edge; follows the sound's treble. */
@@ -120,6 +133,9 @@ typedef struct {
         erase_active;
     bool duration_beats, focus_pattern, clip_moved;
     bool wait_armed, take_started;
+    /* Song beat where the recording take's pattern beat 0 falls; set by the take's first note. */
+    double take_origin;
+    bool take_origin_set;
     int preview_program, preview_route, preview_source_channel;
     bool preview_override, channel_selected, event_marquee, event_marquee_overlay, midi_events;
     int midi_event_kind, midi_event_index;
@@ -128,7 +144,7 @@ typedef struct {
     bool os_cursor;
     bool event_ruler_drag;
     bool event_free;           /* Alt was held when an event point or line was started. */
-    bool event_connect; /* Shift was held: the clicked point connects to the nearest one. */
+    bool event_connect;        /* Shift was held: the clicked point connects to the nearest one. */
     uint64_t event_press_tick; /* When the pending event-lane press began (drag 12). */
     bool midi_values, midi_hex;
     char midi_error[160];
@@ -148,6 +164,7 @@ typedef struct {
     int pan_context;
     float mixer_height, label_width, automation_height;
     int piano_octave, transient_pattern, pattern_drag, rename_pattern;
+    bool pattern_drag_on_playlist; /* The dragged card hides over the playlist's drop outline. */
     char rename_text[64];
     uint32_t accent;
     DmChannel reset_channels[16];
@@ -189,6 +206,8 @@ typedef struct {
     int event_kind, event_program, event_channel, event_numerator, event_denominator, context_note,
         context_point;
     char event_marker[128];
+    uint8_t event_message[3]; /* Draft of an imported channel message in the song event window. */
+    size_t event_message_size;
     int smoke_frames;
     int pattern_channel, selected_pattern, selected_channel, instrument_channel, tool, context,
         capture, drag, drag_index, drag_edge, export_type;
@@ -227,6 +246,13 @@ typedef struct {
     uint64_t sample_hash;       /* Sample project fingerprint when first opened; 0 if unknown. */
     int pending_action, new_mode, device;
     Binding bindings[ACT_COUNT];
+    MouseBinding gestures[GESTURE_COUNT];
+    int gesture_capture; /* Gesture waiting for a mouse press in Keyboard Shortcuts, or -1. */
+    bool gesture_capture_armed; /* The click that started the capture has been released. */
+    /* A copy drag: the button it uses (-1 none), and whether the copies are still to be made on
+       the first movement. */
+    int copy_button;
+    bool copy_pending, copy_was_selected;
     DmBytes undo[32], redo[32], clipboard, event_selection;
     int undo_count, redo_count;
     int held[SDL_SCANCODE_COUNT];

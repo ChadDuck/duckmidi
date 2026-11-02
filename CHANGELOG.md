@@ -1,5 +1,27 @@
 # duckmidi changelog
 
+## 0.11.2
+
+1. Pattern playback uses the instrument changes, volume, and pan from the pattern's spot in the song instead of the start of the song.
+2. A 'Reset' button beside 'Use selected channel' in the piano roll returns the pattern to its channel's instrument.
+3. The song event window shows instrument names, controller names, notes and pitch bend values for imported MIDI events instead of generic technical terms.
+4. Editing an imported controller in the song event window no longer replaces its value with the channel number.
+5. The mixer's volume and pan follow the song's volume and pan changes while it plays.
+6. Undoing a pitch bend drawn on a note no longer removes the note too.
+7. Drawing a pitch bend on a note no longer opens the Events section.
+8. Clicking the playlist no longer places a pattern.
+9. "Shift + keypad -" removes a new, unused automation pattern, like "keypad -" does for regular patterns.
+10. The LFO view in automation patterns shows the whole pattern without scrolling sideways; pitch bends shown as note pitches still scroll up and down.
+11. Switching an automation pattern's controller, such as to Modulation, can now be undone and redone.
+12. The piano roll's instrument dropdown shows the instrument playing at the playhead.
+13. Mixer volume and pan changes now apply to imported MIDI files that set them just after the start.
+14. Moving a mixer volume or pan control while the song plays holds until the song changes it again.
+15. The mixer's volume and pan now move as the song plays through its changes, not only when seeking.
+16. A pattern card dragged over the playlist hides, so the outline of where it will land stays visible.
+17. Shift + drag on a pattern on the playlist drags a linked copy of it, or of all selected patterns, leaving the originals in place.
+18. Middle-drag on a note drags a copy of it, or of all selected notes, keeping length, velocity and color.
+19. Modified some recording logic relating to patterns.
+
 ## 0.11.1
 
 New export plugin/option: OoT (`OoT.dll`): Save an *Ocarina of Time* sequence package, or use 'Export to Repository' to export directly to a [zeldaret/oot](https://github.com/zeldaret/oot) checkout.

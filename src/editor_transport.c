@@ -89,6 +89,8 @@ bool ed_begin_record_take(Editor *e) {
         return false;
     }
 
+    e->take_origin_set = false;
+
     size_t bytes = p->count * sizeof(DmNote);
 
     if (!dm_reserve((void **)&e->record_original.data, &e->record_original.capacity, bytes, 1)) {
@@ -147,30 +149,28 @@ static void replace_recorded_overlap(Editor *e, double start, double end) {
     }
 }
 
+/* Song beat where pattern beat 0 falls for a recording take starting at a song beat. Pattern
+   playback records at the pattern's own position. With the playlist focused and its playhead on
+   a placement of the pattern, notes land where the playhead is. Otherwise the take starts at the
+   pattern's beginning, keeping the beat within the bar where playing began. */
 double ed_recording_origin(Editor *e, double beat) {
     if (e->pattern_mode) {
         return 0;
     }
 
-    double origin = 0;
-    bool found = false;
+    if (ed_selection_focus(e) == FOCUS_PLAYLIST) {
+        for (size_t i = 0; i < e->project.clip_count; ++i) {
+            DmClip c = e->project.clips[i];
 
-    for (size_t i = 0; i < e->project.clip_count; ++i) {
-        DmClip c = e->project.clips[i];
-
-        if (c.pattern == e->selected_pattern && c.beat <= beat + 1e-7 &&
-            (!found || c.beat > origin)) {
-            origin = c.beat;
-            found = true;
+            if (c.pattern == e->selected_pattern && beat >= c.beat - 1e-7 &&
+                beat < c.beat + dm_clip_length(&e->project, c)) {
+                return c.beat - c.offset;
+            }
         }
     }
 
-    if (!found && e->selected_clip >= 0 && (size_t)e->selected_clip < e->project.clip_count &&
-        e->project.clips[e->selected_clip].pattern == e->selected_pattern) {
-        origin = e->project.clips[e->selected_clip].beat;
-    }
-
-    return origin;
+    DmMeter meter = dm_meter(&e->project, beat);
+    return meter.origin + floor((beat - meter.origin) / meter.bar + 1e-9) * meter.bar;
 }
 
 void ed_record_note(Editor *e, int note) {
@@ -204,8 +204,11 @@ void ed_stop_edit_feedback(Editor *e) {
     }
 }
 
+/* The sound lasts while the drag's button is held: left, or a copy drag's own button. */
 void ed_finish_edit_feedback(Editor *e) {
-    if (!ui_mouse().left) {
+    UiMouse mouse = ui_mouse();
+
+    if (!mouse.left && !(e->copy_button >= 0 && ed_mouse_down(mouse, e->copy_button))) {
         ed_stop_edit_feedback(e);
     }
 }

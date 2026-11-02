@@ -32,6 +32,22 @@ static void event_editing(Editor *e) {
     source_event(e, initial_volume, sizeof(initial_volume), 0);
     check(e->event_channel == 2,
           "initial volume inspector keeps channel separate from controller value");
+    const uint8_t expression[] = {0xb2, 11, 90};
+    source_event(e, expression, sizeof(expression), 1);
+    ed_song_event_open(e, e->midi_event_index, false);
+    check(e->event_message_size == 3 && e->event_message[2] == 90,
+          "song event window drafts the controller value, not the channel");
+    e->event_message[2] = 70;
+    ed_song_event_add(e);
+    bool applied = false;
+
+    for (size_t i = 0; i < e->project.event_count; ++i) {
+        const DmEvent *event = &e->project.events[i];
+        applied |= event->beat == 1 && event->message.size == 3 && event->message.data[0] == 0xb2 &&
+                   event->message.data[1] == 11 && event->message.data[2] == 70;
+    }
+
+    check(applied, "song event window applies the edited controller value");
     const uint8_t pedal[] = {0xb2, 66, 0};
     source_event(e, pedal, sizeof(pedal), 2);
     check(e->event_channel == 2, "controller decoder reads its channel from the MIDI status byte");

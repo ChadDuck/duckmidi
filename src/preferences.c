@@ -378,6 +378,18 @@ static bool recent(Ini *ini, const char *key, const char *s) {
     return value(ini->next.recent[index], DM_PATH, s);
 }
 
+/* Mouse gestures the file does not list keep their defaults; unknown names are ignored. */
+static bool mouse_gesture(Ini *ini, const char *key, const char *s) {
+    for (int i = 0; i < GESTURE_COUNT; ++i) {
+        if (!strcmp(key, ed_gesture_names[i])) {
+            char text[80];
+            return value(text, sizeof(text), s) && ed_gesture_parse(text, &ini->next.gestures[i]);
+        }
+    }
+
+    return true;
+}
+
 static bool line(Ini *ini, char *s, char *section, size_t cap) {
     s = trim(s);
 
@@ -424,6 +436,10 @@ static bool line(Ini *ini, char *s, char *section, size_t cap) {
 
     if (!strcmp(section, "recent")) {
         return recent(ini, key, entry);
+    }
+
+    if (!strcmp(section, "mouse")) {
+        return mouse_gesture(ini, key, entry);
     }
 
     return true;
@@ -637,6 +653,14 @@ bool dm_preferences_save(Editor *e, uint32_t shortcut_schema, const char *const 
         setting_label(names[i], label, sizeof(label));
         ok = dm_binding_format(e->bindings[i], binding, sizeof(binding)) &&
              text_field(&b, label, binding);
+    }
+
+    ok = ok && text(&b, "\n[mouse]\n");
+
+    for (int i = 0; i < GESTURE_COUNT && ok; ++i) {
+        char gesture[80];
+        ok = ed_gesture_format(e->gestures[i], gesture, sizeof(gesture)) &&
+             text_field(&b, ed_gesture_names[i], gesture);
     }
 
     ok = ok && text(&b, "\n[percussion]\n");

@@ -145,8 +145,10 @@ void ed_automation_pan_y(Editor *e, UiRect lane, float pixels) {
 }
 
 static void automation_scroll(Editor *e, View *v, UiRect lane, UiMouse mouse, bool hovered) {
+    bool lfo = ed_pattern(e) && ed_pattern(e)->kind && ed_pattern(e)->mode;
+
     if (hovered && mouse.wheel) {
-        if (!mouse.shift) {
+        if (!mouse.shift && !lfo) {
             v->scroll_x = fmaxf(0, v->scroll_x - mouse.wheel * 60);
         } else {
             ed_automation_pan_y(e, lane, mouse.wheel * ed_lane_step(lane) * 3);
@@ -551,14 +553,16 @@ static void event_editor_header(Editor *e, DmPattern *p) {
 
     ed_automation_selector(e);
 
+    /* An automation pattern's controller is part of the pattern, so switching it is an undo
+       step; a note pattern only remembers which lane is shown. */
     if (e->automation_cc != p->event) {
-        if (p->mode) {
+        if (p->kind) {
             ed_checkpoint(e);
         }
 
         p->event = e->automation_cc;
 
-        if (p->mode) {
+        if (p->kind) {
             ed_commit(e);
         }
     }
@@ -585,20 +589,13 @@ static void event_editor_header(Editor *e, DmPattern *p) {
 
 static void event_editor_scroll(Editor *e, UiRect r, UiRect lane, View *v, UiMouse mouse,
                                 bool hovered) {
-    bool lfo = ed_pattern(e) && ed_pattern(e)->mode;
-
-    if (lfo) {
-        v->zoom = 1;
-    }
-
-    if (hovered && mouse.wheel && (mouse.ctrl || mouse.pos.y < lane.y) && !lfo) {
+    if (hovered && mouse.wheel && (mouse.ctrl || mouse.pos.y < lane.y)) {
         float old = v->zoom;
         v->zoom = ed_clampf(v->zoom * powf(1.15f, mouse.wheel), .15f, 8);
         v->scroll_x = fmaxf(0, (v->scroll_x + mouse.pos.x - lane.x) * (v->zoom / old) -
                                    (mouse.pos.x - lane.x));
     } else {
-        automation_scroll(e, v, lane, mouse,
-                          hovered && ed_inside(mouse.pos, lane) && !(lfo && mouse.ctrl));
+        automation_scroll(e, v, lane, mouse, hovered && ed_inside(mouse.pos, lane));
     }
 
     float total = (float)ed_pattern_length(e) * 80 * v->zoom;
@@ -667,10 +664,22 @@ void ed_event_editor(Editor *e, float width, float height) {
     ui_canvas(DM_TEXT_EVENT_EDITOR_CANVAS, r.w, r.h);
     bool hovered = ui_hover();
     UiMouse mouse = ui_mouse();
-    View *v = &e->roll_view;
+    View *v = &e->roll_view, fit;
     UiRect lane = {r.x + label, r.y + 28, r.w - label, r.h - 28};
     focus_event_pattern(e, lane, scale);
-    event_editor_scroll(e, r, lane, v, mouse, hovered);
+
+    /* An LFO pattern fits its whole length in view. Only note-pitch bends scroll, vertically. */
+    if (p->mode) {
+        fit = *v;
+        fit.scroll_x = 0;
+        fit.zoom = lane.w / (80 * (float)fmax(1.0 / DM_PPQ, ed_pattern_length(e)));
+        automation_scroll(e, &fit, lane, mouse, hovered && ed_inside(mouse.pos, lane));
+        fit.scroll_x = 0;
+        v = &fit;
+    } else {
+        event_editor_scroll(e, r, lane, v, mouse, hovered);
+    }
+
     scale = 80 * v->zoom;
     ui_rect(r, BG, 0);
     ui_clip((UiRect){r.x, r.y + 28, label, r.h - 28});
@@ -690,6 +699,7 @@ void ed_event_editor(Editor *e, float width, float height) {
     ui_unclip();
     ed_ruler(e, r, v, scale, label);
     event_editor_vertical(e, r, lane);
+
     ed_timeline_drag(e, r, v, scale, label, 2, hovered);
     ui_child_end();
 }

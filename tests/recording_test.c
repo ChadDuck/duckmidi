@@ -119,8 +119,8 @@ int main(void) {
     e->pattern_mode = true;
     e->start_beat[1] = 0;
     e->cursor_beat[1] = 1;
-    check(dm_audio_publish_pattern(audio, &e->project, 0, 0, -1, e->project.patterns[0].length, .5,
-                                   true, error, sizeof(error)),
+    DmPatternPreview ordinary = {0, 0, -1, false, 0, e->project.patterns[0].length};
+    check(dm_audio_publish_pattern(audio, &e->project, &ordinary, .5, true, error, sizeof(error)),
           "start ordinary pattern playback away from set position");
     SDL_Delay(90);
 
@@ -139,6 +139,41 @@ int main(void) {
     key(e, SDL_SCANCODE_RIGHT, true);
     check(e->start_beat[1] > 0 && e->start_beat[1] == e->cursor_beat[1],
           "arrow seek updates set position");
+    /* Song playback into a pattern that is not on the playlist: the take starts at the
+       pattern's beginning, keeping the beat within the bar where playing began. */
+    int unplaced = dm_pattern_add(&e->project, "Unplaced take");
+    e->selected_pattern = unplaced;
+    e->context = 2;
+    e->edit_focus = FOCUS_NOTES;
+    e->pattern_mode = false;
+    e->record = true;
+    e->piano = true;
+    double bar = dm_bar(&e->project), song_start = bar + 1.5;
+    e->start_beat[0] = e->cursor_beat[0] = song_start;
+    key(e, SDL_SCANCODE_SPACE, true);
+    transport_limit = SDL_GetTicks() + 3000;
+
+    while (!dm_audio_playing(audio) ||
+           dm_seconds_beat(&e->project, dm_audio_position(audio)) < song_start + .1) {
+        check(SDL_GetTicks() < transport_limit, "song recording startup timeout");
+        SDL_Delay(5);
+    }
+
+    key(e, SDL_SCANCODE_Q, true);
+    SDL_Delay(60);
+    key(e, SDL_SCANCODE_Q, false);
+    SDL_Delay(200);
+    key(e, SDL_SCANCODE_W, true);
+    SDL_Delay(60);
+    key(e, SDL_SCANCODE_W, false);
+    key(e, SDL_SCANCODE_SPACE, true);
+    DmPattern *take = &e->project.patterns[unplaced];
+    check(take->count == 2 && take->notes[0].beat > 1.5 && take->notes[0].beat < 2.5,
+          "an unplaced pattern records from its start, offset within the bar");
+    check(take->notes[1].beat > take->notes[0].beat + .2,
+          "later notes of the take keep their timing after the first");
+    e->record = false;
+    e->piano = false;
     printf("PASS recording: one note, beat %.6f, length %.6f; live transport preserved\n",
            note.beat, note.length);
     editor_free(e);

@@ -346,19 +346,44 @@ static bool action_global(Editor *e, int a) {
     return true;
 }
 
+static bool unused_new_pattern(Editor *e) {
+    return e->selected_pattern == e->transient_pattern && e->transient_pattern > 0 &&
+           (size_t)e->selected_pattern + 1 == e->project.pattern_count;
+}
+
 static void discard_unused_pattern(Editor *e) {
-    if (e->selected_pattern == e->transient_pattern && e->transient_pattern > 0 &&
-        (size_t)e->selected_pattern + 1 == e->project.pattern_count) {
-        ed_checkpoint(e);
-        dm_pattern_remove(&e->project, e->transient_pattern);
-        e->transient_pattern = -1;
-        ed_changed(e);
+    if (!unused_new_pattern(e)) {
+        return;
     }
+
+    ed_checkpoint(e);
+    dm_pattern_remove(&e->project, e->transient_pattern);
+    e->transient_pattern = -1;
+    ed_changed(e);
+    bool automation = e->automation_browser;
+
+    for (int i = e->selected_pattern - 1; i >= 0; --i) {
+        if ((e->project.patterns[i].kind != 0) == automation) {
+            ed_open_pattern(e, i, false);
+            ed_bind_pattern_channel(e);
+            return;
+        }
+    }
+
+    /* The list's only pattern was removed: return to the last pattern of the other list. */
+    ed_open_pattern(e, (int)e->project.pattern_count - 1, false);
+    ed_bind_pattern_channel(e);
 }
 
 static void navigate_pattern(Editor *e, int direction) {
     if (direction < 0) {
-        discard_unused_pattern(e);
+        if (unused_new_pattern(e)) {
+            discard_unused_pattern(e);
+            return;
+        }
+    } else if (unused_new_pattern(e) &&
+               (e->project.patterns[e->selected_pattern].kind != 0) == e->automation_browser) {
+        return; /* Stepping on from an unused new pattern would leave it behind. */
     }
 
     /* From a pattern of the other list, step from that list's first or last pattern. */
@@ -741,7 +766,14 @@ void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
         e->record_start[note] = e->record && dm_audio_playing(e->audio)
                                     ? dm_seconds_beat(&e->project, dm_audio_position(e->audio))
                                     : -1;
-        e->record_origin[note] = ed_recording_origin(e, e->record_start[note]);
+        /* The take's first note fixes where the pattern starts; a loop back restarts it. */
+        if (e->record_start[note] >= 0 &&
+            (!e->take_origin_set || e->record_start[note] < e->take_origin)) {
+            e->take_origin = ed_recording_origin(e, e->record_start[note]);
+            e->take_origin_set = true;
+        }
+
+        e->record_origin[note] = e->take_origin_set ? e->take_origin : 0;
     }
 }
 

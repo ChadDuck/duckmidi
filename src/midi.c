@@ -940,6 +940,33 @@ static void import_initial_controls(DmProject *p) {
                 p->channels[clip.channel].pan = a.b;
             }
         }
+
+        size_t placements = 0;
+
+        for (size_t j = 0; j < p->clip_count; ++j) {
+            placements += p->clips[j].pattern == clip.pattern;
+        }
+
+        /* The opening volume and pan became the channel settings. Removing them leaves the mixer
+           in control until the song changes them; nothing sounds before the first note. */
+        if (placements != 1 || pat->kind || !isfinite(first)) {
+            continue;
+        }
+
+        size_t write = 0;
+
+        for (size_t j = 0; j < p->automation_count; ++j) {
+            DmAutomation a = p->automation[j];
+
+            if (a.pattern == clip.pattern && a.type == MIDI_CONTROL && a.beat <= first &&
+                (a.a == MIDI_CC_VOLUME || a.a == MIDI_CC_PAN)) {
+                continue;
+            }
+
+            p->automation[write++] = a;
+        }
+
+        p->automation_count = write;
     }
 }
 

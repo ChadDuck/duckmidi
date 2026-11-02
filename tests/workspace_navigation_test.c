@@ -18,6 +18,8 @@ static void configuration(Editor *e) {
     snprintf(e->settings_path, DM_PATH, "%s", path);
     ed_defaults(e);
     e->bindings[ACT_PLAY_MODE].key = SDL_SCANCODE_F9;
+    e->gestures[GESTURE_COPY_PLACEMENTS] =
+        (MouseBinding){MOUSE_MIDDLE, (SDL_Keymod)(SDL_KMOD_CTRL | SDL_KMOD_ALT)};
     e->accent = 0xff123456;
     snprintf(e->preferred_font, DM_PATH, "C:\\fonts\\a \"quoted\" \\font.sf2");
     snprintf(e->midi_folder, DM_PATH, "C:\\MIDI\\");
@@ -35,6 +37,15 @@ static void configuration(Editor *e) {
     check(!e->monitor && !strcmp(e->output_name, "My MIDI output"),
           "output choice and monitoring persist");
     check(e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9, "custom binding restored");
+    check(e->gestures[GESTURE_COPY_PLACEMENTS].button == MOUSE_MIDDLE &&
+              e->gestures[GESTURE_COPY_PLACEMENTS].mods == (SDL_KMOD_CTRL | SDL_KMOD_ALT) &&
+              e->gestures[GESTURE_COPY_NOTES].button == MOUSE_MIDDLE &&
+              !e->gestures[GESTURE_COPY_NOTES].mods,
+          "rebound mouse gestures are restored");
+    MouseBinding plain = {MOUSE_LEFT, (SDL_Keymod)0}, parsed;
+    char text[80];
+    check(ed_gesture_format(plain, text, sizeof(text)) && !ed_gesture_parse(text, &parsed),
+          "a plain left drag cannot be a gesture");
     ed_defaults(e);
     check(dm_preferences_load(e, ed_shortcut_schema() + 1),
           "other preferences survive shortcut schema change");

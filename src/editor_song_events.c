@@ -42,25 +42,23 @@ static void apply_initial_source(Editor *e) {
         return;
     }
 
-    DmEvent event = e->project.events[e->event_edit];
-
-    if (event.beat != 0 || event.message.size < 2) {
+    if (e->event_source_kind != 3 || e->event_message_size < 2) {
         return;
     }
 
-    const uint8_t *m = event.message.data;
-    int channel = m[0] & MIDI_CHANNEL_MASK;
+    const uint8_t *m = e->event_message;
+    int type = m[0] & MIDI_STATUS_MASK, channel = m[0] & MIDI_CHANNEL_MASK;
 
-    if ((m[0] & MIDI_STATUS_MASK) == MIDI_PROGRAM) {
-        e->project.channels[channel].program = e->event_program;
+    if (type == MIDI_PROGRAM) {
+        e->project.channels[channel].program = m[1];
     }
 
-    if ((m[0] & MIDI_STATUS_MASK) == MIDI_CONTROL && m[1] == MIDI_CC_VOLUME) {
-        e->project.channels[channel].volume = e->event_channel;
+    if (type == MIDI_CONTROL && e->event_message_size == 3 && m[1] == MIDI_CC_VOLUME) {
+        e->project.channels[channel].volume = m[2];
     }
 
-    if ((m[0] & MIDI_STATUS_MASK) == MIDI_CONTROL && m[1] == MIDI_CC_PAN) {
-        e->project.channels[channel].pan = e->event_channel;
+    if (type == MIDI_CONTROL && e->event_message_size == 3 && m[1] == MIDI_CC_PAN) {
+        e->project.channels[channel].pan = m[2];
     }
 }
 
@@ -73,12 +71,9 @@ void ed_song_event_add(Editor *e) {
         DmBytes copy = {0};
 
         if (dm_bytes(&copy, source.message.data, source.message.size)) {
-            if (copy.size >= 2 && copy.data[0] < MIDI_SYSTEM) {
-                copy.data[1] = (uint8_t)e->event_program;
-
-                if (copy.size == 3) {
-                    copy.data[2] = (uint8_t)e->event_channel;
-                }
+            if (e->event_message_size && copy.size == e->event_message_size &&
+                copy.data[0] < MIDI_SYSTEM) {
+                memcpy(copy.data, e->event_message, copy.size);
             }
 
             ed_song_event_remove(e);
@@ -192,7 +187,7 @@ static void song_event_fields(Editor *e) {
             e->event_channel = channel - 1;
         }
 
-        if (ui_combo(DM_TEXT_PROGRAM, dm_program_name(e->event_program))) {
+        if (ui_combo(DM_TEXT_INSTRUMENT, dm_program_name(e->event_program))) {
             for (int i = 0; i < 128; ++i) {
                 if (ui_select(dm_program_name(i), e->event_program == i, 0, 0)) {
                     e->event_program = i;
@@ -201,6 +196,11 @@ static void song_event_fields(Editor *e) {
 
             ui_combo_end();
         }
+
+        char number[80];
+        snprintf(number, sizeof(number), DM_TEXT_PROGRAM_MIDI_VALUE, e->event_program + 1,
+                 e->event_program);
+        ui_dim(number);
     }
 }
 
@@ -254,12 +254,9 @@ static void song_event_details(Editor *e) {
 static void opaque_event_fields(Editor *e) {
     DmBytes *ed_message = &e->project.events[e->event_edit].message;
 
-    if (ed_message->size >= 2 && ed_message->data[0] < MIDI_SYSTEM) {
-        ui_int(DM_TEXT_DATA_1, &e->event_program, 0, 127);
-
-        if (ed_message->size == 3) {
-            ui_int(DM_TEXT_DATA_2, &e->event_channel, 0, 127);
-        }
+    if (e->event_message_size && ed_message->size == e->event_message_size &&
+        ed_message->data[0] < MIDI_SYSTEM) {
+        ed_midi_channel_fields(e->event_message, e->event_message_size);
     } else {
         ui_dim(DM_TEXT_OPAQUE_MIDI_PAYLOAD);
     }
