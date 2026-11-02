@@ -28,7 +28,7 @@ While the design, usability, UI, and goals of this program were dictated by a hu
 - Save compositions as `.duck` projects or retain editor data in exported MIDI files.
 - Export MIDI, WAV (PCM), MP3, AAC, Ogg Vorbis, Opus, and FLAC.
 - Add export formats through the plugin API. 
-   - The bundled M64 plugin converts General MIDI arrangements into SM64 sequences; transforming a previously arduous task into a quick and painless experience.
+   - The bundled M64 & OoT plugins converts General MIDI arrangements into their respective sequences; transforming a previously arduous task into a quick and painless experience.
 
 ## Performance
 
@@ -42,19 +42,19 @@ Estimates; tested against a *Release* candidate v0.11.1 using a complex midi com
 - Core
    - Performance
       - Improve Resource consumption
-      - Improve GUI performance; it suffers with complex MIDI compositions
+      - ~~Improve GUI performance; it suffers with complex MIDI compositions~~
    - GUI
-      - Pattern colors
+      - ~~Pattern colors~~
       - 'Unslop' parts of the GUI
       - More keyboard shortcuts.
    - MIDI Input Support
    - Better implementation for Polyphonic Aftertouch
    - API Expansion
 - Plugins
-   - M64 - Export to repo
-   - M64 - Automatic adjustment of sequence memory code to match export requirements
-   - M64 - Loop Points
-   - OoT/MM Exporting
+   - ~~M64 - Export to repo~~
+   - ~~M64 - Automatic adjustment of sequence memory code to match export requirements~~
+   - ~~M64 - Loop Points~~
+   - ~~OoT/MM Exporting~~
 - Probably a lot more
 
 
