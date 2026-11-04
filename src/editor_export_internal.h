@@ -23,12 +23,14 @@ typedef struct {
     bool existed, backup_created;
 } DmRepositoryChange;
 
+enum { DM_PLUGIN_FILES = 64 }; /* Files an install may read and queue. */
+
 typedef struct {
     SDL_Thread *thread;
     SDL_AtomicInt cancel, done, progress;
     bool inspection, success, review, prepared;
     bool install, keep_originals; /* Folder install, and whether every original is kept. */
-    DmPluginFile reads[16], installs[16];
+    DmPluginFile reads[DM_PLUGIN_FILES], installs[DM_PLUGIN_FILES];
     size_t read_count, install_count;
     DmRepositoryChange *changes;
     size_t change_count;
@@ -66,13 +68,15 @@ typedef struct DmExportPlugins {
     int pending_format;
     int message_format;
     SDL_DialogFileFilter filter;
+
     /* Export to Repository folders by exporter ID, kept in duckmidi-plugins.ini. Entries of
        exporters that are not installed are kept too. */
     struct {
         char id[97], repository[DM_PATH];
     } folders[DM_EXPORT_MAX_FORMATS];
+
     size_t folder_count;
-    int folder_format; /* Exporter whose folder the Preferences picker sets, or -1. */
+    int folder_format;           /* Exporter whose folder the Preferences picker sets, or -1. */
     bool keep_originals;         /* Keep original files; on until the user turns it off. */
     DmRepositoryChange *changes; /* Changes made to repository since the last revert. */
     size_t change_count;

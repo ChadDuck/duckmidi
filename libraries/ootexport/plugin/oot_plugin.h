@@ -54,6 +54,7 @@ typedef struct {
     char port_notice[768];
     DmeEvent *events;
     OotReviewUi *review_ui;
+    OotText spec_cleaned; /* Install: the spec without removed songs. */
 } OotPluginJob;
 
 void *DME_CALL oot_ui_create(void);

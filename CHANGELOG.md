@@ -1,5 +1,9 @@
 # duckmidi changelog
 
+## 0.11.3
+
+1. OoT 'Export to Repository' removes songs earlier exports left behind after they were replaced, freeing their soundfonts; 'Revert repository export' brings them back.
+
 ## 0.11.2
 
 1. Pattern playback uses the instrument changes, volume, and pan from the pattern's spot in the song instead of the start of the song.

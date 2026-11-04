@@ -182,6 +182,25 @@ bool oot_patch_spec(const uint8_t *data, uint64_t size, const char *name, bool f
                     char *error, size_t capacity);
 /* Next soundfont index from spec/spec's Audiobank segment, or -1. */
 int oot_next_font_index(const uint8_t *data, uint64_t size, const char *name);
+
+/* The sequence ID a song takes: the replaced song's NA_BGM_* or NA_BGM_<NAME> for a new one. */
+void oot_song_id(const char *name, const char *song, char *out, size_t capacity);
+
+enum { OOT_SONG_NAME_CAPACITY = 64 };
+
+/* Custom songs a spec includes: sequences other than seq_N and soundfonts other than
+   Soundfont_N, each name once. */
+size_t oot_custom_songs(const uint8_t *data, uint64_t size, char names[][OOT_SONG_NAME_CAPACITY],
+                        size_t capacity);
+/* Custom soundfonts in spec order; vanilla counts the Soundfont_N includes. */
+size_t oot_custom_fonts(const uint8_t *data, uint64_t size, char names[][OOT_SONG_NAME_CAPACITY],
+                        size_t capacity, unsigned *vanilla);
+/* Whether Sequence_<song> stays in the sequence table once name is installed for song ID id. */
+bool oot_song_kept(const uint8_t *table, uint64_t size, const char *song, const char *name,
+                   const char *id);
+/* The spec without the sequence and soundfont includes of the given custom songs. */
+bool oot_spec_without(const uint8_t *data, uint64_t size, char names[][OOT_SONG_NAME_CAPACITY],
+                      size_t count, OotText *out);
 /* Raises every audio spec's temporary sequence/font cache below the given sizes and grows the
    audio heap by the largest increase. *growth receives that increase. */
 bool oot_patch_session_config(const uint8_t *data, uint64_t size, uint32_t sequence_cache,

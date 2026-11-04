@@ -31,7 +31,9 @@ enum { DME_BOOL, DME_INT, DME_TEXT, DME_CHOICE, DME_MAPPING, DME_NOTICE, DME_ACT
 
 enum { DME_LOOP_START = 1u, DME_LOOP_END = 2u }; /* DmeContext.loop_points */
 
-enum { DME_INSTALL_BACKUP = 1u }; /* install_file: keep the original even without backups */
+/* install_file flags: BACKUP keeps the original even without backups; REMOVE deletes the file
+   (data NULL, size 0), recorded so Revert restores it. */
+enum { DME_INSTALL_BACKUP = 1u, DME_INSTALL_REMOVE = 2u };
 
 typedef struct {
     uint64_t tick, source_id;

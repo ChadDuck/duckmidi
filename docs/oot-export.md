@@ -59,6 +59,8 @@ Game sample audio is not included; your checkout supplies it.
 
 The export writes `assets/audio/sequences/<name>.seq` and `assets/audio/soundfonts/Soundfont_<name>.xml`, registers the song in `include/tables/sequence_table.h`, and adds both files to `spec/spec`. A new soundfont takes the next free index; exporting again keeps it. Files with these names that duckmidi did not create are never replaced.
 
+OoT has room for 48 soundfonts, 38 of them vanilla. When an export replaces a song an earlier export installed, or finds duckmidi songs the sequence table no longer uses, it removes their sequence and soundfont files and `spec/spec` lines, and renumbers the remaining duckmidi soundfonts so their indices have no gaps. Files duckmidi did not create are left alone. **Revert repository export** restores the removed files.
+
 When a replaced song is a fanfare that loads into the small persistent cache and your song is larger, its table entry switches to the temporary cache.
 
 **Keep original files** (on by default, above the export buttons) saves a copy of each checkout file before the export changes it, as `<file>.bkp` beside it. With it off, files are replaced directly, except the audio memory files, which are always kept. **Revert repository export** restores every changed file and removes the backups the exports created.

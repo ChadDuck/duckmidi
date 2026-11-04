@@ -450,7 +450,7 @@ static int32_t DME_CALL read_file(void *user, const char *path, const uint8_t **
     DmPluginWork *w = user;
     char full[DM_PATH], error[256];
 
-    if (!install_path(path) || w->read_count == 16 ||
+    if (!install_path(path) || w->read_count == DM_PLUGIN_FILES ||
         !repository_file(w->destination, path, full, sizeof(full))) {
         return 0;
     }
@@ -472,8 +472,11 @@ static int32_t DME_CALL install_file(void *user, const char *path, const uint8_t
                                      uint64_t size, uint32_t flags) {
     DmPluginWork *w = user;
 
-    if (!install_path(path) || w->install_count == 16 || (!data && size) ||
-        size > 64ULL * 1024 * 1024 || flags > DME_INSTALL_BACKUP) {
+    bool remove = flags & DME_INSTALL_REMOVE;
+
+    if (!install_path(path) || w->install_count == DM_PLUGIN_FILES || (!data && size) ||
+        size > 64ULL * 1024 * 1024 || (flags & ~(DME_INSTALL_BACKUP | DME_INSTALL_REMOVE)) ||
+        (remove && size)) {
         snprintf(w->message, sizeof(w->message), DM_TEXT_EXPORTER_QUEUED_INVALID_REPOSITORY);
         return 0;
     }
@@ -563,6 +566,12 @@ static bool commit_install(DmPluginWork *w) {
         }
 
         change->existed = dm_read(change->path, &change->original, error, sizeof(error));
+        bool remove = file->flags & DME_INSTALL_REMOVE;
+
+        if (remove && !change->existed) {
+            continue; /* Already gone: nothing to remove or revert. */
+        }
+
         ++w->change_count;
         bool keep = w->keep_originals || (file->flags & DME_INSTALL_BACKUP);
 
@@ -587,6 +596,16 @@ static bool commit_install(DmPluginWork *w) {
                 missing_folder(w->destination, folder, change->created, sizeof(change->created));
                 SDL_CreateDirectory(folder);
             }
+        }
+
+        if (remove) {
+            if (!SDL_RemovePath(change->path)) {
+                snprintf(w->message, sizeof(w->message), DM_TEXT_CANNOT_WRITE, file->path,
+                         SDL_GetError());
+                return false;
+            }
+
+            continue;
         }
 
         if (!dm_write(change->path, file->data.data, file->data.size, error, sizeof(error))) {
@@ -652,7 +671,7 @@ static void clear_work(DmPluginWork *w) {
         dm_bytes_free(&w->artifacts[i].data);
     }
 
-    for (size_t i = 0; i < 16; i++) {
+    for (size_t i = 0; i < DM_PLUGIN_FILES; i++) {
         dm_bytes_free(&w->reads[i].data);
         dm_bytes_free(&w->installs[i].data);
     }

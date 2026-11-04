@@ -192,21 +192,25 @@ static bool is_definition(const uint8_t *line, uint64_t length, bool *pointer) {
     return true;
 }
 
+void oot_song_id(const char *name, const char *song, char *out, size_t capacity) {
+    if (song) {
+        snprintf(out, capacity, "%s", song);
+        return;
+    }
+
+    snprintf(out, capacity, "NA_BGM_%s", name);
+
+    for (char *c = out; *c; c++) {
+        *c = (char)toupper((unsigned char)*c);
+    }
+}
+
 bool oot_patch_sequence_table(const uint8_t *data, uint64_t size, const char *name,
                               const char *song, uint64_t sequence_bytes, OotText *out, char *notice,
                               size_t notice_capacity, char *error, size_t capacity) {
     char symbol[96], id[96];
     snprintf(symbol, sizeof(symbol), "Sequence_%s", name);
-
-    if (song) {
-        snprintf(id, sizeof(id), "%s", song);
-    } else {
-        snprintf(id, sizeof(id), "NA_BGM_%s", name);
-
-        for (char *c = id; *c; c++) {
-            *c = (char)toupper((unsigned char)*c);
-        }
-    }
+    oot_song_id(name, song, id, sizeof(id));
 
     if (notice && notice_capacity) {
         *notice = 0;
@@ -367,6 +371,167 @@ int oot_next_font_index(const uint8_t *data, uint64_t size, const char *name) {
     }
 
     return count;
+}
+
+/* The name in an include line after prefix, up to `.o"`; empty when the line has none. */
+static void include_name(const uint8_t *line, uint64_t length, const char *prefix, char *out,
+                         size_t capacity) {
+    size_t n = strlen(prefix);
+    out[0] = 0;
+
+    for (uint64_t i = 0; i + n <= length; i++) {
+        if (memcmp(line + i, prefix, n)) {
+            continue;
+        }
+
+        uint64_t begin = i + n, end = begin;
+
+        while (end < length && line[end] != '.' && line[end] != '"') {
+            end++;
+        }
+
+        if (end + 3 <= length && !memcmp(line + end, ".o\"", 3) && end - begin < capacity) {
+            memcpy(out, line + begin, (size_t)(end - begin));
+            out[end - begin] = 0;
+        }
+
+        return;
+    }
+}
+
+static bool all_digits(const char *s) {
+    if (!*s) {
+        return false;
+    }
+
+    for (; *s; s++) {
+        if (!isdigit((unsigned char)*s)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* The name of a custom (not extracted vanilla) sequence or soundfont included by a spec line. */
+static bool custom_include(const uint8_t *line, uint64_t length, bool font, char *out,
+                           size_t capacity) {
+    if (font) {
+        include_name(line, length, "assets/audio/soundfonts/Soundfont_", out, capacity);
+        return *out && !all_digits(out);
+    }
+
+    include_name(line, length, "assets/audio/sequences/", out, capacity);
+    return *out && strncmp(out, "seq_", 4);
+}
+
+static bool listed_name(char names[][OOT_SONG_NAME_CAPACITY], size_t count, const char *name) {
+    for (size_t i = 0; i < count; i++) {
+        if (!strcmp(names[i], name)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+size_t oot_custom_songs(const uint8_t *data, uint64_t size, char names[][OOT_SONG_NAME_CAPACITY],
+                        size_t capacity) {
+    const char *segments[] = {"Audioseq", "Audiobank"};
+    size_t count = 0;
+
+    for (int s = 0; s < 2; s++) {
+        uint64_t begin, end;
+
+        if (!find_segment(data, size, segments[s], &begin, &end)) {
+            continue;
+        }
+
+        uint64_t at = begin, start, length, next;
+
+        while (at < end && next_line(data, end, &at, &start, &length, &next)) {
+            char name[OOT_SONG_NAME_CAPACITY];
+
+            if (custom_include(data + start, length, s == 1, name, sizeof(name)) &&
+                !listed_name(names, count, name) && count < capacity) {
+                snprintf(names[count++], OOT_SONG_NAME_CAPACITY, "%s", name);
+            }
+        }
+    }
+
+    return count;
+}
+
+size_t oot_custom_fonts(const uint8_t *data, uint64_t size, char names[][OOT_SONG_NAME_CAPACITY],
+                        size_t capacity, unsigned *vanilla) {
+    uint64_t begin, end;
+    size_t count = 0;
+    *vanilla = 0;
+
+    if (!find_segment(data, size, "Audiobank", &begin, &end)) {
+        return 0;
+    }
+
+    uint64_t at = begin, start, length, next;
+
+    while (at < end && next_line(data, end, &at, &start, &length, &next)) {
+        char name[OOT_SONG_NAME_CAPACITY];
+
+        if (custom_include(data + start, length, true, name, sizeof(name))) {
+            if (count < capacity) {
+                snprintf(names[count++], OOT_SONG_NAME_CAPACITY, "%s", name);
+            }
+        } else if (*name) {
+            (*vanilla)++;
+        }
+    }
+
+    return count;
+}
+
+/* Whether Sequence_<song> is still in the table once name replaces the song with ID id. */
+bool oot_song_kept(const uint8_t *table, uint64_t size, const char *song, const char *name,
+                   const char *id) {
+    if (!strcmp(song, name)) {
+        return true;
+    }
+
+    char symbol[OOT_SONG_NAME_CAPACITY + 16];
+    snprintf(symbol, sizeof(symbol), "Sequence_%s", song);
+    uint64_t at = 0, start, length, next;
+
+    while (next_line(table, size, &at, &start, &length, &next)) {
+        bool pointer;
+        char args[5][96];
+        uint64_t spans[5][2];
+
+        if (is_definition(table + start, length, &pointer) && !pointer &&
+            table_arguments(table + start, length, args, spans) == 5 && strcmp(args[1], id) &&
+            !strcmp(args[0], symbol)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool oot_spec_without(const uint8_t *data, uint64_t size, char names[][OOT_SONG_NAME_CAPACITY],
+                      size_t count, OotText *out) {
+    *out = (OotText){0};
+    uint64_t at = 0, start, length, next;
+
+    while (next_line(data, size, &at, &start, &length, &next)) {
+        char name[OOT_SONG_NAME_CAPACITY];
+        bool drop = (custom_include(data + start, length, false, name, sizeof(name)) ||
+                     custom_include(data + start, length, true, name, sizeof(name))) &&
+                    listed_name(names, count, name);
+
+        if (!drop) {
+            oot_text_append(out, (const char *)data + start, (size_t)(next - start));
+        }
+    }
+
+    return !out->failed;
 }
 
 bool oot_patch_spec(const uint8_t *data, uint64_t size, const char *name, bool font, OotText *out,

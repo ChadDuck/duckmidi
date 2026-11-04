@@ -123,7 +123,8 @@ add_custom_target(export_registry_fixtures
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${TEST_BIN}/plugins"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:m64export>" "${REGISTRY_FIXTURES}/m64.dll"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:plugin_fixture>" "${TEST_BIN}/plugins/fixture.dll"
-  DEPENDS m64export plugin_fixture plugin_bad-abi plugin_bad-schema plugin_missing-entry
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ootexport>" "${TEST_BIN}/plugins/"
+  DEPENDS m64export ootexport plugin_fixture plugin_bad-abi plugin_bad-schema plugin_missing-entry
     plugin_allocation-failure plugin_z-duplicate VERBATIM)
 add_dependencies(export_plugins_test export_registry_fixtures)
 add_executable(export_registry_test export_registry_test.c "${PROJECT_SOURCE_DIR}/src/export_plugins.c")

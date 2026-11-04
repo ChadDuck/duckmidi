@@ -24,6 +24,7 @@ Descriptors and function tables live until module unload. Instances and jobs are
 | `DME_SINGLE_FILE`, `DME_ZIP` | Save exactly one artifact, or package artifacts into ZIP. |
 | `DME_LOOP_START`, `DME_LOOP_END` | Bits of `DmeContext.loop_points`: the arrangement marks a loop start, a loop end, or both. |
 | `DME_INSTALL_BACKUP` | `install_file` flag: keep the original file even when the user turned backups off. |
+| `DME_INSTALL_REMOVE` | `install_file` flag: delete the file (`data` NULL, `size` 0). Revert restores it; it is kept as a backup like a replaced file. |
 
 ## Public data types
 
@@ -303,11 +304,11 @@ free(buffer); /* Safe after the callback has copied it. */
 
 ### `read_file(host->user, path, &data, &size)` — install only
 
-Read a file below the chosen folder. `path` is relative and uses `/`; absolute paths, `..` and drive letters are rejected. Returns zero when the file is missing or unreadable. The bytes stay valid until `install` returns. Up to 16 files can be read per install. NULL outside `install`.
+Read a file below the chosen folder. `path` is relative and uses `/`; absolute paths, `..` and drive letters are rejected. Returns zero when the file is missing or unreadable. The bytes stay valid until `install` returns. Up to 64 files can be read per install. NULL outside `install`.
 
 ### `install_file(host->user, path, data, size, flags)` — install only
 
-Queue a whole file for writing below the chosen folder, using the same path rules. The host copies the bytes. `flags` may be `DME_INSTALL_BACKUP`. Up to 16 files of at most 64 MiB each. Returns zero for invalid paths, sizes or flags. NULL outside `install`.
+Queue a whole file for writing below the chosen folder, using the same path rules. The host copies the bytes. `flags` may be `DME_INSTALL_BACKUP` and `DME_INSTALL_REMOVE`; removing a missing file does nothing. Up to 64 files of at most 64 MiB each. Returns zero for invalid paths, sizes or flags. NULL outside `install`.
 
 ## Registration example and limits
 
