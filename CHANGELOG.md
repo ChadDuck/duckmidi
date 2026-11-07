@@ -25,7 +25,8 @@
         - Hitting 'Save' finalizes those changes.
     - Waveform and envelope values are modifiable with a visual graph.
         - Click and drag along these graphs in a responsive & intuitive manner
-    - Pitch hints that read the filename and the audio have been implemented
+    - Typical sample metadata is also parsed and imported.
+        - Things like root note, loop points, playback start & end position; all imported.
         - duckmidi reads filename and metadata information to populate options *for you*.
 
 ## **Custom Sample Export**

@@ -21,7 +21,7 @@ static int32_t DME_CALL read_pcm(void *user, uint32_t asset, uint64_t start, uin
     return DME_OK;
 }
 
-static void signal(bool harmonic) {
+static void fill_input(bool harmonic) {
     for (unsigned i = 0; i < FRAMES; ++i) {
         double phase = 6.283185307179586 * i / RATE;
         input[i] = (float)(.15 * sin(440 * phase) + (harmonic ? .15 * sin(6600 * phase) : 0));
@@ -254,7 +254,7 @@ int main(void) {
                                 .loop_mode = DME_SAMPLE_LOOP_CONTINUOUS,
                                 .loop_start = 0,
                                 .loop_end = FRAMES};
-    signal(false);
+    fill_input(false);
     DmeSampleZoneParams trimmed = zone;
     trimmed.loop_mode = DME_SAMPLE_NO_LOOP;
     trimmed.playback_start = RATE / 2;
@@ -267,7 +267,7 @@ int main(void) {
     render_zone(trimmed, 69, 0);
     assert(tone(880, 2400, 4800) > .01 && tone(440, 2400, 4800) < .001);
     assert(tone(880, 24000, 12000) < .00001);
-    signal(false);
+    fill_input(false);
     puts("PASS playback boundaries select the audible source segment and stop at its end");
     check_live_edit_and_cut(zone);
     render_zone(zone, 69, false);
@@ -314,7 +314,7 @@ int main(void) {
     assert(tone(440, 4800, 38400) > flat * 1.5);
     puts("PASS gain, hard pan, key range and filter resonance");
     zone.tone.cutoff = zone.tone.resonance = 0;
-    signal(true);
+    fill_input(true);
     render_zone(zone, 69, false);
     double high = tone(6600, 4800, 38400);
     zone.tone.cutoff = 1200;
@@ -326,7 +326,7 @@ int main(void) {
     assert(tone(6600, 24000, 19200) > high * .3);
     puts("PASS low-pass cutoff and an envelope that opens the filter");
     zone.tone.filter_depth = zone.attack = zone.tone.cutoff = 0;
-    signal(false);
+    fill_input(false);
     zone.tone.vibrato_rate = 5;
     zone.tone.vibrato_depth = 80;
     render_zone(zone, 69, false);

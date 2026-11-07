@@ -10,6 +10,7 @@
 #include <windows.h>
 #else
 #include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 typedef struct {
@@ -674,30 +675,41 @@ int main(int argc, char **argv) {
     puts(
         "PASS interrupted recovery retains unknown outside edits and succeeds after conflict resolution");
 
-    r = open_repository(plugins, checkout, &host);
 #ifdef _WIN32
-    snprintf(path, sizeof(path), "%s/audio/bank.cfg", checkout);
+    bool permissions_enforced = true;
 #else
-    snprintf(path, sizeof(path), "%s/audio", checkout);
+    /* Root ignores directory permissions, so a read-only directory cannot deny the write. */
+    bool permissions_enforced = geteuid() != 0;
 #endif
-    state.deny = path;
-    recipe = (Recipe){1, 13, 900};
-    assert(
-        !es_repository_apply(r, "denied", "Denied", &recipe, sizeof(recipe), error, sizeof(error)));
+
+    if (permissions_enforced) {
+        r = open_repository(plugins, checkout, &host);
 #ifdef _WIN32
-    assert(CloseHandle(state.lock));
+        snprintf(path, sizeof(path), "%s/audio/bank.cfg", checkout);
 #else
-    assert(!chmod(path, 0755));
+        snprintf(path, sizeof(path), "%s/audio", checkout);
 #endif
-    state = (Boundary){0};
-    expect(r, "audio/bank.cfg", "initialized bank");
-    expect(r, "audio/songs/denied.seq", NULL);
-    es_repository_close(r);
-    r = open_repository(plugins, checkout, &host);
-    apply(r, "denied", recipe);
-    revert(r, NULL);
-    es_repository_close(r);
-    puts("PASS denied native write rolls back completed files and a later retry succeeds");
+        state.deny = path;
+        recipe = (Recipe){1, 13, 900};
+        assert(!es_repository_apply(r, "denied", "Denied", &recipe, sizeof(recipe), error,
+                                    sizeof(error)));
+#ifdef _WIN32
+        assert(CloseHandle(state.lock));
+#else
+        assert(!chmod(path, 0755));
+#endif
+        state = (Boundary){0};
+        expect(r, "audio/bank.cfg", "initialized bank");
+        expect(r, "audio/songs/denied.seq", NULL);
+        es_repository_close(r);
+        r = open_repository(plugins, checkout, &host);
+        apply(r, "denied", recipe);
+        revert(r, NULL);
+        es_repository_close(r);
+        puts("PASS denied native write rolls back completed files and a later retry succeeds");
+    } else {
+        puts("SKIP denied native write rollback: permissions are not enforced for root");
+    }
 
     r = open_repository(plugins, checkout, &host);
     apply(r, "bulk", (Recipe){5, 0, 0});
