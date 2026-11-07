@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../../export_support/curves.h"
 #include <limits.h>
 
 bool reserve(void **p, size_t *cap, size_t count, size_t width) {
@@ -223,12 +224,145 @@ static void sequence_memory_warning(Compile *c) {
     }
 }
 
+typedef struct {
+    Compile *c;
+    const size_t *events; /* Request event of each curve point. */
+} CurveFit;
+
+/* es_fit_curves callback: encodes with the kept curve points and one phrase layout. */
+static int render_curves(void *user, const bool *keep, uint64_t *bytes) {
+    CurveFit *f = user;
+    Compile *c = f->c;
+    uint64_t count = c->request->event_count;
+
+    for (uint64_t i = 0; i < count; i++) {
+        c->curve_skip[i] = false;
+    }
+
+    for (size_t i = 0; f->events[i] != SIZE_MAX; i++) {
+        c->curve_skip[f->events[i]] = !keep[i];
+    }
+
+    free(c->result->files[M64_SEQUENCE].data);
+    c->result->files[M64_SEQUENCE] = (Buffer){0};
+    c->result->status = M64_OK;
+
+    if (cancelled(c, 2, 0)) {
+        return -1;
+    }
+
+    c->phrase_notes = 4;
+    bool ok = sequence(c);
+    *bytes = c->result->files[M64_SEQUENCE].size;
+
+    if (c->result->status != M64_OK && c->result->status != M64_LIMIT) {
+        return -1;
+    }
+
+    free(c->result->files[M64_SEQUENCE].data);
+    c->result->files[M64_SEQUENCE] = (Buffer){0};
+    c->result->status = M64_OK;
+    return ok;
+}
+
+/* Before any note changes: leaves out volume, expression, pan and pitch-bend points within
+   audible bounds (es_fit_curves), keeping as many as fit. */
+static bool fit_curves(Compile *c) {
+    uint64_t count = c->request->event_count;
+    EsCurvePoint *points = malloc((count + 1) * sizeof(*points));
+    size_t *events = malloc((count + 1) * sizeof(*events));
+    bool *keep = malloc((count + 1) * sizeof(*keep));
+    c->curve_skip = calloc(count + 1, sizeof(*c->curve_skip));
+    unsigned range[16], rpn[16];
+    size_t n = 0;
+    int fits = -1;
+
+    for (unsigned ch = 0; ch < 16; ch++) {
+        range[ch] = 2;
+        rpn[ch] = 0x3fff;
+    }
+
+    for (uint64_t i = 0; points && events && keep && c->curve_skip && i < count; i++) {
+        const M64Event *e = &c->request->events[i];
+        unsigned type = e->status & MIDI_STATUS_MASK, ch = e->status & MIDI_CHANNEL_MASK;
+        int kind = -1, value = 0;
+
+        if (e->status >= MIDI_SYSTEM) {
+            continue;
+        }
+
+        if (type == MIDI_CONTROL && e->a == MIDI_CC_RPN_MSB) {
+            rpn[ch] = (rpn[ch] & 127) | e->b << 7;
+        } else if (type == MIDI_CONTROL && e->a == MIDI_CC_RPN_LSB) {
+            rpn[ch] = (rpn[ch] & (127u << 7)) | e->b;
+        } else if (type == MIDI_CONTROL && e->a == MIDI_CC_DATA && !rpn[ch]) {
+            range[ch] = e->b;
+        } else if (type == MIDI_CONTROL && (e->a == MIDI_CC_VOLUME || e->a == MIDI_CC_EXPRESSION)) {
+            kind = ES_CURVE_VOLUME;
+            value = (int)e->b;
+        } else if (type == MIDI_CONTROL && e->a == MIDI_CC_PAN) {
+            kind = ES_CURVE_PAN;
+            value = (int)e->b;
+        } else if (type == MIDI_PITCH_BEND) {
+            kind = ES_CURVE_BEND;
+            value = (int)lround(((double)(e->b << 7 | e->a) - 8192) / 8192 * range[ch] * 100);
+        }
+
+        if (kind >= 0) {
+            unsigned which = type == MIDI_PITCH_BEND ? 3 : e->a == MIDI_CC_PAN ? 2 : e->a & 1;
+            points[n] = (EsCurvePoint){tick48(c, e->tick), value, ch * 4 + which, (uint8_t)kind};
+            events[n++] = (size_t)i;
+        }
+    }
+
+    if (points && events && keep && c->curve_skip && n) {
+        events[n] = SIZE_MAX;
+        CurveFit fit = {c, events};
+        uint64_t bytes = 0;
+
+        for (size_t i = 0; i < n; i++) {
+            keep[i] = true;
+        }
+
+        fits = render_curves(&fit, keep, &bytes) < 0
+                   ? -1
+                   : es_fit_curves(points, n, bytes, 0xFFFF, 24, render_curves, &fit, keep);
+    }
+
+    free(points);
+    free(events);
+    free(keep);
+
+    /* The chosen points are in curve_skip; encode them with every phrase layout. */
+    if (fits > 0 && lossless_sequence(c)) {
+        return true;
+    }
+
+    free(c->curve_skip);
+    c->curve_skip = NULL;
+    return false;
+}
+
 static bool fit_sequence(Compile *c) {
     size_t diagnostics = c->result->count;
     bool baseline_warned[256];
     memcpy(baseline_warned, c->warned, sizeof(baseline_warned));
 
     if (lossless_sequence(c)) {
+        sequence_memory_warning(c);
+        return true;
+    }
+
+    if (c->result->status != M64_OK && c->result->status != M64_LIMIT) {
+        return false;
+    }
+
+    c->result->status = M64_OK;
+
+    if (fit_curves(c)) {
+        diagnose(c, M64_WARNING, 64, NULL,
+                 "Volume, pan and pitch-bend curves were simplified to fit 64 KiB; notes are "
+                 "unchanged.");
         sequence_memory_warning(c);
         return true;
     }
@@ -353,6 +487,14 @@ static bool fit_sequence(Compile *c) {
 }
 
 const M64Instrument *program_definition(const Compile *c, uint32_t p) {
+    if (p >= M64_CUSTOM_STOCK_BASE) {
+        return &gm_programs[(p - M64_CUSTOM_STOCK_BASE) >> 8];
+    }
+
+    if (p >= 4096) {
+        return &c->custom->definitions[(p - 4096) >> 8];
+    }
+
     if (c->request->channel_programs) {
         return &c->request->channel_programs[(p >> 8) * 128 + (p & 127)];
     }
@@ -360,7 +502,24 @@ const M64Instrument *program_definition(const Compile *c, uint32_t p) {
     return &(c->request->programs ? c->request->programs : gm_programs)[p & 127];
 }
 
+bool m64_range_origin(const M64Result *result, uint64_t index, uint64_t *out) {
+    if (!result || index >= result->range_count || !out) {
+        return false;
+    }
+
+    *out = result->range_origins[index];
+    return true;
+}
+
 const M64Instrument *drum_definition(const Compile *c, uint32_t p) {
+    if (p >= 256) {
+        return &gm_drums[p - 256];
+    }
+
+    if (p >= 128) {
+        return &c->custom_drums[p - 128];
+    }
+
     return &(c->request->drums ? c->request->drums : gm_drums)[p];
 }
 
@@ -396,8 +555,8 @@ static bool instrument_valid(const M64Instrument *i) {
     return true;
 }
 
-static int32_t compile_common(const M64Request *q, const M64Hooks *h, M64Result **out,
-                              bool analysis) {
+int32_t m64_compile_custom(const M64Request *q, const M64Hooks *h, const M64Custom *custom,
+                           bool analysis, M64Result **out) {
     if (!out) {
         return M64_INVALID;
     }
@@ -412,6 +571,7 @@ static int32_t compile_common(const M64Request *q, const M64Hooks *h, M64Result 
     *out = r;
     Compile c = {0};
     c.request = q;
+    c.custom = custom;
     c.hooks = h;
     c.result = r;
     c.tempo_scale = 1;
@@ -430,15 +590,11 @@ static int32_t compile_common(const M64Request *q, const M64Hooks *h, M64Result 
         return r->status;
     }
 
-    for (unsigned i = 0; i < 4096; i++) {
-        c.slots[i] = -1;
-    }
-
-    for (unsigned i = 0; i < 128; i++) {
+    for (unsigned i = 0; i < 384; i++) {
         c.drums[i] = -1;
 
-        if (!instrument_valid(program_definition(&c, i)) ||
-            !instrument_valid(drum_definition(&c, i))) {
+        if (i < 128 && (!instrument_valid(program_definition(&c, i)) ||
+                        !instrument_valid(drum_definition(&c, i)))) {
             r->status = M64_INVALID;
             diagnose(&c, M64_ERROR, 2, NULL, "Invalid instrument definition at index %u.", i);
             return r->status;
@@ -454,6 +610,26 @@ static int32_t compile_common(const M64Request *q, const M64Hooks *h, M64Result 
                 return r->status;
             }
         }
+    }
+
+    if (custom &&
+        (!custom->samples || !custom->definitions || (c.coopdx && custom->samples->count) ||
+         custom->samples->count > ES_NATIVE_REGIONS ||
+         custom->samples->event_count != q->event_count)) {
+        r->status = M64_INVALID;
+        return r->status;
+    }
+
+    size_t slots = custom ? M64_CUSTOM_STOCK_BASE + 128 * 256 : 4096;
+    c.slots = malloc(slots * sizeof(*c.slots));
+
+    if (!c.slots) {
+        r->status = M64_NOMEM;
+        return r->status;
+    }
+
+    for (size_t i = 0; i < slots; i++) {
+        c.slots[i] = -1;
     }
 
     for (uint64_t i = 0; i < q->event_count; i++) {
@@ -478,6 +654,9 @@ static int32_t compile_common(const M64Request *q, const M64Hooks *h, M64Result 
     }
 
     free(c.notes);
+    free(c.fx);
+    free(c.curve_skip);
+    free(c.slots);
 
     for (unsigned i = 0; i < M64_ARTIFACT_COUNT; i++) {
         if (r->files[i].failed && r->status == M64_OK) {
@@ -510,11 +689,11 @@ static int32_t M64_CALL diagnostic_at(const M64Result *r, uint64_t i, M64Diagnos
 }
 
 static int32_t M64_CALL compile_request(const M64Request *q, const M64Hooks *h, M64Result **out) {
-    return compile_common(q, h, out, false);
+    return m64_compile_custom(q, h, NULL, false, out);
 }
 
 static int32_t M64_CALL analyze(const M64Request *q, const M64Hooks *h, M64Result **out) {
-    return compile_common(q, h, out, true);
+    return m64_compile_custom(q, h, NULL, true, out);
 }
 
 static uint64_t M64_CALL artifact_count(const M64Result *r) {
@@ -539,6 +718,7 @@ static void M64_CALL result_free(M64Result *r) {
         }
 
         free(r->ranges);
+        free(r->range_origins);
         free(r->diagnostics);
         free(r);
     }

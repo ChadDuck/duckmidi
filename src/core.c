@@ -150,9 +150,101 @@ bool dm_port_mix_set(DmProject *p, DmPortMix mix) {
     return true;
 }
 
+bool dm_sample_id_valid(const char *text) {
+    for (size_t i = 0; i < DM_SAMPLE_ID_CAP; ++i) {
+        char c = text[i];
+
+        if (!c) {
+            return i > 0;
+        }
+
+        bool word = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+
+        if (!word && (i == 0 || (c != '-' && c != '_'))) {
+            return false;
+        }
+    }
+
+    return false;
+}
+
+static bool patch_key_equal(DmPatchKey a, DmPatchKey b) {
+    return a.bank == b.bank && a.port == b.port && a.channel == b.channel &&
+           a.program == b.program && a.drums == b.drums;
+}
+
+bool dm_patch_replacement_valid(const DmPatchReplacement *r) {
+    if (r->key.bank > 16383 || r->key.port >= DM_NOTE_PORTS || r->key.channel >= 16 ||
+        r->key.program > 127) {
+        return false;
+    }
+
+    if (!r->generation) {
+        return r->key.port && !r->locator[0] && !r->set_id[0] && !r->preset_id[0];
+    }
+
+    return r->locator[0] && memchr(r->locator, 0, sizeof(r->locator)) &&
+           dm_sample_id_valid(r->set_id) && dm_sample_id_valid(r->preset_id);
+}
+
+const DmPatchReplacement *dm_patch_replacement_exact(const DmProject *p, DmPatchKey key) {
+    for (size_t i = 0; i < p->patch_replacement_count; ++i) {
+        if (patch_key_equal(p->patch_replacements[i].key, key)) {
+            return &p->patch_replacements[i];
+        }
+    }
+
+    return NULL;
+}
+
+const DmPatchReplacement *dm_patch_replacement(const DmProject *p, DmPatchKey key) {
+    const DmPatchReplacement *found = dm_patch_replacement_exact(p, key);
+
+    if (!found && key.port) {
+        key.port = 0;
+        found = dm_patch_replacement_exact(p, key);
+    }
+
+    return found;
+}
+
+bool dm_patch_replacement_set(DmProject *p, const DmPatchReplacement *r) {
+    if (!dm_patch_replacement_valid(r)) {
+        return false;
+    }
+
+    const DmPatchReplacement *found = dm_patch_replacement_exact(p, r->key);
+
+    if (found) {
+        p->patch_replacements[found - p->patch_replacements] = *r;
+        return true;
+    }
+
+    size_t count = p->patch_replacement_count;
+
+    if (count >= DM_PATCH_REPLACEMENTS_MAX ||
+        !dm_reserve((void **)&p->patch_replacements, &p->patch_replacement_capacity,
+                    count + 1, sizeof(*p->patch_replacements))) {
+        return false;
+    }
+
+    p->patch_replacements[p->patch_replacement_count++] = *r;
+    return true;
+}
+
+void dm_patch_replacement_clear(DmProject *p, DmPatchKey key) {
+    const DmPatchReplacement *found = dm_patch_replacement_exact(p, key);
+
+    if (found) {
+        size_t index = (size_t)(found - p->patch_replacements);
+        --p->patch_replacement_count;
+        memmove(p->patch_replacements + index, p->patch_replacements + index + 1,
+                (p->patch_replacement_count - index) * sizeof(*p->patch_replacements));
+    }
+}
+
 void dm_channel_ports(const DmProject *p, int channel, bool used[DM_NOTE_PORTS]) {
     memset(used, 0, DM_NOTE_PORTS * sizeof(*used));
-    used[0] = true;
 
     for (size_t i = 0; i < p->clip_count; i++) {
         if (p->clips[i].channel == channel) {
@@ -201,6 +293,7 @@ void dm_project_free(DmProject *p) {
 
     free(p->views);
     free(p->port_mix);
+    free(p->patch_replacements);
     dm_bytes_free(&p->original);
     memset(p, 0, sizeof(*p));
 }
@@ -220,6 +313,8 @@ bool dm_project_copy(DmProject *destination, const DmProject *source) {
     next.original = (DmBytes){0};
     next.port_mix = NULL;
     next.port_mix_count = next.port_mix_capacity = 0;
+    next.patch_replacements = NULL;
+    next.patch_replacement_count = next.patch_replacement_capacity = 0;
 
     if (!dm_reserve((void **)&next.port_mix, &next.port_mix_capacity, source->port_mix_count,
                     sizeof(DmPortMix))) {
@@ -231,6 +326,17 @@ bool dm_project_copy(DmProject *destination, const DmProject *source) {
     }
 
     next.port_mix_count = source->port_mix_count;
+
+    if (source->patch_replacement_count) {
+        if (!dm_reserve((void **)&next.patch_replacements, &next.patch_replacement_capacity,
+                        source->patch_replacement_count, sizeof(*next.patch_replacements))) {
+            goto fail;
+        }
+
+        memcpy(next.patch_replacements, source->patch_replacements,
+               source->patch_replacement_count * sizeof(*next.patch_replacements));
+        next.patch_replacement_count = source->patch_replacement_count;
+    }
 
     if (!dm_reserve((void **)&next.patterns, &next.pattern_capacity, source->pattern_count,
                     sizeof(DmPattern))) {

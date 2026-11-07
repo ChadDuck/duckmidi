@@ -11,7 +11,10 @@ Dependency licenses are kept in `vendor/licenses/` and the vendored source trees
 | SDL 3.2.28 | GPU renderer, audio, dialogs and platform services | [zlib](vendor/licenses/SDL3-zlib.txt) | https://github.com/libsdl-org/SDL/tree/release-3.2.28 |
 | RtMidi 6.0.0 | External MIDI and C wrapper | [MIT](vendor/licenses/RtMidi-MIT.txt) | https://github.com/thestk/rtmidi/tree/6.0.0 |
 | FluidSynth 2.5.4 | Dynamically linked synthesizer | [LGPL 2.1](vendor/licenses/FluidSynth-LGPL.txt), upstream permits 2.1 or later | https://github.com/FluidSynth/fluidsynth/tree/v2.5.4 |
-| FFmpeg 9.0.2 | Dynamically linked audio encoders and containers; minimal Windows LGPL build | [LGPL 3](vendor/licenses/FFmpeg-LGPL3.txt), incorporating [GPL 3](vendor/licenses/GCC-GPL3.txt) | https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz |
+| FFmpeg 9.0.2 | Dynamically linked audio codecs and containers in the minimal LGPL build | [LGPL 3](vendor/licenses/FFmpeg-LGPL3.txt), incorporating [GPL 3](vendor/licenses/GCC-GPL3.txt) | https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz |
+| yyjson 0.12.0 | Sample manifests and native repository JSON | [MIT](vendor/licenses/yyjson-MIT.txt) | https://github.com/ibireme/yyjson/tree/8b4a38dc994a110abaec8a400615567bd996105f |
+| pugixml 1.15 | Native repository XML | [MIT](vendor/licenses/pugixml-MIT.txt) | https://github.com/zeux/pugixml/tree/v1.15 |
+| SQLite 3.50.4 | Plugin-owned repository history | [Public-domain dedication](vendor/licenses/SQLite-public-domain.txt) | https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip |
 | TimGM6mb GM | Default SoundFont in production packages | [GPL 2](vendor/licenses/TimGM6mb-GPL2.txt) | https://sources.debian.org/src/timgm6mb-soundfont/1.3-5/ |
 | GLib / GObject / GThread | FluidSynth runtime dependencies | [LGPL](vendor/licenses/GLib-LGPL.txt) | https://gitlab.gnome.org/GNOME/glib |
 | libsndfile | Sample/audio file dependency | [LGPL](vendor/licenses/libsndfile-LGPL.txt) | https://github.com/libsndfile/libsndfile |

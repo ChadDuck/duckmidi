@@ -25,10 +25,12 @@ While the design, usability, UI, and goals of this program were dictated by a hu
 - Customize keyboard shortcuts (and modifiers) and simple percussion key mappings.
 - Give notes independent pitch bends and controller effects by assigning per-note MIDI ports. Up to 128 ports are supported. (Playback support depends on the receiving application).
 - Use an SF2/SF3 SoundFont or an external MIDI output.
+- Bring your own samples! Import audio, shape it in the sample editor, and play it in place of any SoundFont instrument.
 - Save compositions as `.duck` projects or retain editor data in exported MIDI files.
 - Export MIDI, WAV (PCM), MP3, AAC, Ogg Vorbis, Opus, and FLAC.
 - Add export formats through the plugin API. 
    - The bundled M64 & OoT plugins converts General MIDI arrangements into their respective sequences; transforming a previously arduous task into a quick and painless experience.
+   - Your custom samples come along too, and every change made to your game repository can be reverted with a click.
 
 ## Performance
 

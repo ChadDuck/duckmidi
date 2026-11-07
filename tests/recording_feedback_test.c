@@ -71,8 +71,8 @@ static void defaults_and_placement(Editor *e) {
         ordered &= !i || list[i - 1] < list[i];
     }
 
-    check(ordered && disabled == (spare >= 0 && !e->project.channels[spare].enabled),
-          "spare is ordered by channel and reuses an existing empty unassigned row");
+    check(ordered && !disabled && spare >= 0 && !e->project.channels[spare].enabled,
+          "only enabled channels have rows and a free slot is available for + New");
     DmPattern *pat = ed_pattern(e);
     dm_note_add(pat, (DmNote){0, 2, 60, 100, 0});
     dm_note_add(pat, (DmNote){3, .5, 64, 100, 0});

@@ -61,7 +61,7 @@ extern "C" void test_todo_b_ui(Editor *e) {
     frame(e);
     auto *playlist = child("/Playlist_");
     assert(playlist);
-    float x = playlist->WorkRect.Min.x + 30, y = playlist->WorkRect.Min.y + 208;
+    float x = playlist->WorkRect.Min.x + 30, y = playlist->WorkRect.Min.y + 190;
     e->selected_channel = 3;
     frame(e, x, y);
     frame(e, x, y, true);

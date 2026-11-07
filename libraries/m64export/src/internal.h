@@ -2,6 +2,7 @@
 #define M64_INTERNAL_H
 #include "duckmidi_midi.h"
 #include "m64export/m64export.h"
+#include "custom.h"
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -9,6 +10,9 @@
 #include <string.h>
 #include <math.h>
 #include <stdarg.h>
+
+/* Vibrato rate byte every channel script sets at its start. */
+#define M64_CHANNEL_VIBRATO_RATE 8
 
 typedef struct {
     uint8_t *data;
@@ -28,15 +32,21 @@ struct M64Result {
     int32_t status;
     bool compiled;
     M64RangeIssue *ranges;
+    uint64_t *range_origins;
+    size_t origin_capacity;
     size_t range_count, range_capacity;
 };
 
 typedef struct {
     uint64_t start, end, source;
-    uint32_t channel, output, key, velocity, program, layer;
+    uint32_t channel, output, key, velocity, program, layer, drum;
+    uint64_t group;
+    uint32_t original_program;
     uint32_t section; /* 0 plays once; 1 is the repeated loop region. */
     int next;
     bool released;
+    bool custom;
+    uint16_t region;
     double peak_factor;
 } Note;
 
@@ -80,26 +90,34 @@ typedef struct {
 
 typedef struct {
     const M64Request *request;
+    const M64Custom *custom;
     const M64Hooks *hooks;
     M64Result *result;
     Note *notes;
     size_t count, capacity;
     Channel channels[16];
-    int slots[4096], drums[128];
+    int *slots, drums[384];
+    M64Instrument custom_drums[128];
+    unsigned custom_drum_regions[128], custom_drum_keys[128], custom_drum_count;
     uint32_t programs[127], percussion[128], program_count, drum_count;
     int sources[16];
     uint64_t duration;
     uint32_t quality_grid;
+    bool *curve_skip; /* Per request event: a volume, pan or bend change left out to fit. */
     uint32_t phrase_notes;
     double tempo_scale;
     bool warned[256];
+    bool preset_pan[16];  /* Source channels that use layer/drum pan rather than MIDI pan. */
+    EsNativeFxChange *fx; /* Preset reverb/vibrato changes in tick order (48-tick units). */
+    size_t fx_count;
+    uint8_t fx_depth[16]; /* Largest preset vibrato depth byte per channel, for rate limits. */
     Register registers[127];
     bool region;                   /* Request loop 2: intro plus repeated region. */
     uint64_t loop_start, loop_end; /* Region bounds in 48-tick units. */
     uint32_t emit_section;         /* Section being written by sequence() and emit_layers(). */
     /* sm64coopdx: bank 0x2A instruments per program slot and drum note; see coopdx.c. */
     bool coopdx;
-    int fixed[127], fixed_layer[127], drum_instrument[128], drum_pitch[128];
+    int fixed[127], fixed_layer[127], drum_instrument[384], drum_pitch[384];
     int channel_instrument[16], layer_instrument[16];
     bool switches[16];
 } Compile;

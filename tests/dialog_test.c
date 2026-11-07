@@ -1,3 +1,4 @@
+#define SDL_MAIN_HANDLED
 #define main duckmidi_app_main
 #include "../src/main.c"
 #include "editor_internal.h"
@@ -46,7 +47,16 @@ int main(void) {
     for (int attempt = 0; attempt < 8; ++attempt) {
         found = NULL;
         Uint64 start = SDL_GetTicks(), shown = 0, closed = 0;
-        ed_dialog(e, kinds[attempt % 4]);
+
+        if (attempt == 0) {
+            editor_smoke(e);
+            e->dirty = true;
+            ed_request(e, PENDING_OPEN, NULL);
+            assert(e->dialog_busy && !e->confirm && !e->pending_action);
+        } else {
+            ed_dialog(e, kinds[attempt % 4]);
+        }
+
         Uint64 returned = SDL_GetTicks();
 
         while (e->dialog_busy && SDL_GetTicks() - start < 15000) {
@@ -82,6 +92,10 @@ int main(void) {
 
         if (e->dialog_busy) {
             return 2;
+        }
+
+        if (attempt == 0) {
+            assert(shown && e->dirty && !e->confirm && !e->pending_action);
         }
     }
 

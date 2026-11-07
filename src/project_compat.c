@@ -32,6 +32,18 @@ static void upgrade_11_to_12(DmProject *p) {
     }
 }
 
+/* Schema 13 adds explicit patch replacements. Existing routes keep the selected SoundFont. */
+static void upgrade_12_to_13(DmProject *p) {
+    p->patch_replacement_count = 0;
+}
+
+/* Schema 14 references the current sample state instead of a stored revision. */
+static void upgrade_13_to_14(DmProject *p) {
+    for (size_t i = 0; i < p->patch_replacement_count; ++i) {
+        p->patch_replacements[i].generation = p->patch_replacements[i].generation != 0;
+    }
+}
+
 void dm_project_upgrade(DmProject *p, uint32_t schema) {
     if (schema <= 9) {
         upgrade_9_to_10(p);
@@ -43,5 +55,13 @@ void dm_project_upgrade(DmProject *p, uint32_t schema) {
 
     if (schema <= 11) {
         upgrade_11_to_12(p);
+    }
+
+    if (schema <= 12) {
+        upgrade_12_to_13(p);
+    }
+
+    if (schema <= 13) {
+        upgrade_13_to_14(p);
     }
 }

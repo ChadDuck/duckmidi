@@ -2,15 +2,19 @@
    agents/reports/guide-captures/. tools/update-guide-images.ps1 builds this program, runs it and
    converts the captures into docs/images/. The sample project is only read. */
 extern "C" {
-#include "editor_internal.h"
+#include "editor_export_internal.h"
 #include "text/en.h"
+#include "../include/duckmidi_samples_tool.h"
 }
 #include "imgui.h"
 #include "imgui_internal.h"
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
 static const char *output = "agents/reports/guide-captures";
+/* Settings and the sample library live beside the captures, never in the user's preferences. */
+static const char *data = "agents/reports/guide-captures/data/";
 
 static void frame(Editor *e, float x = 0, float y = 0, bool down = false, bool right = false,
                   bool shift = false) {
@@ -73,6 +77,42 @@ static SDL_Rect around(ImGuiWindow *w, int margin = 6) {
     return {x, y, right - x, bottom - y};
 }
 
+/* A decaying plucked tone as 16-bit mono WAV, so the Samples waveform shows a clear shape. */
+static void write_pluck(const char *path, double frequency) {
+    const uint32_t rate = 32000, frames = rate * 6 / 5, bytes = frames * 2;
+    unsigned char header[44] = {'R', 'I', 'F', 'F', 0,  0, 0, 0, 'W', 'A', 'V', 'E',
+                                'f', 'm', 't', ' ', 16, 0, 0, 0, 1,   0,   1,   0};
+    auto put = [&](int at, uint32_t value, int size) {
+        for (int i = 0; i < size; ++i) {
+            header[at + i] = (unsigned char)(value >> (8 * i));
+        }
+    };
+    put(4, 36 + bytes, 4);
+    put(24, rate, 4);
+    put(28, rate * 2, 4);
+    put(32, 2, 2);
+    put(34, 16, 2);
+    std::memcpy(header + 36, "data", 4);
+    put(40, bytes, 4);
+    SDL_IOStream *file = SDL_IOFromFile(path, "wb");
+
+    if (!file) {
+        return;
+    }
+
+    SDL_WriteIO(file, header, sizeof(header));
+
+    for (uint32_t i = 0; i < frames; ++i) {
+        double t = (double)i / rate, phase = 6.283185307179586 * frequency * t;
+        double value = std::exp(-3.5 * t) * (.6 * std::sin(phase) + .25 * std::sin(2 * phase) +
+                                             .1 * std::sin(3 * phase));
+        int16_t sample = (int16_t)(value * 32000);
+        SDL_WriteIO(file, &sample, 2);
+    }
+
+    SDL_CloseIO(file);
+}
+
 static int first_note_pattern(Editor *e) {
     for (size_t i = 0; i < e->project.pattern_count; ++i) {
         if (!e->project.patterns[i].kind && e->project.patterns[i].count) {
@@ -92,6 +132,7 @@ int main(int argc, char **argv) {
     }
 
     SDL_CreateDirectory(output);
+    SDL_CreateDirectory(data);
     SDL_Window *sdl_window = SDL_CreateWindow("Guide captures", 1400, 900, SDL_WINDOW_HIDDEN);
     SDL_Renderer *renderer = SDL_CreateRenderer(sdl_window, "software");
     char error[512];
@@ -103,7 +144,7 @@ int main(int argc, char **argv) {
     }
 
     auto *e = (Editor *)SDL_calloc(1, sizeof(Editor));
-    editor_init(e, sdl_window, renderer, audio, "", "", true);
+    editor_init(e, sdl_window, renderer, audio, "", data, true);
     e->update_prompt_pending = false;
     e->update_prompted = true;
     settle(e);
@@ -156,10 +197,10 @@ int main(int argc, char **argv) {
     capture(e, "events", around(window("/Piano roll_"), 0));
     e->automation_open = false;
 
-    e->instrument_channel = 0;
+    ed_open_instrument(e, -1, false);
     settle(e);
     capture(e, "instrument", around(window(DM_TEXT_INSTRUMENT), 0));
-    e->instrument_channel = -1;
+    ed_close_instrument(e);
 
     ed_percussion_open(e);
     settle(e);
@@ -169,7 +210,71 @@ int main(int argc, char **argv) {
     e->export_window = true;
     settle(e);
     capture(e, "export", around(window(DM_TEXT_EXPORT), 0));
+
+    /* The M64 plugin's options and its channel/instrument mapping list. */
+    DmExportRegistry *registry = &ed_export_host(e)->registry;
+
+    for (size_t i = 0; i < registry->count; ++i) {
+        if (!std::strcmp(registry->formats[i].api->id, "org.duckmidi.sm64")) {
+            e->export_type = (int)i + 1;
+        }
+    }
+
+    for (int i = 0; i < 60; ++i) {
+        frame(e);
+        SDL_Delay(10);
+    }
+
+    capture(e, "export-m64", around(window(DM_TEXT_EXPORT), 0));
     e->export_window = false;
+    settle(e);
+
+    /* Samples with two imported files, the first selected. */
+    ed_samples_open(e);
+    settle(e);
+    DmNativeTool *tool = dm_export_registry_tool(registry, DME_SAMPLES_TOOL_ID);
+    ImGuiWindow *samples = window("Samples");
+
+    if (tool && samples) {
+        auto *api = static_cast<const DmeSamplesApi *>(tool->api->interface_at(DME_SAMPLES_API));
+        const char *files[] = {"agents/reports/guide-captures/data/Pluck C4.wav",
+                               "agents/reports/guide-captures/data/Pluck G4.wav"};
+        write_pluck(files[0], 261.63);
+        write_pluck(files[1], 392.0);
+        float x = (samples->Pos.x + samples->Size.x / 2) * ui_scale();
+        float y = (samples->Pos.y + samples->Size.y / 2) * ui_scale();
+        SDL_Event event = {};
+        event.drop.x = x;
+        event.drop.y = y;
+        event.type = SDL_EVENT_DROP_BEGIN;
+        editor_event(e, &event);
+        event.type = SDL_EVENT_DROP_POSITION;
+        editor_event(e, &event);
+
+        for (const char *file : files) {
+            event.type = SDL_EVENT_DROP_FILE;
+            event.drop.data = file;
+            editor_event(e, &event);
+        }
+
+        event.type = SDL_EVENT_DROP_COMPLETE;
+        event.drop.data = nullptr;
+        editor_event(e, &event);
+        uint64_t end = SDL_GetTicks() + 8000;
+
+        while (api->count(tool->instance) < 2 && SDL_GetTicks() < end) {
+            frame(e);
+            SDL_Delay(2);
+        }
+
+        settle(e);
+        capture(e, "samples", around(window("Samples"), 0));
+    } else {
+        std::fprintf(stderr, "Samples is unavailable; build the plugins first\n");
+    }
+
+    ed_samples_close(e);
+    settle(e);
 
     ed_update_open(e);
     settle(e);

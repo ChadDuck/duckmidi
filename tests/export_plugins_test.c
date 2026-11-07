@@ -1,4 +1,6 @@
 #include "editor_export_internal.h"
+#include "native_repository_fixture.h"
+#include "../shared/sample_library.h"
 #include <assert.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -25,6 +27,28 @@ static void wait_work(Editor *e) {
    edits, with a fake .git and a neighbouring folder as tripwires. */
 #define SANDBOX "agents/reports/repository-export-2026-10-31"
 #define OOT_SANDBOX "agents/reports/repository-export-oot"
+
+static char fixture_root[1024];
+
+static const char *fixture_path(const char *path) {
+    static char results[64][2048];
+    static unsigned next;
+    char *out = results[next++ % 64];
+    const char *suffix;
+    const char *target;
+
+    if (!strncmp(path, OOT_SANDBOX, strlen(OOT_SANDBOX))) {
+        suffix = path + strlen(OOT_SANDBOX);
+        target = "oot-suite";
+    } else {
+        assert(!strncmp(path, SANDBOX, strlen(SANDBOX)));
+        suffix = path + strlen(SANDBOX);
+        target = "sm64-suite";
+    }
+
+    assert(SDL_snprintf(out, 2048, "%s/%s%s", fixture_root, target, suffix) < 2048);
+    return out;
+}
 
 typedef struct {
     char path[512];
@@ -122,35 +146,40 @@ static int differences(const Snapshot *a, const Snapshot *b, const char *inside)
 
 static void put(const char *path, const char *text) {
     char error[256];
-    assert(dm_write(path, text, strlen(text), error, sizeof(error)));
+
+    if (!dm_write(path, text, strlen(text), error, sizeof(error))) {
+        fprintf(stderr, "Could not write fixture %s: %s\n", path, error);
+        abort();
+    }
 }
 
 static void make_checkout(void) {
-    static const char *dirs[] = {SANDBOX,
-                                 SANDBOX "/neighbor",
-                                 SANDBOX "/sm64",
-                                 SANDBOX "/sm64/.git",
-                                 SANDBOX "/sm64/sound",
-                                 SANDBOX "/sm64/src",
-                                 SANDBOX "/sm64/src/audio",
-                                 SANDBOX "/sm64/src/buffers"};
+    const char *dirs[] = {fixture_path(SANDBOX),
+                          fixture_path(SANDBOX "/neighbor"),
+                          fixture_path(SANDBOX "/sm64"),
+                          fixture_path(SANDBOX "/sm64/.git"),
+                          fixture_path(SANDBOX "/sm64/sound"),
+                          fixture_path(SANDBOX "/sm64/src"),
+                          fixture_path(SANDBOX "/sm64/src/audio"),
+                          fixture_path(SANDBOX "/sm64/src/buffers")};
 
     for (size_t i = 0; i < sizeof(dirs) / sizeof(*dirs); ++i) {
         SDL_CreateDirectory(dirs[i]);
     }
 
-    put(SANDBOX "/neighbor/keep.txt", "untouched neighbour\n");
-    put(SANDBOX "/sm64/.git/HEAD", "ref: refs/heads/master\n");
-    put(SANDBOX "/sm64/sound/sequences.json",
-        "{\n    \"02_menu_title_screen\": [\"11\"],\n    \"03_custom_worker\": [\"22\"],\n"
+    put(fixture_path(SANDBOX "/neighbor/keep.txt"), "untouched neighbour\n");
+    put(fixture_path(SANDBOX "/sm64/.git/HEAD"), "ref: refs/heads/master\n");
+    put(fixture_path(SANDBOX "/sm64/sound/sequences.json"),
+        "{\n    \"00_unused\": null,\n    \"01_unused\": null,\n    \"02_menu_title_screen\": [\"11\"],\n    \"03_custom_worker\": [\"22\"],\n"
         "    \"04_level_inside_castle\": [\"0E\"]\n}\n");
-    put(SANDBOX "/sm64/src/audio/data.h", "#if defined(VERSION_EU)\n#define AUDIO_HEAP_SIZE "
-                                          "0x2c500\n#else\n#define AUDIO_HEAP_SIZE 0x31150\n"
-                                          "#endif\n");
-    put(SANDBOX "/sm64/src/buffers/buffers.c",
+    put(fixture_path(SANDBOX "/sm64/src/audio/data.h"),
+        "#if defined(VERSION_EU)\n#define AUDIO_HEAP_SIZE "
+        "0x2c500\n#else\n#define AUDIO_HEAP_SIZE 0x31150\n"
+        "#endif\n");
+    put(fixture_path(SANDBOX "/sm64/src/buffers/buffers.c"),
         "#if defined(VERSION_EU)\nALIGNED16 u8 gAudioHeap[0x3000];\n#else\n"
         "ALIGNED16 u8 gAudioHeap[DOUBLE_SIZE_ON_64_BIT(0x31200)];\n#endif\n");
-    put(SANDBOX "/sm64/src/audio/data.c",
+    put(fixture_path(SANDBOX "/sm64/src/audio/data.c"),
         "#if defined(VERSION_JP) || defined(VERSION_US)\n"
         "struct AudioSessionSettings gAudioSessionPresets[18] = {\n#ifdef VERSION_JP\n"
         "    { 32000, 16, 1, 0x0800, 0x2FFF, 0x7FFF, 0x3900, 0x6000, 0x4400, 0x2A00 },\n#else\n"
@@ -172,6 +201,7 @@ static void make_checkout(void) {
         "    { 32000, 10, 1, 0x0800, 0x2FFF, 0x7FFF, 0x2500, 0x5500, 0x7400, 0x2400 },\n"
         "    { 32000, 8, 1, 0x0800, 0x2FFF, 0x7FFF, 0x2500, 0x5500, 0x7400, 0x2400 },\n"
         "    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }\n};\n#endif\n");
+    native_repository_fixture(fixture_path(SANDBOX "/sm64"), false);
 }
 
 /* duckmidi's own folder, top level only: names of files and folders. */
@@ -193,7 +223,7 @@ static void export_to_checkout(Editor *e, size_t m64) {
     const char *start;
     e->export_type = (int)m64 + 1;
     assert(ed_export_repository_picker(e, &start));
-    ed_export_repository_done(e, SANDBOX "/sm64");
+    ed_export_repository_done(e, fixture_path(SANDBOX "/sm64"));
     wait_work(e);
 
     bool ok = strstr(e->status, "export complete") || strstr(e->status, "exported to repository");
@@ -205,18 +235,36 @@ static void export_to_checkout(Editor *e, size_t m64) {
     assert(ok);
 }
 
+/* Revert all through the history panel's action, as its confirmed button runs it. */
+static void revert_all(Editor *e) {
+    DmExportFormat *format = ed_export_selected(e);
+    assert(format && format->history_job);
+    assert(ed_export_repository_action(e, DME_REPOSITORY_REVERT_ALL, format->history_scope, NULL));
+    wait_work(e);
+}
+
+/* Whether the selected exporter's history lists current changes. */
+static bool history_rows(Editor *e) {
+    DmExportFormat *format = ed_export_selected(e);
+    DmeRepositoryView view = {0};
+    return format && format->history_job &&
+           ed_export_host(e)->registry.history_runtime->describe(format->history_job, &view) ==
+               DME_OK &&
+           view.row_count;
+}
+
 static void repository_round_trip(Editor *e, size_t m64) {
     static char before_names[512][128], after_names[512][128];
     static Snapshot original, exported, again, reverted;
     make_checkout();
     int before_count = project_entries(before_names, 512);
-    snapshot(SANDBOX, &original);
-    assert(original.count == 6);
+    snapshot(fixture_path(SANDBOX), &original);
+    assert(original.count > 6);
 
     for (int keep = 1; keep >= 0; --keep) {
         ed_export_host(e)->keep_originals = keep != 0;
         export_to_checkout(e, m64);
-        snapshot(SANDBOX, &exported);
+        snapshot(fixture_path(SANDBOX), &exported);
         int changed = differences(&original, &exported, "sm64/");
         assert(changed >= 3 && changed <= 32);
         assert(find_file(&exported, "sm64/.git/HEAD") && find_file(&exported, "neighbor/keep.txt"));
@@ -225,14 +273,14 @@ static void repository_round_trip(Editor *e, size_t m64) {
 
         /* A second export keeps the first originals, so one revert undoes both. */
         export_to_checkout(e, m64);
-        snapshot(SANDBOX, &again);
+        snapshot(fixture_path(SANDBOX), &again);
         differences(&original, &again, "sm64/");
-        assert(ed_export_has_changes(e));
-        ed_export_revert(e);
+        assert(history_rows(e));
+        revert_all(e);
         assert(strstr(e->status, "reverted"));
-        snapshot(SANDBOX, &reverted);
+        snapshot(fixture_path(SANDBOX), &reverted);
         assert(differences(&original, &reverted, NULL) == 0);
-        assert(!ed_export_has_changes(e));
+        assert(!history_rows(e));
     }
 
     int after_count = project_entries(after_names, 512);
@@ -250,6 +298,9 @@ void test_export_dropdown(Editor *e, int target);
 void test_export_mapping_row(Editor *e, int field_index, int row);
 void test_export_warning(Editor *e);
 void test_m64_sequence_dropdown(Editor *e, int target);
+void test_export_custom_panel(Editor *e);
+void test_export_history_panel(Editor *e);
+void test_export_catalog_refresh(Editor *e, size_t fixture);
 
 static size_t find(Editor *e, const char *id);
 
@@ -257,57 +308,75 @@ static size_t find(Editor *e, const char *id);
    files back exactly. */
 static void oot_leftover_round_trip(Editor *e, size_t oot) {
     static Snapshot original, exported, reverted;
-    static const char *dirs[] = {OOT_SANDBOX,
-                                 OOT_SANDBOX "/include",
-                                 OOT_SANDBOX "/include/tables",
-                                 OOT_SANDBOX "/spec",
-                                 OOT_SANDBOX "/src",
-                                 OOT_SANDBOX "/src/audio",
-                                 OOT_SANDBOX "/src/audio/game",
-                                 OOT_SANDBOX "/src/buffers",
-                                 OOT_SANDBOX "/assets",
-                                 OOT_SANDBOX "/assets/audio",
-                                 OOT_SANDBOX "/assets/audio/sequences",
-                                 OOT_SANDBOX "/assets/audio/soundfonts"};
+    const char *dirs[] = {fixture_path(OOT_SANDBOX),
+                          fixture_path(OOT_SANDBOX "/include"),
+                          fixture_path(OOT_SANDBOX "/include/tables"),
+                          fixture_path(OOT_SANDBOX "/spec"),
+                          fixture_path(OOT_SANDBOX "/src"),
+                          fixture_path(OOT_SANDBOX "/src/audio"),
+                          fixture_path(OOT_SANDBOX "/src/audio/game"),
+                          fixture_path(OOT_SANDBOX "/src/buffers"),
+                          fixture_path(OOT_SANDBOX "/assets"),
+                          fixture_path(OOT_SANDBOX "/assets/audio"),
+                          fixture_path(OOT_SANDBOX "/assets/audio/sequences"),
+                          fixture_path(OOT_SANDBOX "/assets/audio/soundfonts")};
 
     for (size_t i = 0; i < sizeof(dirs) / sizeof(*dirs); ++i) {
         SDL_CreateDirectory(dirs[i]);
     }
 
-    put(OOT_SANDBOX "/include/tables/sequence_table.h",
+    put(fixture_path(OOT_SANDBOX "/include/tables/sequence_table.h"),
         "DEFINE_SEQUENCE    (Sequence_29,        NA_BGM_MARKET,           MEDIUM_CART, "
         "CACHE_LOAD_TEMPORARY,  0          ) // market\n");
-    put(OOT_SANDBOX "/spec/spec",
+    put(fixture_path(OOT_SANDBOX "/spec/spec"),
         "beginseg\n    name \"Audiobank\"\n"
         "    include \"$(BUILD_DIR)/assets/audio/soundfonts/Soundfont_0.o\"\n"
         "    include \"$(BUILD_DIR)/assets/audio/soundfonts/Soundfont_old_a.o\"\nendseg\n"
         "beginseg\n    name \"Audioseq\"\n"
         "    include \"$(BUILD_DIR)/assets/audio/sequences/seq_0.prg.o\"\n"
         "    include \"$(BUILD_DIR)/assets/audio/sequences/old_a.o\"\nendseg\n");
-    put(OOT_SANDBOX "/src/audio/game/session_config.c",
+    put(fixture_path(OOT_SANDBOX "/src/audio/game/session_config.c"),
         "AudioSpec gAudioSpecs[1] = {\n"
         "    { 32000, 1, 24, 4, 0, 0, 2, sReverbSettings[0], 0x300, 0x200, 0x7FFF, 0x7F0, 0xE00, 0, "
         "0x3800, 0x2880, 0, 0, 0 },\n};\n");
-    put(OOT_SANDBOX "/src/buffers/audio_heap.c", "ALIGNED(16) u8 gAudioHeap[0x38000];\n");
-    put(OOT_SANDBOX "/include/buffers.h", "extern u8 gAudioHeap[0x38000]; // 0x38000 bytes\n");
-    put(OOT_SANDBOX "/assets/audio/sequences/old_a.seq", "/* old_a: generated by duckmidi */\n");
-    put(OOT_SANDBOX "/assets/audio/soundfonts/Soundfont_old_a.xml",
+    put(fixture_path(OOT_SANDBOX "/src/buffers/audio_heap.c"),
+        "ALIGNED(16) u8 gAudioHeap[0x38000];\n");
+    put(fixture_path(OOT_SANDBOX "/include/buffers.h"),
+        "extern u8 gAudioHeap[0x38000]; // 0x38000 bytes\n");
+    put(fixture_path(OOT_SANDBOX "/assets/audio/sequences/old_a.seq"),
+        "/* old_a: generated by duckmidi */\n");
+    put(fixture_path(OOT_SANDBOX "/assets/audio/soundfonts/Soundfont_old_a.xml"),
         "<!-- generated by duckmidi -->\n<Soundfont Name=\"Soundfont_old_a\" Index=\"1\"/>\n");
-    snapshot(OOT_SANDBOX "", &original);
+    native_repository_fixture(fixture_path(OOT_SANDBOX), true);
+    snapshot(fixture_path(OOT_SANDBOX), &original);
+    assert(find_file(&original, "assets/audio/sequences/old_a.seq") &&
+           find_file(&original, "assets/audio/soundfonts/Soundfont_old_a.xml"));
     ed_export_host(e)->keep_originals = false;
     const char *start;
     e->export_type = (int)oot + 1;
     assert(ed_export_repository_picker(e, &start));
-    ed_export_repository_done(e, OOT_SANDBOX "");
+    ed_export_repository_done(e, fixture_path(OOT_SANDBOX));
     wait_work(e);
-    snapshot(OOT_SANDBOX "", &exported);
-    assert(!find_file(&exported, "assets/audio/sequences/old_a.seq") &&
-           !find_file(&exported, "assets/audio/soundfonts/Soundfont_old_a.xml"));
-    ed_export_revert(e);
+
+    if (!strstr(e->status, "export complete")) {
+        fprintf(stderr, "OoT repository export status: %s\n", e->status);
+    }
+
+    assert(strstr(e->status, "export complete"));
+    assert(history_rows(e));
+    snapshot(fixture_path(OOT_SANDBOX), &exported);
+    assert(find_file(&exported, "assets/audio/sequences/old_a.seq") &&
+           find_file(&exported, "assets/audio/soundfonts/Soundfont_old_a.xml"));
+    revert_all(e);
+
+    if (!strstr(e->status, "reverted")) {
+        fprintf(stderr, "OoT repository revert status: %s\n", e->status);
+    }
+
     assert(strstr(e->status, "reverted"));
-    snapshot(OOT_SANDBOX "", &reverted);
+    snapshot(fixture_path(OOT_SANDBOX), &reverted);
     assert(differences(&original, &reverted, NULL) == 0);
-    puts("PASS an OoT export removes a leftover duckmidi song, and Revert restores it");
+    puts("PASS OoT preserves initialized unrecorded songs and restores managed exports");
 }
 
 static size_t find(Editor *e, const char *id) {
@@ -348,6 +417,8 @@ static const DmeField *field(DmeUi ui, const char *id) {
 }
 
 static void set_text(Editor *e, size_t i, const char *id, const char *value) {
+    wait_work(e);
+
     if (!strcmp(id, "sequence_name")) {
         assert(ed_export_set(e, i, "sequence", (DmeValue){DME_CHOICE, 35, NULL}));
     }
@@ -366,6 +437,7 @@ static bool has_field(DmeUi ui, const char *id) {
 }
 
 static void set_int(Editor *e, size_t i, const char *id, int kind, int value) {
+    wait_work(e);
     assert(ed_export_set(e, i, id, (DmeValue){(uint32_t)kind, value, NULL}));
 }
 
@@ -391,8 +463,60 @@ static bool contains(DmBytes b, const char *s) {
     return false;
 }
 
+static void publish_export_samples(const char *runtime, double frequency) {
+    char root[1600], error[2048];
+    SDL_snprintf(root, sizeof(root), "%ssamples", runtime);
+    assert(SDL_CreateDirectory(root));
+    float *pcm = calloc(32000, sizeof(*pcm));
+    assert(pcm);
+    for (unsigned i = 0; i < 32000; i++) {
+        pcm[i] = (float)(.2 * sin(6.283185307179586 * frequency * i / 32000));
+    }
+
+    DmSampleAudio audio = {
+        .pcm = pcm, .frames = 32000, .rate = 32000, .channels = 1, .embedded_root = 60};
+    DmSampleAsset asset = {.id = "tone",
+                           .file = "tone.wav",
+                           .frames = 32000,
+                           .rate = 32000,
+                           .channels = 1,
+                           .source_name = "Generated tone.wav"};
+    /* The deferred filter envelope keeps review paused while the fixture library changes. */
+    DmSampleZone zone = {.root = 60,
+                         .key_hi = 127,
+                         .velocity_lo = 1,
+                         .velocity_hi = 127,
+                         .tone = {.filter_depth = 100},
+                         .envelope = {.attack = .01, .decay = .02, .sustain = .8, .release = .1}};
+    DmSampleZone zones[] = {zone, zone};
+    DmSamplePreset presets[] = {
+        {.id = "piano", .name = "Generated piano", .zone_count = 1, .suggested_program = 1},
+        {.id = "unclassified", .name = "Unclassified tone", .first_zone = 1, .zone_count = 1}};
+    DmSampleManifest manifest = {.id = "export-fixture",
+                                 .name = "Export fixture",
+                                 .asset_count = 1,
+                                 .preset_count = 2,
+                                 .zone_count = 2,
+                                 .assets = &asset,
+                                 .presets = presets,
+                                 .zones = zones};
+    bool saved = dm_sample_library_publish(root, &manifest, &audio, NULL, error, sizeof(error));
+    if (!saved) {
+        fprintf(stderr, "%s\n", error);
+    }
+
+    assert(saved);
+    free(pcm);
+}
+
 int main(void) {
     assert(SDL_Init(SDL_INIT_VIDEO));
+    SDL_Time fixture_time;
+    assert(SDL_GetCurrentTime(&fixture_time));
+    assert(SDL_snprintf(fixture_root, sizeof(fixture_root),
+                        "agents/reports/export-plugins/native-%llu",
+                        (unsigned long long)fixture_time) < (int)sizeof(fixture_root));
+    assert(SDL_CreateDirectory(fixture_root));
     SDL_Window *window =
         SDL_CreateWindow("Exporter plugins validation", 1000, 1000, SDL_WINDOW_HIDDEN);
     assert(window);
@@ -400,7 +524,19 @@ int main(void) {
     assert(renderer && ui_init(window, renderer, NULL));
     Editor *e = calloc(1, sizeof(*e));
     assert(e);
-    editor_init(e, window, renderer, NULL, "", "", true);
+    char runtime[1200], settings_file[1400], program[1400];
+    SDL_snprintf(runtime, sizeof(runtime), "%s/runtime/", fixture_root);
+    SDL_snprintf(settings_file, sizeof(settings_file), "%spreferences.ini", runtime);
+    SDL_snprintf(program, sizeof(program), "%sprogram/", runtime);
+    assert(SDL_CreateDirectory(runtime));
+    assert(SDL_CreateDirectory(program));
+    publish_export_samples(runtime, 440);
+    /* The plugins folder beside the test holds a history ledger; each run starts without one. */
+    char ledger[1400];
+    SDL_snprintf(ledger, sizeof(ledger), "%splugins/history/repositories.sqlite3",
+                 SDL_GetBasePath());
+    SDL_RemovePath(ledger);
+    editor_init(e, window, renderer, NULL, program, settings_file, true);
     size_t m64 = find(e, "org.duckmidi.sm64"), fixture = find(e, "org.duckmidi.fixture");
     assert(ed_export_count(e) == 3); /* SM64, OoT and the fixture. */
     int pattern = dm_pattern_add(&e->project, "generated melodic fixture");
@@ -423,6 +559,69 @@ int main(void) {
     DmeUi ui = settings(e, m64);
     const DmeField *mapped = field(ui, "mapping");
     assert(mapped->row_count == 2);
+    assert(mapped->rows[0].custom && mapped->rows[0].custom->catalog->set_count == 1);
+    if (getenv("DUCKMIDI_TEST_HISTORY_ONLY")) {
+        make_checkout();
+        ed_export_set_repository(e, m64, fixture_path(SANDBOX "/sm64"));
+        assert(ed_export_repository_action(e, DME_REPOSITORY_INSPECT, 0, NULL));
+        wait_work(e);
+        test_export_history_panel(e);
+        ed_export_free(e);
+        dm_project_free(&e->project);
+        free(e);
+        ui_shutdown();
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 0;
+    }
+
+    test_export_catalog_refresh(e, fixture);
+    test_export_custom_panel(e);
+    ed_export_start(e, m64, "agents/reports/export-plugins/worker/saved-custom.zip");
+    uint64_t frozen_deadline = SDL_GetTicks() + 15000;
+    while (!ed_export_review_open(e) && ed_export_busy(e) && SDL_GetTicks() < frozen_deadline) {
+        ed_export_poll(e);
+        SDL_Delay(1);
+    }
+
+    assert(ed_export_review_open(e) && ed_export_host(e)->work.frozen_count == 1);
+    publish_export_samples(runtime, 880);
+    ed_export_review_decide(e, 1);
+    wait_work(e);
+    if (!strstr(e->status, "complete") || !ed_export_warning_open(e)) {
+        fprintf(stderr, "Saved custom export: %s\n%s\n", e->status, ed_export_host(e)->message);
+    }
+    assert(strstr(e->status, "complete") && ed_export_warning_open(e));
+    DmBytes frozen_zip = {0};
+    char frozen_error[512];
+    assert(dm_read("agents/reports/export-plugins/worker/saved-custom.zip", &frozen_zip,
+                   frozen_error, sizeof(frozen_error)));
+    bool found_frozen = false;
+    for (size_t i = 0; i + 54 + 32000 < frozen_zip.size; i++) {
+        const uint8_t *p = frozen_zip.data + i;
+        if (memcmp(p, "FORM", 4) || memcmp(p + 8, "AIFFCOMM", 8) || memcmp(p + 38, "SSND", 4)) {
+            continue;
+        }
+
+        unsigned crossings = 0;
+        int previous = 0;
+        for (unsigned frame = 0; frame < 16000; frame++) {
+            int16_t value = (int16_t)((unsigned)p[54 + frame * 2] << 8 | p[55 + frame * 2]);
+            crossings += value > 0 && previous <= 0;
+            previous = value;
+        }
+
+        assert(crossings >= 219 && crossings <= 221);
+        found_frozen = true;
+        break;
+    }
+
+    assert(found_frozen);
+    dm_bytes_free(&frozen_zip);
+    test_export_warning(e);
+    ed_export_host(e)->catalog_dirty = true;
+    assert(ed_export_set(e, m64, "reset_mappings", (DmeValue){DME_ACTION, 0, NULL}));
     e->project.patterns[pattern].notes[0].key = 127;
     ed_changed(e);
     settings(e, m64);
@@ -638,20 +837,37 @@ int main(void) {
     set_int(e, fixture, "mode", DME_CHOICE, 7);
     ed_export_start(e, fixture, "agents/reports/export-plugins/worker/fixture-warning.txt");
     wait_work(e);
+    const char *shown = ed_export_host(e)->warning;
     assert(ed_export_warning_open(e) &&
-           strstr(ed_export_host(e)->warning, "Independent fixture audible-change warning"));
+           strstr(shown, "Independent fixture audible-change warning"));
+    /* Grouped items, no headline without a last-resort note change, and no extra lines. */
+    assert(strstr(shown, "Omitted:\n- SysEx\n- Controller 74\n") &&
+           strstr(shown, "Converted:\n- Timing\n") && !strstr(shown, "audible changes or") &&
+           !strstr(shown, "source project") && !strstr(shown, "Details") &&
+           strstr(shown, "Saved to: "));
     test_export_warning(e);
+    /* A last-resort note change brings back the headline. */
+    set_int(e, fixture, "amount", DME_INT, 1);
+    ed_export_start(e, fixture, "agents/reports/export-plugins/worker/fixture-altered.txt");
+    wait_work(e);
+    shown = ed_export_host(e)->warning;
+    assert(ed_export_warning_open(e) &&
+           strstr(shown, "export was saved with audible changes or playback limitations.") ==
+               strstr(shown, "export was") &&
+           strstr(shown, "Changed to fit the game:\n- Notes merged\n"));
+    ed_export_warning_close(e);
+    set_int(e, fixture, "amount", DME_INT, 19);
+
+    const char *preserved_path = "agents/reports/export-plugins/worker/preserved.txt";
+    put(preserved_path, "sentinel");
 
     for (int mode = 1; mode <= 5; mode++) {
         set_int(e, fixture, "mode", DME_CHOICE, mode);
-        assert(dm_write("agents/reports/export-plugins/worker/preserved.txt", "sentinel", 8, error,
-                        sizeof(error)));
-        ed_export_start(e, fixture, "agents/reports/export-plugins/worker/preserved.txt");
+        ed_export_start(e, fixture, preserved_path);
         wait_work(e);
         assert(!strstr(e->status, "complete"));
         assert(!ed_export_warning_open(e));
-        assert(dm_read("agents/reports/export-plugins/worker/preserved.txt", &archive, error,
-                       sizeof(error)));
+        assert(dm_read(preserved_path, &archive, error, sizeof(error)));
         assert(archive.size == 8 && !memcmp(archive.data, "sentinel", 8));
         dm_bytes_free(&archive);
     }
@@ -733,6 +949,8 @@ int main(void) {
     assert(dm_preferences_load(e, ed_shortcut_schema()));
     assert(!strcmp(e->export_folder, "agents/reports/export-plugins/worker/"));
     repository_round_trip(e, m64);
+    test_export_history_panel(e);
+    wait_work(e);
     oot_leftover_round_trip(e, find(e, "org.duckmidi.oot"));
 
     /* Repository folders are kept per exporter in duckmidi-plugins.ini beside the preferences,
@@ -741,13 +959,13 @@ int main(void) {
     SDL_RemovePath(plugin_ini);
     assert(ed_export_installs(e, m64) && !ed_export_installs(e, fixture));
     /* With a saved folder, Export to Repository installs there without asking. */
-    ed_export_set_repository(e, m64, SANDBOX "/sm64");
+    ed_export_set_repository(e, m64, fixture_path(SANDBOX "/sm64"));
     e->export_type = (int)m64 + 1;
     ed_export_to_repository(e);
     assert(!e->dialog_busy);
     wait_work(e);
     assert(strstr(e->status, "exported to repository") || strstr(e->status, "export complete"));
-    ed_export_revert(e);
+    revert_all(e);
     assert(strstr(e->status, "reverted"));
     ed_export_set_repository(e, m64, "C:/games/sm64");
     assert(!strcmp(ed_export_repository(e, m64), "C:/games/sm64") &&

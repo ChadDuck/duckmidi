@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "../../../src/text/en.h"
 
 /* Permit the inaudible final fixed-point rounding at nominal 4x, not a
    semitone of excess range. The US mixer itself caps at 3.99992. */
@@ -196,7 +197,8 @@ static bool note_factors(Compile *c) {
                 Note *n = &c->notes[i];
                 size_t l = upper(changes, count, n->start) - 1,
                        r = upper(changes, count, n->end - 1);
-                n->peak_factor = maximum(tree, base, l, r);
+                /* Preset vibrato is bounded the same way as CC1 extent. */
+                n->peak_factor = maximum(tree, base, l, r) * (1.0 + c->fx_depth[ch] / 512.0);
             }
         }
 
@@ -290,9 +292,16 @@ bool select_registers(Compile *c) {
     typedef struct {
         unsigned count, lo, hi;
         double rate, demand;
+        unsigned channel, program, port, bank;
+        bool drum;
+        uint64_t origin;
+        const M64Instrument *definition;
     } Issue;
 
-    Issue issues[16][128] = {0};
+    Issue issues[2048] = {0};
+    size_t issue_count = 0;
+    int issue_lookup[4096];
+    memset(issue_lookup, -1, sizeof(issue_lookup));
 
     for (size_t i = 0; i < c->count; i++) {
         if (!(i % 4096) && cancelled(c, 1, 95)) {
@@ -307,7 +316,7 @@ bool select_registers(Compile *c) {
         }
 
         if (n->channel == MIDI_DRUM_CHANNEL) {
-            d = drum_definition(c, n->key);
+            d = drum_definition(c, n->drum);
         } else {
             d = program_definition(c, n->program);
             const Register *r = &c->registers[c->slots[n->program]];
@@ -321,8 +330,50 @@ bool select_registers(Compile *c) {
         double rate =
             d->tuning * n->peak_factor *
             (n->channel == MIDI_DRUM_CHANNEL ? 1 : pow(2.0, ((double)n->key - 60) / 12.0));
-        Issue *issue =
-            &issues[n->channel][n->channel == MIDI_DRUM_CHANNEL ? n->key : n->program & 127];
+        unsigned channel = n->channel, port = 0, bank = 0;
+        unsigned program = channel == MIDI_DRUM_CHANNEL ? n->key : n->original_program;
+        uint64_t origin = n->group - 1;
+        const DmeContext *source = c->custom ? c->custom->source_context : NULL;
+        if (source && origin < source->event_count) {
+            const DmeEvent *event = &source->events[origin];
+            channel = event->status & MIDI_CHANNEL_MASK;
+            port = event->port;
+            bank = source->effective_patches ? source->effective_patches[origin].bank : 0;
+        }
+
+        unsigned hash = (channel * 65537u ^ program * 17u ^ port * 16777619u ^ bank * 257u ^
+                         (n->channel == MIDI_DRUM_CHANNEL)) &
+                        4095;
+        size_t at = issue_count;
+        while (issue_lookup[hash] >= 0) {
+            at = (size_t)issue_lookup[hash];
+            if (issues[at].channel == channel && issues[at].port == port &&
+                issues[at].bank == bank && issues[at].program == program &&
+                issues[at].drum == (n->channel == MIDI_DRUM_CHANNEL)) {
+                break;
+            }
+
+            at = issue_count;
+            hash = (hash + 1) & 4095;
+        }
+
+        if (at == issue_count) {
+            if (issue_count == 2048) {
+                c->result->status = M64_LIMIT;
+                return false;
+            }
+
+            issues[issue_count++] = (Issue){.channel = channel,
+                                            .port = port,
+                                            .bank = bank,
+                                            .program = program,
+                                            .origin = origin,
+                                            .definition = d,
+                                            .drum = n->channel == MIDI_DRUM_CHANNEL};
+            issue_lookup[hash] = (int)at;
+        }
+
+        Issue *issue = &issues[at];
         issue->demand =
             fmax(issue->demand, n->peak_factor * (n->channel == MIDI_DRUM_CHANNEL
                                                       ? 1
@@ -330,6 +381,23 @@ bool select_registers(Compile *c) {
 
         if (rate <= RATE_LIMIT) {
             continue;
+        }
+
+        bool melodic = n->program >= 4096 && n->program < M64_CUSTOM_STOCK_BASE;
+
+        if (melodic || (n->drum >= 128 && n->drum < 256)) {
+            /* The plugin lowers the region's sample rate by this factor and compiles again. */
+            if (c->custom->overspeed) {
+                unsigned region =
+                    melodic ? (n->program - 4096) >> 8 : c->custom_drum_regions[n->drum - 128];
+                c->custom->overspeed[region] =
+                    fmax(c->custom->overspeed[region], rate / RATE_LIMIT);
+                continue;
+            }
+
+            c->result->status = M64_LIMIT;
+            diagnose(c, M64_ERROR, 62, NULL, DM_TEXT_NATIVE_M64_RATE, d->sample, rate, n->key);
+            return false;
         }
 
         if (!issue->count) {
@@ -349,39 +417,37 @@ bool select_registers(Compile *c) {
         issue->rate = fmax(issue->rate, rate);
     }
 
-    for (unsigned ch = 0; ch < 16; ch++) {
-        for (unsigned p = 0; p < 128; p++) {
-            if (issues[ch][p].count) {
-                Issue *s = &issues[ch][p];
-                M64Event e = {0, 0, MIDI_NOTE_ON | ch, s->lo, 0};
-                M64Result *result = c->result;
+    for (size_t at = 0; at < issue_count; at++) {
+        if (issues[at].count) {
+            Issue *s = &issues[at];
+            unsigned ch = s->channel, p = s->program;
+            M64Event e = {0, 0, MIDI_NOTE_ON | ch, s->lo, 0};
+            M64Result *result = c->result;
 
-                if (!reserve((void **)&result->ranges, &result->range_capacity,
-                             result->range_count + 1, sizeof(M64RangeIssue))) {
-                    result->status = M64_NOMEM;
-                    return false;
-                }
-
-                M64RangeIssue *issue = &result->ranges[result->range_count++];
-                *issue = (M64RangeIssue){.channel = ch,
-                                         .program = p,
-                                         .percussion = ch == MIDI_DRUM_CHANNEL,
-                                         .note_low = s->lo,
-                                         .note_high = s->hi,
-                                         .note_count = s->count,
-                                         .demand = s->demand,
-                                         .maximum_rate = s->rate};
-                const M64Instrument *definition =
-                    ch == MIDI_DRUM_CHANNEL
-                        ? drum_definition(c, p)
-                        : program_definition(c, p | (c->request->channel_programs ? ch << 8 : 0));
-                snprintf(issue->sample, sizeof(issue->sample), "%s", definition->sample);
-                diagnose(
-                    c, M64_WARNING, 59, &e,
-                    "Channel %u %s %u: %u note(s), MIDI keys %u-%u, need up to %.3fx sample playback. SM64 caps near 4x; pitches may flatten. No higher stock register can cover these notes; change the mapping or prepare a suitable sample.",
-                    ch + 1, ch == MIDI_DRUM_CHANNEL ? "drum note" : "GM program", p, s->count,
-                    s->lo, s->hi, s->rate);
+            if (!reserve((void **)&result->ranges, &result->range_capacity, result->range_count + 1,
+                         sizeof(M64RangeIssue)) ||
+                !reserve((void **)&result->range_origins, &result->origin_capacity,
+                         result->range_count + 1, sizeof(uint64_t))) {
+                result->status = M64_NOMEM;
+                return false;
             }
+
+            result->range_origins[result->range_count] = s->origin;
+            M64RangeIssue *issue = &result->ranges[result->range_count++];
+            *issue = (M64RangeIssue){.channel = ch,
+                                     .program = p,
+                                     .percussion = s->drum,
+                                     .note_low = s->lo,
+                                     .note_high = s->hi,
+                                     .note_count = s->count,
+                                     .demand = s->demand,
+                                     .maximum_rate = s->rate};
+            const M64Instrument *definition = s->definition;
+            snprintf(issue->sample, sizeof(issue->sample), "%s", definition->sample);
+            diagnose(
+                c, M64_WARNING, 59, &e,
+                "Channel %u %s %u: %u note(s), MIDI keys %u-%u, need up to %.3fx sample playback. SM64 caps near 4x; pitches may flatten. No higher stock register can cover these notes; change the mapping or prepare a suitable sample.",
+                ch + 1, s->drum ? "drum note" : "GM program", p, s->count, s->lo, s->hi, s->rate);
         }
     }
 

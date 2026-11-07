@@ -1,6 +1,9 @@
 /* The OoT plugin through its entry point: settings, review, package and Export to Repository
    against a generated excerpt of a zeldaret/oot checkout. */
 #include "../libraries/ootexport/plugin/oot_plugin.h"
+#include "native_repository_fixture.h"
+#include "repository_install.h"
+#include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,10 +40,8 @@ typedef struct {
 
 static File checkout[16];
 static unsigned checkout_count;
-static char installed[64][160], artifacts[16][160];
-static char *contents[64];
-static uint32_t flags[64];
-static unsigned installed_count, artifact_count;
+static char artifacts[16][160];
+static unsigned artifact_count;
 
 static void reset_checkout(void) {
     checkout_count = 0;
@@ -50,11 +51,7 @@ static void reset_checkout(void) {
     checkout[checkout_count++] = (File){OOT_AUDIO_HEAP_C, heap_c};
     checkout[checkout_count++] = (File){OOT_BUFFERS_H, buffers_h};
 
-    for (unsigned i = 0; i < installed_count; i++) {
-        free(contents[i]);
-    }
-
-    installed_count = artifact_count = 0;
+    artifact_count = 0;
 }
 
 static int32_t DME_CALL cancelled(void *user) {
@@ -96,44 +93,38 @@ static int32_t DME_CALL artifact(void *user, const char *name, const uint8_t *da
     return 1;
 }
 
-static int32_t DME_CALL read_file(void *user, const char *path, const uint8_t **data,
-                                  uint64_t *size) {
-    (void)user;
+/* A generated checkout of its own: the native fixture under the listed excerpts, with an empty
+   plugins folder for its history. */
+static void make_checkout(char dir[512], char plugins[600], const char *name) {
+    scenario_folder(dir, 512, "oot-install", name);
+    native_repository_fixture(dir, true);
 
-    for (unsigned i = 0; i < checkout_count; ++i) {
-        if (!strcmp(checkout[i].path, path)) {
-            *data = (const uint8_t *)checkout[i].data;
-            *size = strlen(checkout[i].data);
-            return 1;
-        }
+    for (unsigned i = 0; i < checkout_count; i++) {
+        checkout_write(dir, checkout[i].path, checkout[i].data);
     }
 
-    return 0;
+    snprintf(plugins, 600, "%s-plugins", dir);
+    assert(SDL_CreateDirectory(plugins));
 }
 
-static int32_t DME_CALL install_file(void *user, const char *path, const uint8_t *data,
-                                     uint64_t size, uint32_t f) {
-    (void)user;
-    assert(installed_count < 64);
-    snprintf(installed[installed_count], 160, "%s", path);
-    contents[installed_count] = calloc(size + 1, 1);
-    memcpy(contents[installed_count], data, size);
-    flags[installed_count++] = f;
-    return 1;
+static bool same_file(const char *dir, const char *path, const char *expected) {
+    char *actual = checkout_read(dir, path);
+    bool same = actual && expected && !strcmp(actual, expected);
+    SDL_free(actual);
+    return same || (!actual && !expected);
 }
 
-static const char *installed_file(const char *path, uint32_t *f) {
-    for (unsigned i = 0; i < installed_count; ++i) {
-        if (!strcmp(installed[i], path)) {
-            if (f) {
-                *f = flags[i];
-            }
+static char *install(const DmeExporter *x, void *settings, const DmeContext *c, const DmeHost *host,
+                     const char *plugins, const char *dir, const char *read_back) {
+    char error[2048] = {0};
+    int32_t status = repository_install(x, settings, c, host, plugins, dir, error, sizeof(error));
 
-            return contents[i];
-        }
+    if (status != DME_OK) {
+        fprintf(stderr, "install: %s\n", error);
     }
 
-    return NULL;
+    assert(status == DME_OK);
+    return read_back ? checkout_read(dir, read_back) : NULL;
 }
 
 static bool has_artifact(const char *name) {
@@ -200,10 +191,10 @@ int main(void) {
            !duckmidi_export_plugin(DME_ABI + 1));
     const DmeExporter *x = plugin->exporter(0);
     assert(x && !plugin->exporter(1) && !strcmp(x->name, "OoT") && x->container == DME_ZIP &&
-           !strcmp(x->install_label, "Export to Repository") && x->install);
+           !strcmp(x->install_label, "Export to Repository") && x->history);
     char error[512] = {0};
     DmeHost host = {NULL, cancelled, progress, diagnostic, artifact, NULL, NULL};
-    DmeHost folder = {NULL, cancelled, progress, diagnostic, NULL, read_file, install_file};
+    DmeHost folder = {.cancelled = cancelled, .progress = progress, .diagnostic = diagnostic};
 
     /* A short piano and drum song. */
     for (unsigned i = 0; i < 8; i++) {
@@ -347,52 +338,45 @@ int main(void) {
            has_artifact("Soundfont_my_song.xml") && has_artifact("INSTALL.txt"));
     x->destroy_job(job);
 
-    /* Export to Repository adds the song, its soundfont and both registrations. */
-    job = x->create_job(s, error, sizeof(error));
-    assert(job && x->preflight(job, &c, &folder, error, sizeof(error)) == DME_OK);
+    /* Export to Repository adds the song, its soundfont and both registrations; audio memory
+       stays for a short song. */
+    char dir[512], plugins[600];
     reset_checkout();
-    assert(x->install(job, &c, &folder, error, sizeof(error)) == DME_OK);
-    uint32_t f;
-    const char *seq = installed_file("assets/audio/sequences/my_song.seq", &f);
-    const char *font = installed_file("assets/audio/soundfonts/Soundfont_my_song.xml", NULL);
-    const char *new_table = installed_file(OOT_SEQUENCE_TABLE, NULL);
-    const char *new_spec = installed_file(OOT_SPEC, NULL);
-    assert(seq && f == 0 && strstr(seq, "generated by duckmidi") &&
-           strstr(seq, "#include \"Soundfont_my_song.h\""));
-    assert(font && strstr(font, "Index=\"2\"") && strstr(font, "generated by duckmidi"));
+    make_checkout(dir, plugins, "song");
+    char *seq = install(x, s, &c, &folder, plugins, dir, "assets/audio/sequences/my_song.seq");
+    char *font = checkout_read(dir, "assets/audio/soundfonts/Soundfont_my_song.xml");
+    char *new_table = checkout_read(dir, OOT_SEQUENCE_TABLE);
+    char *new_spec = checkout_read(dir, OOT_SPEC);
+    assert(seq && strstr(seq, "#include \"Soundfont_my_song.h\""));
+    assert(font && strstr(font, "Name=\"Soundfont_my_song\""));
     assert(new_table && strstr(new_table, "(Sequence_my_song, NA_BGM_MY_SONG, MEDIUM_CART"));
     assert(new_spec && strstr(new_spec, "soundfonts/Soundfont_my_song.o") &&
            strstr(new_spec, "sequences/my_song.o"));
-    assert(installed_count == 4 && !installed_file(OOT_SESSION_CONFIG, NULL));
-    x->destroy_job(job);
+    assert(same_file(dir, OOT_SESSION_CONFIG, session));
 
-    /* Re-exporting keeps the soundfont's index; a foreign file at the path is never replaced. */
-    char existing_font[256];
-    snprintf(existing_font, sizeof(existing_font),
-             "<!-- my_song: generated by duckmidi -->\n<Soundfont Name=\"Soundfont_my_song\" "
-             "Index=\"40\">\n");
-    reset_checkout();
-    checkout[checkout_count++] =
-        (File){"assets/audio/soundfonts/Soundfont_my_song.xml", existing_font};
-    job = x->create_job(s, error, sizeof(error));
-    assert(x->install(job, &c, &folder, error, sizeof(error)) == DME_OK);
-    assert(strstr(installed_file("assets/audio/soundfonts/Soundfont_my_song.xml", NULL),
-                  "Index=\"40\""));
-    x->destroy_job(job);
-    reset_checkout();
-    checkout[checkout_count++] = (File){"assets/audio/sequences/my_song.seq", "my own song\n"};
-    job = x->create_job(s, error, sizeof(error));
-    assert(x->install(job, &c, &folder, error, sizeof(error)) == DME_INVALID &&
-           strstr(error, "not made by duckmidi") && installed_count == 0);
-    x->destroy_job(job);
-    reset_checkout();
-    checkout_count = 1; /* Not a checkout: no spec */
-    job = x->create_job(s, error, sizeof(error));
-    assert(x->install(job, &c, &folder, error, sizeof(error)) == DME_INVALID &&
+    /* Re-exporting updates the same logical song and keeps its soundfont index. */
+    const char *index = strstr(font, "Index=\"");
+    char kept[32];
+    assert(index && sscanf(index, "Index=\"%31[0-9]", kept) == 1);
+    SDL_free(font);
+    font =
+        install(x, s, &c, &folder, plugins, dir, "assets/audio/soundfonts/Soundfont_my_song.xml");
+    char expected_index[64];
+    snprintf(expected_index, sizeof(expected_index), "Index=\"%s\"", kept);
+    assert(font && strstr(font, expected_index));
+    SDL_free(seq);
+    SDL_free(font);
+    SDL_free(new_table);
+    SDL_free(new_spec);
+
+    /* A folder that is not a checkout is refused before anything is recorded. */
+    char empty[512];
+    scenario_folder(empty, sizeof(empty), "oot-install", "empty");
+    assert(repository_install(x, s, &c, &folder, plugins, empty, error, sizeof(error)) != DME_OK &&
            strstr(error, "zeldaret/oot"));
-    x->destroy_job(job);
 
-    /* Replacing a song with a vanilla soundfont edits the table line and adds no XML. */
+    /* Replacing a song with a vanilla soundfont edits the table line and adds no XML. The song
+       name is still installed as a new song, so that export is refused until it is reverted. */
     DmeValue market = {DME_CHOICE, 0, NULL};
 
     for (unsigned i = 0; i < oot_song_count; i++) {
@@ -404,80 +388,24 @@ int main(void) {
     DmeValue orchestra = {DME_CHOICE, 3, NULL};
     assert(x->set(s, "song", &market, error, sizeof(error)) == DME_OK);
     assert(x->set(s, "soundfont", &orchestra, error, sizeof(error)) == DME_OK);
-    reset_checkout();
-    job = x->create_job(s, error, sizeof(error));
-    assert(x->install(job, &c, &folder, error, sizeof(error)) == DME_OK);
-    assert(strstr(installed_file(OOT_SEQUENCE_TABLE, NULL),
-                  "(Sequence_my_song,        NA_BGM_MARKET"));
-    assert(!installed_file("assets/audio/soundfonts/Soundfont_my_song.xml", NULL) &&
-           !strstr(installed_file(OOT_SPEC, NULL), "Soundfont_my_song") &&
-           strstr(installed_file("assets/audio/sequences/my_song.seq", NULL),
-                  "#include \"Soundfont_3.h\""));
-    x->destroy_job(job);
+    assert(repository_install(x, s, &c, &folder, plugins, dir, error, sizeof(error)) != DME_OK &&
+           strstr(error, "my_song"));
 
-    /* Songs earlier exports installed that the game no longer plays are removed, freeing their
-       soundfonts: old_a, which this export replaces in the market, and lost_c, whose soundfont
-       was deleted by hand. kept_b stays and takes the first free number; theirs was not made by
-       duckmidi and is left alone. */
-    static const char *leftover_spec =
-        "beginseg\n    name \"Audiobank\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/soundfonts/Soundfont_0.o\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/soundfonts/Soundfont_1.o\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/soundfonts/Soundfont_old_a.o\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/soundfonts/Soundfont_lost_c.o\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/soundfonts/Soundfont_kept_b.o\"\nendseg\n"
-        "beginseg\n    name \"Audioseq\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/sequences/seq_0.prg.o\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/sequences/old_a.o\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/sequences/lost_c.o\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/sequences/kept_b.o\"\n"
-        "    include \"$(BUILD_DIR)/assets/audio/sequences/theirs.o\"\nendseg\n";
-    static const char *leftover_table =
-        "DEFINE_SEQUENCE    (Sequence_old_a,        NA_BGM_MARKET,           MEDIUM_CART, "
-        "CACHE_LOAD_TEMPORARY,  0          ) // market\n"
-        "DEFINE_SEQUENCE    (Sequence_kept_b,       NA_BGM_CUTSCENE_EFFECTS, MEDIUM_CART, "
-        "CACHE_LOAD_TEMPORARY,  0          ) // cutscene_effects\n";
-    DmeValue custom_font = {DME_CHOICE, OOT_CUSTOM_CHOICE, NULL};
-    assert(x->set(s, "soundfont", &custom_font, error, sizeof(error)) == DME_OK);
-    reset_checkout();
-    checkout[0].data = leftover_table;
-    checkout[1].data = leftover_spec;
-    checkout[checkout_count++] =
-        (File){"assets/audio/sequences/old_a.seq", "/* old_a: generated by duckmidi */\n"};
-    checkout[checkout_count++] = (File){
-        "assets/audio/soundfonts/Soundfont_old_a.xml",
-        "<!-- generated by duckmidi -->\n<Soundfont Name=\"Soundfont_old_a\" Index=\"2\"/>\n"};
-    checkout[checkout_count++] =
-        (File){"assets/audio/sequences/lost_c.seq", "/* lost_c: generated by duckmidi */\n"};
-    checkout[checkout_count++] =
-        (File){"assets/audio/sequences/kept_b.seq", "/* kept_b: generated by duckmidi */\n"};
-    checkout[checkout_count++] = (File){
-        "assets/audio/soundfonts/Soundfont_kept_b.xml",
-        "<!-- generated by duckmidi -->\n<Soundfont Name=\"Soundfont_kept_b\" Index=\"4\"/>\n"};
-    checkout[checkout_count++] = (File){"assets/audio/sequences/theirs.seq", "my own song\n"};
-    messages[0] = 0;
-    job = x->create_job(s, error, sizeof(error));
-    assert(x->install(job, &c, &folder, error, sizeof(error)) == DME_OK);
-    const char *removed[] = {"assets/audio/sequences/old_a.seq",
-                             "assets/audio/soundfonts/Soundfont_old_a.xml",
-                             "assets/audio/sequences/lost_c.seq"};
-
-    for (size_t i = 0; i < 3; i++) {
-        assert(installed_file(removed[i], &f) && f == DME_INSTALL_REMOVE);
-    }
-
-    assert(!installed_file("assets/audio/sequences/theirs.seq", NULL) &&
-           !installed_file("assets/audio/sequences/kept_b.seq", NULL));
-    const char *cleaned_spec = installed_file(OOT_SPEC, NULL);
-    assert(!strstr(cleaned_spec, "old_a") && !strstr(cleaned_spec, "lost_c") &&
-           strstr(cleaned_spec, "Soundfont_kept_b.o") && strstr(cleaned_spec, "theirs.o") &&
-           strstr(cleaned_spec, "Soundfont_my_song.o"));
-    assert(strstr(installed_file("assets/audio/soundfonts/Soundfont_kept_b.xml", NULL),
-                  "Index=\"2\""));
-    assert(strstr(installed_file("assets/audio/soundfonts/Soundfont_my_song.xml", NULL),
-                  "Index=\"3\""));
-    assert(strstr(messages, "old_a") && strstr(messages, "lost_c") && !strstr(messages, "theirs"));
-    x->destroy_job(job);
+    /* Revert all restores the initialized checkout. */
+    assert(repository_revert_all(x, s, &folder, plugins, dir, error, sizeof(error)) == DME_OK);
+    assert(same_file(dir, OOT_SEQUENCE_TABLE, table) && same_file(dir, OOT_SPEC, spec) &&
+           same_file(dir, "assets/audio/sequences/my_song.seq", NULL) &&
+           same_file(dir, "assets/audio/soundfonts/Soundfont_my_song.xml", NULL));
+    new_table = install(x, s, &c, &folder, plugins, dir, OOT_SEQUENCE_TABLE);
+    assert(new_table && strstr(new_table, "(Sequence_my_song,        NA_BGM_MARKET"));
+    SDL_free(new_table);
+    assert(same_file(dir, "assets/audio/soundfonts/Soundfont_my_song.xml", NULL));
+    seq = checkout_read(dir, "assets/audio/sequences/my_song.seq");
+    new_spec = checkout_read(dir, OOT_SPEC);
+    assert(seq && strstr(seq, "#include \"Soundfont_3.h\"") && new_spec &&
+           !strstr(new_spec, "Soundfont_my_song"));
+    SDL_free(seq);
+    SDL_free(new_spec);
     assert(x->set(s, "soundfont", &orchestra, error, sizeof(error)) == DME_OK);
 
     /* A high flute line needs a substitute: the review recommends one and applies it. */
@@ -523,29 +451,26 @@ int main(void) {
     c = context(4000 * 97);
     assert(x->inspect(s, &c, error, sizeof(error)) == DME_OK);
     reset_checkout();
+    make_checkout(dir, plugins, "memory");
     messages[0] = 0;
-    job = x->create_job(s, error, sizeof(error));
-    assert(x->install(job, &c, &folder, error, sizeof(error)) == DME_OK);
-    const char *new_session = installed_file(OOT_SESSION_CONFIG, &f);
-    assert(new_session && f == DME_INSTALL_BACKUP && !strstr(new_session, "0x2800, 0x2880"));
-    const char *new_heap = installed_file(OOT_AUDIO_HEAP_C, &f);
-    assert(new_heap && f == DME_INSTALL_BACKUP && !strstr(new_heap, "0x38000") &&
-           installed_file(OOT_BUFFERS_H, NULL));
-    x->destroy_job(job);
+    char *new_session = install(x, s, &c, &folder, plugins, dir, OOT_SESSION_CONFIG);
+    char *new_heap = checkout_read(dir, OOT_AUDIO_HEAP_C);
+    assert(new_session && !strstr(new_session, "0x2800, 0x2880"));
+    assert(new_heap && !strstr(new_heap, "0x38000") && !same_file(dir, OOT_BUFFERS_H, buffers_h));
+    SDL_free(new_session);
+    SDL_free(new_heap);
 
     /* With Enlarge, the memory is raised, so the song draws no memory warning. */
     assert(!strstr(messages, "Sequence memory") && !strstr(messages, "audio spec 10"));
 
-    /* Stock leaves the audio code alone and says where the song does not fit. */
+    /* Stock composes the song again, so the audio code returns to its initialized text, and says
+       where the song does not fit. */
     DmeValue stock = {DME_CHOICE, 1, NULL};
     assert(x->set(s, "memory", &stock, error, sizeof(error)) == DME_OK);
-    reset_checkout();
     messages[0] = 0;
-    job = x->create_job(s, error, sizeof(error));
-    assert(x->install(job, &c, &folder, error, sizeof(error)) == DME_OK &&
-           !installed_file(OOT_SESSION_CONFIG, NULL));
+    install(x, s, &c, &folder, plugins, dir, NULL);
+    assert(same_file(dir, OOT_SESSION_CONFIG, session) && same_file(dir, OOT_AUDIO_HEAP_C, heap_c));
     assert(strstr(messages, "Sequence memory") || strstr(messages, "audio spec 10"));
-    x->destroy_job(job);
     reset_checkout();
     x->destroy(s);
     free(events);

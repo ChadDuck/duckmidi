@@ -217,6 +217,9 @@ bool oot_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion
                         snprintf(notice, sizeof(layout->notice) - strlen(layout->notice),
                                  "%s%s both change %s; they are merged and the latest value wins.",
                                  *layout->notice ? " " : "", where, name);
+                        size_t merged = strlen(layout->merges);
+                        snprintf(layout->merges + merged, sizeof(layout->merges) - merged,
+                                 "%s: %s\n", where, name);
                         layout->interference = true;
                         ++layout->conflict_count;
                         ch = MIDI_CHANNELS;

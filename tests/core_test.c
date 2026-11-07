@@ -32,6 +32,10 @@ static void roundtrip(void) {
     CHECK(fabs(p.patterns[0].notes[1].beat - .5) < 1e-9);
     CHECK(fabs(dm_beat_seconds(&p, 3) - 2.5) < 1e-9);
     CHECK(fabs(dm_seconds_beat(&p, 2.5) - 3) < 1e-9);
+    CHECK(dm_playback_bpm(&p, .499) == 120 && dm_playback_bpm(&p, .5) == 60);
+    p.bpm = 100;
+    CHECK(dm_playback_bpm(&p, .599) == 100 && dm_playback_bpm(&p, .6) == 60);
+    p.bpm = 120;
     DmBytes mid = {0};
     CHECK(dm_midi(&p, &mid, error, sizeof(error)));
     DmProject next;
@@ -137,6 +141,106 @@ static void opening_controls(void) {
     CHECK(scheduled_control(&s, 7, note) == 30);
     CHECK(scheduled_control(&s, 10, later) == 127);
     dm_schedule_free(&s);
+    dm_project_free(&p);
+}
+
+static unsigned default_pan_flags(const DmProject *p) {
+    DmExportEvent *events = NULL;
+    size_t count;
+    uint64_t duration;
+    char error[256] = {0};
+    CHECK(dm_export_timeline(p, &events, &count, &duration, error, sizeof(error)));
+    unsigned flags = 0;
+
+    /* Mirrors the export host: authored channels clear the default flag. */
+    unsigned authored = dm_export_authored_pan(p);
+
+    for (size_t i = 0; i < count; i++) {
+        if (events[i].status == MIDI_CONTROL && events[i].a == MIDI_CC_PAN && events[i].tick == 0 &&
+            !(authored & 1u)) {
+            flags |= events[i].flags;
+        }
+    }
+
+    free(events);
+    return flags;
+}
+
+static void pan_provenance(void) {
+    DmProject p;
+    dm_project_init(&p);
+    p.channels[0].enabled = true;
+    int pattern = dm_pattern_add(&p, "Pan provenance");
+    CHECK(pattern == 0 && dm_note_add(&p.patterns[0], (DmNote){0, 1, 60, 100, 0}));
+    CHECK(dm_clip_add(&p, (DmClip){.pattern = 0, .channel = 0, .length = 4}));
+    CHECK(default_pan_flags(&p) == DM_EXPORT_DEFAULT_CONTROL);
+    p.clips[0].length = 0;
+    CHECK(default_pan_flags(&p) == DM_EXPORT_DEFAULT_CONTROL);
+    p.clips[0].length = 4;
+    CHECK(dm_automation_add(
+        &p,
+        (DmAutomation){.beat = .5, .type = MIDI_CONTROL, .a = MIDI_CC_PAN, .b = 64, .pattern = 0}));
+    CHECK(!default_pan_flags(&p));
+    p.automation_count = 0;
+    p.channels[0].pan = 32;
+    CHECK(!default_pan_flags(&p));
+    p.channels[0].pan = 64;
+    DmBytes pan = {0};
+    const uint8_t bytes[] = {MIDI_CONTROL, MIDI_CC_PAN, 64};
+    CHECK(dm_bytes(&pan, bytes, sizeof(bytes)) && dm_event_add(&p, 0, 0, 0, &pan));
+    CHECK(!default_pan_flags(&p));
+    dm_bytes_free(&pan);
+    dm_project_free(&p);
+
+    const uint8_t imported[] = {'M',
+                                'T',
+                                'h',
+                                'd',
+                                0,
+                                0,
+                                0,
+                                6,
+                                0,
+                                0,
+                                0,
+                                1,
+                                0,
+                                96,
+                                'M',
+                                'T',
+                                'r',
+                                'k',
+                                0,
+                                0,
+                                0,
+                                16,
+                                0,
+                                MIDI_CONTROL,
+                                MIDI_CC_PAN,
+                                64,
+                                0,
+                                MIDI_NOTE_ON,
+                                60,
+                                100,
+                                96,
+                                MIDI_NOTE_OFF,
+                                60,
+                                0,
+                                0,
+                                MIDI_META,
+                                MIDI_META_END,
+                                0};
+    dm_project_init(&p);
+    char error[256] = {0};
+    CHECK(dm_import(&p, imported, sizeof(imported), 0, 0, error, sizeof(error)));
+    CHECK(p.channels[0].pan == 64 && !default_pan_flags(&p));
+    DmBytes packed = {0};
+    CHECK(dm_pack(&p, &packed));
+    dm_project_free(&p);
+    dm_project_init(&p);
+    CHECK(dm_unpack(&p, packed.data, packed.size, error, sizeof(error)));
+    CHECK(!default_pan_flags(&p));
+    dm_bytes_free(&packed);
     dm_project_free(&p);
 }
 
@@ -669,7 +773,18 @@ static void midi_metadata_views(void) {
         char error[256];
         CHECK(dm_import(&p, source.data, source.size, 1, 0, error, sizeof(error)));
         strcpy(p.patterns[0].name, "Port one private edit");
+        DmPatchReplacement first_sample = {.generation = 1,
+                                           .locator = "generated/missing-library",
+                                           .set_id = "view-set",
+                                           .preset_id = "first"};
+        CHECK(dm_patch_replacement_set(&p, &first_sample));
         CHECK(dm_view_switch(&p, 2, format == 2 ? 1 : 0, error, sizeof(error)));
+        CHECK(!p.patch_replacement_count);
+        DmPatchReplacement second_sample = first_sample;
+        second_sample.key.channel = 1;
+        second_sample.generation = 2;
+        strcpy(second_sample.preset_id, "second");
+        CHECK(dm_patch_replacement_set(&p, &second_sample));
         strcpy(p.patterns[0].name, "Port two edit");
         p.patterns[0].notes[0].velocity = 83;
         CHECK(dm_pack(&p, &packed));
@@ -681,8 +796,12 @@ static void midi_metadata_views(void) {
         CHECK(packed.size == restored.size && !memcmp(packed.data, restored.data, packed.size));
         CHECK(dm_view_switch(&q, 1, 0, error, sizeof(error)));
         CHECK(!strcmp(q.patterns[0].name, "Port one private edit"));
+        CHECK(q.patch_replacement_count == 1 &&
+              dm_patch_replacement(&q, first_sample.key)->generation == 1);
         CHECK(dm_view_switch(&q, 2, format == 2 ? 1 : 0, error, sizeof(error)));
         CHECK(q.patterns[0].notes[0].velocity == 83);
+        CHECK(q.patch_replacement_count == 1 &&
+              dm_patch_replacement(&q, second_sample.key)->generation == 1);
 
         if (format == 1) {
             CHECK(
@@ -710,6 +829,7 @@ static void midi_metadata_views(void) {
         CHECK(
             dm_import(&q, active.data, active.size, 2, format == 2 ? 1 : 0, error, sizeof(error)));
         CHECK(q.patterns[0].notes[0].velocity == 83);
+        CHECK(!q.patch_replacement_count);
         dm_bytes_free(&active);
         CHECK(dm_midi_export(&p, &active, true, DM_METADATA_DUCKMIDI_ONLY, error, sizeof(error)));
         /* Search the entire output, including the embedded original and packed views. */
@@ -725,6 +845,8 @@ static void midi_metadata_views(void) {
 
         CHECK(dm_view_switch(&q, 1, 0, error, sizeof(error)));
         CHECK(!strcmp(q.patterns[0].name, "Port one private edit"));
+        CHECK(q.patch_replacement_count == 1 &&
+              dm_patch_replacement(&q, first_sample.key)->generation == 1);
         CHECK(dm_view_switch(&q, 2, format == 2 ? 1 : 0, error, sizeof(error)));
         CHECK(q.patterns[0].notes[0].velocity == 83);
         dm_bytes_free(&restored);
@@ -754,6 +876,100 @@ static DmBytes one_track(const unsigned char *track, size_t size) {
         1,   0,   96,  'M', 'T', 'r', 'k', 0, 0, 0, (unsigned char)size};
     CHECK(size < 256 && dm_bytes(&file, header, sizeof(header)) && dm_bytes(&file, track, size));
     return file;
+}
+
+static void program_repeats(void) {
+    /* clang-format off */
+    const uint8_t first_track[] = {
+        0, MIDI_PROGRAM, 4,
+        0, MIDI_CONTROL, MIDI_CC_VOLUME, 100,
+        0, MIDI_CONTROL, MIDI_CC_PAN, 64,
+        0, MIDI_PROGRAM, 4, /* Same setup repeated. */
+        0, MIDI_CONTROL, MIDI_CC_VOLUME, 100,
+        0, MIDI_CONTROL, MIDI_CC_PAN, 64,
+        0, MIDI_PROGRAM | 1, 4, /* Different channel. */
+        0, MIDI_CONTROL, MIDI_CC_BANK, 1,
+        0, MIDI_PROGRAM, 4, /* New bank. */
+        0, MIDI_PROGRAM, 5,
+        0, MIDI_PROGRAM, 4, /* Return to program 4. */
+        0, MIDI_NOTE_ON, 60, 100,
+        0, MIDI_PROGRAM, 4, /* A note intervened. */
+        0, MIDI_NOTE_ON | 1, 61, 100,
+        96, MIDI_NOTE_OFF, 60, 0,
+        0, MIDI_NOTE_OFF | 1, 61, 0,
+        0, MIDI_PROGRAM, 4, /* Different tick. */
+        0, MIDI_META, MIDI_META_PORT, 1, 1,
+        0, MIDI_PROGRAM, 4, /* Different port, same tick. */
+        0, MIDI_PROGRAM, 4,
+        0, MIDI_NOTE_ON, 64, 100,
+        96, MIDI_NOTE_OFF, 64, 0,
+        0, MIDI_META, MIDI_META_END, 0,
+    };
+    const uint8_t second_track[] = {
+        0, MIDI_PROGRAM, 4, /* Different track. */
+        0, MIDI_PROGRAM, 4,
+        0, MIDI_META, MIDI_META_END, 0,
+    };
+    /* clang-format on */
+    DmBytes midi = one_track(first_track, sizeof(first_track));
+    DmBytes second = one_track(second_track, sizeof(second_track));
+    midi.data[9] = 1;
+    midi.data[11] = 2;
+    CHECK(dm_bytes(&midi, second.data + 14, second.size - 14));
+
+    DmProject p;
+    dm_project_init(&p);
+    char error[256];
+    CHECK(dm_import(&p, midi.data, midi.size, -1, 0, error, sizeof(error)));
+    CHECK(p.port == DM_PORT_COMBINED);
+
+    const struct {
+        double beat;
+        int track, port, status, program;
+    } expected[] = {
+        {0, 0, 0, MIDI_PROGRAM, 4}, {0, 0, 0, MIDI_PROGRAM | 1, 4}, {0, 0, 0, MIDI_PROGRAM, 4},
+        {0, 0, 0, MIDI_PROGRAM, 5}, {0, 0, 0, MIDI_PROGRAM, 4},     {0, 0, 0, MIDI_PROGRAM, 4},
+        {0, 1, 0, MIDI_PROGRAM, 4}, {1, 0, 0, MIDI_PROGRAM, 4},     {1, 0, 1, MIDI_PROGRAM, 4},
+    };
+
+    size_t seen = 0;
+
+    for (size_t i = 0; i < p.event_count; ++i) {
+        const DmEvent *e = &p.events[i];
+
+        if ((e->message.data[0] & MIDI_STATUS_MASK) != MIDI_PROGRAM) {
+            continue;
+        }
+
+        CHECK(seen < sizeof(expected) / sizeof(*expected));
+        CHECK(e->beat == expected[seen].beat && e->track == expected[seen].track &&
+              e->port == expected[seen].port && e->message.data[0] == expected[seen].status &&
+              e->message.data[1] == expected[seen].program);
+        ++seen;
+    }
+
+    CHECK(seen == sizeof(expected) / sizeof(*expected));
+    CHECK(p.original.size == midi.size && !memcmp(p.original.data, midi.data, midi.size));
+    dm_project_free(&p);
+    dm_bytes_free(&second);
+    dm_bytes_free(&midi);
+
+    /* An older editor snapshot can still contain both records. Normalize on MIDI import. */
+    const uint8_t patch[] = {MIDI_PROGRAM, 4};
+    DmBytes program = {(uint8_t *)patch, sizeof(patch), sizeof(patch)}, exported = {0};
+    DmProject restored;
+    dm_project_init(&p);
+    dm_project_init(&restored);
+    CHECK(dm_event_add(&p, 0, 0, 0, &program));
+    CHECK(dm_event_add(&p, 0, 0, 0, &program));
+    CHECK(dm_event_add(&p, 0, 1, 0, &program));
+    CHECK(dm_midi_export(&p, &exported, false, DM_METADATA_KEEP_ALL, error, sizeof(error)));
+    CHECK(dm_import(&restored, exported.data, exported.size, -1, 0, error, sizeof(error)));
+    CHECK(restored.event_count == 2 && restored.events[0].track == 0 &&
+          restored.events[1].track == 1);
+    dm_bytes_free(&exported);
+    dm_project_free(&restored);
+    dm_project_free(&p);
 }
 
 static size_t count_bytes(const DmBytes *b, const unsigned char *pattern, size_t size) {
@@ -825,7 +1041,66 @@ static void percussion_parts(void) {
     dm_project_free(&again);
 }
 
+static void opening_tempo(void) {
+    const uint8_t track[] = {
+        12,
+        MIDI_META,
+        MIDI_META_TEMPO,
+        3,
+        0x09,
+        0x27,
+        0xc0, /* 100 BPM before the first note. */
+        12,
+        MIDI_NOTE_ON,
+        60,
+        100,
+        96,
+        MIDI_NOTE_OFF,
+        60,
+        0,
+        0,
+        MIDI_META,
+        MIDI_META_TEMPO,
+        3,
+        0x0f,
+        0x42,
+        0x40, /* 60 BPM later in the song. */
+        0,
+        MIDI_META,
+        MIDI_META_END,
+        0,
+    };
+    DmBytes file = one_track(track, sizeof(track));
+    DmProject project;
+    dm_project_init(&project);
+    char error[256];
+    CHECK(dm_import(&project, file.data, file.size, 0, 0, error, sizeof(error)));
+    CHECK(project.bpm == 100 && dm_playback_bpm(&project, 0) == 100);
+    CHECK(dm_playback_bpm(&project, dm_beat_seconds(&project, 2)) == 60);
+    dm_project_free(&project);
+    dm_bytes_free(&file);
+}
+
+/* Route 0 counts as used only when something on the channel uses it, like any other route. */
+static void channel_ports(void) {
+    DmProject p;
+    dm_project_init(&p);
+    bool used[DM_NOTE_PORTS];
+    dm_channel_ports(&p, 0, used);
+    CHECK(!used[0]);
+    CHECK(dm_pattern_add(&p, "Route 2") == 0);
+    CHECK(dm_note_add(&p.patterns[0], (DmNote){0, 1, 60, 100, 0, 2}));
+    CHECK(dm_clip_add(&p, (DmClip){.pattern = 0, .channel = 0}));
+    dm_channel_ports(&p, 0, used);
+    CHECK(!used[0] && used[2]);
+    CHECK(dm_note_add(&p.patterns[0], (DmNote){1, 1, 62, 100, 0, 0}));
+    dm_channel_ports(&p, 0, used);
+    CHECK(used[0] && used[2]);
+    dm_project_free(&p);
+}
+
 int main(void) {
+    channel_ports();
     midi_metadata();
     midi_metadata_views();
     bounded_curves();
@@ -835,6 +1110,9 @@ int main(void) {
     model();
     multiport();
     opening_controls();
+    pan_provenance();
+    program_repeats();
+    opening_tempo();
     malformed();
     advanced();
     independent_sequences();

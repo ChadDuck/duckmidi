@@ -1,4 +1,5 @@
 /* Exercise the actual application loop's platform boundary without a visible window. */
+#define SDL_MAIN_HANDLED
 #define main duckmidi_application_main
 #include "../src/main.c"
 #undef main

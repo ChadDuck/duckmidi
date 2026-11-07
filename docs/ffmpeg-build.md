@@ -1,6 +1,6 @@
 # Minimal audio libraries
 
-duckmidi's Windows and macOS builds use FFmpeg 9.0.2 shared libraries built for its audio exports. LAME 3.100, Ogg 1.3.6, Vorbis 1.3.7, and Opus 1.6 are linked into those libraries, so every export format has its encoder.
+duckmidi's Windows and macOS builds use FFmpeg 9.0.2 shared libraries. LAME 3.100, Ogg 1.3.6, Vorbis 1.3.7, and Opus 1.6 supply the existing audio export codecs. The build includes native decoders and demuxers for PCM WAV, MP3, AAC in M4A, Ogg Vorbis, Ogg Opus, FLAC, and PCM AIFF. The recipe disables GPL and nonfree components.
 
 The Windows SDK is checked in under `vendor/ffmpeg-9.0/`. macOS builds compile the same libraries locally, because Homebrew's `ffmpeg` package lacks the Vorbis encoder.
 
@@ -54,4 +54,4 @@ cmake -DCHECK_ONLY=ON -P tools/build-ffmpeg-minimal.cmake
 
 The recipe downloads pinned source archives, checks their SHA-256 hashes, and builds under `build/development/ffmpeg-minimal-work/`. Build logs and configuration captures go under `agents/reports/ffmpeg-minimal/`. This rebuild compiles only FFmpeg and its codec dependencies.
 
-Linux builds use the distribution's FFmpeg packages, which include these encoders. Application compilation is a separate step; see [project build instructions](../README.md#building).
+Linux builds use the distribution's FFmpeg packages. For application compilation, see the [project build instructions](../README.md#building).

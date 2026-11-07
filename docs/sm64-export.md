@@ -7,7 +7,7 @@ The bundled M64 plugin exports music for the SM64 US audio engine: stock [n64dec
 1. Press **Ctrl + E** and select **M64**.
 2. Choose the **Target** game: **SM64** (the default), **HackerSM64** or **sm64coopdx**. See [Targets](#targets).
 3. Choose a **Sequence name** from the dropdown, or choose **Custom** and enter a filename stem. Custom starts with the project's name, or the MIDI file's name for an unnamed project.
-4. Set a **Bank name** that does not conflict with another bank in your checkout. sm64coopdx has no bank name.
+4. Set a **Bank name** that does not conflict with another bank in your checkout. Export to Repository uses it as the bank file name when it sorts after the checkout's existing banks; otherwise it puts the last bank's name in front, so existing bank numbers do not change. sm64coopdx has no bank name.
 5. For SM64 and HackerSM64, choose **Sequence memory**: **Enlarge** makes the smallest memory change the song needs and still runs on console; **Stock** changes no game files besides the export itself.
 6. Enable **Loop song** if you want it to repeat, or **Use M64 loop points** to repeat part of it (see [Loop points](#loop-points)).
 7. Review the instrument mappings, then click **Save M64 Package**, or **Export to Repository** to install into your checkout.
@@ -75,7 +75,7 @@ Sequence and bank names control the files inside the ZIP; the ZIP itself can hav
 **Export to Repository** installs the song straight into a checkout:
 
 1. Choose an existing song as the **Sequence name**; the export replaces it. sm64coopdx also accepts a new name.
-2. Click **Export to Repository** and choose the checkout's root folder (it contains `sound/sequences.json`).
+2. The first time, click **Choose Folder** and choose the checkout's root folder (it contains `sound/sequences.json`). Then click **Export to Repository**.
 3. Rebuild the checkout as described below.
 
 The export recognizes the checkout's game and installs for it, whatever **Target** is set to; **Target** chooses the game of saved packages. When they differ, a warning names the game it installed for. sm64coopdx checkouts are recognized by `src/pc/lua/utils/smlua_audio_utils.c`, and HackerSM64 checkouts by `include/config/config_audio.h`.
@@ -86,9 +86,9 @@ For HackerSM64, it writes the same files and raises `TEMPORARY_SEQ_MEM` in `src/
 
 For sm64coopdx, it writes `mods/duckmidi_<sequence>/main.lua` and `mods/duckmidi_<sequence>/sound/<sequence>.m64`. The build copies `mods/` beside the game; enable the mod when you host a game.
 
-The first export asks for the checkout folder; later exports install there without asking. Change it in **Edit > Preferences** under **Export plugins**.
+Once the folder is chosen, later exports install there without asking. Change it in **Edit > Preferences** under **Export plugins**.
 
-**Keep original files** (on by default, above the export buttons) saves a copy of each checkout file before the export changes it, as `<file>.bkp` beside it. With it off, files are replaced directly, except stock audio memory files, which are always kept. **Revert repository export** restores every changed file and removes the backups the exports created, for all exports to that folder since the last revert during this session.
+**Keep original files** (on by default, above the export buttons) also saves a copy of each changed checkout file as `<file>.bkp` beside it. A replaced sample always keeps one. duckmidi's own history keeps every original either way, so **Repository history** can revert any export, or all of them, even after a restart.
 
 ## Install into an SM64 checkout manually
 
@@ -120,7 +120,7 @@ An **Export warnings** popup lists engine limitations after a successful save. T
 | Unsupported controls | Check the affected effect in-game; the warning identifies what was omitted or approximated. |
 | Timing or note changes | Review the affected passage. Native tick rounding and hard engine limits can require changes that are reported explicitly. |
 
-A memory warning alone does not cause musical reduction. The exporter tries lossless layouts first; only unrepresentable sequence branches trigger its last-resort size reduction. Extreme tempos, exhausted note layers, and other engine limits can also require audible changes.
+A memory warning alone does not cause musical reduction. When a song's script addresses pass 64 KiB, the exporter first tries lossless layouts. It then simplifies volume, expression, pan and pitch-bend curves within about 1 dB, 6 pan steps and 10 cents, then spaces those changes further apart; notes stay as written. Only if that is not enough does its last-resort reduction round note timing and velocity, which the warning window reports as audible changes. Extreme tempos, exhausted note layers, and other engine limits can also require audible changes.
 
 Whole-song looping restores the initial tempo, instruments, and controller state. Non-looping exports include a one-beat release tail.
 

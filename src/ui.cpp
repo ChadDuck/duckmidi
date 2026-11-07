@@ -17,6 +17,12 @@ static SDL_Cursor *icon_cursors[3], *system_cursors[ImGuiMouseCursor_COUNT];
 static SDL_Cursor *applied_cursor;
 static int cursor_size, gesture_cursor = -1;
 static bool custom_cursor = true;
+static ImVec4 base_colors[ImGuiCol_COUNT];
+static uint32_t theme_background = 0xff0a0a0au;
+static uint32_t theme_foreground = 0xffffffffu, theme_accent = 0xff56eeffu, theme_accent_button;
+static uint32_t theme_header_active;
+static float theme_shade_edge = 1;
+static bool theme_ready;
 static void cache_cursors();
 
 void ui_set_scale(float scale) {
@@ -73,6 +79,8 @@ bool ui_init(SDL_Window *window, SDL_Renderer *renderer, const char *settings) {
     s.Colors[ImGuiCol_CheckMark] = {0.4f, 0.88f, 0.69f, 1};
     s.Colors[ImGuiCol_SliderGrab] = {0.34f, 0.78f, 0.62f, 1};
     s.Colors[ImGuiCol_Text] = {0.88f, 0.92f, 0.95f, 1};
+    memcpy(base_colors, s.Colors, sizeof(base_colors));
+    theme_ready = false;
     io.Fonts->AddFontDefault();
     s.FontSizeBase = 15;
     bool ok = ImGui_ImplSDL3_InitForSDLRenderer(window, renderer) &&
@@ -431,6 +439,22 @@ bool ui_button(const char *s, float w, float h) {
     return ImGui::Button(s, {w, h});
 }
 
+int ui_button_pair(const char *left, const char *right, int selected, float width) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    ui_accent(selected == 0);
+    bool choose_left = ui_button(left, width * .5f, 0);
+    ui_accent_end();
+    ImVec2 edge = ImGui::GetItemRectMax();
+    ImGui::SameLine(0, 0);
+    ui_accent(selected == 1);
+    bool choose_right = ui_button(right, width * .5f, 0);
+    ui_accent_end();
+    ImGui::PopStyleVar();
+    ImGui::GetWindowDrawList()->AddLine({edge.x, ImGui::GetItemRectMin().y}, {edge.x, edge.y},
+                                        ImGui::GetColorU32(ImGuiCol_Border));
+    return choose_left ? 0 : choose_right ? 1 : selected;
+}
+
 static ImRect icon_bounds(UiIcon icon) {
     ImVec2 lo(100, 100), hi(-100, -100);
 
@@ -726,20 +750,24 @@ bool ui_int(const char *s, int *v, int lo, int hi) {
 }
 
 bool ui_float(const char *s, float *v, float lo, float hi) {
+    return ui_float_step(s, v, lo, hi, 1);
+}
+
+bool ui_float_step(const char *s, float *v, float lo, float hi, float step) {
     auto &style = ImGui::GetStyle();
     float content = ImGui::CalcTextSize("999.00").x + style.FramePadding.x * 2;
     ImGui::SetNextItemWidth(
         ImMax(125.0f, content + 2 * (ImGui::GetFrameHeight() + style.ItemInnerSpacing.x)));
-    bool changed = ImGui::InputFloat(s, v, 1, 10, "%.2f");
+    bool changed = ImGui::InputFloat(s, v, step, step * 10, "%.2f");
 
     if (ImGui::IsItemActive()) {
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
-            *v += 1;
+            *v += step;
             changed = true;
         }
 
         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
-            *v -= 1;
+            *v -= step;
             changed = true;
         }
     }
@@ -758,6 +786,29 @@ bool ui_input(const char *s, char *v, size_t n) {
     }
 
     return ImGui::InputText(s, v, n);
+}
+
+void ui_readonly(const char *label, const char *value) {
+    ImGui::InputText(label, const_cast<char *>(value), strlen(value) + 1,
+                     ImGuiInputTextFlags_ReadOnly);
+}
+
+bool ui_input_submit(const char *label, char *value, size_t cap) {
+    return ImGui::InputText(label, value, cap,
+                            ImGuiInputTextFlags_AutoSelectAll |
+                                ImGuiInputTextFlags_EnterReturnsTrue);
+}
+
+bool ui_input_select_all(const char *label, char *value, size_t cap) {
+    if (!(GImGui->NextItemData.HasFlags & ImGuiNextItemDataFlags_HasWidth)) {
+        ImGui::SetNextItemWidth(240);
+    }
+
+    return ImGui::InputText(label, value, cap, ImGuiInputTextFlags_AutoSelectAll);
+}
+
+bool ui_section(const char *label) {
+    return ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
 }
 
 bool ui_appearing() {
@@ -956,6 +1007,10 @@ static bool combo(const char *s, const char *p, bool bar) {
 
 bool ui_combo(const char *s, const char *p) {
     return combo(s, p, false);
+}
+
+bool ui_edit_combo(const char *label, const char *preview) {
+    return ImGui::BeginCombo(label, preview);
 }
 
 bool ui_bar_combo(const char *s, const char *p) {
@@ -1291,35 +1346,200 @@ bool ui_dialog(const char *s, bool *open, float w, float h) {
     return ImGui::Begin(s, open, ImGuiWindowFlags_NoCollapse);
 }
 
-bool ui_growing_dialog(const char *s, bool *open, float w, float h) {
+bool ui_expanding_dialog(const char *title, bool *open, float width, float height, bool expanded) {
+    const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
+    ImGuiWindow *existing = ImGui::FindWindowByName(title);
+    ImGuiID key = ImHashStr("##expanded-content");
+    bool previous = existing && existing->StateStorage.GetBool(key);
+    float w = ImMin(existing ? existing->SizeFull.x : width, work.x);
+
+    if (expanded) {
+        if (!previous) {
+            ImGui::SetNextWindowSize({w, ImMin(height, work.y)}, ImGuiCond_Always);
+        }
+
+        ImGui::SetNextWindowSizeConstraints({ImMin(320.0f, work.x), ImMin(220.0f, work.y)}, work);
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
+                                {.5f, .5f});
+        bool visible = ImGui::Begin(title, open, ImGuiWindowFlags_NoCollapse);
+        ImGui::GetCurrentWindow()->StateStorage.SetBool(key, true);
+        return visible;
+    }
+
+    w = ImMin(width, work.x);
+    ImGui::SetNextWindowSize({w, 0}, ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints({w, 0}, {w, work.y});
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
+    bool visible = ImGui::Begin(title, open,
+                                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
+                                    ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::GetCurrentWindow()->StateStorage.SetBool(key, false);
+    return visible;
+}
+
+bool ui_resizable_dialog(const char *s, bool *open, float w, float h) {
+    ImVec2 work = ImGui::GetMainViewport()->WorkSize;
+    ImGui::SetNextWindowSizeConstraints({ImMin(320.0f, work.x), ImMin(220.0f, work.y)}, work);
+    return ui_dialog(s, open, ImMin(w, work.x), ImMin(h, work.y));
+}
+
+static bool growing_dialog(const char *s, bool *open, float w, float h) {
     /* The height follows last frame's contents, limited to the work area so the options and the
        resize corner stay visible; the width stays the user's. */
     ImGuiWindow *window = ImGui::FindWindowByName(s);
     const ImGuiViewport *view = ImGui::GetMainViewport();
+    float max_width = view->WorkSize.x;
+    ImGui::SetNextWindowSizeConstraints({ImMin(32.0f, max_width), 32},
+                                        {max_width, view->WorkSize.y});
 
-    if (window && window->WasActive && !window->Collapsed) {
+    if (window && window->WasActive && !window->Appearing && !window->Collapsed) {
         float fit = window->ContentSizeIdeal.y + window->WindowPadding.y * 2 +
                     window->DecoOuterSizeY1 + window->DecoOuterSizeY2;
-        float height = ImMin(fit, view->WorkSize.y);
+        float height = ImMin(std::ceil(fit) + 2, view->WorkSize.y);
 
         float top =
             ImClamp(window->Pos.y, view->WorkPos.y, view->WorkPos.y + view->WorkSize.y - height);
-        ImGui::SetNextWindowSize({window->SizeFull.x, height}, ImGuiCond_Always);
+        ImGui::SetNextWindowSize({ImMin(window->SizeFull.x, max_width), height}, ImGuiCond_Always);
 
         if (top != window->Pos.y) {
             ImGui::SetNextWindowPos({window->Pos.x, top}, ImGuiCond_Always);
         }
     } else {
         float width = window ? window->SizeFull.x : w;
-        ImGui::SetNextWindowSize({width, ImMin(h, view->WorkSize.y)}, ImGuiCond_Always);
+        ImGui::SetNextWindowSize({ImMin(width, max_width), ImMin(h, view->WorkSize.y)},
+                                 ImGuiCond_Always);
         ImGui::SetNextWindowPos(view->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
     }
 
     return ImGui::Begin(s, open, ImGuiWindowFlags_NoCollapse);
 }
 
+bool ui_growing_dialog(const char *s, bool *open, float w, float h) {
+    return growing_dialog(s, open, w, h);
+}
+
+/* Flexible dialogs resize in both directions but never become shorter than their contents
+   need. The window remembers how much extra height ui_flex gave out last frame, so its minimum
+   is the contents at their smallest, and the spare height this frame goes back to ui_flex.
+   Until the user resizes it, the height follows the contents plus the flexible row's preferred
+   extra; a new layout or reopening the window returns it to that height. */
+static const char *const flex_extra_key = "ui_flex_extra";
+static const char *const flex_slack_key = "ui_flex_slack";
+static const char *const flex_want_key = "ui_flex_want";
+static const char *const flex_sized_key = "ui_flex_sized";
+static const char *const flex_set_key = "ui_flex_set";
+static const char *const flex_layout_key = "ui_flex_layout";
+static const char *const flex_rows_key = "ui_flex_rows";
+
+bool ui_flexible_dialog(const char *s, bool *open, float w, float h, bool attached, int layout) {
+    ImGuiWindow *window = ImGui::FindWindowByName(s);
+    const ImGuiViewport *view = ImGui::GetMainViewport();
+    float max_width = view->WorkSize.x - (attached ? ImMin(180.0f, view->WorkSize.x * .45f) : 0);
+    float minimum = 32, needed = 32, requested = -1;
+    bool measured = window && window->WasActive && !window->Appearing && !window->Collapsed;
+
+    if (window && (!measured || window->StateStorage.GetInt(ImHashStr(flex_layout_key)) != layout)) {
+        window->StateStorage.SetBool(ImHashStr(flex_sized_key), false);
+    }
+
+    if (measured) {
+        /* Last frame's contents and the extra height they were given come from the same frame;
+           ContentSizeIdeal would lag one frame behind and make the minimum oscillate. */
+        float extra = window->StateStorage.GetFloat(ImHashStr(flex_extra_key), 0);
+        float want = window->StateStorage.GetFloat(ImHashStr(flex_want_key), 0);
+        float contents = window->DC.CursorMaxPos.y - window->DC.CursorStartPos.y;
+        float fit = contents - extra + window->WindowPadding.y * 2 + window->DecoOuterSizeY1 +
+                    window->DecoOuterSizeY2;
+        /* Contents taller than the work area scroll instead; they get no spare height. */
+        needed = std::ceil(fit) + 2;
+        minimum = ImMin(needed, view->WorkSize.y);
+        bool sized = window->StateStorage.GetBool(ImHashStr(flex_sized_key), false);
+        float height = ImClamp(sized ? window->SizeFull.y : needed + want, minimum,
+                               view->WorkSize.y);
+        requested = height;
+        float top =
+            ImClamp(window->Pos.y, view->WorkPos.y, view->WorkPos.y + view->WorkSize.y - height);
+        ImGui::SetNextWindowSize({ImMin(window->SizeFull.x, max_width), height}, ImGuiCond_Always);
+
+        if (top != window->Pos.y) {
+            ImGui::SetNextWindowPos({window->Pos.x, top}, ImGuiCond_Always);
+        }
+    } else {
+        float width = window ? window->SizeFull.x : w;
+        ImGui::SetNextWindowSize({ImMin(width, max_width), ImMin(h, view->WorkSize.y)},
+                                 ImGuiCond_Always);
+        ImGui::SetNextWindowPos(view->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
+    }
+
+    ImGui::SetNextWindowSizeConstraints({ImMin(32.0f, max_width), minimum},
+                                        {max_width, view->WorkSize.y});
+    bool visible = ImGui::Begin(s, open, ImGuiWindowFlags_NoCollapse);
+    ImGuiWindow *current = ImGui::GetCurrentWindow();
+    ImGuiStorage *state = &current->StateStorage;
+
+    /* Begin applies a manual resize after the requested size, so a different height means the
+       user resized the window this frame. */
+    if (requested >= 0 && std::fabs(current->SizeFull.y - requested) > .5f) {
+        state->SetBool(ImHashStr(flex_sized_key), true);
+    }
+
+    /* Spare height is shared by last frame's flexible rows. */
+    float slack = measured ? ImMax(0.0f, current->Size.y - needed) : 0;
+    slack /= (float)ImMax(1, state->GetInt(ImHashStr(flex_rows_key), 1));
+    state->SetFloat(ImHashStr(flex_slack_key), slack);
+    state->SetInt(ImHashStr(flex_rows_key), 0);
+    state->SetFloat(ImHashStr(flex_extra_key), 0);
+    state->SetFloat(ImHashStr(flex_want_key), 0);
+    state->SetInt(ImHashStr(flex_layout_key), layout);
+    return visible;
+}
+
+float ui_flex(float minimum, float preferred) {
+    ImGuiWindow *root = ImGui::GetCurrentWindow()->RootWindow;
+    float slack = root->StateStorage.GetFloat(ImHashStr(flex_slack_key), 0);
+    float extra = root->StateStorage.GetFloat(ImHashStr(flex_extra_key), 0);
+    float want = root->StateStorage.GetFloat(ImHashStr(flex_want_key), 0);
+    int rows = root->StateStorage.GetInt(ImHashStr(flex_rows_key), 0);
+    root->StateStorage.SetInt(ImHashStr(flex_rows_key), rows + 1);
+    root->StateStorage.SetFloat(ImHashStr(flex_extra_key), extra + slack);
+    root->StateStorage.SetFloat(ImHashStr(flex_want_key), want + ImMax(0.0f, preferred - minimum));
+    return minimum + slack;
+}
+
 bool ui_context(const char *s) {
     return ImGui::BeginPopupContextItem(s, ImGuiPopupFlags_MouseButtonRight);
+}
+
+UiRect ui_attach_space(float width) {
+    ImGuiWindow *window = ImGui::GetCurrentWindow();
+    const ImGuiViewport *view = ImGui::GetMainViewport();
+    float minimum_panel = ImMin(180.0f, view->WorkSize.x * .45f);
+    float available = ImMax(1.0f, view->WorkSize.x - minimum_panel);
+
+    if (window->Size.x > available) {
+        ImGui::SetWindowSize({available, window->Size.y});
+    }
+
+    float panel =
+        ImClamp(width, minimum_panel, ImMax(minimum_panel, view->WorkSize.x - window->Size.x));
+
+    ImVec2 position = window->Pos;
+    position.x = ImClamp(
+        position.x, view->WorkPos.x,
+        ImMax(view->WorkPos.x, view->WorkPos.x + view->WorkSize.x - window->Size.x - panel));
+    ImGui::SetWindowPos(position);
+    return ui_window_rect();
+}
+
+bool ui_attached_drawer(const char *id, UiRect main, float width) {
+    const ImGuiViewport *view = ImGui::GetMainViewport();
+    float max_width = ImMax(1.0f, view->WorkPos.x + view->WorkSize.x - main.x - main.w);
+    ImGui::SetNextWindowPos({main.x + main.w, main.y}, ImGuiCond_Always);
+    ImGui::SetNextWindowSize({ImMin(width, max_width), main.h}, ImGuiCond_Always);
+    return ImGui::Begin(id, NULL,
+                        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                            ImGuiWindowFlags_NoSavedSettings);
 }
 
 bool ui_modal(const char *title, bool *open, float width, float height) {
@@ -1421,6 +1641,34 @@ int ui_topmost(const char *const *titles, int count) {
     return -1;
 }
 
+bool ui_window_front_at(const char *title, UiPoint at) {
+    auto *target = ImGui::FindWindowByName(title);
+    auto &windows = ImGui::GetCurrentContext()->WindowsFocusOrder;
+
+    for (int i = windows.Size - 1; target && i >= 0; --i) {
+        auto *window = windows[i];
+
+        if (window->Active && !window->Hidden &&
+            !(window->Flags & ImGuiWindowFlags_NoMouseInputs) &&
+            window->Rect().Contains({at.x, at.y})) {
+            return window->RootWindow == target->RootWindow;
+        }
+    }
+
+    return false;
+}
+
+bool ui_window_focused(const char *title) {
+    const auto &g = *ImGui::GetCurrentContext();
+    const auto *focus = g.NavWindow;
+
+    if (focus && (focus->Flags & ImGuiWindowFlags_ChildMenu) && g.OpenPopupStack.Size) {
+        focus = g.OpenPopupStack[0].RestoreNavWindow;
+    }
+
+    return focus && focus->RootWindow == ImGui::FindWindowByName(title);
+}
+
 bool ui_cancel_popup() {
     auto &g = *ImGui::GetCurrentContext();
 
@@ -1485,6 +1733,14 @@ void ui_label_fit(UiPoint at, float width, uint32_t color, const char *text) {
 
 float ui_font_size() {
     return ImGui::GetFontSize();
+}
+
+float ui_frame_height() {
+    return ImGui::GetFrameHeight();
+}
+
+float ui_text_height(const char *text, float width) {
+    return ImGui::CalcTextSize(text, nullptr, false, width).y;
 }
 
 float ui_text_width(const char *text) {
@@ -1552,14 +1808,25 @@ void ui_channel_color_end() {
 }
 
 void ui_accent(bool on) {
+    uint32_t header = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_HeaderActive]);
+    ui_button_color(on ? (header == theme_header_active ? theme_accent_button : header) : 0);
+}
+
+void ui_button_color(uint32_t color) {
     auto &s = ImGui::GetStyle();
-    ImGui::PushStyleColor(ImGuiCol_Button,
-                          on ? s.Colors[ImGuiCol_HeaderActive] : s.Colors[ImGuiCol_Button]);
-    ImGui::PushStyleColor(ImGuiCol_Text, s.Colors[ImGuiCol_Text]);
+    ImVec4 button = color ? ImGui::ColorConvertU32ToFloat4(color) : s.Colors[ImGuiCol_Button];
+    ImGui::PushStyleColor(ImGuiCol_Button, button);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                          color ? button : s.Colors[ImGuiCol_ButtonHovered]);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, color ? button : s.Colors[ImGuiCol_ButtonActive]);
+    ImGui::PushStyleColor(ImGuiCol_Text,
+                          color ? ImGui::ColorConvertU32ToFloat4(
+                                      theme_accent == 0xff56eeffu ? 0xffffffffu : ui_text_on(color))
+                                : s.Colors[ImGuiCol_Text]);
 }
 
 void ui_accent_end() {
-    ImGui::PopStyleColor(2);
+    ImGui::PopStyleColor(4);
 }
 
 void ui_scrollbar(const char *id, UiRect r, bool vertical, float *value, float visible,
@@ -1584,24 +1851,61 @@ void ui_scrollbar(const char *id, UiRect r, bool vertical, float *value, float v
     *value = (float)scroll;
 }
 
-void ui_theme(uint32_t accent) {
+static float luminance(uint32_t color) {
+    ImVec4 rgb = ImGui::ColorConvertU32ToFloat4(color);
+    auto linear = [](float c) {
+        return c <= .04045f ? c / 12.92f : std::pow((c + .055f) / 1.055f, 2.4f);
+    };
+    return .2126f * linear(rgb.x) + .7152f * linear(rgb.y) + .0722f * linear(rgb.z);
+}
+
+uint32_t ui_text_on(uint32_t color) {
+    return luminance(color) > .179f ? 0xff000000u : 0xffffffffu;
+}
+
+uint32_t ui_background_shade(int gray) {
+    ImVec4 bg = ImGui::ColorConvertU32ToFloat4(theme_background);
+    float shade = (gray - 10) / 245.0f;
+    return ImGui::ColorConvertFloat4ToU32({ImLerp(bg.x, theme_shade_edge, shade),
+                                           ImLerp(bg.y, theme_shade_edge, shade),
+                                           ImLerp(bg.z, theme_shade_edge, shade), 1});
+}
+
+uint32_t ui_theme_text(bool muted) {
+    if (!muted) {
+        return theme_foreground;
+    }
+
+    return theme_foreground == 0xff000000u ? 0xff303030u : 0xffbfc7ccu;
+}
+
+void ui_theme(uint32_t accent, uint32_t background) {
+    if (theme_ready && background == theme_background && accent == theme_accent) {
+        return;
+    }
+
+    theme_ready = true;
+    theme_accent = accent;
+    theme_background = background;
+    theme_foreground = ui_text_on(background);
+    float light = luminance(background);
+    theme_shade_edge = light < .07f || (light > .179f && light < .4f) ? 1 : 0;
     auto &s = ImGui::GetStyle();
     ImVec4 c = ImGui::ColorConvertU32ToFloat4(accent);
 
     for (int i = 0; i < ImGuiCol_COUNT; ++i) {
-        if (i == ImGuiCol_Text || i == ImGuiCol_TextDisabled) {
-            continue;
-        }
-
-        ImVec4 old = s.Colors[i];
-        float gray = (old.x + old.y + old.z) / 3;
-        s.Colors[i] = {gray, gray, gray, old.w};
+        ImVec4 old = base_colors[i];
+        int gray = (int)((old.x + old.y + old.z) * 85);
+        s.Colors[i] = ImGui::ColorConvertU32ToFloat4(ui_background_shade(ImMax(10, gray)));
+        s.Colors[i].w = old.w;
     }
 
-    s.Colors[ImGuiCol_WindowBg] = {.035f, .035f, .035f, 1};
-    s.Colors[ImGuiCol_ChildBg] = {.055f, .055f, .055f, 1};
-    s.Colors[ImGuiCol_FrameBg] = {.11f, .11f, .11f, 1};
-    s.Colors[ImGuiCol_Button] = {.14f, .14f, .14f, 1};
+    s.Colors[ImGuiCol_Text] = ImGui::ColorConvertU32ToFloat4(ui_theme_text(false));
+    s.Colors[ImGuiCol_TextDisabled] = ImGui::ColorConvertU32ToFloat4(ui_theme_text(true));
+    s.Colors[ImGuiCol_WindowBg] = ImGui::ColorConvertU32ToFloat4(background);
+    s.Colors[ImGuiCol_ChildBg] = ImGui::ColorConvertU32ToFloat4(ui_background_shade(14));
+    s.Colors[ImGuiCol_FrameBg] = ImGui::ColorConvertU32ToFloat4(ui_background_shade(28));
+    s.Colors[ImGuiCol_Button] = ImGui::ColorConvertU32ToFloat4(ui_background_shade(36));
     s.Colors[ImGuiCol_ButtonHovered] = {c.x * .34f, c.y * .34f, c.z * .34f, 1};
     s.Colors[ImGuiCol_ButtonActive] = {c.x * .48f, c.y * .48f, c.z * .48f, 1};
     const int indices[] = {ImGuiCol_HeaderActive,     ImGuiCol_TitleBgActive,  ImGuiCol_SliderGrab,
@@ -1611,6 +1915,30 @@ void ui_theme(uint32_t accent) {
     for (int index : indices) {
         s.Colors[index] = {c.x * .55f, c.y * .55f, c.z * .55f, 1};
     }
+
+    theme_accent_button = ImGui::GetColorU32(ImGuiCol_HeaderActive);
+    const int text_surfaces[] = {
+        ImGuiCol_FrameBg,          ImGuiCol_FrameBgHovered, ImGuiCol_FrameBgActive,
+        ImGuiCol_Button,           ImGuiCol_ButtonHovered,  ImGuiCol_ButtonActive,
+        ImGuiCol_Header,           ImGuiCol_HeaderHovered,  ImGuiCol_HeaderActive,
+        ImGuiCol_TitleBg,          ImGuiCol_TitleBgActive,  ImGuiCol_TitleBgCollapsed,
+        ImGuiCol_PopupBg,          ImGuiCol_MenuBarBg,      ImGuiCol_Tab,
+        ImGuiCol_TabHovered,       ImGuiCol_TabSelected,    ImGuiCol_TabDimmed,
+        ImGuiCol_TabDimmedSelected};
+    ImVec4 bg = s.Colors[ImGuiCol_WindowBg];
+
+    for (int index : text_surfaces) {
+        ImVec4 &surface = s.Colors[index];
+        uint32_t foreground = ui_theme_text(false);
+
+        while (ui_text_on(ImGui::ColorConvertFloat4ToU32(surface)) != foreground) {
+            surface.x = ImLerp(surface.x, bg.x, .5f);
+            surface.y = ImLerp(surface.y, bg.y, .5f);
+            surface.z = ImLerp(surface.z, bg.z, .5f);
+        }
+    }
+
+    theme_header_active = ImGui::ColorConvertFloat4ToU32(s.Colors[ImGuiCol_HeaderActive]);
 }
 
 bool ui_color(const char *label, uint32_t *color) {
@@ -1719,8 +2047,14 @@ void ui_clamp_windows() {
         ImVec2 size(ImMin(w->Size.x, extent.x), ImMin(w->Size.y, extent.y));
         ImVec2 pos(ImClamp(w->Pos.x, 0.0f, ImMax(0.0f, extent.x - size.x)),
                    ImClamp(w->Pos.y, 0.0f, ImMax(0.0f, extent.y - size.y)));
-        ImGui::SetWindowSize(w, size);
-        ImGui::SetWindowPos(w, pos);
+        /* Only touch windows outside the display, so a size set elsewhere this frame survives. */
+        if (size.x != w->Size.x || size.y != w->Size.y) {
+            ImGui::SetWindowSize(w, size);
+        }
+
+        if (pos.x != w->Pos.x || pos.y != w->Pos.y) {
+            ImGui::SetWindowPos(w, pos);
+        }
     }
 }
 
@@ -1744,9 +2078,10 @@ void ui_placement_tip(const char *text) {
     ImVec2 at(ImClamp(io.MousePos.x, 4.0f, ImMax(4.0f, io.DisplaySize.x - size.x - 20)),
               io.MousePos.y + 24);
     auto *draw = ImGui::GetForegroundDrawList();
-    draw->AddRectFilled(at, {at.x + size.x + 16, at.y + size.y + 10}, 0xb8202020u, 5);
-    draw->AddRect(at, {at.x + size.x + 16, at.y + size.y + 10}, 0x887f7f7fu, 5);
-    draw->AddText({at.x + 8, at.y + 5}, 0xffebe4d9u, text);
+    uint32_t surface = ui_background_shade(32);
+    draw->AddRectFilled(at, {at.x + size.x + 16, at.y + size.y + 10}, surface, 5);
+    draw->AddRect(at, {at.x + size.x + 16, at.y + size.y + 10}, ui_background_shade(80), 5);
+    draw->AddText({at.x + 8, at.y + 5}, ui_text_on(surface), text);
 }
 
 bool ui_splitter(float *width, float min, float max, float height) {
@@ -1758,7 +2093,8 @@ bool ui_splitter(float *width, float min, float max, float height) {
     }
 
     ImVec2 at = ImGui::GetItemRectMin();
-    ImGui::GetWindowDrawList()->AddLine({at.x + 4, at.y}, {at.x + 4, at.y + height}, 0xff3a3a3au);
+    ImGui::GetWindowDrawList()->AddLine({at.x + 4, at.y}, {at.x + 4, at.y + height},
+                                        ui_background_shade(58));
 
     if (active) {
         *width = ImClamp(*width + ImGui::GetIO().MouseDelta.x, min, max);
@@ -1775,9 +2111,10 @@ UiRect ui_window_rect() {
 void ui_drop_overlay(UiRect rect, const char *text) {
     auto *draw = ImGui::GetForegroundDrawList();
     ImVec2 start(rect.x, rect.y), end(rect.x + rect.w, rect.y + rect.h);
-    draw->AddRectFilled(start, end, 0xd0101010u, 8);
-    draw->AddRect({start.x + 10, start.y + 10}, {end.x - 10, end.y - 10}, 0xff56eeffu, 8, 0, 2);
+    uint32_t surface = ui_background_shade(16);
+    draw->AddRectFilled(start, end, surface, 8);
+    draw->AddRect({start.x + 10, start.y + 10}, {end.x - 10, end.y - 10}, theme_accent, 8, 0, 2);
     ImVec2 size = ImGui::CalcTextSize(text);
-    draw->AddText({rect.x + (rect.w - size.x) * .5f, rect.y + (rect.h - size.y) * .5f}, 0xffebe4d9u,
-                  text);
+    draw->AddText({rect.x + (rect.w - size.x) * .5f, rect.y + (rect.h - size.y) * .5f},
+                  ui_text_on(surface), text);
 }

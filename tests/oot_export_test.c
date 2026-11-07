@@ -257,7 +257,8 @@ static void check_conversion(void) {
            strstr(result.sequence.data, "notedv 63, 48, 100"));
     oot_result_free(&result);
 
-    /* Repeated bars become one subroutine called from the layer. */
+    /* Repeated bars become one subroutine called from the layer. With short notes the first bar
+       sets velocity and gate, so it enters differently and is written inline. */
     event_count = 0;
 
     for (unsigned bar = 0; bar < 8; bar++) {
@@ -270,7 +271,8 @@ static void check_conversion(void) {
     q.duration = 8 * 4 * PPQ;
     assert(oot_convert(&q, NULL, false, &result, error, sizeof(error)) == DME_OK);
     assert(strstr(result.sequence.data, ".layer LSUB_0") &&
-           count(result.sequence.data, "call LSUB_0") >= 7);
+           count(result.sequence.data, "call LSUB_0") >= 6 &&
+           strstr(result.sequence.data, "shortdvg"));
     oot_result_free(&result);
 
     /* Invalid names and empty songs are rejected. */
@@ -482,9 +484,160 @@ static void write_demos(const char *dir) {
     oot_result_free(&result);
 }
 
+/* Dense volume ramps that pass OoT's 64 KiB limit are simplified until the song fits; the notes
+   stay as written and the warning is a list item without the "audible changes" flag. */
+static void check_dense_controllers(void) {
+    enum { CHANNELS = 16, STEPS = 1600 };
+
+    size_t capacity = CHANNELS * (STEPS + 2), count = 0;
+    DmeEvent *dense = calloc(capacity, sizeof(*dense));
+    assert(dense);
+
+    for (unsigned step = 0; step < STEPS; step++) {
+        for (unsigned ch = 0; ch < CHANNELS; ch++) {
+            /* Distinct per channel, so the streams cannot be shared. */
+            unsigned phase = step + ch * 37;
+            unsigned value = phase % 254 < 127 ? phase % 127 : 127 - phase % 127;
+            dense[count] =
+                (DmeEvent){step * 2, count + 1, MIDI_CONTROL | ch, MIDI_CC_VOLUME, value, 0};
+            count++;
+        }
+    }
+
+    for (unsigned ch = 0; ch < CHANNELS; ch++) {
+        if (ch == MIDI_DRUM_CHANNEL) {
+            continue;
+        }
+
+        dense[count] = (DmeEvent){0, count + 1, MIDI_NOTE_ON | ch, 48 + ch, 100, 0};
+        count++;
+        dense[count] = (DmeEvent){STEPS * 2, count + 1, MIDI_NOTE_OFF | ch, 48 + ch, 0, 0};
+        count++;
+    }
+
+    qsort(dense, count, sizeof(*dense), compare_events);
+    OotRequest q;
+    event_count = 0;
+    default_request(&q, OOT_CUSTOM_FONT);
+    q.events = dense;
+    q.event_count = count;
+    q.duration = STEPS * 2;
+    OotResult result;
+    char error[256] = {0};
+    assert(oot_convert(&q, NULL, false, &result, error, sizeof(error)) == DME_OK);
+    assert(result.sequence_bytes <= 0x10000);
+    bool simplified = false;
+
+    for (size_t i = 0; i < result.diagnostic_count; i++) {
+        const OotDiagnostic *d = &result.diagnostics[i];
+        simplified |= (d->flags & DME_LIST) && !(d->flags & DME_ALTERED) &&
+                      strstr(d->text, "curves: simplified");
+    }
+
+    unsigned notes = 0;
+
+    for (const char *line = result.sequence.data; (line = strstr(line, "\n")) != NULL; ++line) {
+        const char *word = line + 1;
+
+        while (*word == ' ') {
+            ++word;
+        }
+
+        notes += !strncmp(word, "note", 4) || !strncmp(word, "shortd", 6) ||
+                 !strncmp(word, "shortvg", 7);
+    }
+
+    assert(simplified && notes == CHANNELS - 1);
+    oot_result_free(&result);
+    free(dense);
+    puts("PASS dense controllers fit by simplifying curves only");
+}
+
+/* Channels with the same volume automation store it once: the later stream jumps into the
+   earlier one's identical tail. */
+static void check_shared_streams(void) {
+    event_count = 0;
+
+    for (unsigned step = 0; step < 100; step++) {
+        add(step * 4, MIDI_CONTROL | 0, MIDI_CC_VOLUME, 20 + step);
+        add(step * 4, MIDI_CONTROL | 1, MIDI_CC_VOLUME, 20 + step);
+    }
+
+    note(0, 400, 0, 60);
+    note(0, 400, 1, 64);
+    OotRequest q;
+    default_request(&q, OOT_CUSTOM_FONT);
+    OotResult result;
+    char error[256] = {0};
+    assert(oot_convert(&q, NULL, false, &result, error, sizeof(error)) == DME_OK);
+    assert(strstr(result.sequence.data, "jump CTRL_") && count(result.sequence.data, "vol ") < 150);
+    oot_result_free(&result);
+    puts("PASS identical controller streams are shared");
+}
+
+/* Repeated bars with a tick of timing jitter and slightly different velocities share nothing
+   and pass 64 KiB without any controllers. The last resort rounds the notes until bars repeat,
+   and reports it as an audible change. */
+static void check_note_reduction(void) {
+    enum { CHANNELS = 15, BARS = 300, NOTES = 8 };
+
+    size_t count = 0;
+    DmeEvent *jittered = calloc(CHANNELS * BARS * NOTES * 2, sizeof(*jittered));
+    assert(jittered);
+    unsigned seed = 1;
+
+    for (unsigned ch = 0, out = 0; out < CHANNELS; ch++) {
+        if (ch == MIDI_DRUM_CHANNEL) {
+            continue;
+        }
+
+        for (unsigned bar = 0; bar < BARS; bar++) {
+            for (unsigned i = 0; i < NOTES; i++) {
+                seed = seed * 1103515245u + 12345u;
+                uint64_t start = (bar * NOTES + i) * (PPQ / 2) + (seed >> 16) % 3;
+                unsigned velocity = 96 + (seed >> 20) % 4;
+                jittered[count] =
+                    (DmeEvent){start, count + 1, MIDI_NOTE_ON | ch, 60 + i, velocity, 0};
+                count++;
+                jittered[count] =
+                    (DmeEvent){start + PPQ / 4, count + 1, MIDI_NOTE_OFF | ch, 60 + i, 0, 0};
+                count++;
+            }
+        }
+
+        out++;
+    }
+
+    qsort(jittered, count, sizeof(*jittered), compare_events);
+    OotRequest q;
+    event_count = 0;
+    default_request(&q, OOT_CUSTOM_FONT);
+    q.events = jittered;
+    q.event_count = count;
+    q.duration = (uint64_t)BARS * NOTES * (PPQ / 2) + PPQ;
+    OotResult result;
+    char error[256] = {0};
+    assert(oot_convert(&q, NULL, false, &result, error, sizeof(error)) == DME_OK);
+    assert(result.sequence_bytes <= 0x10000);
+    bool altered = false, curves = false;
+
+    for (size_t i = 0; i < result.diagnostic_count; i++) {
+        altered |= (result.diagnostics[i].flags & DME_ALTERED) != 0;
+        curves |= strstr(result.diagnostics[i].text, "curves") != NULL;
+    }
+
+    assert(altered && !curves);
+    oot_result_free(&result);
+    free(jittered);
+    puts("PASS unshareable notes fit by last-resort note reduction");
+}
+
 int main(int argc, char **argv) {
     check_catalog();
     check_conversion();
+    check_dense_controllers();
+    check_shared_streams();
+    check_note_reduction();
     check_repository();
 
     if (argc > 1) {

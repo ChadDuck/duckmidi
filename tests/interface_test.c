@@ -30,15 +30,14 @@ static void event_editing(Editor *e) {
     editor_smoke(e);
     const uint8_t initial_volume[] = {0xb2, 7, 120};
     source_event(e, initial_volume, sizeof(initial_volume), 0);
-    check(e->event_channel == 2,
+    check((e->midi_draft.data[0] & MIDI_CHANNEL_MASK) == 2,
           "initial volume inspector keeps channel separate from controller value");
     const uint8_t expression[] = {0xb2, 11, 90};
     source_event(e, expression, sizeof(expression), 1);
-    ed_song_event_open(e, e->midi_event_index, false);
-    check(e->event_message_size == 3 && e->event_message[2] == 90,
-          "song event window drafts the controller value, not the channel");
-    e->event_message[2] = 70;
-    ed_song_event_add(e);
+    check(e->midi_draft.size == 3 && e->midi_draft.data[2] == 90,
+          "MIDI event window drafts the controller value independently of the channel");
+    e->midi_draft.data[2] = 70;
+    check(ed_midi_apply_draft(e), "apply edited controller value");
     bool applied = false;
 
     for (size_t i = 0; i < e->project.event_count; ++i) {
@@ -47,10 +46,11 @@ static void event_editing(Editor *e) {
                    event->message.data[1] == 11 && event->message.data[2] == 70;
     }
 
-    check(applied, "song event window applies the edited controller value");
+    check(applied, "MIDI event window applies the edited controller value");
     const uint8_t pedal[] = {0xb2, 66, 0};
     source_event(e, pedal, sizeof(pedal), 2);
-    check(e->event_channel == 2, "controller decoder reads its channel from the MIDI status byte");
+    check((e->midi_draft.data[0] & MIDI_CHANNEL_MASK) == 2,
+          "controller decoder reads its channel from the MIDI status byte");
     check(strstr(ed_midi_row_name(e, (MidiRow){2, e->midi_event_index, false}), "Sostenuto"),
           "controller row names explain their musical purpose");
     e->midi_values = true;

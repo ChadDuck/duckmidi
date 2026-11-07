@@ -11,6 +11,7 @@ int oot_ui_font(const OotPluginUi *s) {
 }
 
 static void reset_maps(OotPluginUi *s) {
+    es_mappings_reset(s->custom);
     int font = oot_ui_font(s);
 
     for (unsigned ch = 0; ch < 16; ch++) {
@@ -49,12 +50,20 @@ void DME_CALL oot_ui_reset(void *instance) {
     s->memory = 0;
     s->percussion = 0;
     reset_maps(s);
+    es_mappings_reset(s->custom);
 }
 
 void *DME_CALL oot_ui_create(void) {
     OotPluginUi *s = calloc(1, sizeof(*s));
 
     if (!s) {
+        return NULL;
+    }
+
+    s->custom = es_mappings_create(1, 1);
+
+    if (!s->custom) {
+        free(s);
         return NULL;
     }
 
@@ -69,7 +78,9 @@ void *DME_CALL oot_ui_create(void) {
 }
 
 void DME_CALL oot_ui_destroy(void *instance) {
-    free(instance);
+    OotPluginUi *s = instance;
+    es_mappings_destroy(s->custom);
+    free(s);
 }
 
 /* A valid sequence name from the project name, or the MIDI file name without its folder and
@@ -166,7 +177,6 @@ int32_t DME_CALL oot_ui_inspect(void *instance, const DmeContext *c, char *error
         return DME_NOMEM;
     }
 
-    snprintf(s->port_notice, sizeof(s->port_notice), "%s", layout->notice);
     unsigned program[16] = {0};
 
     for (uint64_t i = 0; i < c->event_count; i++) {
@@ -196,8 +206,20 @@ int32_t DME_CALL oot_ui_inspect(void *instance, const DmeContext *c, char *error
         }
     }
 
+    bool custom_ok = es_mappings_inspect(s->custom, c, &layout->out[0][0], 128, error, (size_t)cap);
+
+    for (size_t i = 0; custom_ok && i < es_mappings_count(s->custom); i++) {
+        const EsSourceRow *row = es_mappings_source(s->custom, i);
+
+        if (row->source.flags & DME_SAMPLE_PERCUSSION) {
+            s->used_drums[row->source.drum_key] = true;
+        } else {
+            s->used[row->native_channel][row->source.program] = true;
+        }
+    }
+
     free(layout);
-    return DME_OK;
+    return custom_ok ? DME_OK : DME_FAILED;
 }
 
 static unsigned build_song_choices(OotPluginUi *s) {
@@ -249,42 +271,39 @@ int32_t DME_CALL oot_ui_describe(void *instance, DmeUi *ui) {
                              : oot_instrument_choices(font, s->choices, s->choice_labels, 128);
     unsigned count = 0;
 
-    for (unsigned ch = 0; ch < 16; ch++) {
-        for (unsigned p = 0; p < 128 && count < 2048; p++) {
-            if (drums ? !(ch == MIDI_DRUM_CHANNEL && s->used_drums[p]) : !s->used[ch][p]) {
-                continue;
-            }
+    for (size_t source_index = 0; source_index < es_mappings_count(s->custom); source_index++) {
+        const EsSourceRow *source = es_mappings_source(s->custom, source_index);
+        bool is_drum = (source->source.flags & DME_SAMPLE_PERCUSSION) != 0;
 
-            snprintf(s->row_ids[count], 40, drums ? "drum.%u" : "melodic.%u.%u", drums ? p : ch, p);
-            snprintf(s->row_labels[count], 180, "Ch %u: %s%s%u", ch + 1,
-                     drums ? s->drum_names[p] : s->program_names[p], drums ? " / note " : " / GM ",
-                     p);
-            int value = drums ? s->drums[p] : s->melodic[ch][p];
-            int fallback = drums ? oot_default_drum(font, p) : oot_default_instrument(font, p);
-
-            if (s->similar_stale) {
-                OotRangeIssue notes = {.channel = ch,
-                                       .program = p,
-                                       .low = drums ? p : s->low[ch][p],
-                                       .high = drums ? p : s->high[ch][p],
-                                       .percussion = drums};
-                s->similar_count[count] =
-                    oot_similar(font, &notes, fallback, s->choices, choices, s->similar[count], 8);
-            }
-
-            s->rows[count] =
-                (DmeMappingRow){s->row_ids[count], s->row_labels[count], value,
-                                fallback,          s->similar[count],    s->similar_count[count]};
-            count++;
+        if (is_drum != drums || count >= 2048) {
+            continue;
         }
+
+        unsigned ch = source->native_channel;
+        unsigned p = drums ? source->source.drum_key : source->source.program;
+        int value = es_mappings_stock(s->custom, 0, source->source,
+                                      drums ? s->drums[p] : s->melodic[ch][p]);
+        int fallback = drums ? oot_default_drum(font, p) : oot_default_instrument(font, p);
+
+        if (s->similar_stale) {
+            OotRangeIssue notes = {.channel = ch,
+                                   .program = p,
+                                   .low = drums ? p : s->low[ch][p],
+                                   .high = drums ? p : s->high[ch][p],
+                                   .percussion = drums};
+            s->similar_count[count] =
+                oot_similar(font, &notes, fallback, s->choices, choices, s->similar[count], 8);
+        }
+
+        s->rows[count] = (DmeMappingRow){source->id, source->label,     value,
+                                         fallback,   s->similar[count], s->similar_count[count]};
+        s->rows[count].source = source->source;
+        s->rows[count].custom = es_mappings_describe(s->custom, 0, source_index);
+        count++;
     }
 
     s->similar_stale = false;
     unsigned f = 0;
-
-    if (*s->port_notice) {
-        s->fields[f++] = (DmeField){.id = "ports", .label = s->port_notice, .type = DME_NOTICE};
-    }
 
     s->fields[f++] = (DmeField){
         .id = "song",
@@ -381,6 +400,20 @@ static bool drum_allowed(const OotPluginUi *s, int value) {
 int32_t DME_CALL oot_ui_set(void *instance, const char *id, const DmeValue *v, char *error,
                             uint64_t cap) {
     OotPluginUi *s = instance;
+    char stock_id[64];
+
+    if (id && es_mappings_stock_id(s->custom, id, stock_id)) {
+        bool drums = !strncmp(stock_id, "drum.", 5);
+        if (v && v->type == DME_CHOICE &&
+            (drums ? drum_allowed(s, v->integer) : instrument_allowed(s, v->integer)) &&
+            es_mappings_set_stock(s->custom, 0, id, (int32_t)v->integer)) {
+            s->similar_stale = true;
+            return DME_OK;
+        }
+
+        goto invalid;
+    }
+
     unsigned ch, p;
     char tail;
 

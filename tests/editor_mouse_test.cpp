@@ -1,5 +1,5 @@
 extern "C" {
-#include "editor.h"
+#include "editor_internal.h"
 }
 #include "imgui.h"
 #include "imgui_impl_sdlrenderer3.h"
@@ -14,6 +14,9 @@ namespace toolbar_geometry {
 }
 
 extern "C" void test_event_controls_ui(Editor *, void (*)(bool, const char *));
+extern "C" void ed_open_instrument(Editor *, int, bool);
+extern "C" void ed_close_instrument(Editor *);
+static void capture_workspace_navigation(Editor *e, const char *path);
 
 static ImGuiWindow *roll_window() {
     auto &windows = ImGui::GetCurrentContext()->Windows;
@@ -129,6 +132,85 @@ static void direct_key(Editor *e, SDL_Scancode key, SDL_Keymod mods = SDL_KMOD_N
     event.key.scancode = key;
     event.key.mod = mods;
     editor_event(e, &event);
+}
+
+extern "C" void test_channel_row_ui(Editor *e, void (*check)(bool, const char *)) {
+    mouse_frame(e, 0, 0, false);
+    auto *playlist = find_window("/Playlist_");
+    check(playlist, "playlist draws its toolbar");
+    auto activate = [e](ImGuiWindow *w, const char *label) {
+        ImGui::ActivateItemByID(w->GetID(label));
+        mouse_frame(e, 0, 0, false);
+    };
+    auto select_channel = [&]() {
+        auto *dialog = ImGui::FindWindowByName("Instrument");
+        activate(dialog, "##Channel");
+        auto &popups = ImGui::GetCurrentContext()->OpenPopupStack;
+        check(popups.Size && popups.back().Window, "channel dropdown opens");
+        activate(popups.back().Window, "Channel 1");
+        check(e->instrument_channel == 1, "an occupied channel cannot be selected");
+        check(popups.Size && popups.back().Window, "disabled choice keeps the dropdown open");
+        activate(popups.back().Window, "Channel 4");
+        check(e->instrument_channel == 3, "a free channel can be selected explicitly");
+        return dialog;
+    };
+    int undo = e->undo_count;
+    activate(playlist, "+ New");
+    check(e->instrument_new && e->instrument_channel == 1 && !e->project.channels[1].enabled,
+          "+ New opens a draft for the first free channel");
+    auto *dialog = select_channel();
+    activate(dialog, "Drums");
+    direct_key(e, SDL_SCANCODE_DOWN);
+    check(e->instrument_channel == 3 && e->instrument_drums && e->instrument_program == 8 &&
+              !e->project.channels[3].enabled && e->undo_count == undo,
+          "Down steps to the next named kit without changing the channel or project");
+    direct_key(e, SDL_SCANCODE_ESCAPE);
+    check(e->instrument_channel < 0 && !e->project.channels[3].enabled,
+          "Escape discards the channel draft");
+    mouse_frame(e, 0, 0, false);
+
+    activate(playlist, "+ New");
+    dialog = select_channel();
+    activate(dialog, "Drums");
+    activate(dialog, "##Instrument");
+    auto &popups = ImGui::GetCurrentContext()->OpenPopupStack;
+    check(popups.Size && popups.back().Window, "the drum kit dropdown opens");
+    char kit[64];
+    std::snprintf(kit, sizeof(kit), "%s (24)", dm_drum_kit_name(24));
+    activate(popups.back().Window, kit);
+    capture_workspace_navigation(e, "agents/reports/new-channel-instrument.bmp");
+    ImGui::FocusWindow(ImGui::FindWindowByName("##workspace"));
+    direct_key(e, SDL_SCANCODE_RETURN);
+    check(e->instrument_channel < 0 && e->project.channels[3].enabled &&
+              e->project.channels[3].drums && e->project.channels[3].program == 24 &&
+              e->undo_count == undo + 1,
+          "Enter applies the chosen channel and kit with workspace focus");
+    mouse_frame(e, 0, 0, false);
+    float x = playlist->WorkRect.Min.x + 24, y = playlist->WorkRect.Min.y + 216;
+    mouse_frame(e, x, y, false);
+    mouse_frame(e, x, y, false, false, false, false, 0, true);
+    mouse_frame(e, x, y, false);
+    check(e->instrument_channel == 3 && !e->instrument_new,
+          "right-clicking the new row opens its instrument");
+    activate(dialog, "Remove channel");
+    check(e->instrument_channel < 0 && !e->project.channels[3].enabled,
+          "removing an empty row closes immediately");
+
+    check(dm_clip_add(&e->project, DmClip{.pattern = 0, .channel = 3}), "populated row fixture");
+    mouse_frame(e, x, y, false);
+    mouse_frame(e, x, y, false, false, false, false, 0, true);
+    mouse_frame(e, x, y, false);
+    activate(dialog, "Remove channel");
+    check(e->instrument_remove && e->project.channels[3].enabled && e->project.clip_count == 1,
+          "a populated row stays intact while the warning is open");
+    activate(dialog, "Cancel");
+    check(!e->instrument_remove && e->instrument_channel == 3 && e->project.clip_count == 1,
+          "canceling the warning leaves the row and its placement");
+    activate(dialog, "Remove channel");
+    activate(dialog, "Remove channel");
+    check(!e->project.channels[3].enabled && e->project.clip_count == 0 &&
+              e->project.pattern_count == 1,
+          "confirming removal clears the row and keeps the source pattern");
 }
 
 static UiPoint roll_origin() {
@@ -637,12 +719,12 @@ static void layout_and_mixer(Editor *e, void (*check)(bool, const char *)) {
     check(e->start_beat[0] == 0, "Shift-Space starts from the beginning");
 }
 
-static float tempo_card_width() {
+static float song_event_card_width(uint32_t accent) {
     auto *w = find_window("/Playlist_");
     float left = FLT_MAX, right = -FLT_MAX;
 
     for (auto &v : w->DrawList->VtxBuffer) {
-        if (v.col == 0xff2b367bu) {
+        if (v.col == ((accent & 0x00ffffffu) | 0x54000000u)) {
             left = ImMin(left, v.pos.x);
             right = ImMax(right, v.pos.x);
         }
@@ -652,34 +734,96 @@ static float tempo_card_width() {
 }
 
 static void event_inspection(Editor *e, void (*check)(bool, const char *)) {
+    for (size_t i = 0; i < e->project.event_count; ++i) {
+        dm_bytes_free(&e->project.events[i].message);
+    }
+
     e->project.event_count = 0;
     e->playlist_view.zoom = 1;
     e->playlist_view.scroll_x = 0;
     const uint8_t tempo[] = {0xff, 0x51, 3, 7, 0xa1, 0x20};
     DmBytes bytes = {(unsigned char *)tempo, sizeof(tempo), sizeof(tempo)};
     check(dm_event_add(&e->project, 2, 0, 0, &bytes), "create conductor fixture");
+    const uint8_t text[] = {MIDI_META, MIDI_META_TEXT, 1, 'A'};
+    bytes = {(unsigned char *)text, sizeof(text), sizeof(text)};
+    check(dm_event_add(&e->project, 1, 0, 0, &bytes), "create same-bar text fixture");
     mouse_frame(e, 0, 0, false);
-    float old = tempo_card_width();
+    float old = song_event_card_width(e->accent);
     e->playlist_view.zoom = 2;
     mouse_frame(e, 0, 0, false);
-    float bigger = tempo_card_width();
-    check(old > 10 && bigger > old * 1.8f,
-          "tempo event cards expand with zoom and use their auburn color");
+    float bigger = song_event_card_width(e->accent);
+    check(std::fabs(old - dm_bar(&e->project) * 40) < 1 && std::fabs(bigger - old * 2) < 1,
+          "same-bar events share one full-width block in the application color");
     auto *w = find_window("/Playlist_");
     float top =
         w->Pos.y + w->WindowPadding.y + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
-    float x = w->Pos.x + w->WindowPadding.x + e->label_width + 2 * 80 + 8, y = top + 43;
+    float grid_x = w->Pos.x + w->WindowPadding.x + e->label_width;
+    float x = grid_x + bigger - 8, y = top + 43;
     mouse_frame(e, x, y, true);
     mouse_frame(e, x, y, false);
-    check(e->song_event && e->event_edit == 0 && e->event_kind == 0 &&
-              std::fabs(e->event_bpm - 120) < .01f,
-          "clicking an existing event opens its editable tempo inspector");
-    e->event_bpm = 90;
-    auto *ed_dialog = ImGui::FindWindowByName("Song event");
-    ImGui::ActivateItemByID(ed_dialog->GetID("Apply event"));
+    auto *list = find_window("/MIDI event list_");
+    auto *details = find_window("/MIDI event details_");
+    check(e->song_event && !e->song_event_add && e->midi_event_index == 0 &&
+              e->midi_draft.data[1] == MIDI_META_TEXT && list && details,
+          "clicking the far edge opens Edit with both list and details");
+    x = list->WorkRect.Min.x + 20;
+    y = list->WorkRect.Min.y + 36 + 10;
+    mouse_frame(e, x, y, true);
+    mouse_frame(e, x, y, false);
+    check(e->midi_event_index == 1 && e->midi_draft.data[1] == MIDI_META_TEMPO &&
+              e->event_beat == 2,
+          "selecting the second row loads its tempo and exact beat");
+    int us = (int)std::llround(60000000.0 / 90);
+    e->midi_draft.data[3] = us >> 16;
+    e->midi_draft.data[4] = us >> 8;
+    e->midi_draft.data[5] = us;
+    capture_workspace_navigation(e, "agents/reports/song-events-edit.bmp");
+    ImGui::ActivateItemByID(details->GetID("Apply event"));
     mouse_frame(e, 0, 0, false);
-    check(!e->song_event && std::fabs(dm_beat_seconds(&e->project, 3) - (1 + 2.0 / 3)) < .0001,
-          "event inspector applies a changed tempo to playback timing");
+    check(e->song_event && std::fabs(dm_beat_seconds(&e->project, 3) - (1 + 2.0 / 3)) < .0001,
+          "applying a tempo updates playback and keeps the bar editor open");
+    e->song_event = false;
+    mouse_frame(e, 0, 0, false);
+    x = grid_x + bigger + 12;
+    y = top + 43;
+    mouse_frame(e, x, y, true);
+    mouse_frame(e, x, y, false);
+    check(e->song_event && e->song_event_add && e->midi_event_index == -1,
+          "clicking the empty next bar opens Add");
+    auto *dialog = ImGui::FindWindowByName("Song event");
+    ImGui::ActivateItemByID(dialog->GetID("Mode"));
+    mouse_frame(e, 0, 0, false);
+    mouse_frame(e, 0, 0, false);
+    auto &popups = ImGui::GetCurrentContext()->OpenPopupStack;
+    check(popups.Size && popups.back().Window, "song event mode dropdown opens");
+    ImGui::ActivateItemByID(popups.back().Window->GetID("Edit"));
+    mouse_frame(e, 0, 0, false);
+    check(!e->song_event_add && e->midi_event_index == -1,
+          "Edit on an empty bar shows no events from the adjacent bar");
+    ImGui::ActivateItemByID(dialog->GetID("Mode"));
+    mouse_frame(e, 0, 0, false);
+    mouse_frame(e, 0, 0, false);
+    check(popups.Size && popups.back().Window, "Edit can reopen the mode dropdown");
+    ImGui::ActivateItemByID(popups.back().Window->GetID("Add"));
+    mouse_frame(e, 0, 0, false);
+    check(e->song_event_add, "mode dropdown switches back to Add");
+    ImGui::ActivateItemByID(dialog->GetID("Type"));
+    mouse_frame(e, 0, 0, false);
+    mouse_frame(e, 0, 0, false);
+    check(popups.Size && popups.back().Window, "song event type dropdown opens");
+    ImGui::ActivateItemByID(popups.back().Window->GetID("Text"));
+    mouse_frame(e, 0, 0, false);
+    check(e->midi_draft.data[1] == MIDI_META_TEXT &&
+              ed_midi_replace_payload(e, (const uint8_t *)"Verse", 5),
+          "Text in Add uses the shared editable payload");
+    double beat = e->event_beat;
+    ImGui::ActivateItemByID(dialog->GetID("Add event"));
+    mouse_frame(e, 0, 0, false);
+    check(e->song_event && !e->song_event_add && e->event_beat == beat &&
+              e->midi_draft.data[1] == MIDI_META_TEXT &&
+              !std::memcmp(e->midi_draft.data + 3, "Verse", 5),
+          "adding Text keeps its beat and opens the new bar group in Edit");
+    e->song_event = false;
     e->playlist_view.zoom = 1;
 }
 
@@ -691,13 +835,13 @@ static void shortcut_and_dialogs(Editor *e, void (*check)(bool, const char *)) {
     check(e->capture < 0 && e->bindings[ACT_PLAY_START].mods == mods,
           "shortcut capture accepts combined Ctrl Alt Shift and Win modifiers");
     e->shortcuts = false;
-    e->instrument_channel = 0;
+    ed_open_instrument(e, 0, false);
     mouse_frame(e, 0, 0, false);
     int program = e->project.channels[0].program;
     direct_key(e, SDL_SCANCODE_DOWN);
-    check(e->project.channels[0].program == program + 1,
-          "instrument arrow selection has contextual priority");
-    e->instrument_channel = -1;
+    check(e->instrument_program == program + 1 && e->project.channels[0].program == program,
+          "instrument arrows select a draft preset without changing the project");
+    ed_close_instrument(e);
     e->piano = true;
     direct_key(e, SDL_SCANCODE_KP_2);
     direct_key(e, SDL_SCANCODE_Q);
@@ -939,7 +1083,6 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
     e->confirm = false;
 }
 
-static void capture_workspace_navigation(Editor *e, const char *path);
 
 static void metadata_export_ui(Editor *e, void (*check)(bool, const char *)) {
     e->config = e->preferences = e->shortcuts = false;
@@ -1290,12 +1433,7 @@ extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)
     check(dm_event_add(&e->project, 0, 0, 0, &ed_message), "add isolated device-specific event");
     e->midi_events = true;
     e->midi_values = false;
-    e->midi_event_index = (int)e->project.event_count - 1;
-    e->midi_event_kind = 0;
-    e->event_edit = e->midi_event_index;
-    e->event_auto_edit = -1;
-    dm_bytes_free(&e->midi_draft);
-    dm_bytes(&e->midi_draft, bytes, sizeof(bytes));
+    ed_midi_select(e, MidiRow{0, (int)e->project.event_count - 1, false});
     mouse_frame(e, 0, 0, false);
     auto *details = find_window("/MIDI event details_");
     check(details != nullptr, "existing device-specific event remains inspectable");
@@ -1606,7 +1744,7 @@ extern "C" void test_channel_routing_ui(Editor *e, void (*check)(bool, const cha
     check(w != nullptr, "routing playlist renders");
     float gx = w->WorkRect.Min.x + e->label_width;
     float top = w->WorkRect.Min.y + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y + 28;
-    float x = gx + 40, y = top + 64 + 32, target = top + 3 * 64 + 32;
+    float x = gx + 40, y = top + 64 + 32, target = top + 2 * 64 + 32;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
     mouse_frame(e, x, target, true);
@@ -1626,7 +1764,7 @@ extern "C" void test_channel_routing_ui(Editor *e, void (*check)(bool, const cha
     mouse_frame(e, sx, sy, false);
     mouse_frame(e, sx, sy, true);
     mouse_frame(e, sx + 16, sy + 5, true);
-    float dx = gx + 200, dy = top + 4 * 64 + 32;
+    float dx = gx + 200, dy = top + 3 * 64 + 32;
     mouse_frame(e, dx, dy, true);
     mouse_frame(e, dx, dy, true);
     mouse_frame(e, dx, dy, false);
@@ -1639,6 +1777,29 @@ extern "C" void test_channel_routing_ui(Editor *e, void (*check)(bool, const cha
 extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, const char *)) {
     e->piano = false;
     e->song_event = e->config = e->preferences = e->shortcuts = false;
+    mouse_frame(e, 0, 0, false);
+    auto *patterns = find_window("/Patterns_");
+    check(patterns && roll_window(), "patterns and piano roll are visible");
+    float blank_x = patterns->WorkRect.Max.x - 20, blank_y = patterns->WorkRect.Max.y - 20;
+
+    for (int i = 0; i < 2; ++i) {
+        mouse_frame(e, blank_x, blank_y, false);
+        mouse_frame(e, blank_x, blank_y, true);
+        mouse_frame(e, blank_x, blank_y, false);
+        check(!roll_window(), "clicking the patterns background hides the piano roll");
+
+        if (i == 0) {
+            direct_key(e, SDL_SCANCODE_E);
+        } else {
+            auto *workspace = ImGui::FindWindowByName("##workspace");
+            ImGui::ActivateItemByID(workspace->GetID("Piano roll"));
+        }
+
+        mouse_frame(e, 0, 0, false);
+        check(roll_window(), i == 0 ? "one E press reopens the piano roll"
+                                    : "one toolbar activation reopens the piano roll");
+    }
+
     e->automation_node = -1;
     e->automation_open = true;
     e->roll_height = 480;
@@ -1730,13 +1891,8 @@ extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, cons
     check(strips->Scroll.x > 0 && e->project.channels[0].volume == volume &&
               e->project.channels[0].pan == pan,
           "mixer wheel scrolls strips without changing volume or pan");
-    e->song_event = true;
-    e->event_source_kind = 0;
-    e->event_kind = 0;
-    e->event_beat = 0;
-    e->event_bpm = (float)e->project.bpm;
-    e->event_numerator = e->project.numerator;
-    e->event_denominator = e->project.denominator;
+    e->cursor_beat[0] = 0;
+    ed_new_song_event(e);
     e->cursor_beat[0] = 7.5;
     capture_workspace_navigation(e, "agents/reports/workspace_navigation-event.bmp");
     auto *event = ImGui::FindWindowByName("Song event");
@@ -1752,6 +1908,17 @@ extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, cons
           "About window has no resize affordance");
     capture_workspace_navigation(e, "agents/reports/workspace_navigation-about.bmp");
     e->about = false;
+    e->preferences = true;
+    e->background = 0xffe2dbce;
+    e->accent = 0xff694523;
+    e->record = true;
+    capture_workspace_navigation(e, "agents/reports/todo-01-10-light-preferences.bmp");
+    auto *preferences = ImGui::FindWindowByName("Preferences");
+    check(preferences && preferences->Size.y <= ImGui::GetMainViewport()->WorkSize.y,
+          "Preferences fits the available canvas");
+    check(ImGui::GetColorU32(ImGuiCol_Text) == IM_COL32_BLACK &&
+              ui_text_on(e->accent) == IM_COL32_WHITE,
+          "light background and dark accent get contrasting text");
 }
 
 extern "C" void test_selection_history_ui(Editor *e, void (*check)(bool, const char *)) {
@@ -2563,7 +2730,7 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
     mouse_frame(e, x, y, false);
-    check(e->midi_event_index >= 0 && e->event_kind == 0,
+    check(e->midi_event_index >= 0 && e->midi_draft.data[1] == MIDI_META_TEMPO,
           "MIDI browser selects hidden initial tempo");
     int tempo_us = (int)std::llround(60000000.0 / 155);
     e->midi_draft.data[3] = tempo_us >> 16;
@@ -2861,9 +3028,9 @@ extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const ch
     e->automation_browser = false;
     e->focus_pattern = true;
     mouse_frame(e, 0, 0, false);
-    e->instrument_channel = 2;
     e->project.channels[2].enabled = true;
     e->project.channels[2].program = 40;
+    ed_open_instrument(e, 2, false);
     mouse_frame(e, 0, 0, false);
     direct_key(e, SDL_SCANCODE_Z);
     recording_feedback_audio_render(e->audio, 256);

@@ -73,53 +73,6 @@ static int clip_identity(const void *left, const void *right);
 static void retain_note_selection(DmPattern *next, const DmPattern *live);
 static void retain_selection(DmProject *next, const DmProject *live);
 
-void ed_decode_source_event(Editor *e, DmEvent *event) {
-    const uint8_t *m = event->message.data;
-    e->event_beat = (float)event->beat;
-    e->event_source_kind = 3;
-
-    e->event_message_size = 0;
-
-    if (event->message.size < 3 || m[0] != MIDI_META) {
-        if (event->message.size >= 2 && event->message.size <= 3 && m[0] < MIDI_SYSTEM) {
-            int type = m[0] & MIDI_STATUS_MASK, c = m[0] & MIDI_CHANNEL_MASK;
-            memcpy(e->event_message, m, event->message.size);
-            e->event_message_size = event->message.size;
-            e->event_program = m[1];
-            e->event_channel = c;
-
-            /* Song beat 0 programs, volume and pan play the channel settings. */
-            if (event->beat == 0 && type == MIDI_PROGRAM) {
-                e->event_message[1] = (uint8_t)fmax(0, e->project.channels[c].program);
-            } else if (event->beat == 0 && type == MIDI_CONTROL && m[1] == MIDI_CC_VOLUME) {
-                e->event_message[2] = (uint8_t)e->project.channels[c].volume;
-            } else if (event->beat == 0 && type == MIDI_CONTROL && m[1] == MIDI_CC_PAN) {
-                e->event_message[2] = (uint8_t)e->project.channels[c].pan;
-            }
-        }
-
-        return;
-    }
-
-    if (m[1] == MIDI_META_TEMPO && event->message.size == 6) {
-        e->event_kind = 0;
-        e->event_bpm = 60000000.0f / ((m[3] << 16) | (m[4] << 8) | m[5]);
-    } else if (m[1] == MIDI_META_TIME && event->message.size == 7) {
-        e->event_kind = 1;
-        e->event_numerator = m[3];
-        e->event_denominator = 1 << m[4];
-    } else if (dm_loop_marker(&event->message)) {
-        e->event_kind = 3 + dm_loop_marker(&event->message);
-    } else if (m[1] == MIDI_META_MARKER && m[2] < 128 && event->message.size == (size_t)m[2] + 3) {
-        e->event_kind = 2;
-        snprintf(e->event_marker, sizeof(e->event_marker), "%.*s", m[2], m + 3);
-    } else {
-        return;
-    }
-
-    e->event_source_kind = 1;
-}
-
 void ed_focus_edit(Editor *e, EditFocus focus) {
     e->edit_focus = focus;
 
@@ -149,11 +102,45 @@ void ed_reset_layout(Editor *e) {
 }
 
 void ed_toggle_roll(Editor *e) {
-    e->roll = !e->roll;
+    DmPattern *selected = ed_pattern(e);
 
-    if (e->roll) {
-        e->roll_auto_hidden = false;
+    if (e->roll && !e->roll_auto_hidden && (!selected || !selected->kind)) {
+        e->roll = false;
+        return;
     }
+
+    if (!selected || selected->kind) {
+        int target = -1;
+
+        for (size_t i = 0; i < e->project.pattern_count; ++i) {
+            const DmPattern *pattern = &e->project.patterns[i];
+
+            if (pattern->kind) {
+                continue;
+            }
+
+            if (target < 0) {
+                target = (int)i;
+            }
+
+            if (pattern->uid == e->last_note_pattern_uid) {
+                target = (int)i;
+                break;
+            }
+        }
+
+        if (target >= 0) {
+            bool browser = e->automation_browser;
+            ed_open_pattern(e, target, false);
+            e->automation_browser = browser;
+            ed_bind_pattern_channel(e);
+        } else if (selected) {
+            return;
+        }
+    }
+
+    e->roll = true;
+    e->roll_auto_hidden = false;
 }
 
 int ed_channel_program(Editor *e, int channel) {
@@ -279,8 +266,12 @@ void ed_open_pattern(Editor *e, int id, bool created) {
 
         if (e->automation_browser) {
             e->automation_cc = e->project.patterns[id].event;
-        } else if (e->automation_cc == 7 || e->automation_cc == 10) {
-            e->automation_cc = -3;
+        } else {
+            e->last_note_pattern_uid = e->project.patterns[id].uid;
+
+            if (e->automation_cc == 7 || e->automation_cc == 10) {
+                e->automation_cc = -3;
+            }
         }
     }
 
@@ -396,7 +387,7 @@ bool ed_gesture_parse(const char *text, MouseBinding *out) {
 
 void ed_defaults(Editor *e) {
     for (int i = 0; i < ACT_COUNT; ++i) {
-        e->bindings[i] = (Binding){default_keys[i], (SDL_Keymod)0};
+        e->bindings[i] = (Binding){.key = default_keys[i]};
     }
 
     e->gestures[GESTURE_COPY_PLACEMENTS] = (MouseBinding){MOUSE_LEFT, SDL_KMOD_SHIFT};
@@ -485,18 +476,47 @@ static bool push(DmBytes *stack, int *count, const DmProject *p) {
     return true;
 }
 
-void ed_checkpoint(Editor *e) {
+bool ed_checkpoint(Editor *e) {
     if (e->recording_take && e->take_snapshot) {
-        return;
+        return false;
     }
 
-    if (!push(e->undo, &e->undo_count, &e->project)) {
+    bool pushed = push(e->undo, &e->undo_count, &e->project);
+
+    if (!pushed) {
         ed_message(e, DM_TEXT_CANNOT_ALLOCATE_UNDO);
     } else if (e->recording_take) {
         e->take_snapshot = true;
     }
 
     ed_clear_history(e->redo, &e->redo_count);
+    return pushed;
+}
+
+void ed_checkpoint_abandon(Editor *e, bool pushed) {
+    if (!pushed || !e->undo_count) {
+        return;
+    }
+
+    DmBytes b = e->undo[--e->undo_count];
+    DmProject saved;
+    dm_project_init(&saved);
+
+    if (dm_unpack(&saved, b.data, b.size, e->status, sizeof(e->status))) {
+        saved.next_pattern_uid =
+            (uint32_t)fmax(saved.next_pattern_uid, e->project.next_pattern_uid);
+        retain_selection(&saved, &e->project);
+        dm_project_free(&e->project);
+        e->project = saved;
+    } else {
+        dm_project_free(&saved);
+    }
+
+    if (e->recording_take) {
+        e->take_snapshot = false;
+    }
+
+    dm_bytes_free(&b);
 }
 
 bool ed_add_note(Editor *e, DmPattern *p, DmNote note) {
@@ -593,24 +613,6 @@ void ed_publish(Editor *e) {
 void ed_changed(Editor *e) {
     ++e->export_revision;
     dm_patterns_fit(&e->project);
-
-    if (ed_pattern(e) && ed_pattern(e)->count) {
-        e->transient_pattern = -1;
-    }
-
-    for (size_t i = 0; i < e->project.clip_count; ++i) {
-        if (e->project.clips[i].pattern == e->transient_pattern) {
-            e->transient_pattern = -1;
-        }
-    }
-
-    for (size_t i = 0; i < e->project.automation_count; ++i) {
-        if (e->project.automation[i].pattern == e->transient_pattern) {
-            e->transient_pattern = -1;
-            break;
-        }
-    }
-
     e->dirty = true;
 }
 
@@ -725,6 +727,11 @@ static void retain_selection(DmProject *next, const DmProject *live) {
 }
 
 void ed_undo(Editor *e, bool redo) {
+    if (ed_samples_history(e, redo, true)) {
+        return;
+    }
+
+    ed_close_instrument(e);
     e->midi_event_index = -1;
     e->song_event = false;
     e->curve_drag = e->event_marquee = false;
@@ -754,6 +761,11 @@ void ed_undo(Editor *e, bool redo) {
         /* Identities cannot be reused when an undone creation is replaced by another edit. */
         next.next_pattern_uid = (uint32_t)fmax(next.next_pattern_uid, e->project.next_pattern_uid);
         retain_selection(&next, &e->project);
+
+        if (next.port != e->project.port || next.sequence != e->project.sequence) {
+            e->last_note_pattern_uid = 0;
+        }
+
         dm_project_free(&e->project);
         e->project = next;
         dm_project_init(&next);

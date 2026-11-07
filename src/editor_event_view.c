@@ -834,7 +834,7 @@ static void velocity_input(Editor *e, DmPattern *p, UiMouse mouse, bool hovered,
 static void velocity_panel(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse,
                            bool hovered) {
     DmPattern *p = ed_pattern(e);
-    ui_rect(lane, COLOR(18, 18, 18), 0);
+    ui_rect(lane, ui_background_shade(18), 0);
 
     /* Lines every 10, plus one at 127 along the top edge. */
     for (int value = 0; value <= 127; value = value == 120 ? 127 : value + 10) {
@@ -949,7 +949,7 @@ void ed_automation_panel(Editor *e, UiRect r, View *v, float scale, float label,
         return;
     }
 
-    ui_rect(lane, COLOR(18, 18, 18), 0);
+    ui_rect(lane, ui_background_shade(18), 0);
     ui_clip((UiRect){at.x, lane.y, label, lane.h});
     automation_axis(e, at, lane);
     ui_unclip();

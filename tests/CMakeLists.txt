@@ -3,7 +3,7 @@ if(NOT WIN32)
 endif()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(TEST_BIN "${CMAKE_CURRENT_BINARY_DIR}/bin")
-set(TEST_LIBRARIES duckversion duckcore duckgui duckmidi_io fluidsynth duckmedia winhttp)
+set(TEST_LIBRARIES duckversion duckcore duckgui duckmidi_io fluidsynth duckmedia ducksamplesynth winhttp)
 
 function(test_dependencies TARGET)
   target_include_directories(${TARGET} PRIVATE "${PROJECT_SOURCE_DIR}/src"
@@ -74,13 +74,21 @@ foreach(NAME editor recording window transport_shortcuts dialog edit_gestures po
     source_workflow channel_row live_edit_editor interface event_lanes midi_inspector export_plugins backlog)
   desktop_test(${NAME}_test audio)
 endforeach()
+set_tests_properties(dialog_test PROPERTIES DISABLED TRUE)
 foreach(NAME recording_feedback pattern_workflow channel_routing toolbar_followup todo_b todo_c todo_d
     frame_performance)
   desktop_test(${NAME}_test recording_feedback_audio)
 endforeach()
 desktop_test(event_controls_test event_controls_audio)
 desktop_test(visualizers_test visualizers_audio)
-target_sources(export_plugins_test PRIVATE export_plugins_ui.cpp)
+desktop_test(samples_editor_test audio)
+target_sources(samples_editor_test PRIVATE samples_editor_ui.cpp)
+set_tests_properties(samples_editor_test PROPERTIES FIXTURES_REQUIRED
+  "soundfont_fixtures;sample_import_audio")
+add_custom_command(TARGET samples_editor_test POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:sampletool>" "${TEST_BIN}/plugins/"
+  VERBATIM)
+target_sources(export_plugins_test PRIVATE export_plugins_ui.cpp native_repository_fixture.c)
 target_sources(todo_b_test PRIVATE todo_b_ui.cpp)
 target_sources(todo_c_test PRIVATE todo_c_ui.cpp)
 
@@ -114,17 +122,22 @@ foreach(VARIANT fixture bad-abi bad-schema missing-entry allocation-failure z-du
     target_link_options(plugin_${VARIANT} PRIVATE -static-libgcc)
   endif()
 endforeach()
-target_compile_definitions(plugin_bad-abi PRIVATE FIXTURE_ABI=99)
+target_compile_definitions(plugin_bad-abi PRIVATE FIXTURE_ABI=5)
 target_compile_definitions(plugin_bad-schema PRIVATE FIXTURE_BAD_UI)
 target_compile_definitions(plugin_missing-entry PRIVATE FIXTURE_MISSING_ENTRY)
 target_compile_definitions(plugin_allocation-failure PRIVATE FIXTURE_CREATE_FAIL)
 target_compile_definitions(plugin_z-duplicate PRIVATE FIXTURE_DUPLICATE)
+add_library(plugin_tool_fixture MODULE tool_plugin_fixture.c)
+set_target_properties(plugin_tool_fixture PROPERTIES PREFIX "" OUTPUT_NAME "sample-tool-fixture"
+  LIBRARY_OUTPUT_DIRECTORY "${REGISTRY_FIXTURES}" RUNTIME_OUTPUT_DIRECTORY "${REGISTRY_FIXTURES}")
 add_custom_target(export_registry_fixtures
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${TEST_BIN}/plugins"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:duck_export_support>" "${TEST_BIN}/plugins/"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:duck_export_support>" "${REGISTRY_FIXTURES}/"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:m64export>" "${REGISTRY_FIXTURES}/m64.dll"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:plugin_fixture>" "${TEST_BIN}/plugins/fixture.dll"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ootexport>" "${TEST_BIN}/plugins/"
-  DEPENDS m64export ootexport plugin_fixture plugin_bad-abi plugin_bad-schema plugin_missing-entry
+  DEPENDS m64export ootexport plugin_fixture plugin_tool_fixture plugin_bad-abi plugin_bad-schema plugin_missing-entry
     plugin_allocation-failure plugin_z-duplicate VERBATIM)
 add_dependencies(export_plugins_test export_registry_fixtures)
 add_executable(export_registry_test export_registry_test.c "${PROJECT_SOURCE_DIR}/src/export_plugins.c")

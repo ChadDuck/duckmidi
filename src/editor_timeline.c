@@ -18,10 +18,10 @@ uint32_t ed_grid_color(Editor *e, double beat) {
     DmMeter meter = dm_meter(&e->project, beat);
 
     if (fabs(remainder(beat - meter.origin, meter.bar)) < .001) {
-        return COLOR(80, 80, 80);
+        return ui_background_shade(80);
     }
 
-    return fabs(beat - round(beat)) < .001 ? COLOR(62, 62, 62) : GRID;
+    return fabs(beat - round(beat)) < .001 ? ui_background_shade(62) : GRID;
 }
 
 static void grid_pan(Editor *e, View *v, UiRect canvas, UiMouse mouse, int context) {
@@ -148,7 +148,7 @@ double ed_view_playhead(Editor *e, int context, bool playing, double beat, bool 
 }
 
 void ed_ruler(Editor *e, UiRect r, View *v, float scale, float label) {
-    ui_rect((UiRect){r.x, r.y, r.w, 28}, COLOR(26, 26, 26), 0);
+    ui_rect((UiRect){r.x, r.y, r.w, 28}, ui_background_shade(26), 0);
     int region = v == &e->roll_view;
 
     if (e->loop_enabled[region]) {

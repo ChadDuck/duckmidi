@@ -60,6 +60,7 @@ int m64_stock_sequence(const char *name) {
 }
 
 static void reset_maps(M64PluginUi *s) {
+    es_mappings_reset(s->custom);
     for (unsigned ch = 0; ch < 16; ch++) {
         for (unsigned p = 0; p < 128; p++) {
             s->melodic[ch][p] = (int)p;
@@ -86,12 +87,20 @@ void DME_CALL m64_ui_reset(void *instance) {
     s->memory = M64_MEMORY_ENLARGE;
     s->percussion = 0;
     reset_maps(s);
+    es_mappings_reset(s->custom);
 }
 
 void *DME_CALL m64_ui_create(void) {
     M64PluginUi *s = calloc(1, sizeof(*s));
 
     if (!s) {
+        return NULL;
+    }
+
+    s->custom = es_mappings_create(3, 3);
+
+    if (!s->custom) {
+        free(s);
         return NULL;
     }
 
@@ -106,7 +115,9 @@ void *DME_CALL m64_ui_create(void) {
 }
 
 void DME_CALL m64_ui_destroy(void *instance) {
-    free(instance);
+    M64PluginUi *s = instance;
+    es_mappings_destroy(s->custom);
+    free(s);
 }
 
 /* A sequence file stem from the project name, or the MIDI file name without its folder and
@@ -198,7 +209,6 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
         return DME_NOMEM;
     }
 
-    snprintf(s->port_notice, sizeof(s->port_notice), "%s", layout->notice);
     s->port_interference = layout->interference;
     unsigned program[16] = {0};
 
@@ -230,8 +240,20 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
         }
     }
 
+    bool custom_ok = es_mappings_inspect(s->custom, c, &layout->out[0][0], 128, error, (size_t)cap);
+
+    for (size_t i = 0; custom_ok && i < es_mappings_count(s->custom); i++) {
+        const EsSourceRow *row = es_mappings_source(s->custom, i);
+
+        if (row->source.flags & DME_SAMPLE_PERCUSSION) {
+            s->used_drums[row->source.drum_key] = true;
+        } else {
+            s->used[row->native_channel][row->source.program] = true;
+        }
+    }
+
     free(layout);
-    return DME_OK;
+    return custom_ok ? DME_OK : DME_FAILED;
 }
 
 int32_t DME_CALL m64_ui_describe(void *instance, DmeUi *ui) {
@@ -242,49 +264,39 @@ int32_t DME_CALL m64_ui_describe(void *instance, DmeUi *ui) {
     unsigned choices = m64_preset_choices(drums, s->choices, s->choice_labels);
     unsigned count = 0;
 
-    for (unsigned ch = 0; ch < 16; ch++) {
-        for (unsigned p = 0; p < 128; p++) {
-            if (drums ? !(ch == MIDI_DRUM_CHANNEL && s->used_drums[p]) : !s->used[ch][p]) {
-                continue;
-            }
+    for (size_t source_index = 0; source_index < es_mappings_count(s->custom); source_index++) {
+        const EsSourceRow *source = es_mappings_source(s->custom, source_index);
+        bool is_drum = (source->source.flags & DME_SAMPLE_PERCUSSION) != 0;
 
-            if (drums) {
-                snprintf(s->row_ids[count], 40, "drum.%u", p);
-            } else {
-                snprintf(s->row_ids[count], 40, "melodic.%u.%u", ch, p);
-            }
-
-            snprintf(s->row_labels[count], 180, "Ch %u: %s%s%u", ch + 1,
-                     drums ? s->drum_names[p] : s->program_names[p], drums ? " / note " : " / GM ",
-                     p);
-            int mapped = drums ? s->drums[p] : s->melodic[ch][p];
-            int value = m64_canonical_preset(drums, mapped);
-
-            if (s->similar_stale) {
-                M64RangeIssue notes = {.channel = ch,
-                                       .program = p,
-                                       .percussion = drums,
-                                       .demand = drums ? 1 : s->demand[ch][p]};
-                s->similar_count[count] =
-                    m64_similar(&notes, (int)p, s->choices, choices, s->similar[count], 8);
-            }
-
-            s->rows[count] = (DmeMappingRow){s->row_ids[count],
-                                             s->row_labels[count],
-                                             value,
-                                             m64_canonical_preset(drums, (int)p),
-                                             s->similar[count],
-                                             s->similar_count[count]};
-            count++;
+        if (is_drum != drums || count >= 2048) {
+            continue;
         }
+
+        unsigned ch = source->native_channel;
+        unsigned p = drums ? source->source.drum_key : source->source.program;
+        int mapped = es_mappings_stock(s->custom, (uint32_t)s->target, source->source,
+                                       drums ? s->drums[p] : s->melodic[ch][p]);
+        int value = m64_canonical_preset(drums, mapped);
+
+        if (s->similar_stale) {
+            M64RangeIssue notes = {.channel = ch,
+                                   .program = p,
+                                   .percussion = drums,
+                                   .demand = drums ? 1 : s->demand[ch][p]};
+            s->similar_count[count] =
+                m64_similar(&notes, (int)p, s->choices, choices, s->similar[count], 8);
+        }
+
+        s->rows[count] = (DmeMappingRow){
+            source->id,        source->label,          value, m64_canonical_preset(drums, (int)p),
+            s->similar[count], s->similar_count[count]};
+        s->rows[count].source = source->source;
+        s->rows[count].custom = es_mappings_describe(s->custom, (uint32_t)s->target, source_index);
+        count++;
     }
 
     s->similar_stale = false;
     unsigned f = 0;
-
-    if (*s->port_notice) {
-        s->fields[f++] = (DmeField){.id = "ports", .label = s->port_notice, .type = DME_NOTICE};
-    }
 
     s->fields[f++] = (DmeField){
         .id = "target",
@@ -369,6 +381,18 @@ int32_t DME_CALL m64_ui_describe(void *instance, DmeUi *ui) {
 int32_t DME_CALL m64_ui_set(void *instance, const char *id, const DmeValue *v, char *error,
                             uint64_t cap) {
     M64PluginUi *s = instance;
+    char stock_id[64];
+
+    if (id && es_mappings_stock_id(s->custom, id, stock_id)) {
+        if (v && v->type == DME_CHOICE && v->integer >= 0 && v->integer < 128 &&
+            es_mappings_set_stock(s->custom, (uint32_t)s->target, id, (int32_t)v->integer)) {
+            s->similar_stale = true;
+            return DME_OK;
+        }
+
+        goto invalid;
+    }
+
     unsigned ch, p;
     char tail;
 

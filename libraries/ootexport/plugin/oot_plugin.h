@@ -1,6 +1,8 @@
 #ifndef OOT_PLUGIN_H
 #define OOT_PLUGIN_H
 #include "../src/oot.h"
+#include "../../export_support/mapping.h"
+#include "../../export_support/sample.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -13,6 +15,7 @@ typedef struct {
     bool merged, interference;
     unsigned moved_count, conflict_count;
     char notice[768];
+    char merges[768]; /* One "where: control" line per interfering merge. */
 } OotPortLayout;
 
 /* Where each colored port's channel messages play; see ports.c. */
@@ -21,6 +24,8 @@ bool oot_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion
 
 typedef struct {
     int song; /* 0 adds a new song; n replaces oot_songs[n - 1]. */
+    EsMappings *custom;
+    char checkout[8192], checkout_identity[96];
     int font; /* OOT_CUSTOM_CHOICE or a vanilla soundfont index */
     char name[OOT_NAME_CAPACITY];
     char project_name[OOT_NAME_CAPACITY]; /* Default sequence name from the project. */
@@ -34,7 +39,6 @@ typedef struct {
     bool used[16][128], used_drums[128];
     uint8_t low[16][128], high[16][128]; /* Key range each used source plays. */
     char program_names[128][80], drum_names[128][80];
-    char port_notice[768];
     DmeField fields[14];
     DmeChoice song_choices[80], font_choices[48], choices[128];
     char song_labels[80][80], font_labels[48][64], choice_labels[128][96];
@@ -48,11 +52,18 @@ typedef struct OotReviewUi OotReviewUi;
 
 typedef struct {
     OotRequest request;
+    EsMappingJob *custom;
+    EsNativeSamples samples;
+    EsRepository *repository;
+    char checkout[8192], checkout_identity[96];
     char name[OOT_NAME_CAPACITY];
+    char sample_bank[8192];
     const char *song; /* NA_BGM_* to replace, or NULL to add a song */
     bool loop_points, enlarge;
+    bool keep_originals;
     char port_notice[768];
     DmeEvent *events;
+    int32_t *stock_values;
     OotReviewUi *review_ui;
     OotText spec_cleaned; /* Install: the spec without removed songs. */
 } OotPluginJob;

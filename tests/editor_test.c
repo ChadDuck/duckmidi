@@ -82,6 +82,148 @@ static void clips(Editor *e) {
     check(e->project.clip_count == count + 1, "undo clip deletion");
 }
 
+static int pattern_with_uid(const DmProject *p, uint32_t uid) {
+    for (size_t i = 0; i < p->pattern_count; ++i) {
+        if (p->patterns[i].uid == uid) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+static void note_pattern_shortcuts(Editor *e) {
+    DmProject *p = &e->project;
+    size_t count = p->pattern_count;
+    uint32_t ids[3];
+
+    ed_choose_pattern_card(e, 0, false);
+    press(e, SDL_SCANCODE_KP_PLUS, 0);
+    check(e->selected_pattern == 1 && p->pattern_count == count,
+          "plus selects the next edited note pattern");
+    press(e, SDL_SCANCODE_KP_MINUS, 0);
+    check(e->selected_pattern == 0 && p->pattern_count == count,
+          "minus selects the previous edited note pattern");
+    press(e, SDL_SCANCODE_KP_PLUS, 0);
+
+    for (int i = 0; i < 3; ++i) {
+        press(e, SDL_SCANCODE_KP_PLUS, 0);
+        const DmPattern *pattern = ed_pattern(e);
+        char name[64];
+        snprintf(name, sizeof(name), "Pattern %d", i + 1);
+        check(p->pattern_count == count + i + 1 && !e->automation_browser && pattern &&
+                  !pattern->kind && !strcmp(pattern->name, name),
+              "keypad plus creates consecutive empty note patterns");
+        ids[i] = pattern->uid;
+    }
+
+    int second = pattern_with_uid(p, ids[1]);
+    check(dm_note_add(&p->patterns[second], (DmNote){.length = .5, .key = 60, .velocity = 100}),
+          "edit note pattern 2");
+    ed_commit(e);
+    press(e, SDL_SCANCODE_KP_MINUS, 0);
+    check(p->pattern_count == count + 2 && pattern_with_uid(p, ids[2]) < 0,
+          "minus removes the newest empty note pattern");
+    press(e, SDL_SCANCODE_KP_MINUS, 0);
+    check(p->pattern_count == count + 1 && pattern_with_uid(p, ids[0]) < 0 && ed_pattern(e) &&
+              ed_pattern(e)->uid == ids[1] && ed_pattern(e)->count == 1,
+          "minus skips the note pattern with content and removes the older empty one");
+    press(e, SDL_SCANCODE_KP_PLUS, 0);
+    check(ed_pattern(e) && !strcmp(ed_pattern(e)->name, "Pattern 1") &&
+              e->selected_pattern < pattern_with_uid(p, ids[1]),
+          "a new note pattern reuses number 1 ahead of the surviving pattern 2");
+    press(e, SDL_SCANCODE_KP_MINUS, 0);
+}
+
+static void automation_shortcuts(Editor *e) {
+    DmProject *p = &e->project;
+    size_t count = p->pattern_count;
+    uint32_t ids[10];
+
+    for (int i = 0; i < 10; ++i) {
+        press(e, SDL_SCANCODE_KP_PLUS, i % 2 ? 0 : SDL_KMOD_SHIFT);
+        DmPattern *pattern = ed_pattern(e);
+        char name[64];
+        snprintf(name, sizeof(name), "Automation %d", i + 1);
+        check(p->pattern_count == count + i + 1 && e->automation_browser && pattern &&
+                  pattern->kind && !strcmp(pattern->name, name),
+              "each keypad plus creates and selects another numbered automation pattern");
+        ids[i] = pattern->uid;
+    }
+
+    ed_choose_pattern_card(e, pattern_with_uid(p, ids[7]), false);
+    ed_checkpoint(e);
+    check(dm_automation_add(p, (DmAutomation){.beat = 1,
+                                              .type = MIDI_PITCH_BEND,
+                                              .b = 90,
+                                              .pattern = e->selected_pattern}),
+          "edit automation pattern 8");
+    ed_commit(e);
+    ed_choose_pattern_card(e, pattern_with_uid(p, ids[9]), false);
+
+    for (int i = 9; i >= 0; --i) {
+        if (i == 7) {
+            continue;
+        }
+
+        size_t before = p->pattern_count;
+        press(e, SDL_SCANCODE_KP_MINUS, i % 2 ? 0 : SDL_KMOD_SHIFT);
+        check(p->pattern_count == before - 1 && pattern_with_uid(p, ids[i]) < 0,
+              "each keypad minus removes one empty automation pattern in creation order");
+        check(pattern_with_uid(p, ids[7]) >= 0, "keypad minus preserves pattern 8");
+    }
+
+    press(e, SDL_SCANCODE_KP_MINUS, 0);
+    check(p->pattern_count == count + 1 && ed_pattern(e)->uid == ids[7],
+          "keypad minus leaves the last populated pattern selected");
+
+    press(e, SDL_SCANCODE_KP_PLUS, 0);
+    int first = e->selected_pattern;
+    check(!strcmp(ed_pattern(e)->name, "Automation 1") && first < pattern_with_uid(p, ids[7]),
+          "numbering restarts at 1 and inserts the card before pattern 8");
+    press(e, SDL_SCANCODE_KP_PLUS, SDL_KMOD_SHIFT);
+    int second = e->selected_pattern;
+    int eighth = pattern_with_uid(p, ids[7]);
+    check(!strcmp(ed_pattern(e)->name, "Automation 2") && first < second && second < eighth &&
+              !strcmp(p->patterns[eighth].name, "Automation 8"),
+          "another new card fills the next gap without renaming the survivor");
+    bool point_preserved = false;
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        DmAutomation point = p->automation[i];
+        point_preserved |= point.pattern == eighth && point.type == MIDI_PITCH_BEND &&
+                           point.beat == 1 && point.b == 90;
+    }
+
+    check(point_preserved, "inserting before pattern 8 preserves its point");
+    p->patterns[first].mode = 1;
+    p->lane_count[0] = 1;
+    snprintf(p->lane_names[0][0], sizeof(p->lane_names[0][0]), "Pitch bend");
+
+    check(dm_clip_add(p, (DmClip){.pattern = second, .channel = 0, .lane = 1}),
+          "place an empty automation pattern on the playlist");
+    ed_commit(e);
+    press(e, SDL_SCANCODE_KP_PLUS, SDL_KMOD_SHIFT);
+    check(e->selected_pattern == eighth && p->pattern_count == count + 3,
+          "plus selects the next edited automation pattern");
+    press(e, SDL_SCANCODE_KP_MINUS, SDL_KMOD_SHIFT);
+    check(e->selected_pattern == second && p->pattern_count == count + 3,
+          "minus selects the previous edited automation pattern when none are empty");
+    press(e, SDL_SCANCODE_KP_PLUS, 0);
+    press(e, SDL_SCANCODE_KP_PLUS, 0);
+    uint32_t newest = ed_pattern(e)->uid;
+    press(e, SDL_SCANCODE_KP_MINUS, 0);
+    check(pattern_with_uid(p, newest) < 0, "minus removes a new card inserted before pattern 8");
+    press(e, SDL_SCANCODE_KP_MINUS, SDL_KMOD_SHIFT);
+    check(p->pattern_count == count + 3 && p->patterns[first].mode &&
+              p->clips[p->clip_count - 1].pattern == second,
+          "minus preserves LFOs and placed automation patterns");
+    press(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
+    check(pattern_with_uid(p, newest) >= 0, "undo restores the removed empty card");
+    press(e, SDL_SCANCODE_Y, SDL_KMOD_CTRL);
+    check(pattern_with_uid(p, newest) < 0, "redo removes the empty card again");
+}
+
 static void test_shortcuts(Editor *e) {
     press(e, SDL_SCANCODE_F1, 0);
     check(e->piano, "keyboard piano enabled");
@@ -102,35 +244,14 @@ static void test_shortcuts(Editor *e) {
     frame(e);
     press(e, SDL_SCANCODE_ESCAPE, 0);
     check(!e->shortcuts && e->running, "Escape closes floating window without quitting");
-    e->selected_pattern = (int)e->project.pattern_count - 1;
-    size_t count = e->project.pattern_count;
-    press(e, SDL_SCANCODE_KP_PLUS, 0);
-    check(e->project.pattern_count == count + 1, "next creates a pattern at end");
-    press(e, SDL_SCANCODE_KP_MINUS, 0);
-    check(e->selected_pattern == (int)count - 1, "previous pattern");
-    check(e->project.pattern_count == count,
-          "unused newly-created pattern is removed when stepping back");
-    int created = -1;
+    note_pattern_shortcuts(e);
+    automation_shortcuts(e);
 
-    for (int i = 0; i < 64 && e->project.pattern_count == count; ++i) {
-        press(e, SDL_SCANCODE_KP_PLUS, SDL_KMOD_SHIFT);
-        frame(e);
-        created = e->selected_pattern;
-    }
+    /* Start below the undo limit so the controller tests can count new steps. */
+    ed_clear_history(e->undo, &e->undo_count);
 
-    check(e->project.pattern_count == count + 1 && ed_pattern(e)->kind,
-          "next automation creates an automation pattern at end");
-    press(e, SDL_SCANCODE_KP_PLUS, SDL_KMOD_SHIFT);
-    frame(e);
-    check(e->project.pattern_count == count + 1 && e->selected_pattern == created,
-          "stepping on from an unused automation pattern adds no second one");
-    press(e, SDL_SCANCODE_KP_MINUS, SDL_KMOD_SHIFT);
-    frame(e);
-    check(e->project.pattern_count == count && ed_pattern(e),
-          "unused newly-created automation pattern is removed when stepping back");
-
-    /* Controller switches of an automation pattern undo and redo, in both modes. */
     for (int mode = 0; mode < 2; ++mode) {
+        ed_choose_pattern_card(e, (int)e->project.pattern_count - 1, false);
         press(e, SDL_SCANCODE_KP_PLUS, SDL_KMOD_SHIFT);
         frame(e);
         DmPattern *automation = ed_pattern(e);

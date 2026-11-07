@@ -71,7 +71,7 @@ deb)
   distro="${ID^}" # Debian or Ubuntu
   mkdir -p "$work/debian" "$root/DEBIAN"
   echo "Source: duckmidi" > "$work/debian/control"
-  depends=$(cd "$work" && dpkg-shlibdeps -O --ignore-missing-info -l"$app/lib" "$app/duckmidi" "$app"/lib/libfluidsynth.so.3.* "$app"/plugins/*.so)
+  depends=$(cd "$work" && dpkg-shlibdeps -O --ignore-missing-info -l"$app/lib" -l"$app/plugins" "$app/duckmidi" "$app"/lib/libfluidsynth.so.3.* "$app"/plugins/*.so)
   depends=${depends#shlibs:Depends=}
   cat > "$root/DEBIAN/control" <<EOF
 Package: duckmidi

@@ -2,6 +2,9 @@
    against generated SM64, HackerSM64 and sm64coopdx checkouts made of the excerpts the plugin
    reads and edits. */
 #include "../libraries/m64export/plugin/m64_plugin.h"
+#include "native_repository_fixture.h"
+#include "repository_install.h"
+#include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,8 +46,10 @@ static const char *data_h = "#if defined(VERSION_EU)\n#define AUDIO_HEAP_SIZE 0x
 static const char *buffers_c = "#if defined(VERSION_EU)\nALIGNED16 u8 gAudioHeap[0x3000];\n#else\n"
                                "ALIGNED16 u8 gAudioHeap[DOUBLE_SIZE_ON_64_BIT(0x31200)];\n#endif\n";
 
+/* Registrations matching the generated native fixture's sequences and banks. */
 static const char *sequences =
-    "{\n    \"02_menu_title_screen\": [\"11\"],\n    \"03_level_grass\": [\"22\"],\n"
+    "{\n    \"00_unused\": null,\n    \"01_unused\": null,\n"
+    "    \"02_menu_title_screen\": [\"11\"],\n    \"03_custom_worker\": [\"22\"],\n"
     "    \"04_level_inside_castle\": [\"0E\"]\n}\n";
 
 typedef struct {
@@ -62,12 +67,6 @@ static File hacker[] = {{"sound/sequences.json", NULL},
 static File coopdx[] = {
     {"sound/sequences.json", NULL},
     {"src/pc/lua/utils/smlua_audio_utils.c", "void smlua_audio_utils_reset_all(void);\n"}};
-static File *checkout = sm64;
-static size_t checkout_count = 4;
-static char installed[8][128];
-static char *contents[8];
-static uint32_t flags[8];
-static int installed_count;
 static char artifacts[8][128];
 static char *artifact_data[8];
 static int artifact_count;
@@ -127,56 +126,58 @@ static const char *artifact_named(const char *name) {
 }
 
 static void reset_output(void) {
-    for (int i = 0; i < installed_count; ++i) {
-        free(contents[i]);
-    }
-
     for (int i = 0; i < artifact_count; ++i) {
         free(artifact_data[i]);
     }
 
-    installed_count = artifact_count = 0;
+    artifact_count = 0;
     warning[0] = 0;
 }
 
-static int32_t DME_CALL read_file(void *user, const char *path, const uint8_t **data,
-                                  uint64_t *size) {
-    (void)user;
+/* A generated checkout of its own, with the native fixture under the listed excerpts, and an
+   empty plugins folder for its history. */
+static void make_checkout(char checkout[512], char plugins[600], const char *name,
+                          const File *files, size_t count) {
+    scenario_folder(checkout, 512, "m64-install", name);
+    native_repository_fixture(checkout, false);
 
-    for (size_t i = 0; i < checkout_count; ++i) {
-        if (!strcmp(checkout[i].path, path)) {
-            *data = (const uint8_t *)checkout[i].data;
-            *size = strlen(checkout[i].data);
-            return 1;
-        }
+    for (size_t i = 0; i < count; i++) {
+        checkout_write(checkout, files[i].path, files[i].data);
     }
 
-    return 0;
+    snprintf(plugins, 600, "%s-plugins", checkout);
+    assert(SDL_CreateDirectory(plugins));
 }
 
-static int32_t DME_CALL install_file(void *user, const char *path, const uint8_t *data,
-                                     uint64_t size, uint32_t f) {
-    (void)user;
-    assert(installed_count < 8);
-    snprintf(installed[installed_count], 128, "%s", path);
-    contents[installed_count] = calloc(size + 1, 1);
-    memcpy(contents[installed_count], data, size);
-    flags[installed_count++] = f;
-    return 1;
+static bool same_file(const char *checkout, const char *path, const char *expected) {
+    char *actual = checkout_read(checkout, path);
+    bool same = actual && expected && !strcmp(actual, expected);
+    SDL_free(actual);
+    return same || (!actual && !expected);
 }
 
-static const char *installed_file(const char *path, uint32_t *f) {
-    for (int i = 0; i < installed_count; ++i) {
-        if (!strcmp(installed[i], path)) {
-            *f = flags[i];
-            return contents[i];
-        }
+static bool present(const char *checkout, const char *path) {
+    char *data = checkout_read(checkout, path);
+    SDL_free(data);
+    return data != NULL;
+}
+
+static void install(const DmeExporter *exporter, void *settings, const DmeContext *context,
+                    const DmeHost *host, const char *plugins, const char *checkout) {
+    char error[2048] = {0};
+    int32_t status = repository_install(exporter, settings, context, host, plugins, checkout, error,
+                                        sizeof(error));
+
+    if (status != DME_OK) {
+        fprintf(stderr, "install: %s\n", error);
     }
 
-    return NULL;
+    assert(status == DME_OK);
 }
 
 int main(void) {
+    assert(SDL_Init(0));
+    assert(SDL_CreateDirectory("agents/reports/m64-install"));
     sm64[0].data = sequences;
     sm64[1].data = data_c;
     sm64[2].data = data_h;
@@ -292,9 +293,10 @@ int main(void) {
            layout.out[9][0] == 0 &&
            strstr(layout.notice, "Port 0 of channel 10 plays on channel 1."));
 
-    /* Install through the plugin: the song replaces 03_level_grass and its bank entry. */
+    /* Export to Repository through the history runtime: the song replaces 03_custom_worker and
+       its bank entry, appending a bank after the initialized ones; audio memory stays. */
     const DmeExporter *exporter = duckmidi_export_plugin(DME_ABI)->exporter(0);
-    assert(exporter->install && !strcmp(exporter->install_label, "Export to Repository"));
+    assert(exporter->history && !strcmp(exporter->install_label, "Export to Repository"));
     void *settings = exporter->create();
     DmeEvent events[] = {{0, 1, 0x90, 60, 100, 0}, {960, 2, 0x80, 60, 0, 0}};
     DmeContext context = {.events = events,
@@ -302,73 +304,75 @@ int main(void) {
                           .duration = 960,
                           .ppq = 960,
                           .percussion_channels = 1u << MIDI_DRUM_CHANNEL};
-    void *job = exporter->create_job(settings, error, sizeof(error));
-    DmeHost host = {NULL, cancelled, progress, diagnostic, NULL, read_file, install_file};
-    assert(job && exporter->install(job, &context, &host, error, sizeof(error)) == DME_OK);
+    DmeHost host = {.cancelled = cancelled, .progress = progress, .diagnostic = diagnostic};
+    char checkout[512], plugins[600];
+    make_checkout(checkout, plugins, "sm64", sm64, 4);
+    install(exporter, settings, &context, &host, plugins, checkout);
     assert(!*warning);
-    uint32_t f = 0;
-    const char *entry = installed_file("sound/sequences.json", &f);
-    assert(entry && strstr(entry, "\"03_level_grass\": [\"26_custom_duckmidi\"],") &&
+    char *entry = checkout_read(checkout, "sound/sequences.json");
+    assert(entry && strstr(entry, "\"03_level_grass\": [\"26_custom_duckmidi\"]") &&
            strstr(entry, "\"02_menu_title_screen\": [\"11\"],"));
-    assert(installed_file("sound/sequences/us/03_level_grass.m64", &f) &&
-           installed_file("sound/sound_banks/26_custom_duckmidi.json", &f));
-    assert(!installed_file("src/audio/data.c", &f));
-    exporter->destroy_job(job);
+    SDL_free(entry);
+    assert(present(checkout, "sound/sequences/us/03_level_grass.m64") &&
+           !present(checkout, "sound/sequences/us/03_custom_worker.m64"));
+    assert(same_file(checkout, "src/audio/data.c", data_c));
 
-    /* A song name missing from the table is refused before anything is queued. */
-    installed_count = 0;
-    DmeValue custom = {DME_CHOICE, 35, NULL}, name = {DME_TEXT, 0, "99_custom_song"};
+    /* Revert all restores every initialized file and removes what the export added. */
+    char error_text[2048] = {0};
+    assert(repository_revert_all(exporter, settings, &host, plugins, checkout, error_text,
+                                 sizeof(error_text)) == DME_OK);
+    assert(same_file(checkout, "sound/sequences.json", sequences) &&
+           present(checkout, "sound/sequences/us/03_custom_worker.m64") &&
+           !present(checkout, "sound/sequences/us/03_level_grass.m64"));
+
+    /* A custom song name takes the next free sequence ID. */
+    DmeValue custom = {DME_CHOICE, 35, NULL}, name = {DME_TEXT, 0, "my_song"};
     assert(exporter->set(settings, "sequence", &custom, error, sizeof(error)) == DME_OK &&
            exporter->set(settings, "sequence_name", &name, error, sizeof(error)) == DME_OK);
-    job = exporter->create_job(settings, error, sizeof(error));
-    assert(exporter->install(job, &context, &host, error, sizeof(error)) == DME_INVALID &&
-           strstr(error, "99_custom_song") && !installed_count);
-    exporter->destroy_job(job);
+    install(exporter, settings, &context, &host, plugins, checkout);
+    entry = checkout_read(checkout, "sound/sequences.json");
+    assert(entry && strstr(entry, "\"05_my_song\"") &&
+           present(checkout, "sound/sequences/us/05_my_song.m64"));
+    SDL_free(entry);
 
     /* sm64coopdx checkouts are detected by their Lua audio utilities. The song becomes a mod
        in mods/, which the build copies; the unused sequences.json and audio memory stay as they
        are. A Target other than the checkout's game is reported, and the checkout wins. */
     DmeValue grass = {DME_CHOICE, 3, NULL};
     assert(exporter->set(settings, "sequence", &grass, error, sizeof(error)) == DME_OK);
-    checkout = coopdx;
-    checkout_count = 2;
+    make_checkout(checkout, plugins, "coopdx", coopdx, 2);
     reset_output();
-    job = exporter->create_job(settings, error, sizeof(error));
-    assert(job && exporter->install(job, &context, &host, error, sizeof(error)) == DME_OK);
-    assert(strstr(warning, "sm64coopdx checkout") && installed_count == 2);
-    const char *lua = installed_file("mods/duckmidi_03_level_grass/main.lua", &f);
+    install(exporter, settings, &context, &host, plugins, checkout);
+    assert(strstr(warning, "sm64coopdx checkout"));
+    char *lua = checkout_read(checkout, "mods/duckmidi_03_level_grass/main.lua");
     assert(lua && strstr(lua, "-- name: duckmidi 03_level_grass\n") &&
            strstr(lua, "smlua_audio_utils_replace_sequence(0x03, 0x2A, 75, \"03_level_grass\")"));
-    assert(installed_file("mods/duckmidi_03_level_grass/sound/03_level_grass.m64", &f) && !f);
-    assert(!installed_file("sound/sequences.json", &f));
-    exporter->destroy_job(job);
+    SDL_free(lua);
+    assert(present(checkout, "mods/duckmidi_03_level_grass/sound/03_level_grass.m64") &&
+           same_file(checkout, "sound/sequences.json", sequences));
 
-    /* A song that replaces no stock sequence gets a new sequence ID. */
+    /* A song that replaces no stock sequence gets a sequence allocated by the mod. */
     reset_output();
-    DmeValue sm64coopdx = {DME_CHOICE, 2, NULL};
+    DmeValue sm64coopdx = {DME_CHOICE, 2, NULL}, coop_name = {DME_TEXT, 0, "99_custom_song"};
     assert(exporter->set(settings, "target", &sm64coopdx, error, sizeof(error)) == DME_OK &&
-           exporter->set(settings, "sequence", &custom, error, sizeof(error)) == DME_OK);
-    job = exporter->create_job(settings, error, sizeof(error));
-    assert(job && exporter->install(job, &context, &host, error, sizeof(error)) == DME_OK);
+           exporter->set(settings, "sequence", &custom, error, sizeof(error)) == DME_OK &&
+           exporter->set(settings, "sequence_name", &coop_name, error, sizeof(error)) == DME_OK);
+    install(exporter, settings, &context, &host, plugins, checkout);
     assert(!*warning);
-    lua = installed_file("mods/duckmidi_99_custom_song/main.lua", &f);
+    lua = checkout_read(checkout, "mods/duckmidi_99_custom_song/main.lua");
     assert(lua && strstr(lua, "SEQ_99_CUSTOM_SONG = smlua_audio_utils_allocate_sequence()") &&
            strstr(lua, "replace_sequence(SEQ_99_CUSTOM_SONG, 0x2A, 75, \"99_custom_song\")"));
-    exporter->destroy_job(job);
+    SDL_free(lua);
 
     /* HackerSM64 is still detected, ahead of the stock layout; a small song keeps its pool. */
     assert(exporter->set(settings, "sequence", &grass, error, sizeof(error)) == DME_OK);
-    checkout = hacker;
-    checkout_count = 3;
     hacker[2].data = hacker_h;
+    make_checkout(checkout, plugins, "hacker", hacker, 3);
     reset_output();
-    job = exporter->create_job(settings, error, sizeof(error));
-    assert(job && exporter->install(job, &context, &host, error, sizeof(error)) == DME_OK);
-    assert(strstr(warning, "HackerSM64 checkout") && installed_count == 3);
-    assert(installed_file("sound/sequences/us/03_level_grass.m64", &f) &&
-           installed_file("sound/sound_banks/26_custom_duckmidi.json", &f) &&
-           installed_file("sound/sequences.json", &f) && !installed_file("src/audio/data.h", &f));
-    exporter->destroy_job(job);
+    install(exporter, settings, &context, &host, plugins, checkout);
+    assert(strstr(warning, "HackerSM64 checkout"));
+    assert(present(checkout, "sound/sequences/us/03_level_grass.m64") &&
+           same_file(checkout, "src/audio/data.h", hacker_h));
 
     /* Saved packages follow Target: file layout, names and the manifest's game. */
     const char *const sm64_files[] = {"03_level_grass.m64", "26_custom_duckmidi.json",
@@ -384,7 +388,7 @@ int main(void) {
         DmeValue target = {DME_CHOICE, game, NULL};
         assert(exporter->set(settings, "target", &target, error, sizeof(error)) == DME_OK);
         reset_output();
-        job = exporter->create_job(settings, error, sizeof(error));
+        void *job = exporter->create_job(settings, error, sizeof(error));
         assert(job && exporter->run(job, &context, &host, error, sizeof(error)) == DME_OK);
         int expected = game == 2 ? 3 : 4;
         assert(artifact_count == expected);
@@ -442,25 +446,24 @@ int main(void) {
                              .duration = NOTES * 37,
                              .ppq = 96,
                              .percussion_channels = 1u << MIDI_DRUM_CHANNEL};
-    checkout = sm64;
-    checkout_count = 4;
+    make_checkout(checkout, plugins, "memory", sm64, 4);
     host.artifact = NULL;
     reset_output();
     pool_warning[0] = 0;
     assert(exporter->inspect(settings, &large_song, error, sizeof(error)) == DME_OK);
-    job = exporter->create_job(settings, error, sizeof(error));
-    assert(job && exporter->install(job, &large_song, &host, error, sizeof(error)) == DME_OK);
-    assert(installed_file("src/audio/data.c", &f) && !*pool_warning);
-    exporter->destroy_job(job);
+    install(exporter, settings, &large_song, &host, plugins, checkout);
+    assert(!same_file(checkout, "src/audio/data.c", data_c) && !*pool_warning);
+
+    /* Re-exporting with Stock composes the song again, and the memory files return to their
+       initialized text because no current export needs more. */
     DmeValue stock = {DME_CHOICE, M64_MEMORY_STOCK, NULL};
     assert(exporter->set(settings, "memory", &stock, error, sizeof(error)) == DME_OK);
     reset_output();
-    job = exporter->create_job(settings, error, sizeof(error));
-    assert(job && exporter->install(job, &large_song, &host, error, sizeof(error)) == DME_OK);
-    assert(!installed_file("src/audio/data.c", &f) && !installed_file("src/audio/data.h", &f) &&
-           !installed_file("src/buffers/buffers.c", &f) &&
-           installed_file("sound/sequences/us/03_level_grass.m64", &f) && *pool_warning);
-    exporter->destroy_job(job);
+    install(exporter, settings, &large_song, &host, plugins, checkout);
+    assert(same_file(checkout, "src/audio/data.c", data_c) &&
+           same_file(checkout, "src/audio/data.h", data_h) &&
+           same_file(checkout, "src/buffers/buffers.c", buffers_c) &&
+           present(checkout, "sound/sequences/us/03_level_grass.m64") && *pool_warning);
 
     /* Similar instruments: other stock samples, each one a choice of the mapping. */
     assert(exporter->describe(settings, &ui) == DME_OK);

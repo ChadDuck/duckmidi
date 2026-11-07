@@ -5,13 +5,14 @@
 #include <stdint.h>
 
 #include "../include/duckmidi_midi.h"
+#include "../shared/sample_ids.h"
 
 #define DM_PORT_COMBINED 256 /* Virtual source view; exported channel messages use port 0. */
 #define DM_LANES 32
 #define DM_PPQ 960
 #define DM_PIANO_KEYS 37
-#define DM_PROJECT_SCHEMA 12
-#define DM_PROJECT_SCHEMA_PREVIOUS 11 /* Still loaded through src/project_compat.c. */
+#define DM_PROJECT_SCHEMA 14
+#define DM_PROJECT_SCHEMA_PREVIOUS 13 /* Still loaded through src/project_compat.c. */
 #define DM_PROJECT_SCHEMA_OLDEST 9    /* Schema 9 (0.10.1) also loads, converted through 10. */
 #define DM_NOTE_PORTS 128
 #define DM_PATTERN_COLORS 16
@@ -21,6 +22,7 @@
 #define DM_LOOP_END_MARKER "loopEnd"
 #define DM_PARTS (DM_NOTE_PORTS * 16)
 #define DM_PATH 4096
+#define DM_PATCH_REPLACEMENTS_MAX 4096
 
 /* This build's version: the one set for the build, or its UTC build time (src/version.c). */
 extern const char dm_app_version[];
@@ -96,10 +98,28 @@ typedef struct {
 } DmPortMix;
 
 typedef struct {
+    uint16_t bank;
+    uint8_t port, channel, program;
+    bool drums;
+} DmPatchKey;
+
+typedef struct {
+    DmPatchKey key;       /* Port 0 is the channel default. */
+    uint32_t generation;  /* Runtime sample cache token; zero explicitly selects SoundFont. */
+    char locator[DM_PATH], set_id[DM_SAMPLE_ID_CAP], preset_id[DM_SAMPLE_ID_CAP];
+} DmPatchReplacement;
+
+typedef struct {
     double beat;
     int track, port;
     DmBytes message;
 } DmEvent;
+
+typedef struct {
+    double position;
+    int track, index;
+    uint8_t program_plus_one;
+} DmProgramHistory;
 
 typedef struct {
     int port, sequence;
@@ -113,6 +133,8 @@ typedef struct {
     DmChannel channels[16];
     DmPortMix *port_mix;
     size_t port_mix_count, port_mix_capacity;
+    DmPatchReplacement *patch_replacements;
+    size_t patch_replacement_count, patch_replacement_capacity;
     bool percussion_override;
     uint8_t percussion_keys[128]; /* 0 unassigned; otherwise PC piano-key index + 1. */
     int lane_count[16];
@@ -137,6 +159,7 @@ typedef struct {
     uint8_t status, a, b;
     DmBytes sysex;
     double note_end; /* Prepared audio note lifetime; not serialized. */
+    uint16_t note_sample;
     uint8_t note_program;
     uint8_t port;
 } DmScheduled;
@@ -163,6 +186,12 @@ void dm_project_free(DmProject *p);
 bool dm_project_copy(DmProject *destination, const DmProject *source);
 DmPortMix dm_port_mix(const DmProject *project, int port, int channel);
 bool dm_port_mix_set(DmProject *project, DmPortMix mix);
+bool dm_patch_replacement_valid(const DmPatchReplacement *replacement);
+const DmPatchReplacement *dm_patch_replacement_exact(const DmProject *project, DmPatchKey key);
+const DmPatchReplacement *dm_patch_replacement(const DmProject *project, DmPatchKey key);
+bool dm_patch_replacement_set(DmProject *project, const DmPatchReplacement *replacement);
+void dm_patch_replacement_clear(DmProject *project, DmPatchKey key);
+/* Ports with notes, automation or mixer settings on the channel; port 0 is not implied. */
 void dm_channel_ports(const DmProject *project, int channel, bool used[DM_NOTE_PORTS]);
 int dm_pattern_add(DmProject *p, const char *name);
 int dm_pattern_copy(DmProject *p, int source);
@@ -185,6 +214,9 @@ bool dm_automation_add(DmProject *p, DmAutomation item);
 double dm_curve_value(DmAutomation first, DmAutomation last, double t);
 bool dm_automation_curves(DmAutomation a);
 bool dm_event_add(DmProject *p, double beat, int track, int port, const DmBytes *message);
+int dm_project_program_repeat(DmProgramHistory history[DM_PORT_COMBINED][16], const DmProject *p,
+                              int index, bool automation);
+bool dm_collapse_program_repeats(DmProject *p, int index, bool automation);
 bool dm_message_valid(const DmBytes *message);
 bool dm_conductor(const DmBytes *message);
 double dm_duration(const DmProject *p);
@@ -208,10 +240,18 @@ bool dm_import_ports(DmProject *p, const unsigned char *data, size_t size, const
 typedef struct {
     uint64_t tick, source_id;
     uint32_t status, a, b, port;
+    uint32_t flags;
 } DmExportEvent;
+
+/* A mixer pan inserted at its centre default. Channels in dm_export_authored_pan had that
+   centre pan authored, so it is not a default there. */
+enum { DM_EXPORT_DEFAULT_CONTROL = 1u };
 
 bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *count,
                         uint64_t *duration, char *error, size_t cap);
+/* Mask of MIDI channels whose opening pan was authored, including pan folded into the mixer
+   on import. Reads the retained source MIDI, so call it once per export. */
+unsigned dm_export_authored_pan(const DmProject *p);
 
 typedef enum {
     DM_METADATA_KEEP_ALL,
@@ -251,9 +291,11 @@ bool dm_schedule(const DmProject *p, DmSchedule *s);
 void dm_schedule_free(DmSchedule *s);
 double dm_beat_seconds(const DmProject *p, double beat);
 double dm_seconds_beat(const DmProject *p, double seconds);
+double dm_playback_bpm(const DmProject *p, double seconds);
 const char *dm_drum_name(int key);
-/* GS drum kit name for a channel-10 program, or NULL when the program is not a kit. */
+/* GS drum kit name for a percussion program, or NULL when the program is not a kit. */
 const char *dm_drum_kit_name(int program);
+bool dm_midi_rhythm_part(const DmBytes *message, int *channel, bool *drums);
 /* 1 for a loop start marker, 2 for a loop end marker, 0 otherwise. */
 int dm_loop_marker(const DmBytes *message);
 /* Beats of the first loop start and end markers, -1 when absent. Returns whether either exists. */

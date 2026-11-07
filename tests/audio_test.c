@@ -1,4 +1,5 @@
 #include "audio.h"
+#include "../shared/sample_library.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdio.h>
@@ -27,6 +28,112 @@ static void await_job(DmAudio *a) {
         check(SDL_GetTicks() - start < 30000, "worker timeout");
         SDL_Delay(5);
     }
+}
+
+static double sample_tone(const DmSampleAudio *audio, double start, int channel, double hz) {
+    size_t first = (size_t)(start * audio->rate);
+    size_t count = (size_t)audio->rate / 10;
+    double sine = 0, cosine = 0;
+    check(audio->channels == 2 && first + count <= audio->frames, "offline sample window");
+
+    for (size_t i = 0; i < count; ++i) {
+        double phase = 6.283185307179586 * hz * (double)i / audio->rate;
+        float value = audio->pcm[(first + i) * 2 + (size_t)channel];
+        sine += value * sin(phase);
+        cosine += value * cos(phase);
+    }
+
+    return 2 * hypot(sine, cosine) / (double)count;
+}
+
+static void render_sample_instrument(DmAudio *audio) {
+    enum { FRAMES = 4800, RATE = 48000 };
+
+    float pcm[FRAMES * 2];
+
+    for (size_t i = 0; i < FRAMES; ++i) {
+        double phase = 6.283185307179586 * (double)i / RATE;
+        pcm[2 * i] = (float)(0.5 * sin(660 * phase));
+        pcm[2 * i + 1] = (float)(0.5 * sin(880 * phase));
+    }
+
+    DmSampleAudio sample = {.pcm = pcm, .frames = FRAMES, .rate = RATE, .channels = 2};
+    DmSampleAsset asset = {
+        .id = "tone", .file = "tone.wav", .frames = FRAMES, .rate = RATE, .channels = 2};
+    DmSamplePreset preset = {.id = "tone", .name = "Generated sample", .zone_count = 1};
+    DmSampleZone zone = {.root = 69,
+                         .key_hi = 127,
+                         .velocity_lo = 1,
+                         .velocity_hi = 127,
+                         .cents = 100,
+                         .envelope = {.attack = 0.001, .sustain = 1, .release = 0.04},
+                         .loop_mode = DM_SAMPLE_CONTINUOUS_LOOP,
+                         .loop = {0, FRAMES}};
+    DmSampleManifest manifest = {.id = "audio-test",
+                                 .name = "Generated audio fixture",
+                                 .generation = 1,
+                                 .asset_count = 1,
+                                 .preset_count = 1,
+                                 .zone_count = 1,
+                                 .assets = &asset,
+                                 .presets = &preset,
+                                 .zones = &zone};
+    char root[DM_PATH], error[512] = {0};
+    SDL_Time now;
+    check(SDL_GetCurrentTime(&now), "timestamp for isolated sample library");
+    snprintf(root, sizeof(root), "agents/reports/sample-audio-%llu", (unsigned long long)now);
+    check(SDL_CreateDirectory(root), "create isolated sample library");
+    check(dm_sample_library_publish(root, &manifest, &sample, NULL, error, sizeof(error)), error);
+
+    DmProject project;
+    dm_project_init(&project);
+    snprintf(project.soundfont, sizeof(project.soundfont), "agents/reports/generated-programs.sf2");
+    project.channels[0].enabled = true;
+    project.channels[0].program = 0;
+    int pattern = dm_pattern_add(&project, "Sample, stock, sample");
+    check(pattern >= 0, "create sample arrangement");
+
+    for (int i = 0; i < 3; ++i) {
+        check(dm_note_add(&project.patterns[pattern], (DmNote){2 * i, .8, 69, 112, 0}),
+              "create isolated note");
+    }
+
+    check(dm_clip_add(&project, (DmClip){0, pattern, 0, 0}), "place sample arrangement");
+    DmAutomation program = {.beat = 2, .type = MIDI_PROGRAM, .a = 1, .pattern = -1};
+    check(dm_automation_add(&project, program), "switch to stock Program 1");
+    program.beat = 4;
+    program.a = 0;
+    check(dm_automation_add(&project, program), "return to replaced Program 0");
+    DmPatchReplacement replacement = {.generation = 1, .set_id = "audio-test", .preset_id = "tone"};
+    snprintf(replacement.locator, sizeof(replacement.locator), "%s", root);
+    check(dm_patch_replacement_set(&project, &replacement), "set sample replacement");
+    const char *path = "agents/reports/offline-sample-fixture.wav";
+    check(dm_audio_export(audio, &project, path, NULL, error, sizeof(error)), error);
+    await_job(audio);
+    DmSampleAudio rendered = {0};
+    check(dm_sample_decode(path, NULL, &rendered, error, sizeof(error)), error);
+    double corrected = exp2(-1.0 / 12);
+    check(sample_tone(&rendered, .1, 0, 660 * corrected) > .02 &&
+              sample_tone(&rendered, .1, 1, 880 * corrected) > .02,
+          "offline audio preserves both sample channels and applies fine correction");
+    check(sample_tone(&rendered, 1.1, 0, 440) > .02 &&
+              sample_tone(&rendered, 1.1, 0, 660 * corrected) < .005,
+          "unreplaced program renders through the selected SoundFont");
+    check(sample_tone(&rendered, 2.1, 0, 660 * corrected) > .02,
+          "returning to the original program restores its sample");
+    dm_sample_audio_free(&rendered);
+
+    strcpy(replacement.preset_id, "missing");
+    check(dm_patch_replacement_set(&project, &replacement), "point to a missing revision");
+    path = "agents/reports/offline-missing-sample-fixture.wav";
+    check(dm_audio_export(audio, &project, path, NULL, error, sizeof(error)), error);
+    await_job(audio);
+    check(dm_sample_decode(path, NULL, &rendered, error, sizeof(error)), error);
+    check(sample_tone(&rendered, .1, 0, 440) > .02 &&
+              sample_tone(&rendered, .1, 0, 660 * corrected) < .005,
+          "missing sample falls back to the selected SoundFont in audio export");
+    dm_sample_audio_free(&rendered);
+    dm_project_free(&project);
 }
 
 static int scheduled_program(const DmSchedule *s, double seconds) {
@@ -101,6 +208,7 @@ int main(void) {
     check(dm_audio_soundfont(a, "agents/reports/generated-sine.sf2", error, sizeof(error)),
           "start SoundFont worker");
     await_job(a);
+    render_sample_instrument(a);
     DmProject p;
     dm_project_init(&p);
     snprintf(p.soundfont, sizeof(p.soundfont), "agents/reports/generated-sine.sf2");

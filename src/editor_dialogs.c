@@ -21,7 +21,6 @@ static void rename_dialog(Editor *e) {
         if (ui_button(DM_TEXT_RENAME, ui_available().x, 0) || ui_dialog_enter()) {
             ed_checkpoint(e);
             dm_pattern_name(&e->project, e->rename_pattern, e->rename_text);
-            e->transient_pattern = -1;
             ed_changed(e);
             open = false;
         }
@@ -207,8 +206,8 @@ static void audio_export_controls(Editor *e) {
         if (ui_button(DM_TEXT_CANCEL_AUDIO_EXPORT, ui_available().x, 0)) {
             dm_audio_cancel(e->audio);
         }
-    } else {
-        ui_wrap(e->status);
+    } else if (*e->audio_export_message) {
+        ui_wrap(e->audio_export_message);
     }
 }
 
@@ -220,7 +219,10 @@ void ed_export_dialog(Editor *e) {
     e->export_shown = e->export_window;
 
     if (e->export_window) {
-        if (ui_growing_dialog(DM_TEXT_EXPORT, &e->export_window, 760, 400)) {
+        UiRect export_rect = {0};
+        bool visible = ui_flexible_dialog(DM_TEXT_EXPORT, &e->export_window, 760, 400,
+                                          ed_export_history_visible(e), e->export_type);
+        if (visible) {
             ui_text(DM_TEXT_EXPORT_COMPOSITION);
             ui_separator();
             size_t count = ed_export_count(e);
@@ -254,6 +256,7 @@ void ed_export_dialog(Editor *e) {
             }
 
             ui_disabled_end();
+            ed_export_history_toggle(e);
             ui_separator();
 
             if (e->export_type == -1) {
@@ -292,9 +295,14 @@ void ed_export_dialog(Editor *e) {
             }
 
             ed_export_plugin_errors(e);
+            export_rect = ui_window_rect();
         }
 
         ui_end();
+
+        if (e->export_window && export_rect.h > 0) {
+            ed_export_history_panel(e, export_rect);
+        }
     }
 }
 
@@ -354,6 +362,7 @@ void ed_dialogs(Editor *e) {
     ed_midi_event_window(e);
     ed_settings(e);
     ed_instrument(e);
+    ed_samples_draw(e);
     ed_preferences(e);
     ed_shortcuts(e);
     ed_update_dialog(e);

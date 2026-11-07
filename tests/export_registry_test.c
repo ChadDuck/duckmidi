@@ -36,7 +36,11 @@ int main(void) {
     dm_export_registry_load(&r, "build/development/export-registry-fixtures");
     printf("registered=%zu\n%s\n", r.count, r.errors);
     assert(r.count == 2);
-    assert(strstr(r.errors, "ABI 5"));
+    assert(strstr(r.errors, "ABI 8"));
+    assert(r.tool_count == 1);
+    DmNativeTool *tool = dm_export_registry_tool(&r, DME_SAMPLES_TOOL_ID);
+    assert(tool && !tool->open_requested && tool->api->interface_at(1) &&
+           !tool->api->interface_at(2));
     assert(strstr(r.errors, "Duplicate exporter ID"));
     assert(strstr(r.errors, "settings schema"));
     assert(strstr(r.errors, "entry point"));
@@ -54,6 +58,16 @@ int main(void) {
         char message[256] = {0};
 
         if (!strcmp(f->api->id, "org.duckmidi.fixture")) {
+            DmeValue request = {DME_TEXT, 0, DME_SAMPLES_TOOL_ID};
+            assert(f->api->set(f->instance, "request-tool", &request, message, sizeof(message)) ==
+                   DME_OK);
+            assert(tool->open_requested && *(const unsigned *)tool->instance == 1);
+            assert(dm_export_registry_request_tool(&r, DME_SAMPLES_TOOL_ID) == DME_OK);
+            assert(*(const unsigned *)tool->instance == 2);
+            request.text = "org.duckmidi.unknown";
+            assert(f->api->set(f->instance, "request-tool", &request, message, sizeof(message)) ==
+                   DME_UNAVAILABLE);
+
             void *job = f->api->create_job(f->instance, message, sizeof(message));
             assert(job);
             DmeValue v = {DME_TEXT, 0, "Changed after freezing"};
@@ -92,7 +106,7 @@ int main(void) {
     bad.count = 2;
     assert(!dm_export_ui_valid(&bad, error, sizeof(error)));
     dm_export_registry_free(&r);
-    assert(!r.count && !r.module_count);
+    assert(!r.count && !r.tool_count && !r.module_count);
     dm_export_registry_load(&r, "build/development/export-no-such-directory");
     assert(!r.count);
     dm_export_registry_free(&r);

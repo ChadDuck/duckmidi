@@ -80,7 +80,7 @@ void ed_note_thumbnail(const DmPattern *p, NoteThumbnail t) {
             drawn[column][note.key >> 6] |= bit;
         }
 
-        ui_rect((UiRect){x, y, width, 2}, COLOR(30, 30, 30), 0); /* Square corners: 4 vertices. */
+        ui_rect((UiRect){x, y, width, 2}, t.color, 0);
     }
 }
 
@@ -127,27 +127,216 @@ void ed_choose_pattern_card(Editor *e, int id, bool selected) {
     }
 }
 
+static void remap_pattern_refs(Editor *e, int from, int to) {
+    int *refs[] = {&e->selected_pattern, &e->rename_pattern, &e->pattern_color_target,
+                   &e->pattern_drag};
+
+    for (size_t i = 0; i < sizeof(refs) / sizeof(*refs); ++i) {
+        int index = *refs[i];
+
+        if (to >= 0) {
+            *refs[i] = dm_pattern_moved_index(index, from, to);
+        } else {
+            *refs[i] = index == from ? -1 : index - (index > from);
+        }
+    }
+}
+
+static long pattern_number(const char *name, const char *prefix) {
+    size_t length = strlen(prefix);
+
+    if (strncmp(name, prefix, length)) {
+        return 0;
+    }
+
+    const char *digits = name + length;
+    char *end;
+    long number = strtol(digits, &end, 10);
+    return *digits >= '1' && *digits <= '9' && !*end ? number : 0;
+}
+
+static void create_pattern(Editor *e, bool automation) {
+    e->automation_browser = automation;
+    DmProject *p = &e->project;
+    const char *prefix =
+        automation ? DM_TEXT_AUTOMATION_NUMBER_PREFIX : DM_TEXT_PATTERN_NUMBER_PREFIX;
+    int count = (int)p->pattern_count;
+    bool *used = calloc((size_t)count + 2, sizeof(*used));
+
+    if (!used) {
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PATTERN_EDIT);
+        return;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        long number = pattern_number(p->patterns[i].name, prefix);
+
+        if (number > 0 && number <= count + 1) {
+            used[number] = true;
+        }
+    }
+
+    int number = 1;
+
+    while (used[number]) {
+        ++number;
+    }
+
+    free(used);
+    int before = count;
+
+    for (int i = 0; i < count; ++i) {
+        if ((p->patterns[i].kind != 0) == automation &&
+            pattern_number(p->patterns[i].name, prefix) > number) {
+            before = i;
+            break;
+        }
+    }
+
+    char name[64];
+    snprintf(name, sizeof(name), "%s%d", prefix, number);
+    bool pushed = ed_checkpoint(e);
+    int id = dm_pattern_add(p, name);
+
+    if (id < 0) {
+        ed_checkpoint_abandon(e, pushed);
+        return;
+    }
+
+    if (automation) {
+        p->patterns[id].kind = 1;
+        p->patterns[id].length = dm_bar(p);
+    }
+
+    int to = dm_pattern_move(p, id, before);
+    remap_pattern_refs(e, id, to);
+    ed_open_pattern(e, to, true);
+    ed_bind_pattern_channel(e);
+    ed_commit(e);
+}
+
+void ed_step_pattern(Editor *e, bool automation, int direction) {
+    e->automation_browser = automation;
+    DmProject *p = &e->project;
+
+    if (!p->pattern_count) {
+        if (direction > 0) {
+            create_pattern(e, automation);
+        }
+
+        return;
+    }
+
+    bool *used = calloc(p->pattern_count, sizeof(*used));
+
+    if (!used) {
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PATTERN_EDIT);
+        return;
+    }
+
+    for (size_t i = 0; i < p->clip_count; ++i) {
+        int id = p->clips[i].pattern;
+
+        if ((size_t)id < p->pattern_count) {
+            used[id] = true;
+        }
+    }
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        int id = p->automation[i].pattern;
+
+        if ((size_t)id < p->pattern_count) {
+            used[id] = true;
+        }
+    }
+
+    int count = (int)p->pattern_count;
+    int selected = e->selected_pattern;
+    bool in_category =
+        selected >= 0 && selected < count && (p->patterns[selected].kind != 0) == automation;
+
+    for (int i = 0; i < count; ++i) {
+        used[i] |= p->patterns[i].mode != 0 || p->patterns[i].count != 0;
+    }
+
+    if (direction > 0) {
+        /* Keep creating cards while the selection is on an empty one. */
+        if (!in_category || used[selected]) {
+            for (int i = in_category ? selected + 1 : 0; i < count; ++i) {
+                if (used[i] && (p->patterns[i].kind != 0) == automation) {
+                    free(used);
+                    ed_open_pattern(e, i, false);
+                    ed_bind_pattern_channel(e);
+                    return;
+                }
+            }
+        }
+
+        free(used);
+        create_pattern(e, automation);
+        return;
+    }
+
+    /* UIDs follow creation order even when a card moves or fills a gap in the list. */
+    int remove = -1;
+
+    for (size_t i = 0; i < p->pattern_count; ++i) {
+        const DmPattern *pattern = &p->patterns[i];
+
+        if ((pattern->kind != 0) == automation && !used[i] &&
+            (remove < 0 || pattern->uid > p->patterns[remove].uid)) {
+            remove = (int)i;
+        }
+    }
+
+    if (remove < 0) {
+        for (int i = (in_category ? selected : count) - 1; i >= 0; --i) {
+            if (used[i] && (p->patterns[i].kind != 0) == automation) {
+                ed_open_pattern(e, i, false);
+                ed_bind_pattern_channel(e);
+                break;
+            }
+        }
+
+        free(used);
+        return;
+    }
+
+    free(used);
+    ed_checkpoint(e);
+    dm_pattern_remove(p, remove);
+    remap_pattern_refs(e, remove, -1);
+    const DmPattern *current = ed_pattern(e);
+
+    if (!current || (current->kind != 0) != automation) {
+        int last = (int)p->pattern_count - 1;
+        int next = current ? e->selected_pattern : last;
+
+        for (int i = last; i >= 0; --i) {
+            if ((p->patterns[i].kind != 0) == automation) {
+                next = i;
+
+                if (i < remove) {
+                    break;
+                }
+            }
+        }
+
+        ed_open_pattern(e, next, false);
+        ed_bind_pattern_channel(e);
+        e->automation_browser = automation;
+    }
+
+    ed_commit(e);
+}
+
 static void pattern_browser_header(Editor *e) {
     ui_align_frame();
     ui_text(DM_TEXT_PATTERNS);
     ui_same();
 
     if (ui_button(DM_TEXT_NEW, 70, 0)) {
-        ed_checkpoint(e);
-        e->selected_pattern = dm_pattern_add(&e->project, NULL);
-
-        if (e->selected_pattern >= 0 && e->automation_browser) {
-            e->project.patterns[e->selected_pattern].kind = 1;
-            e->project.patterns[e->selected_pattern].length = dm_bar(&e->project);
-            char name[64];
-            snprintf(name, sizeof(name), DM_TEXT_AUTOMATION_NUMBER, e->selected_pattern + 1);
-            dm_pattern_name(&e->project, e->selected_pattern, name);
-        }
-
-        e->pattern_channel = e->selected_channel;
-        e->transient_pattern = e->selected_pattern;
-        ed_open_pattern(e, e->selected_pattern, true);
-        ed_commit(e);
+        create_pattern(e, e->automation_browser);
     }
 
     ui_same();
@@ -186,10 +375,11 @@ static void pattern_card_face(Editor *e, int i, UiRect r, bool selected, bool ho
 
     ui_border(r, selected ? TEXT : color, 5, selected ? 2 : 1);
     ui_clip(r);
-    ui_label((UiPoint){r.x + 9, r.y + 10}, BG, e->project.patterns[i].name);
+    ui_label((UiPoint){r.x + 9, r.y + 10}, ui_text_on(color), e->project.patterns[i].name);
     DmPattern *p = &e->project.patterns[i];
 
     ed_note_thumbnail(p, (NoteThumbnail){.visible = r,
+                                         .color = ui_text_on(color),
                                          .x = r.x + 9,
                                          .x_scale = (float)((r.w - 18) / p->length),
                                          .y = r.y + 68,
@@ -198,7 +388,8 @@ static void pattern_card_face(Editor *e, int i, UiRect r, bool selected, bool ho
                                          .bottom = r.y + 81});
 
     if (p->kind) {
-        ed_automation_preview(e, i, (UiRect){r.x + 9, r.y + 33, r.w - 18, 48}, BG, 0, p->length);
+        ed_automation_preview(e, i, (UiRect){r.x + 9, r.y + 33, r.w - 18, 48}, ui_text_on(color), 0,
+                              p->length);
     }
 
     ui_unclip();
@@ -327,15 +518,7 @@ static void move_pattern_card(Editor *e, int dragged, int slot) {
 
     ed_checkpoint(e);
     dm_pattern_move(&e->project, dragged, before);
-    int *refs[] = {&e->selected_pattern, &e->transient_pattern, &e->rename_pattern,
-                   &e->pattern_color_target};
-
-    for (size_t r = 0; r < sizeof(refs) / sizeof(*refs); ++r) {
-        if (*refs[r] >= 0) {
-            *refs[r] = dm_pattern_moved_index(*refs[r], dragged, to);
-        }
-    }
-
+    remap_pattern_refs(e, dragged, to);
     e->pattern_drag = -1;
     ed_commit(e);
 }
@@ -537,21 +720,13 @@ bool ed_channel_has_clips(Editor *e, int channel) {
 }
 
 int ed_available_channel(Editor *e) {
-    int spare = -1;
-
     for (int c = 0; c < 16; ++c) {
-        DmChannel *channel = &e->project.channels[c];
-
-        if (channel->enabled && channel->program < 0 && !ed_channel_has_clips(e, c)) {
+        if (!e->project.channels[c].enabled) {
             return c;
-        }
-
-        if (!channel->enabled && spare < 0) {
-            spare = c;
         }
     }
 
-    return spare;
+    return -1;
 }
 
 static void mixer_peak_update(Editor *e, uint64_t now) {
@@ -642,6 +817,12 @@ void ed_mixer(Editor *e, float width, float height) {
             count += used[port];
         }
 
+        /* An empty channel still gets the strip of its default route. */
+        if (!count) {
+            used[0] = true;
+            count = 1;
+        }
+
         float group_width = count * 64.0f + 12;
         uint32_t row_color = channel_row_color(e, c);
         ui_id(c);
@@ -657,12 +838,14 @@ void ed_mixer(Editor *e, float width, float height) {
             ed_release_piano(e);
             e->selected_channel = c;
             e->channel_selected = true;
-            e->instrument_channel = c;
+            ed_open_instrument(e, c, false);
         }
 
         if (ui_item_middle()) {
             ed_checkpoint(e);
             e->project.channels[c] = e->reset_channels[c];
+            e->project.channels[c].enabled = true;
+            ed_sample_clear_route(&e->project, -1, c);
             ed_commit(e);
         }
 
@@ -699,10 +882,10 @@ void ed_mixer(Editor *e, float width, float height) {
 }
 
 int ed_channels(Editor *e, int *list) {
-    int n = 0, spare = ed_available_channel(e);
+    int n = 0;
 
     for (int c = 0; c < 16; ++c) {
-        if (e->project.channels[c].enabled || c == spare) {
+        if (e->project.channels[c].enabled) {
             list[n++] = c;
         }
     }

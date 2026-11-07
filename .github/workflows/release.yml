@@ -19,14 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.read.outputs.version }}
+      commit: ${{ steps.read.outputs.commit }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Tags, for a manual run
       - id: read
         name: Choose the version
-        # The pushed tag names the release. A manual run uses the tag typed when starting it, or
-        # the newest vX.Y.Z tag on its branch.
+        # Build the tagged commit when the tag exists. A new tag uses the dispatched commit.
         env:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
@@ -42,7 +42,13 @@ jobs:
             echo "Release tag '$tag' is not vX.Y.Z." >&2
             exit 1
           fi
+          tag_ref=refs/tags/v$version
+          commit=$(git rev-parse HEAD)
+          if [ "$GITHUB_REF_TYPE" != tag ] && git show-ref --verify --quiet "$tag_ref"; then
+            commit=$(git rev-parse "$tag_ref^{commit}")
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
   windows:
     needs: version
@@ -52,6 +58,8 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
@@ -83,6 +91,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
       - name: Install dependencies
         run: brew install cmake ninja pkgconf sdl3 fluid-synth dylibbundler
       # Same minimal FFmpeg and cache key as the macOS workflow; dylibbundler copies it into the app.
@@ -127,6 +137,8 @@ jobs:
       - name: Install dependencies
         run: pacman -Syu --noconfirm --needed base-devel git cmake ninja pkgconf sdl3 fluidsynth alsa-lib ffmpeg
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
       - name: Build and test
         run: |
           cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DDUCKMIDI_PRODUCTION=OFF -DDUCKMIDI_DELIVERY_VERSION=${{ needs.version.outputs.version }}
@@ -168,6 +180,8 @@ jobs:
           apt-get update
           apt-get install -y build-essential cmake ninja-build pkg-config git libsdl3-dev libasound2-dev libglib2.0-dev libsndfile1-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
       - name: Build FluidSynth 2.5.4
         run: |
           git clone --depth 1 --branch v2.5.4 https://github.com/FluidSynth/fluidsynth.git build/development/deps/fluidsynth
@@ -197,8 +211,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: release-draft-${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.commit }}
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -209,16 +227,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=${{ needs.version.outputs.version }}
+          tag=v$version
           # Release notes are this version's section of CHANGELOG.md.
           awk -v heading="## $version" '$0 == heading {found = 1; next} found && /^## / {exit} found' CHANGELOG.md > notes.md
           # A draft for this tag gets the new files; a published release is never changed.
-          draft=$(gh release view "v$version" --json isDraft --jq .isDraft 2>/dev/null || true)
-          if [ "$draft" = true ]; then
-            gh release upload "v$version" dist/* --clobber
-            gh release edit "v$version" --notes-file notes.md
-          elif [ "$draft" = false ]; then
-            echo "v$version is already published. Push a new vX.Y.Z tag, or type one when starting the workflow." >&2
+          draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)
+          if [ "$draft" = false ]; then
+            echo "$tag is already published. Push a new vX.Y.Z tag, or type one when starting the workflow." >&2
             exit 1
+          fi
+
+          # Push missing tags with GITHUB_TOKEN so publication cannot create a new tag-push run.
+          tag_ref=refs/tags/$tag
+          remote_tag=$(git ls-remote --refs origin "$tag_ref")
+          if [ -z "$remote_tag" ]; then
+            git push origin "HEAD:$tag_ref"
+          fi
+          git fetch --no-tags origin "$tag_ref"
+          if [ "$(git rev-parse 'FETCH_HEAD^{commit}')" != "$(git rev-parse HEAD)" ]; then
+            echo "$tag does not point to the commit used to build the packages." >&2
+            exit 1
+          fi
+
+          if [ "$draft" = true ]; then
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" --notes-file notes.md
           else
-            gh release create "v$version" dist/* --draft --title "duckmidi v$version" --notes-file notes.md --target "$GITHUB_SHA"
+            gh release create "$tag" dist/* --draft --verify-tag --title "duckmidi $tag" --notes-file notes.md
           fi

@@ -65,12 +65,10 @@ static void piano_keys(Editor *e, UiRect r, View *v, float label, float row, UiM
 
         int key = 127 - i, step = key % 12;
         bool black = ed_black_key(step);
-        ui_rect((UiRect){r.x, y, r.w, row}, black ? COLOR(14, 14, 14) : COLOR(22, 22, 22), 0);
-        ui_rect((UiRect){r.x, y, label - 2, row - 1},
-                ed_sounding(e, key) ? GREEN
-                : black             ? COLOR(31, 31, 31)
-                                    : COLOR(62, 62, 62),
-                0);
+        uint32_t key_color = ed_sounding(e, key) ? GREEN : ui_background_shade(black ? 31 : 62);
+        ui_rect((UiRect){r.x, y, r.w, row},
+                black ? ui_background_shade(14) : ui_background_shade(22), 0);
+        ui_rect((UiRect){r.x, y, label - 2, row - 1}, key_color, 0);
         ui_line((UiPoint){r.x + label, y + row}, (UiPoint){r.x + r.w, y + row}, GRID, 1);
         static const char *note_names[] = {DM_TEXT_C,       DM_TEXT_C_SHARP, DM_TEXT_D,
                                            DM_TEXT_D_SHARP, DM_TEXT_E,       DM_TEXT_F,
@@ -80,7 +78,7 @@ static void piano_keys(Editor *e, UiRect r, View *v, float label, float row, UiM
         if (step == 0 || row >= 18) {
             char text[32];
             snprintf(text, sizeof(text), "%s%d", note_names[step], key / 12 - 1);
-            ui_label_fit((UiPoint){r.x + 9, y + 3}, label - 18, ed_sounding(e, key) ? BG : TEXT,
+            ui_label_fit((UiPoint){r.x + 9, y + 3}, label - 18, ui_text_on(key_color),
                          dm_channel_drums(&e->project, e->pattern_channel) ? dm_drum_name(key)
                                                                            : text);
         }
@@ -1081,6 +1079,7 @@ void ed_roll(Editor *e, float width, float height) {
         return;
     }
 
+    e->last_note_pattern_uid = p->uid;
     piano_header(e, p);
     UiPoint at = ui_cursor(), space = ui_available();
     float automation_height =

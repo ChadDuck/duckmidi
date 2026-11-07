@@ -9,18 +9,16 @@ static void channel_switch(Editor *e, bool solo);
 static bool action_input(Editor *e, int a);
 static void toggle_play_mode(Editor *e);
 static bool action_global(Editor *e, int a);
-static void discard_unused_pattern(Editor *e);
-static void navigate_pattern(Editor *e, int direction);
 static bool action_pattern(Editor *e, int a);
 static void action_scroll(Editor *e, int a, View *v);
 static void action_navigation(Editor *e, int a);
-static void capture_binding(Editor *e, SDL_Scancode key, SDL_Keymod mods);
+static void capture_binding(Editor *e, Binding binding);
 static bool fixed_binding(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat);
 static bool piano_record_start(Editor *e);
 static bool floating_open(Editor *e);
 static bool context_action(int a);
 static bool piano_blocks(Editor *e, int action, SDL_Scancode key, SDL_Keymod mods);
-static bool dispatch_custom(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat);
+static bool dispatch_custom(Editor *e, Binding binding, bool repeat);
 static void output_extension(Editor *e, char *output, size_t capacity, int kind);
 static void remember_folder(Editor *e, int kind, const char *path);
 static void dialog_output(Editor *e, int kind, const char *path);
@@ -109,7 +107,7 @@ static bool close_floating(Editor *e) {
         ed_export_warning_close(e);
         break;
     case 8:
-        e->instrument_channel = -1;
+        ed_close_instrument(e);
         break;
     case 9:
         e->rename_pattern = -1;
@@ -209,8 +207,17 @@ static void events_shortcut(Editor *e) {
     }
 
     if (!ed_pattern(e) || !ed_pattern(e)->kind) {
-        e->automation_browser = true;
-        navigate_pattern(e, 1);
+        for (size_t i = 0; i < e->project.pattern_count; ++i) {
+            if (e->project.patterns[i].kind) {
+                ed_open_pattern(e, (int)i, false);
+                ed_bind_pattern_channel(e);
+                break;
+            }
+        }
+
+        if (!ed_pattern(e) || !ed_pattern(e)->kind) {
+            ed_step_pattern(e, true, 1);
+        }
     }
 
     if (ed_pattern(e) && ed_pattern(e)->kind) {
@@ -235,9 +242,7 @@ static void instrument_shortcut(Editor *e) {
         return;
     }
 
-    ed_release_piano(e);
-    e->instrument_channel = channel;
-    e->instrument_preview = true;
+    ed_open_instrument(e, channel, true);
 }
 
 static bool action_input(Editor *e, int a) {
@@ -346,89 +351,6 @@ static bool action_global(Editor *e, int a) {
     return true;
 }
 
-static bool unused_new_pattern(Editor *e) {
-    return e->selected_pattern == e->transient_pattern && e->transient_pattern > 0 &&
-           (size_t)e->selected_pattern + 1 == e->project.pattern_count;
-}
-
-static void discard_unused_pattern(Editor *e) {
-    if (!unused_new_pattern(e)) {
-        return;
-    }
-
-    ed_checkpoint(e);
-    dm_pattern_remove(&e->project, e->transient_pattern);
-    e->transient_pattern = -1;
-    ed_changed(e);
-    bool automation = e->automation_browser;
-
-    for (int i = e->selected_pattern - 1; i >= 0; --i) {
-        if ((e->project.patterns[i].kind != 0) == automation) {
-            ed_open_pattern(e, i, false);
-            ed_bind_pattern_channel(e);
-            return;
-        }
-    }
-
-    /* The list's only pattern was removed: return to the last pattern of the other list. */
-    ed_open_pattern(e, (int)e->project.pattern_count - 1, false);
-    ed_bind_pattern_channel(e);
-}
-
-static void navigate_pattern(Editor *e, int direction) {
-    if (direction < 0) {
-        if (unused_new_pattern(e)) {
-            discard_unused_pattern(e);
-            return;
-        }
-    } else if (unused_new_pattern(e) &&
-               (e->project.patterns[e->selected_pattern].kind != 0) == e->automation_browser) {
-        return; /* Stepping on from an unused new pattern would leave it behind. */
-    }
-
-    /* From a pattern of the other list, step from that list's first or last pattern. */
-    int from = e->selected_pattern, count = (int)e->project.pattern_count;
-
-    if (from < 0 || from >= count ||
-        (e->project.patterns[from].kind != 0) != e->automation_browser) {
-        from = direction > 0 ? -1 : count;
-    }
-
-    for (int i = from + direction; i >= 0 && i < count; i += direction) {
-        if ((e->project.patterns[i].kind != 0) != e->automation_browser) {
-            continue;
-        }
-
-        ed_open_pattern(e, i, false);
-        ed_bind_pattern_channel(e);
-        return;
-    }
-
-    if (direction < 0) {
-        return;
-    }
-
-    ed_checkpoint(e);
-    int id = dm_pattern_add(&e->project, NULL);
-
-    if (id < 0) {
-        return;
-    }
-
-    if (e->automation_browser) {
-        e->project.patterns[id].kind = 1;
-        e->project.patterns[id].length = dm_bar(&e->project);
-        char name[64];
-        snprintf(name, sizeof(name), DM_TEXT_AUTOMATION_NUMBER, id + 1);
-        dm_pattern_name(&e->project, id, name);
-    }
-
-    ed_open_pattern(e, id, true);
-    e->pattern_channel = e->selected_channel;
-    e->transient_pattern = id;
-    ed_commit(e);
-}
-
 static bool action_pattern(Editor *e, int a) {
     switch (a) {
     case ACT_NOTE_COLOR:
@@ -469,16 +391,12 @@ static bool action_pattern(Editor *e, int a) {
         }
         break;
     case ACT_NEXT:
-        navigate_pattern(e, 1);
+    case ACT_NEXT_AUTOMATION:
+        ed_step_pattern(e, e->automation_browser || a == ACT_NEXT_AUTOMATION, 1);
         break;
     case ACT_PREVIOUS:
-        navigate_pattern(e, -1);
-        break;
-    case ACT_NEXT_AUTOMATION:
     case ACT_PREVIOUS_AUTOMATION:
-        /* Steps through automation patterns from anywhere, showing the automation list. */
-        e->automation_browser = true;
-        navigate_pattern(e, a == ACT_NEXT_AUTOMATION ? 1 : -1);
+        ed_step_pattern(e, e->automation_browser || a == ACT_PREVIOUS_AUTOMATION, -1);
         break;
     case ACT_ITEM_UP:
         ed_transpose(e, 1);
@@ -601,31 +519,32 @@ void ed_action(Editor *e, int a) {
     action_navigation(e, a);
 }
 
-static void capture_binding(Editor *e, SDL_Scancode key, SDL_Keymod mods) {
-    if (e->capture >= 0) {
+static void capture_binding(Editor *e, Binding binding) {
+    if (!binding.mouse) {
+        SDL_Scancode key = binding.key;
+
         if (key == SDL_SCANCODE_LSHIFT || key == SDL_SCANCODE_RSHIFT || key == SDL_SCANCODE_LCTRL ||
             key == SDL_SCANCODE_RCTRL || key == SDL_SCANCODE_LALT || key == SDL_SCANCODE_RALT ||
             key == SDL_SCANCODE_LGUI || key == SDL_SCANCODE_RGUI) {
             return;
         }
 
-        if (ed_reserved(key, mods)) {
+        if (ed_reserved(key, binding.mods)) {
             ed_message(e, DM_TEXT_KEY_RESERVED_FIXED);
             return;
         }
-
-        for (int i = 0; i < ACT_COUNT; ++i) {
-            if (i != e->capture && e->bindings[i].key == key && e->bindings[i].mods == mods) {
-                ed_message(e, DM_TEXT_BINDING_ALREADY_USE);
-                return;
-            }
-        }
-
-        e->bindings[e->capture] = (Binding){key, mods};
-        e->capture = -1;
-        ed_preference_save(e);
-        return;
     }
+
+    for (int i = 0; i < ACT_COUNT; ++i) {
+        if (i != e->capture && ed_same_binding(e->bindings[i], binding)) {
+            ed_message(e, DM_TEXT_BINDING_ALREADY_USE);
+            return;
+        }
+    }
+
+    e->bindings[e->capture] = binding;
+    e->capture = -1;
+    ed_preference_save(e);
 }
 
 static bool fixed_binding(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
@@ -697,18 +616,19 @@ int ed_keyboard_channel(Editor *e) {
         int channel = e->preview_program == 128 ? MIDI_DRUM_CHANNEL : 0;
 
         if (e->preview_route >= 0 && e->preview_route != channel) {
-            dm_audio_keyboard_program(e->audio, e->preview_route, -1);
+            dm_audio_keyboard_program(e->audio, e->preview_route, -1, false);
         }
 
         e->preview_route = channel;
         dm_audio_keyboard_program(e->audio, channel,
-                                  e->preview_program == 128 ? 0 : e->preview_program);
+                                  e->preview_program == 128 ? 0 : e->preview_program,
+                                  e->preview_program == 128);
         keyboard_mix(e, channel, e->pattern_channel);
         return channel;
     }
 
     if (e->preview_route >= 0) {
-        dm_audio_keyboard_program(e->audio, e->preview_route, -1);
+        dm_audio_keyboard_program(e->audio, e->preview_route, -1, false);
         e->preview_route = -1;
     }
 
@@ -806,13 +726,10 @@ static bool piano_blocks(Editor *e, int ed_action, SDL_Scancode key, SDL_Keymod 
     return !mods && ed_piano_key(key) >= 0 && ed_action != ACT_PIANO;
 }
 
-static bool dispatch_custom(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
+static bool dispatch_custom(Editor *e, Binding binding, bool repeat) {
     for (int i = 0; i < ACT_COUNT; ++i) {
-        if (piano_blocks(e, i, key, mods)) {
-            continue;
-        }
-
-        if (e->bindings[i].key != key || e->bindings[i].mods != mods) {
+        if (!ed_same_binding(e->bindings[i], binding) ||
+            (!binding.mouse && piano_blocks(e, i, binding.key, binding.mods))) {
             continue;
         }
 
@@ -834,6 +751,7 @@ static bool dispatch_custom(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool r
 
 void ed_shortcut(Editor *e, SDL_Scancode key, SDL_Keymod raw, bool repeat) {
     SDL_Keymod mods = ed_normalized(raw);
+    Binding binding = {.key = key, .mods = mods};
 
     if (key == SDL_SCANCODE_ESCAPE) {
         escape(e);
@@ -841,7 +759,7 @@ void ed_shortcut(Editor *e, SDL_Scancode key, SDL_Keymod raw, bool repeat) {
     }
 
     if (e->capture >= 0) {
-        capture_binding(e, key, mods);
+        capture_binding(e, binding);
         return;
     }
 
@@ -857,7 +775,7 @@ void ed_shortcut(Editor *e, SDL_Scancode key, SDL_Keymod raw, bool repeat) {
         return;
     }
 
-    if (dispatch_custom(e, key, mods, repeat)) {
+    if (dispatch_custom(e, binding, repeat)) {
         return;
     }
 
@@ -945,7 +863,7 @@ static void dialog_output(Editor *e, int kind, const char *path) {
     remember_folder(e, kind, path);
 
     if (kind == DIALOG_OPEN) {
-        ed_load(e, path);
+        ed_request(e, PENDING_PATH, path);
     } else if (kind == DIALOG_SAVE) {
         if (!ed_save_to(e, output) && e->pending_action) {
             e->confirm = true;
@@ -957,6 +875,8 @@ static void dialog_output(Editor *e, int kind, const char *path) {
                             sizeof(e->status))) {
             snprintf(e->audio_export_pending, DM_PATH, "%s", output);
         }
+
+        snprintf(e->audio_export_message, sizeof(e->audio_export_message), "%s", e->status);
     } else if (kind == DIALOG_MIDI) {
         DmBytes b = {0};
         bool encoded =
@@ -978,6 +898,12 @@ static void dialog_output(Editor *e, int kind, const char *path) {
 
 static void dialog_result(Editor *e, const SDL_Event *event) {
     e->dialog_busy = false;
+
+    if (event->user.code == DIALOG_SAMPLE_FILES || event->user.code == DIALOG_SAMPLE_FOLDER) {
+        ed_samples_picker_result(e, event);
+        return;
+    }
+
     const char *path = event->user.data1, *error = event->user.data2;
 
     if (error) {
@@ -1032,27 +958,11 @@ static bool fixed_global_key(Editor *e, const SDL_Event *event) {
 }
 
 static bool instrument_topmost(Editor *e) {
-    if (e->instrument_channel < 0 || ui_popup_open()) {
+    if (e->instrument_channel < 0) {
         return false;
     }
 
-    const char *titles[] = {DM_TEXT_UNSAVED_PROJECT,
-                            DM_TEXT_SONG_EVENT,
-                            DM_TEXT_EXPORT,
-                            DM_TEXT_KEYBOARD_SHORTCUTS,
-                            DM_TEXT_PREFERENCES,
-                            DM_TEXT_PROJECT_SETTINGS,
-                            DM_TEXT_NEW_PROJECT,
-                            DM_TEXT_ABOUT_DUCKMIDI,
-                            DM_TEXT_RENAME_PATTERN,
-                            DM_TEXT_INSTRUMENT,
-                            DM_TEXT_MIDI_EVENTS,
-                            DM_TEXT_AUTOMATION_LANE,
-                            DM_TEXT_GENERATE_PATTERNS,
-                            DM_TEXT_PERCUSSION_KEYBOARD_MAPPING,
-                            DM_TEXT_EXPORT_WARNINGS,
-                            DM_TEXT_REVIEW_EXPORT_MAPPINGS};
-    return ui_topmost(titles, 16) == 9;
+    return e->instrument_raise || floating_topmost() == 8;
 }
 
 static bool file_extension(const char *path, const char *extension) {
@@ -1075,7 +985,7 @@ static bool midi_path(const char *path) {
 static void drop_path(Editor *e, const char *path, UiPoint at) {
     if (e->dialog_busy) {
         ed_message(e, DM_TEXT_CLOSE_FILE_PICKER);
-    } else if (e->preferences && ed_inside(at, e->preferences_rect)) {
+    } else if (e->preferences && ui_window_front_at(DM_TEXT_PREFERENCES, at)) {
         if (file_extension(path, ".sf2") || file_extension(path, ".sf3")) {
             ed_request_font(e, path);
         } else {
@@ -1097,10 +1007,16 @@ static bool file_drop(Editor *e, const SDL_Event *event) {
         return true;
     }
 
+    if (ed_samples_drop(e, &event->drop)) {
+        return true;
+    }
+
     if (event->type == SDL_EVENT_DROP_BEGIN) {
         e->drop_active = true;
         e->drop_handled = false;
-        e->drop_position = (UiPoint){-1, -1};
+        e->drop_position = event->drop.x || event->drop.y
+                               ? (UiPoint){event->drop.x / ui_scale(), event->drop.y / ui_scale()}
+                               : (UiPoint){-1, -1};
     } else if (event->type == SDL_EVENT_DROP_COMPLETE) {
         e->drop_active = e->drop_handled = false;
     } else if (event->type == SDL_EVENT_DROP_POSITION) {
@@ -1120,25 +1036,23 @@ static bool file_drop(Editor *e, const SDL_Event *event) {
 }
 
 bool ed_instrument_note(Editor *e, const SDL_KeyboardEvent *key) {
-    int c = e->instrument_channel, route = c;
-    int base = ed_piano_key(key->scancode),
-        note = ed_keyboard_note(e, key->scancode,
-                                dm_channel_drums(&e->project, c) ? MIDI_DRUM_CHANNEL : 0);
+    int c = e->instrument_channel;
+    int note = ed_keyboard_note(e, key->scancode, e->instrument_drums ? MIDI_DRUM_CHANNEL : 0);
 
-    if (base < 0 || key->repeat || note < 0 || note > 127) {
+    if (c < 0 || key->repeat || note < 0 || note > 127) {
         return false;
     }
 
-    if (e->preview_route >= 0 && e->preview_route != route) {
-        dm_audio_keyboard_program(e->audio, e->preview_route, -1);
+    if (e->preview_route >= 0 && e->preview_route != c) {
+        dm_audio_keyboard_program(e->audio, e->preview_route, -1, false);
     }
 
     e->held[key->scancode] = note;
     e->record_start[note] = -1;
-    e->held_channels[key->scancode] = route;
-    dm_audio_keyboard_program(e->audio, route, (int)fmax(0, e->project.channels[c].program));
-    dm_audio_preview(e->audio, route, note, 100, true);
-    e->preview_route = route;
+    e->held_channels[key->scancode] = c;
+    dm_audio_keyboard_program(e->audio, c, e->instrument_program, e->instrument_drums);
+    dm_audio_preview(e->audio, c, note, 100, true);
+    e->preview_route = c;
     return true;
 }
 
@@ -1147,29 +1061,49 @@ static bool instrument_key(Editor *e, const SDL_KeyboardEvent *key) {
         return false;
     }
 
-    if (key->scancode == SDL_SCANCODE_RETURN || key->scancode == SDL_SCANCODE_KP_ENTER) {
-        ed_release_piano(e);
-        e->instrument_accept = true;
+    if (key->scancode == SDL_SCANCODE_ESCAPE) {
+        ui_cancel_popup();
+        ed_close_instrument(e);
         return true;
     }
 
-    if (ui_text_active()) {
-        return false;
+    if (key->scancode == SDL_SCANCODE_RETURN || key->scancode == SDL_SCANCODE_KP_ENTER) {
+        if (!key->repeat) {
+            ui_cancel_popup();
+            ed_apply_instrument(e);
+        }
+
+        return true;
+    }
+
+    if (e->instrument_remove) {
+        return true;
     }
 
     if (key->scancode == SDL_SCANCODE_UP || key->scancode == SDL_SCANCODE_DOWN) {
-        int c = e->instrument_channel;
-        int program = (int)fmax(0, fmin(127, e->project.channels[c].program +
-                                                 (key->scancode == SDL_SCANCODE_DOWN ? 1 : -1)));
-        ed_choose_program(e, c, program);
+        ed_step_instrument(e, key->scancode == SDL_SCANCODE_DOWN ? 1 : -1);
         return true;
     }
 
-    return ed_instrument_note(e, key);
+    return !ui_popup_open() && !ui_text_active() && ed_instrument_note(e, key);
 }
 
 void editor_event(Editor *e, const SDL_Event *event) {
-    if (event->type == SDL_EVENT_KEY_DOWN && ed_percussion_key(e, &event->key)) {
+    if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ed_side_button(event->button.button)) {
+        Binding binding = {.mods = ed_normalized(SDL_GetModState()), .mouse = event->button.button};
+
+        if (e->capture >= 0) {
+            capture_binding(e, binding);
+        } else if (!ui_text_active() && e->gesture_capture < 0) {
+            dispatch_custom(e, binding, false);
+        }
+
+        return;
+    }
+
+    if (event->type == SDL_EVENT_KEY_DOWN &&
+        (ed_samples_key(e, &event->key) || instrument_key(e, &event->key) ||
+         ed_percussion_key(e, &event->key))) {
         return;
     }
 
@@ -1189,10 +1123,6 @@ void editor_event(Editor *e, const SDL_Event *event) {
 
     if (event->type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         ed_release_piano(e);
-        return;
-    }
-
-    if (event->type == SDL_EVENT_KEY_DOWN && instrument_key(e, &event->key)) {
         return;
     }
 

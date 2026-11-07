@@ -104,13 +104,11 @@ static void shortcuts_added(Editor *e) {
     key(e, SDL_SCANCODE_I, 0);
     check(e->instrument_channel == 1 && e->instrument_preview,
           "I opens the playlist channel's instrument window");
-    e->instrument_channel = -1;
-    e->instrument_preview = false;
+    ed_close_instrument(e);
     ed_focus_edit(e, FOCUS_EVENTS);
     key(e, SDL_SCANCODE_I, 0);
     check(e->instrument_channel == 0, "I opens the pattern editor channel's instrument window");
-    e->instrument_channel = -1;
-    e->instrument_preview = false;
+    ed_close_instrument(e);
     ed_focus_edit(e, FOCUS_PATTERNS);
     key(e, SDL_SCANCODE_I, 0);
     check(e->instrument_channel == -1, "I does nothing in the pattern section");
@@ -160,15 +158,13 @@ static void channels_and_events(Editor *e) {
               !strcmp(dm_drum_name(35), "Acoustic Bass Drum"),
           "percussion keys carry GM names");
     ed_new_song_event(e);
-    e->event_kind = 0;
-    e->event_bpm = 90;
+    check(e->midi_draft.data[1] == MIDI_META_TEMPO, "new event defaults to tempo");
     e->event_beat = 2;
     size_t count = e->project.event_count;
     ed_song_event_add(e);
     check(e->project.event_count == count + 1 && !e->song_event, "manual tempo event is committed");
     ed_new_song_event(e);
-    check(e->event_edit == -1 && e->event_auto_edit == -1 && !e->event_source_kind,
-          "new event clears prior edit target");
+    check(e->midi_event_index == -1 && e->song_event_add, "new event clears prior edit target");
     e->song_event = false;
     e->context = 2;
     e->edit_focus = FOCUS_NOTES;
@@ -196,6 +192,31 @@ static void channels_and_events(Editor *e) {
     check(found, "program change reaches MIDI schedule");
     dm_schedule_free(&schedule);
     ui_end();
+}
+
+static void pattern_editor_shortcut(Editor *e) {
+    editor_smoke(e);
+    ed_open_pattern(e, 1, true);
+    uint32_t last_uid = ed_pattern(e)->uid;
+    int automation = dm_pattern_add(&e->project, "Automation");
+    check(automation >= 0, "automation pattern fixture");
+    e->project.patterns[automation].kind = 1;
+    ed_open_pattern(e, automation, true);
+    check(dm_pattern_move(&e->project, 1, 0) == 0, "reorder the last opened note pattern");
+
+    key(e, SDL_SCANCODE_E, SDL_KMOD_NONE);
+    check(e->roll && !e->roll_auto_hidden && e->automation_browser && ed_pattern(e) &&
+              !ed_pattern(e)->kind && ed_pattern(e)->uid == last_uid,
+          "E switches from the event editor to the last note pattern by identity");
+    key(e, SDL_SCANCODE_E, SDL_KMOD_NONE);
+    check(!e->roll, "E closes a visible piano roll");
+    key(e, SDL_SCANCODE_E, SDL_KMOD_SHIFT);
+    check(e->roll && ed_pattern(e) && ed_pattern(e)->kind, "Shift E still opens the event editor");
+    dm_pattern_remove(&e->project, 0);
+    ed_open_pattern(e, automation - 1, true);
+    key(e, SDL_SCANCODE_E, SDL_KMOD_NONE);
+    check(e->roll && ed_pattern(e) && !ed_pattern(e)->kind && ed_pattern(e)->uid != last_uid,
+          "E falls back to the first note pattern when the last one was deleted");
 }
 
 static void bend_edits(Editor *e) {
@@ -314,6 +335,7 @@ int main(void) {
     ui_frame();
     playback(e);
     shortcuts_added(e);
+    pattern_editor_shortcut(e);
     channels_and_events(e);
     bend_edits(e);
     ui_render(renderer);

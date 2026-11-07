@@ -218,7 +218,9 @@ void ed_edit_feedback(Editor *e, float pitch) {
         e->preview_program = ed_channel_program(e, e->preview_source_channel);
     }
 
-    dm_audio_edit_preview(e->audio, e->preview_program, fminf(127, fmaxf(0, pitch)), true);
+    int part = ed_note_port(e) * 16 + e->pattern_channel;
+    dm_audio_edit_preview_part(e->audio, part, e->preview_program, fminf(127, fmaxf(0, pitch)),
+                               true);
     e->edit_feedback = true;
 }
 

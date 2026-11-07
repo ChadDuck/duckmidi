@@ -14,13 +14,25 @@ static void number(Buffer *b, double value) {
     bytes(b, text, strlen(text));
 }
 
-static void envelope(Buffer *b, const M64Instrument *d) {
+static void envelope(Buffer *b, const M64Instrument *d, const EsNativeRegion *custom) {
+    if (custom) {
+        format(b, "[");
+
+        for (unsigned i = 0; i < custom->point_count; i++) {
+            format(b, "[%d,%d],", custom->points[i][0], custom->points[i][1]);
+        }
+
+        format(b, "\"hang\"]");
+        return;
+    }
+
     format(b, "[[%u,32700],[%u,%u],\"hang\"]", d->attack, d->decay, d->sustain);
 }
 
 static void generated_bank(Compile *c) {
     Buffer *b = &c->result->files[M64_BANK_JSON];
-    format(b, "{\n  \"sample_bank\": \"instruments\",\n  \"envelopes\": {\n");
+    format(b, "{\n  \"sample_bank\": \"%s\",\n  \"envelopes\": {\n",
+           c->custom && c->custom->sample_bank ? c->custom->sample_bank : "instruments");
     unsigned total = c->program_count + c->drum_count;
 
     for (unsigned i = 0; i < total; i++) {
@@ -28,7 +40,20 @@ static void generated_bank(Compile *c) {
                                      ? program_definition(c, c->programs[i])
                                      : drum_definition(c, c->percussion[i - c->program_count]);
         format(b, "    \"env%u\": ", i);
-        envelope(b, d);
+        const EsNativeRegion *custom = NULL;
+
+        if (c->custom && i < c->program_count && c->programs[i] >= 4096 &&
+            c->programs[i] < M64_CUSTOM_STOCK_BASE) {
+            custom = &c->custom->samples->regions[(c->programs[i] - 4096) >> 8];
+        } else if (c->custom && i >= c->program_count &&
+                   c->percussion[i - c->program_count] >= 128 &&
+                   c->percussion[i - c->program_count] < 256) {
+            custom =
+                &c->custom->samples
+                     ->regions[c->custom_drum_regions[c->percussion[i - c->program_count] - 128]];
+        }
+
+        envelope(b, d, custom);
         format(b, "%s\n", i + 1 < total ? "," : "");
     }
 
@@ -61,10 +86,16 @@ static void generated_bank(Compile *c) {
 
         for (unsigned i = 0; i < c->drum_count; i++) {
             const M64Instrument *d = drum_definition(c, c->percussion[i]);
+            unsigned drum = c->percussion[i];
+            unsigned pan =
+                drum >= 128 && drum < 256
+                    ? es_native_pan(
+                          &c->custom->samples->regions[c->custom_drum_regions[drum - 128]])
+                    : 64;
             format(
                 b,
-                "      {\"release_rate\": %u, \"pan\": 64, \"envelope\": \"env%u\", \"sound\": {\"sample\": \"%s\", \"tuning\": ",
-                d->release_rate, c->program_count + i, d->sample);
+                "      {\"release_rate\": %u, \"pan\": %u, \"envelope\": \"env%u\", \"sound\": {\"sample\": \"%s\", \"tuning\": ",
+                d->release_rate, pan, c->program_count + i, d->sample);
             number(b, d->tuning);
             format(b, "}}%s\n", i + 1 < c->drum_count ? "," : "");
         }
@@ -104,7 +135,8 @@ bool bank_json(Compile *c) {
 
     format(
         m,
-        "  \"sample_assets_included\": false,\n  \"sequence_bytes\": %llu,\n  \"sequence_address_max_offset\": 65535,\n  \"additional_timing_grid_ticks\": %u,\n  \"tempo_scale\": ",
+        "  \"sample_assets_included\": %s,\n  \"sequence_bytes\": %llu,\n  \"sequence_address_max_offset\": 65535,\n  \"additional_timing_grid_ticks\": %u,\n  \"tempo_scale\": ",
+        c->custom && c->custom->samples->count ? "true" : "false",
         (unsigned long long)c->result->files[M64_SEQUENCE].size, c->quality_grid);
     number(m, c->tempo_scale);
 

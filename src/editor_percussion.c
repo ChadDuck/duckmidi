@@ -82,13 +82,13 @@ static bool percussion_preview(Editor *e, const SDL_KeyboardEvent *key) {
         }
 
         if (e->preview_route >= 0 && e->preview_route != MIDI_DRUM_CHANNEL) {
-            dm_audio_keyboard_program(e->audio, e->preview_route, -1);
+            dm_audio_keyboard_program(e->audio, e->preview_route, -1, false);
         }
 
         e->held[key->scancode] = note;
         e->record_start[note] = -1;
         e->held_channels[key->scancode] = MIDI_DRUM_CHANNEL;
-        dm_audio_keyboard_program(e->audio, MIDI_DRUM_CHANNEL, 0);
+        dm_audio_keyboard_program(e->audio, MIDI_DRUM_CHANNEL, 0, true);
         dm_audio_preview(e->audio, MIDI_DRUM_CHANNEL, note, 100, true);
         e->preview_route = MIDI_DRUM_CHANNEL;
         break;
@@ -227,7 +227,7 @@ void ed_percussion_dialog(Editor *e) {
                 if (ui_select(label, e->percussion_note == note, 0, 0)) {
                     e->percussion_note = note;
                     e->percussion_listening = false;
-                    dm_audio_keyboard_program(e->audio, 9, 0);
+                    dm_audio_keyboard_program(e->audio, MIDI_DRUM_CHANNEL, 0, true);
                     dm_audio_audition(e->audio, 9, note, 100, .25);
                 }
 

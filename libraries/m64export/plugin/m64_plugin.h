@@ -3,6 +3,8 @@
 #include "duckmidi_export_plugin.h"
 #include "duckmidi_midi.h"
 #include "m64export/m64export.h"
+#include "../../export_support/mapping.h"
+#include "../../export_support/sample.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -13,6 +15,8 @@ enum { M64_GAME_SM64, M64_GAME_HACKERSM64, M64_GAME_COOPDX, M64_GAME_COUNT };
 enum { M64_MEMORY_ENLARGE, M64_MEMORY_STOCK };
 
 typedef struct {
+    EsMappings *custom;
+    char checkout[8192], checkout_identity[96];
     char sequence[97], bank[97];
     char custom_sequence[97];
     char project_sequence[97]; /* Custom sequence name taken from the project. */
@@ -26,7 +30,6 @@ typedef struct {
     uint64_t session;
     char program_names[128][80], drum_names[128][80];
     DmeField fields[12];
-    char port_notice[768]; /* Moved or merged colored ports, shown as a notice. */
     bool port_interference;
     DmeChoice choices[128];
     char choice_labels[128][220];
@@ -47,6 +50,7 @@ typedef struct {
     bool merged, interference;
     unsigned moved_count, conflict_count;
     char notice[768];
+    char merges[768]; /* One "where: control" line per interfering merge. */
 } M64PortLayout;
 
 bool m64_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion,
@@ -54,10 +58,21 @@ bool m64_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion
 
 typedef struct {
     M64Request request;
+    uint16_t *source_programs;
+    int32_t *stock_values;
+    EsMappingJob *custom;
+    EsNativeSamples samples;
+    M64Instrument custom_definitions[ES_NATIVE_REGIONS];
+    EsRepository *repository; /* Borrowed only during a repository worker callback. */
+    char checkout[8192], checkout_identity[96];
     char sequence[97], bank[97];
     M64Instrument melodic[16 * 128], drums[128];
+    char sample_bank[128];
+    char requested_bank[97];
+    char target_notice[512];
     int presets[16][128], drum_presets[128];
     bool loop_points, memory_stock;
+    bool keep_originals;
     int target;            /* M64_GAME_* chosen for saved packages */
     char port_notice[768]; /* Merged ports that interfere, reported as a warning. */
     M64ReviewUi *review_ui;

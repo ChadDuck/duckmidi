@@ -3,11 +3,14 @@
 #include "duck.h"
 #include "../shared/spectrum.h"
 #include "../shared/audio_export.h"
+#include "../include/duckmidi_export_plugin.h"
 typedef struct DmAudio DmAudio;
 DmAudio *dm_audio_create(char *error, size_t cap);
 void dm_audio_destroy(DmAudio *audio);
 bool dm_audio_publish(DmAudio *audio, const DmProject *project, double seconds, bool playing,
                       char *error, size_t cap);
+/* Requests a fresh asset lookup on the next publication, including missing revisions. */
+void dm_audio_reload_samples(DmAudio *audio);
 
 /* Pattern playback. The channel's song events come from the placement region starting at song
    beat origin. program -1 keeps the project's channels; 0..127 or 128 (percussion) plays only
@@ -35,10 +38,23 @@ double dm_audio_position(DmAudio *audio);
 bool dm_audio_playing(DmAudio *audio);
 /* Internal-only edit gesture voice, isolated from song and keyboard input. */
 void dm_audio_edit_preview(DmAudio *audio, int program, float pitch, bool on);
+void dm_audio_edit_preview_part(DmAudio *audio, int part, int program, float pitch, bool on);
 void dm_audio_preview(DmAudio *audio, int channel, int key, int velocity, bool on);
 void dm_audio_audition(DmAudio *audio, int channel, int key, int velocity, double duration);
+bool dm_audio_sample_audition(DmAudio *audio, const DmeContext *context, const DmeHost *host,
+                              int key, bool sustained, bool looping, char *error, size_t cap);
+bool dm_audio_preset_audition(DmAudio *audio, const DmPatchReplacement *replacement, int key,
+                              char *error, size_t cap);
+bool dm_audio_instrument_preview(DmAudio *audio, const DmPatchReplacement *replacement, int route,
+                                 char *error, size_t cap);
+void dm_audio_sample_audition_stop(DmAudio *audio);
+void dm_audio_sample_edit(DmAudio *audio, const char *locator, const char *set_id,
+                          const char *preset_id, uint32_t region, const char *asset,
+                          const DmeSampleZoneParams *params);
+bool dm_audio_sample_audition_edit(DmAudio *audio, const DmeSampleZoneParams *params);
+bool dm_audio_sample_audition_loop(DmAudio *audio, uint64_t start, uint64_t end);
 void dm_audio_program(DmAudio *audio, int channel, int program);
-void dm_audio_keyboard_program(DmAudio *audio, int channel, int program);
+void dm_audio_keyboard_program(DmAudio *audio, int channel, int program, bool drums);
 void dm_audio_control(DmAudio *audio, int channel, int controller, int value);
 float dm_audio_peak(DmAudio *audio, int channel);
 /* Volume and pan each part is playing with (255 when not yet set); false when stopped. */

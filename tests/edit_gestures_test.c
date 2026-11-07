@@ -219,8 +219,9 @@ int main(void) {
     dm_event_add(&e->project, 0, 0, 0, &bytes);
     bytes = (DmBytes){meter, sizeof(meter), sizeof(meter)};
     dm_event_add(&e->project, 2, 0, 0, &bytes);
-    ed_song_event_open(e, 1, false);
-    check(e->event_edit == 1 && e->event_kind == 1 && e->event_beat == 2 && e->event_numerator == 3,
+    ed_song_event_open_bar(e, 2, false);
+    check(e->midi_event_index == 1 && e->event_beat == 2 &&
+              e->midi_draft.data[1] == MIDI_META_TIME && e->midi_draft.data[3] == 3,
           "source-event selection updates the selected event's identity and editable fields");
 
     for (int frame = 0; frame < 2; ++frame) {

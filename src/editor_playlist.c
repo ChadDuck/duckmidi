@@ -11,9 +11,7 @@ static bool channel_expander(Editor *e, UiRect r, float label, float row, int ch
                              UiMouse mouse);
 static void playlist_rows(Editor *e, UiRect r, View *v, float label, float row, const int *list,
                           int count, UiMouse mouse);
-static void event_card(Editor *e, UiRect grid, float x, float y, float width, const char *label,
-                       uint32_t color, int index, bool automation);
-static void playlist_events(Editor *e, UiRect r, UiRect grid, View *v, float scale);
+static void playlist_events(Editor *e, UiRect grid, View *v, float row, float scale);
 static void clip_edit_begin(Editor *e);
 static int clip_row(DmClip clip, const int *list, int count);
 static void draw_playlist_clip(Editor *e, DmClip *clip, UiRect box, UiRect grid, float scale);
@@ -46,7 +44,8 @@ static bool placement_valid(Editor *e, int pattern_id, int encoded) {
     }
 
     int lane = encoded / 16;
-    return (!lane || e->project.patterns[pattern_id].kind) &&
+    return e->project.channels[encoded % 16].enabled &&
+           (!lane || e->project.patterns[pattern_id].kind) &&
            lane <= e->project.lane_count[encoded % 16];
 }
 
@@ -208,20 +207,36 @@ bool ed_black_key(int step) {
 }
 
 static void playlist_tools(Editor *e) {
-    bool compact = ui_available().x < 700;
+    UiPoint at = ui_cursor();
+    float available = ui_available().x, spacing = ui_item_spacing_x();
+    float tools = 5 * 42 + 4 * spacing;
+    float add = ui_button_row_width((const char *const[]){DM_TEXT_NEW}, 1);
+    float heading = ui_text_width(DM_TEXT_ARRANGEMENT);
 
-    if (!compact) {
+    if (available >= tools + add + heading + 3 * spacing) {
         ui_align_frame();
         ui_text(DM_TEXT_ARRANGEMENT);
         ui_same();
     }
 
+    ui_disabled(ed_available_channel(e) < 0);
+
+    if (ui_button(DM_TEXT_NEW, add, 32)) {
+        ed_open_instrument(e, -1, false);
+    }
+
+    ui_disabled_end();
+    UiPoint after = ui_cursor();
+    float top = available >= tools + add + 2 * spacing ? at.y : after.y;
+
     static const char *names[] = {DM_TEXT_SELECT, DM_TEXT_MARQUEE, DM_TEXT_SLICE, DM_TEXT_DELETE,
                                   DM_TEXT_BRUSH};
     static const UiIcon icons[] = {UI_POINTER, UI_BOX, UI_SCISSORS, UI_DELETE, UI_BRUSH};
 
+    ui_position(at.x + fmaxf(0, available - tools - spacing), top);
+
     for (int i = 0; i < 5; ++i) {
-        if (i || !compact) {
+        if (i) {
             ui_same();
         }
 
@@ -253,12 +268,11 @@ void ed_playlist_label_text(Editor *e, UiRect r, float label, float row, const i
         if (label < 100) {
             snprintf(text, capacity, "%02d", c + 1);
         } else {
-            snprintf(text, capacity, "%02d  %s", c + 1,
-                     !e->project.channels[c].enabled || e->project.channels[c].program < 0
-                         ? DM_TEXT_CHOOSE_INSTRUMENT
-                     : dm_channel_drums(&e->project, c)
-                         ? DM_TEXT_PERCUSSION
-                         : dm_program_name(e->project.channels[c].program));
+            int program = e->project.channels[c].program;
+            const char *name = dm_channel_drums(&e->project, c)
+                                   ? DM_TEXT_PERCUSSION
+                                   : dm_program_name(program < 0 ? 0 : program);
+            snprintf(text, capacity, "%02d  %s", c + 1, name);
         }
 
         if (e->channel_selected && c == e->selected_channel) {
@@ -274,8 +288,26 @@ static bool channel_expander(Editor *e, UiRect r, float label, float row, int ch
     UiRect button = {r.x + label - 18, y, 18, row};
     bool hovered = ed_inside(mouse.pos, button) && ed_inside(mouse.pos, r);
 
+    bool populated = false;
+
+    for (size_t i = 0; i < e->project.clip_count; ++i) {
+        const DmClip *clip = &e->project.clips[i];
+        const DmPattern *pattern =
+            clip->pattern >= 0 && (size_t)clip->pattern < e->project.pattern_count
+                ? &e->project.patterns[clip->pattern]
+                : NULL;
+        populated |= clip->channel == channel && clip->lane && pattern && pattern->kind;
+    }
+
+    if (populated) {
+        ui_rect(button, (e->accent & 0xffffffu) | (hovered ? 0xa0000000u : 0x50000000u), 0);
+    }
+
     if (hovered) {
-        ui_rect(button, mouse.left ? DIM : GRID, 0);
+        if (!populated) {
+            ui_rect(button, mouse.left ? DIM : GRID, 0);
+        }
+
         ed_hover(e, DM_TEXT_EXPAND_COLLAPSE_AUTOMATION);
     }
 
@@ -307,11 +339,6 @@ void ed_playlist_label_action(Editor *e, int channel, int lane, UiMouse mouse) {
         e->selected_channel = channel;
         e->channel_selected = true;
         e->context = 1;
-
-        if (!lane &&
-            (e->project.channels[channel].program < 0 || !e->project.channels[channel].enabled)) {
-            e->instrument_channel = channel;
-        }
     }
 
     if (mouse.right_clicked) {
@@ -326,7 +353,7 @@ void ed_playlist_label_action(Editor *e, int channel, int lane, UiMouse mouse) {
             snprintf(e->rename_text, 64, "%s",
                      lane ? e->project.lane_names[channel][lane - 1] : "");
         } else {
-            e->instrument_channel = channel;
+            ed_open_instrument(e, channel, false);
         }
     }
 }
@@ -336,9 +363,19 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
     char text[128];
     ed_playlist_label_text(e, r, label, row, list, i, y, text, sizeof(text));
     int encoded = i ? list[i - 1] : 0, channel = encoded % 16, lane = encoded / 16;
+    const char *sample = i && !lane ? ed_sample_channel_filename(e, channel) : NULL;
+
+    if (sample) {
+        ui_rect((UiRect){r.x, y, label - 18, row}, (e->accent & 0xffffffu) | 0x30000000u, 0);
+    }
+
     ui_clip((UiRect){r.x, y, label - 20, row});
-    ui_label_fit((UiPoint){r.x + (lane ? 22 : 10), y + 22}, label - (lane ? 36 : 34),
-                 i ? TEXT : DIM, text);
+    ui_label_fit((UiPoint){r.x + (lane ? 22 : 10), y + (sample ? 11 : 22)},
+                 label - (lane ? 36 : 34), i ? TEXT : DIM, text);
+
+    if (sample) {
+        ui_label_fit((UiPoint){r.x + 10, y + 31}, label - 34, TEXT, sample);
+    }
     ui_unclip();
 
     if (!i) {
@@ -371,7 +408,7 @@ static void playlist_rows(Editor *e, UiRect r, View *v, float label, float row, 
             continue;
         }
 
-        ui_rect(line, i % 2 ? COLOR(19, 19, 19) : COLOR(24, 24, 24), 0);
+        ui_rect(line, i % 2 ? ui_background_shade(19) : ui_background_shade(24), 0);
         ui_line((UiPoint){r.x, y + row}, (UiPoint){r.x + r.w, y + row}, GRID, 1);
         ed_playlist_label(e, r, label, row, list, i, y, mouse);
     }
@@ -408,7 +445,7 @@ const char *ed_event_label(const DmBytes *m) {
         return dm_loop_marker(m) == 1   ? DM_TEXT_M64_LOOP_START
                : dm_loop_marker(m) == 2 ? DM_TEXT_M64_LOOP_END
                                         : DM_TEXT_MARKER;
-    case 3:
+    case MIDI_META_TRACK_NAME:
         return DM_TEXT_TRACK_NAME;
     case 1:
         return DM_TEXT_TEXT;
@@ -430,9 +467,9 @@ const char *ed_event_label(const DmBytes *m) {
         return DM_TEXT_CHANNEL_PREFIX;
     case 0x21:
         return DM_TEXT_MIDI_PORT;
-    case 0x54:
+    case MIDI_META_SMPTE:
         return DM_TEXT_SMPTE_OFFSET;
-    case 0x59:
+    case MIDI_META_KEY:
         return DM_TEXT_KEY_SIGNATURE;
     case 0x7f:
         return DM_TEXT_SEQUENCER_DATA;
@@ -441,91 +478,97 @@ const char *ed_event_label(const DmBytes *m) {
     }
 }
 
-void ed_song_event_open(Editor *e, int index, bool automation) {
-    e->midi_events = false;
-    e->song_event = true;
-    e->event_edit = automation ? -1 : index;
-    e->event_auto_edit = automation ? index : -1;
-    e->event_source_kind = automation ? 2 : 1;
-    e->event_kind = 3;
+typedef struct {
+    double start, end;
+    MidiRow first;
+    size_t count;
+} SongEventGroup;
 
-    if (automation) {
-        DmAutomation a = e->project.automation[index];
-        e->event_beat = (float)a.beat;
-        e->event_channel = a.channel;
-        e->event_program = a.a;
-        return;
+/* Groups the visible song events by bar. Meter lookups and the event scan run only when the
+   project or the visible bars change, not on every frame. */
+static size_t song_event_groups(Editor *e, double left, double right) {
+    if (e->song_event_groups_revision == e->export_revision && e->song_event_groups_left == left &&
+        e->song_event_groups_right == right &&
+        e->song_event_groups_events == e->project.event_count &&
+        e->song_event_groups_automation == e->project.automation_count) {
+        return e->song_event_groups.size / sizeof(SongEventGroup);
     }
 
-    ed_decode_source_event(e, &e->project.events[index]);
+    double start, end, right_start, right_end;
+    ed_song_event_bar(e, left, &start, &end);
+    ed_song_event_bar(e, right, &right_start, &right_end);
+    size_t count = ed_song_event_rows(e, start, right == right_start ? right : right_end);
+    const MidiRow *rows = (const MidiRow *)e->midi_rows.data;
+    e->song_event_groups.size = 0;
+
+    for (size_t i = 0; i < count;) {
+        ed_song_event_bar(e, rows[i].beat, &start, &end);
+        size_t next = i + 1;
+
+        while (next < count && rows[next].beat < end) {
+            ++next;
+        }
+
+        SongEventGroup group = {start, end, rows[i], next - i};
+
+        if (!dm_bytes(&e->song_event_groups, &group, sizeof(group))) {
+            break;
+        }
+
+        i = next;
+    }
+
+    e->song_event_groups_revision = e->export_revision;
+    e->song_event_groups_left = left;
+    e->song_event_groups_right = right;
+    e->song_event_groups_events = e->project.event_count;
+    e->song_event_groups_automation = e->project.automation_count;
+    return e->song_event_groups.size / sizeof(SongEventGroup);
 }
 
-static void event_card(Editor *e, UiRect grid, float x, float y, float width, const char *label,
-                       uint32_t color, int index, bool automation) {
-    UiRect box = {x, y, width, 22};
+static void playlist_events(Editor *e, UiRect grid, View *v, float row, float scale) {
+    float y = grid.y - v->scroll_y;
 
-    if (!ed_intersects(box, grid)) {
+    if (y + row <= grid.y) {
         return;
     }
 
-    ui_rect(box, color, 3);
-    ui_label_fit((UiPoint){x + 4, y + 3}, width - 8, TEXT, label);
+    /* Whole bars at the view edges keep the cache valid while scrolling within them. */
+    double left_start, left_end, right_start, right_end;
+    ed_song_event_bar(e, v->scroll_x / scale, &left_start, &left_end);
+    ed_song_event_bar(e, (v->scroll_x + grid.w) / scale, &right_start, &right_end);
+    size_t count = song_event_groups(e, left_start, right_end);
+    const SongEventGroup *groups = (const SongEventGroup *)e->song_event_groups.data;
     UiMouse mouse = ui_mouse();
+    uint32_t fill = (e->accent & 0x00ffffffu) | 0x54000000u;
 
-    if (ed_inside(mouse.pos, box) && ed_inside(mouse.pos, grid)) {
-        ed_hover(e, label);
+    for (size_t i = 0; i < count; i++) {
+        double start = groups[i].start, end = groups[i].end;
+        float x = grid.x + (float)(start * scale - v->scroll_x);
+        float edge = grid.x + (float)(end * scale - v->scroll_x);
+        UiRect box = {x, y + 4, edge - x, row - 8};
+        ui_rect(box, fill, 0);
+        ui_line((UiPoint){x, box.y}, (UiPoint){x, box.y + box.h}, e->accent, 3);
 
-        if (mouse.clicked) {
-            ed_song_event_open(e, index, automation);
-        }
-    }
-}
+        const char *label = ed_midi_row_name(e, groups[i].first);
+        char group[64];
 
-bool ed_initial_gui_event(const DmEvent *event) {
-    if (event->beat != 0 || event->message.size < 2) {
-        return false;
-    }
-
-    const uint8_t *m = event->message.data;
-
-    if (m[0] == MIDI_META) {
-        return m[1] == MIDI_META_TEMPO || m[1] == MIDI_META_TIME;
-    }
-
-    return (m[0] & MIDI_STATUS_MASK) == MIDI_PROGRAM ||
-           ((m[0] & MIDI_STATUS_MASK) == MIDI_CONTROL && event->message.size == 3 &&
-            (m[1] == MIDI_CC_VOLUME || m[1] == MIDI_CC_PAN));
-}
-
-static void playlist_events(Editor *e, UiRect r, UiRect grid, View *v, float scale) {
-    for (size_t i = 0; i < e->project.event_count; ++i) {
-        DmEvent *event = &e->project.events[i];
-
-        if (ed_initial_gui_event(event)) {
-            continue;
+        if (groups[i].count > 1) {
+            snprintf(group, sizeof(group), DM_TEXT_SONG_EVENT_COUNT, groups[i].count);
+            label = group;
         }
 
-        float x = grid.x + (float)event->beat * scale - v->scroll_x,
-              y = r.y + 34 + (i % 2) * 25 - v->scroll_y;
-        bool tempo = event->message.size > 1 && event->message.data[0] == MIDI_META &&
-                     event->message.data[1] == MIDI_META_TEMPO;
-        event_card(e, grid, x, y, ed_clampf(scale * .9f, 14, 180), ed_event_label(&event->message),
-                   tempo                             ? COLOR(123, 54, 43)
-                   : dm_loop_marker(&event->message) ? COLOR(40, 92, 104)
-                                                     : COLOR(69, 62, 43),
-                   (int)i, false);
-    }
+        float text_x = fmaxf(box.x, grid.x) + 6;
+        float text_width = fminf(edge, grid.x + grid.w) - text_x - 4;
 
-    for (size_t i = 0; i < e->project.automation_count; ++i) {
-        DmAutomation a = e->project.automation[i];
-
-        if (a.pattern >= 0 || a.type != MIDI_PROGRAM || a.beat == 0) {
-            continue;
+        if (text_width > 0) {
+            ui_label_fit((UiPoint){text_x, box.y + 5}, text_width, TEXT, label);
         }
 
-        event_card(e, grid, grid.x + (float)a.beat * scale - v->scroll_x, r.y + 40 - v->scroll_y,
-                   ed_clampf(scale * .9f, 14, 180), DM_TEXT_PROGRAM, COLOR(69, 62, 43), (int)i,
-                   true);
+        if (ui_hover() && ed_inside(mouse.pos, grid) &&
+            ed_inside(mouse.pos, (UiRect){box.x, y, box.w, row})) {
+            ed_hover(e, label);
+        }
     }
 }
 
@@ -567,7 +610,6 @@ void ed_move_clip(Editor *e, DmClip *clip, int encoded, double beat) {
     clip->beat = beat;
     clip->channel = channel;
     clip->lane = lane;
-    e->project.channels[channel].enabled = true;
 
     if (e->selected_clip >= 0 && (size_t)e->selected_clip < e->project.clip_count &&
         clip == &e->project.clips[e->selected_clip]) {
@@ -829,36 +871,40 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
         return;
     }
 
-    if (mouse.clicked && !e->song_event && ed_inside(mouse.pos, grid)) {
-        if (mouse.ctrl) {
-            ed_deselect(e);
-            e->marquee = true;
-            e->marquee_start = mouse.pos;
-            return;
-        }
+    if (!mouse.clicked || !ed_inside(mouse.pos, grid)) {
+        return;
+    }
 
-        double beat = ed_snap((mouse.pos.x - grid.x + v->scroll_x) / scale, 1, mouse.alt);
-        int line = (int)((mouse.pos.y - r.y - 28 + v->scroll_y) / row);
+    int line = (int)((mouse.pos.y - r.y - 28 + v->scroll_y) / row);
 
-        if (hit >= 0) {
-            ed_playlist_hit_click(e, mouse, hit, beat);
-        } else if (e->tool == 1) {
-            ed_deselect(e);
-            e->marquee = true;
-            e->marquee_start = mouse.pos;
-        } else if (line > 0 && line <= count) {
-            /* Patterns are placed by dragging their cards; a click only clears the selection. */
-            ed_deselect(e);
-        } else if (line == 0) {
-            e->event_edit = e->event_auto_edit = -1;
-            e->event_source_kind = 0;
-            e->song_event = true;
-            e->event_beat = (float)beat;
-            e->event_bpm = (float)e->project.bpm;
-            e->event_channel = e->selected_channel;
-            e->event_numerator = e->project.numerator;
-            e->event_denominator = e->project.denominator;
-        }
+    if (e->song_event && (line != 0 || mouse.ctrl)) {
+        return;
+    }
+
+    if (mouse.ctrl) {
+        ed_deselect(e);
+        e->marquee = true;
+        e->marquee_start = mouse.pos;
+        return;
+    }
+
+    double position = (mouse.pos.x - grid.x + v->scroll_x) / scale;
+    double beat = ed_snap(position, 1, mouse.alt);
+
+    if (line == 0) {
+        double start, end;
+        ed_song_event_bar(e, position, &start, &end);
+        bool add = !ed_song_event_rows(e, start, end);
+        ed_song_event_open_bar(e, beat >= start && beat < end ? beat : position, add);
+    } else if (hit >= 0) {
+        ed_playlist_hit_click(e, mouse, hit, beat);
+    } else if (e->tool == 1) {
+        ed_deselect(e);
+        e->marquee = true;
+        e->marquee_start = mouse.pos;
+    } else if (line <= count) {
+        /* Patterns are placed by dragging their cards; a click only clears the selection. */
+        ed_deselect(e);
     }
 }
 
@@ -886,10 +932,11 @@ static void draw_playlist_clip(Editor *e, DmClip *clip, UiRect box, UiRect grid,
                              : color,
               5, clip->selected || linked ? 2 : 1);
     ui_clip(box);
-    ui_label((UiPoint){box.x + 9, box.y + 8}, BG, p->name);
+    ui_label((UiPoint){box.x + 9, box.y + 8}, ui_text_on(color), p->name);
     /* Only the part of the placement inside the grid is drawn. */
     float left = fmaxf(box.x, grid.x), right = fminf(box.x + box.w, grid.x + grid.w);
     ed_note_thumbnail(p, (NoteThumbnail){.visible = {left, box.y, fmaxf(0, right - left), box.h},
+                                         .color = ui_text_on(color),
                                          .x = box.x,
                                          .x_scale = scale,
                                          .offset = clip->offset,
@@ -900,8 +947,8 @@ static void draw_playlist_clip(Editor *e, DmClip *clip, UiRect box, UiRect grid,
 
     if (p->kind) {
         ed_automation_preview(e, clip->pattern,
-                              (UiRect){box.x + 6, box.y + 26, box.w - 12, box.h - 30}, BG,
-                              clip->offset, dm_clip_length(&e->project, *clip));
+                              (UiRect){box.x + 6, box.y + 26, box.w - 12, box.h - 30},
+                              ui_text_on(color), clip->offset, dm_clip_length(&e->project, *clip));
     }
 
     ui_unclip();
@@ -1108,7 +1155,7 @@ void ed_playlist(Editor *e, float width, float height) {
 
     int hit = playlist_clips(e, r, grid, v, scale, row, list, count, mouse);
     pattern_drop(e, r, grid, v, scale, row, list, count, dropped);
-    playlist_events(e, r, grid, v, scale);
+    playlist_events(e, grid, v, row, scale);
     playlist_context(e, hit);
     ui_unclip();
     ed_ruler(e, r, v, scale, label);

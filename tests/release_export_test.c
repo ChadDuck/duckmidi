@@ -1,5 +1,6 @@
 #include "export_plugins.h"
 #include "../include/duckmidi_midi.h"
+#include "../include/duckmidi_samples_tool.h"
 #include <assert.h>
 #include <stdio.h>
 static unsigned artifacts;
@@ -38,13 +39,30 @@ static DmExportFormat *find_format(DmExportRegistry *registry, const char *name)
     return NULL;
 }
 
+static void check_missing_sample_fallback(const DmeExporter *api, void *job, DmeContext context,
+                                          const DmeHost *host) {
+    DmeSamplePreset sample = {.size = sizeof(sample), .flags = DME_SAMPLE_MISSING};
+    DmeEffectivePatch patches[4] = {{.flags = DME_SAMPLE_MISSING, .sample_preset = 1}};
+    assert(context.event_count <= SDL_arraysize(patches));
+    context.sample_presets = &sample;
+    context.sample_preset_count = 1;
+    context.effective_patches = patches;
+    char error[512] = {0};
+    assert(api->preflight(job, &context, host, error, sizeof(error)) == DME_OK);
+    error[0] = 0;
+    unsigned before = artifacts;
+    assert(api->run(job, &context, host, error, sizeof(error)) == DME_OK);
+    assert(artifacts > before);
+}
+
 /* The delivered OoT.dll: declared settings and an empty review pass the host's checks, and a
    package holds the sequence, soundfont and install guide. */
 static void check_oot(DmExportRegistry *registry) {
     DmExportFormat *format = find_format(registry, "OoT");
     assert(format);
     const DmeExporter *api = format->api;
-    assert(api->install && !strcmp(api->install_label, "Export to Repository"));
+    assert(format->history && registry->history_runtime &&
+           !strcmp(api->install_label, "Export to Repository"));
     DmeEvent events[] = {{0, 1, 0x99, 36, 100, 0},
                          {0, 2, 0x90, 60, 100, 0},
                          {960, 3, 0x80, 60, 0, 0},
@@ -75,6 +93,7 @@ static void check_oot(DmExportRegistry *registry) {
     assert(api->review(job, &review) == DME_OK && review.count == 0);
     artifacts = 0;
     assert(api->run(job, &context, &host, error, sizeof(error)) == DME_OK && artifacts == 3);
+    check_missing_sample_fallback(api, job, context, &host);
     api->destroy_job(job);
 }
 
@@ -82,7 +101,12 @@ int main(int argc, char **argv) {
     assert(argc == 2 && SDL_Init(0));
     DmExportRegistry registry;
     dm_export_registry_load(&registry, argv[1]);
-    assert(registry.count == 2 && !*registry.errors);
+    assert(registry.count == 2 && registry.tool_count == 1 && !*registry.errors);
+    DmNativeTool *samples = dm_export_registry_tool(&registry, DME_SAMPLES_TOOL_ID);
+    assert(samples && dm_export_registry_request_tool(&registry, DME_SAMPLES_TOOL_ID) == DME_OK);
+    const DmeSamplesApi *sample_api = samples->api->interface_at(DME_SAMPLES_API);
+    assert(sample_api && sample_api->size == sizeof(*sample_api) &&
+           sample_api->count(samples->instance) == 0);
     check_oot(&registry);
     artifacts = 0;
     DmExportFormat *format = find_format(&registry, "M64");
@@ -124,10 +148,10 @@ int main(int argc, char **argv) {
     assert(api->review_set(job, review.rows[0].id, substitute, error, sizeof(error)) == DME_OK);
     assert(api->review_apply(format->instance, job, error, sizeof(error)) == DME_OK);
     assert(api->run(job, &context, &host, error, sizeof(error)) == DME_OK && artifacts == 4);
+    check_missing_sample_fallback(api, job, context, &host);
     api->destroy_job(job);
     dm_export_registry_free(&registry);
     SDL_Quit();
-    puts(
-        "PASS delivered m64.dll and OoT.dll discovery, ABI preflight without artifacts, structured supported/manual review, apply, and M64 and OoT packages");
+    puts("PASS packaged Samples tool, M64 and OoT discovery, ABI preflight, review, and export");
     return 0;
 }

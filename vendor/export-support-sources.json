@@ -1,0 +1,29 @@
+{
+  "sources": [
+    {
+      "component": "SQLite",
+      "version": "3.50.4",
+      "url": "https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip",
+      "archive_sha256": "1d3049dd0f830a025a53105fc79fd2ab9431aea99e137809d064d8ee8356b032"
+    },
+    {
+      "component": "pugixml",
+      "version": "1.15",
+      "url": "https://github.com/zeux/pugixml/tree/v1.15"
+    },
+    {
+      "component": "yyjson",
+      "version": "0.12.0",
+      "url": "https://github.com/ibireme/yyjson/tree/8b4a38dc994a110abaec8a400615567bd996105f"
+    }
+  ],
+  "sha256": {
+    "vendor/sqlite-3.50.4/sqlite3.c": "e3f5d6901e7492af4a1fc8c4d745cae84c264942524c3fbfc02b82a5ca8818c8",
+    "vendor/sqlite-3.50.4/sqlite3.h": "abd1514e0351f79393d1be882830afdb40a8099e8257f311f0bfdf8486f11bea",
+    "vendor/pugixml-1.15/pugixml.cpp": "67c3892efba51d4e4eb6ce5609286fd2703aede6ba49a6d2130068cad09e0744",
+    "vendor/pugixml-1.15/pugixml.hpp": "2555f950fd080e02ff16f36698ddf8d4a46d3a484b9337b4cbfc6300043be734",
+    "vendor/pugixml-1.15/pugiconfig.hpp": "981cd9ad3313878817d7b548c9929cc09d3bc42be2c0c1dcb0d77290fc98b92d",
+    "vendor/yyjson-0.12.0/yyjson.c": "ac2e9bbb2e2d9149d90878d40506a1d624fa0b33c979a11b61075c54782c6d6a",
+    "vendor/yyjson-0.12.0/yyjson.h": "175867c5493a5df648cec566717fa1c29aa2f6096f5f0cf1efad0b65e1f6d7b3"
+  }
+}

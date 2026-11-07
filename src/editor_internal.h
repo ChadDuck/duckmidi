@@ -11,8 +11,8 @@
 #include <string.h>
 
 #define COLOR(r, g, b) ((uint32_t)(r) | ((uint32_t)(g) << 8) | ((uint32_t)(b) << 16) | 0xff000000u)
-#define BG COLOR(12, 12, 12)
-#define GRID COLOR(38, 38, 38)
+#define BG ui_background_shade(12)
+#define GRID ui_background_shade(38)
 uint32_t ed_port_color(Editor *e, unsigned port);
 uint32_t ed_palette_color(Editor *e, unsigned color);
 void ed_pattern_color_request(Editor *e, int pattern);
@@ -23,8 +23,8 @@ void ed_port_buttons(Editor *e);
 bool ed_color_notes(Editor *e, unsigned port);
 bool ed_delete_note_port(Editor *e, unsigned port);
 void ed_note_color_dialog(Editor *e);
-#define TEXT COLOR(217, 228, 235)
-#define DIM COLOR(115, 137, 151)
+#define TEXT ui_theme_text(false)
+#define DIM ui_theme_text(true)
 #define GREEN (e->accent)
 #define GOLD COLOR(245, 196, 111)
 
@@ -36,10 +36,29 @@ enum {
     DIALOG_FONT,
     DIALOG_EXPORT_PLUGIN,
     DIALOG_REPOSITORY,
-    DIALOG_PLUGIN_FOLDER /* Preferences: an exporter's repository folder */
+    DIALOG_PLUGIN_FOLDER, /* Preferences: an exporter's repository folder */
+    DIALOG_SAMPLE_FILES,
+    DIALOG_SAMPLE_FOLDER
 };
 
 #include "../include/duckmidi_export_plugin.h"
+bool ed_samples_available(Editor *e);
+void ed_samples_open(Editor *e);
+void ed_samples_close(Editor *e);
+void ed_samples_free(Editor *e);
+void ed_samples_poll(Editor *e);
+void ed_samples_draw(Editor *e);
+bool ed_samples_key(Editor *e, const SDL_KeyboardEvent *key);
+bool ed_samples_history(Editor *e, bool redo, bool apply);
+bool ed_samples_drop(Editor *e, const SDL_DropEvent *event);
+bool ed_samples_drop_target(Editor *e, UiPoint at, UiRect *rect);
+void ed_samples_picker_result(Editor *e, const SDL_Event *event);
+void ed_sample_catalog_refresh(Editor *e);
+bool ed_sample_source_picker(Editor *e, DmPatchKey key, const DmPatchReplacement *current,
+                             DmPatchReplacement *selected, bool *inherit);
+bool ed_sample_store_replacement(Editor *e, const DmPatchReplacement *selection, bool inherit);
+void ed_sample_clear_route(DmProject *project, int port, int channel);
+void ed_sample_program_source(Editor *e);
 size_t ed_export_count(Editor *e);
 const char *ed_export_name(Editor *e, size_t index);
 bool ed_export_settings(Editor *e, size_t index, DmeUi *ui);
@@ -48,6 +67,10 @@ void ed_export_start(Editor *e, size_t index, const char *destination);
 void ed_export_poll(Editor *e);
 void ed_export_free(Editor *e);
 void ed_export_controls(Editor *e);
+void ed_export_history_toggle(Editor *e);
+void ed_export_history_panel(Editor *e, UiRect main);
+bool ed_export_history_visible(Editor *e);
+void ed_export_catalog_changed(Editor *e);
 void ed_export_warning_dialog(Editor *e);
 bool ed_export_review_open(Editor *e);
 void ed_export_review_decide(Editor *e, int decision);
@@ -58,10 +81,9 @@ void ed_export_error(Editor *e, const char *message);
 void ed_export_plugin_errors(Editor *e);
 bool ed_export_busy(Editor *e);
 bool ed_export_suggest(Editor *e, const char *extension, char *out, size_t capacity);
+void ed_open_file_location(Editor *e, const char *source);
 void ed_open_audio_location(Editor *e);
 void ed_export_reset_results(Editor *e);
-bool ed_export_has_changes(Editor *e);
-void ed_export_revert(Editor *e);
 bool ed_export_repository_picker(Editor *e, const char **start);
 void ed_export_repository_done(Editor *e, const char *folder);
 void ed_export_to_repository(Editor *e);
@@ -102,7 +124,6 @@ bool ed_gesture_allowed(MouseBinding binding);
 bool ed_gesture_capture(Editor *e, UiMouse mouse);
 bool ed_gesture_format(MouseBinding binding, char *out, size_t cap);
 bool ed_gesture_parse(const char *text, MouseBinding *binding);
-void ed_decode_source_event(Editor *e, DmEvent *event);
 void ed_focus_edit(Editor *e, EditFocus focus);
 bool ed_velocity_editing(Editor *e);
 EditFocus ed_selection_focus(Editor *e);
@@ -120,7 +141,10 @@ void ed_message(Editor *e, const char *text);
 DmPattern *ed_pattern(Editor *e);
 void ed_bind_pattern_channel(Editor *e);
 void ed_clear_history(DmBytes *b, int *count);
-void ed_checkpoint(Editor *e);
+bool ed_checkpoint(Editor *e);
+/* Restores the project saved by the checkpoint just taken and drops it, for an edit that failed
+   before completing; pass ed_checkpoint's result. */
+void ed_checkpoint_abandon(Editor *e, bool pushed);
 bool ed_add_note(Editor *e, DmPattern *p, DmNote note);
 double ed_pattern_length(Editor *e);
 bool ed_transport_publish(Editor *e, double seconds, bool playing);
@@ -212,6 +236,7 @@ void ed_toolbar(Editor *e);
 void ed_menu(Editor *e);
 void ed_choose_pattern_card(Editor *e, int id, bool selected);
 void ed_duplicate_pattern(Editor *e, int pattern);
+void ed_step_pattern(Editor *e, bool automation, int direction);
 uint32_t ed_pattern_color(Editor *e, int id);
 
 /* Thumbnail geometry: x = x + (beat - offset) * x_scale; y = y - (key - 48) * y_scale. */
@@ -219,6 +244,7 @@ typedef struct {
     UiRect visible;
     float x, x_scale, y, y_scale, top, bottom;
     double offset;
+    uint32_t color;
 } NoteThumbnail;
 
 void ed_note_thumbnail(const DmPattern *p, NoteThumbnail thumbnail);
@@ -253,8 +279,9 @@ void ed_playlist_label_action(Editor *e, int channel, int lane, UiMouse mouse);
 void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *list, int i, float y,
                        UiMouse mouse);
 const char *ed_event_label(const DmBytes *m);
-void ed_song_event_open(Editor *e, int index, bool automation);
-bool ed_initial_gui_event(const DmEvent *event);
+void ed_song_event_open_bar(Editor *e, double beat, bool add);
+double ed_song_event_bar(const Editor *e, double beat, double *start, double *end);
+size_t ed_song_event_rows(Editor *e, double start, double end);
 void ed_resize_clip(Editor *e, DmClip *clip, double length);
 void ed_move_clip(Editor *e, DmClip *clip, int encoded, double beat);
 void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, const int *list,
@@ -353,23 +380,30 @@ void ed_piano_mouse(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, flo
 void ed_focus_first_note(Editor *e, DmPattern *p, UiRect grid);
 void ed_roll(Editor *e, float width, float height);
 void ed_settings(Editor *e);
-void ed_choose_program(Editor *e, int channel, int program);
-void ed_choose_drums(Editor *e, int channel);
-bool ed_remove_empty_channel(Editor *e, int channel);
+void ed_open_instrument(Editor *e, int channel, bool preview);
+void ed_close_instrument(Editor *e);
+void ed_apply_instrument(Editor *e);
+void ed_step_instrument(Editor *e, int direction);
+bool ed_remove_channel(Editor *e, int channel);
+int ed_initial_bank(const DmProject *project, int port, int channel);
+const char *ed_sample_channel_filename(Editor *e, int channel);
 void ed_instrument(Editor *e);
 void ed_preferences(Editor *e);
 void ed_shortcuts(Editor *e);
-void ed_song_event_remove(Editor *e);
-void ed_song_event_add(Editor *e);
+bool ed_song_event_add(Editor *e);
+bool ed_song_event_position_valid(Editor *e);
 void ed_song_event_position(Editor *e);
 void ed_song_event_dialog(Editor *e);
 size_t ed_midi_rows(Editor *e);
+size_t ed_midi_rows_between(Editor *e, double start, double end);
 bool ed_midi_parse_bytes(Editor *e);
 void ed_midi_select(Editor *e, MidiRow row);
 const char *ed_midi_row_name(Editor *e, MidiRow row);
 size_t ed_midi_payload_offset(const DmBytes *m);
 bool ed_midi_replace_payload(Editor *e, const uint8_t *payload, size_t size);
-void ed_midi_channel_fields(uint8_t *message, size_t size);
+void ed_midi_event_fields(Editor *e);
+void ed_midi_event_panels(Editor *e, size_t count, float *split);
+void ed_midi_apply_initial(Editor *e, const uint8_t *message);
 bool ed_midi_apply_draft(Editor *e);
 void ed_midi_event_window(Editor *e);
 void ed_export_dialog(Editor *e);

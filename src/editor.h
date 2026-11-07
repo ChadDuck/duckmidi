@@ -59,7 +59,16 @@ typedef enum {
 typedef struct {
     SDL_Scancode key;
     SDL_Keymod mods;
+    uint8_t mouse;
 } Binding;
+
+static inline bool ed_side_button(unsigned button) {
+    return button == SDL_BUTTON_X1 || button == SDL_BUTTON_X2;
+}
+
+static inline bool ed_same_binding(Binding a, Binding b) {
+    return a.key == b.key && a.mods == b.mods && a.mouse == b.mouse;
+}
 
 /* Mouse drags that can be rebound in Keyboard Shortcuts. */
 typedef enum { GESTURE_COPY_PLACEMENTS, GESTURE_COPY_NOTES, GESTURE_COUNT } Gesture;
@@ -115,6 +124,7 @@ typedef struct {
 
     DmMetadataMode export_metadata;
     struct DmExportPlugins *export_plugins;
+    struct DmEditorSamples *samples;
     struct DmSaveJob *save_job;
     struct DmPatternJob *pattern_job;
     bool generate_window;
@@ -125,6 +135,7 @@ typedef struct {
     char export_source[DM_PATH];
     char dialog_suggested[DM_PATH];
     char audio_export_pending[DM_PATH], audio_exported[DM_PATH];
+    char audio_export_message[512]; /* Digital Audio's own result, apart from the status bar. */
     bool export_shown;                      /* The export window was open last frame. */
     uint64_t ports_revision, ports_session; /* Project state the port cache describes. */
     bool ports_cached;
@@ -139,7 +150,11 @@ typedef struct {
     int preview_program, preview_route, preview_source_channel;
     bool preview_override, channel_selected, event_marquee, event_marquee_overlay, midi_events;
     int midi_event_kind, midi_event_index;
-    float midi_split;
+    uint64_t midi_selection_revision;
+    float midi_split, song_event_split;
+    double event_beat, song_event_anchor;
+    int song_event_kind;
+    bool song_event_add, song_event_bound;
     int ui_size;
     bool os_cursor;
     bool event_ruler_drag;
@@ -155,6 +170,12 @@ typedef struct {
     UiRect preferences_rect, info_rect;
     UiPoint event_marquee_start;
     DmBytes record_original, midi_rows;
+    /* Playlist Events row: one group per occupied bar in the visible range, rebuilt only when
+       the project or the range changes. */
+    DmBytes song_event_groups;
+    uint64_t song_event_groups_revision;
+    double song_event_groups_left, song_event_groups_right;
+    size_t song_event_groups_events, song_event_groups_automation;
     bool curve_drag, curve_changed, curve_overlay;
     int curve_left;
     float curve_y;
@@ -163,10 +184,10 @@ typedef struct {
     EditFocus edit_focus;
     int pan_context;
     float mixer_height, label_width, automation_height;
-    int piano_octave, transient_pattern, pattern_drag, rename_pattern;
+    int piano_octave, pattern_drag, rename_pattern;
     bool pattern_drag_on_playlist; /* The dragged card hides over the playlist's drop outline. */
     char rename_text[64];
-    uint32_t accent;
+    uint32_t accent, background;
     DmChannel reset_channels[16];
     double start_beat[2], cursor_beat[2];
     bool scrub, scrub_playing;
@@ -189,7 +210,7 @@ typedef struct {
     bool automation_raw, recording_commit;
     bool last_automation_valid;
     DmAutomation last_automation;
-    int automation_node, event_edit, event_auto_edit, event_source_kind;
+    int automation_node, context_note, context_point;
     double node_beat;
     int node_value;
     float node_y, automation_center;
@@ -202,19 +223,21 @@ typedef struct {
     char font_next[DM_PATH];
     char midi_folder[DM_PATH], font_folder[DM_PATH], export_folder[DM_PATH],
         preferred_font[DM_PATH], output_name[256];
-    float event_beat, event_bpm;
-    int event_kind, event_program, event_channel, event_numerator, event_denominator, context_note,
-        context_point;
-    char event_marker[128];
-    uint8_t event_message[3]; /* Draft of an imported channel message in the song event window. */
-    size_t event_message_size;
     int smoke_frames;
     int pattern_channel, selected_pattern, selected_channel, instrument_channel, tool, context,
         capture, drag, drag_index, drag_edge, export_type;
+    uint32_t last_note_pattern_uid;
     DmAudioOptions audio_options;
     double drag_beat, drag_length, record_start[128];
     int drag_key;
-    bool edit_feedback, instrument_accept;
+    bool edit_feedback;
+    int instrument_program;
+    int instrument_port, instrument_bank;
+    bool instrument_source_dirty, instrument_source_inherit;
+    DmPatchReplacement instrument_source;
+    DmPatchReplacement midi_sample_source;
+    bool midi_sample_dirty, midi_sample_inherit, instrument_audition;
+    bool instrument_new, instrument_drums, instrument_remove, instrument_raise;
     bool instrument_preview; /* The instrument window also sets the pattern editor's dropdown. */
     bool preferences_raise;  /* Preferences comes to the front on its next frame. */
     int brush_quarter, brush_pitch, brush_anchor;
@@ -270,6 +293,7 @@ void ed_update_launch(Editor *e); /* Shows the first-launch prompt or starts a l
 void ed_update_finish(Editor *e); /* Starts a scheduled install as duckmidi exits. */
 void editor_background(Editor *e);
 void editor_event(Editor *e, const SDL_Event *event);
+void editor_open(Editor *e, const char *path);
 void editor_frame(Editor *e, float width, float height);
 void editor_smoke(Editor *e);
 #endif

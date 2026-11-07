@@ -23,7 +23,8 @@ static void fixture(Editor *e) {
     editor_smoke(e);
     e->config = e->preferences = e->midi_events = e->song_event = e->confirm = e->about =
         e->shortcuts = e->export_window = false;
-    e->instrument_channel = e->rename_pattern = -1;
+    ed_close_instrument(e);
+    e->rename_pattern = -1;
     e->selected_pattern = 0;
     e->pattern_channel = e->selected_channel = 0;
     e->channel_selected = true;
@@ -76,11 +77,9 @@ static void preferences_check(Editor *e) {
                          "[application]\nschema=3\nsoundfont=%xx",
                          "[application\nschema=3",
                          "[application]\nschema=3\n[shortcuts]\naction_0=1,0\naction_0=2,0"};
-    char error[256];
 
     for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); ++i) {
-        check(dm_write(e->settings_path, bad[i], strlen(bad[i]), error, sizeof(error)),
-              "write invalid isolated INI");
+        check(SDL_SaveFile(e->settings_path, bad[i], strlen(bad[i])), "write invalid isolated INI");
         e->ui_size = 1;
         check(!dm_preferences_load(e, ed_shortcut_schema()) && e->ui_size == 1 &&
                   e->accent == 0xff123456,
@@ -89,7 +88,7 @@ static void preferences_check(Editor *e) {
 
     const char *valid =
         "; comment\r\n[application]\r\nschema=3\r\nsoundfont=\"é🎹.sf2\"\r\n[future]\r\nkey=value";
-    check(dm_write(e->settings_path, valid, strlen(valid), error, sizeof(error)) &&
+    check(SDL_SaveFile(e->settings_path, valid, strlen(valid)) &&
               dm_preferences_load(e, ed_shortcut_schema()),
           "CRLF, comments, UTF-8 and unknown sections work without final newline");
     check(!strcmp(e->preferred_font, "é🎹.sf2"), "UTF-8 path decoded");
@@ -195,21 +194,123 @@ static void source_checks(Editor *e) {
     DmBytes bytes = {tempo, sizeof(tempo), sizeof(tempo)};
     dm_event_add(&e->project, 0, 0, 0, &bytes);
     dm_event_add(&e->project, 4, 0, 0, &bytes);
-    check(ed_initial_gui_event(&e->project.events[0]) &&
-              !ed_initial_gui_event(&e->project.events[1]),
-          "only initial GUI-owned source event is hidden from arrangement");
-    dm_automation_add(&e->project, (DmAutomation){0, 0xc0, 0, 40, 0, -1, 0, 0, 0, false});
-    check(ed_midi_rows(e) == 3, "MIDI browser retains hidden source and song events");
-    ed_midi_select(e, (MidiRow){0, 0, false});
-    e->event_bpm = 142;
-    ed_song_event_add(e);
-    check(e->project.bpm == 142 && e->project.event_count == 2,
-          "browser edits initial tempo through effective project value");
+    const uint8_t meter[] = {MIDI_META, MIDI_META_TIME, 4, 3, 2, 36, 8};
+    const uint8_t name[] = {MIDI_META, MIDI_META_TRACK_NAME, 1, 'A'};
+    const uint8_t text[] = {MIDI_META, MIDI_META_TEXT, 1, 'B'};
+    const uint8_t smpte[] = {MIDI_META, MIDI_META_SMPTE, 5, 0x40, 2, 3, 4, 5};
+    const uint8_t key[] = {MIDI_META, MIDI_META_KEY, 2, 0, 0};
+    const uint8_t sysex[] = {MIDI_SYSEX, 1, MIDI_SYSEX_END};
+    const uint8_t port[] = {MIDI_META, MIDI_META_PORT, 1, 0};
+    const uint8_t controller[] = {MIDI_CONTROL, MIDI_CC_EXPRESSION, 90};
+    const double change = 2.125;
+
+    const struct {
+        const uint8_t *data;
+        size_t size;
+        double beat;
+    } fixtures[] = {{name, sizeof(name), 0},
+                    {text, sizeof(text), 1},
+                    {smpte, sizeof(smpte), 0},
+                    {key, sizeof(key), 1.5},
+                    {sysex, sizeof(sysex), 1},
+                    {port, sizeof(port), 1},
+                    {controller, sizeof(controller), 1},
+                    {meter, sizeof(meter), change}};
+
+    for (size_t i = 0; i < sizeof(fixtures) / sizeof(*fixtures); ++i) {
+        bytes = (DmBytes){(uint8_t *)fixtures[i].data, fixtures[i].size, fixtures[i].size};
+        check(dm_event_add(&e->project, fixtures[i].beat, 2, 1, &bytes), "add event fixture");
+    }
+
+    check(
+        dm_automation_add(
+            &e->project, (DmAutomation){.beat = 1.5, .type = MIDI_PROGRAM, .a = 40, .pattern = -1}),
+        "add song-level instrument change");
+    double start, end;
+    check(ed_song_event_bar(e, 1, &start, &end) == 1 && start == 0 && end == change,
+          "a meter change ends the preceding bar at its exact beat");
+    check(ed_song_event_rows(e, start, end) == 6 && ed_midi_rows(e) == 11,
+          "song list keeps composition events while MIDI Events includes system and routing");
+    check(ed_song_event_bar(e, change, &start, &end) == 2 && start == change && end == change + 3 &&
+              ed_song_event_rows(e, start, end) == 2,
+          "meter and following tempo belong to the new bar");
+    ed_song_event_open_bar(e, 1, false);
+    check(!e->song_event_add && e->midi_draft.data[1] == MIDI_META_TEMPO,
+          "first bar opens on its effective initial tempo");
+    int us = (int)llround(60000000.0 / 142);
+    e->midi_draft.data[3] = us >> 16;
+    e->midi_draft.data[4] = us >> 8;
+    e->midi_draft.data[5] = us;
+    check(ed_midi_apply_draft(e) && fabs(e->project.bpm - 142) < .001,
+          "song event editor updates the effective initial tempo");
+
+    size_t count = ed_song_event_rows(e, 0, change);
+    MidiRow *rows = (MidiRow *)e->midi_rows.data;
+    int index = -1;
+
+    for (size_t i = 0; i < count; ++i) {
+        if (!rows[i].automation &&
+            e->project.events[rows[i].index].message.data[1] == MIDI_META_TRACK_NAME) {
+            index = rows[i].index;
+            ed_midi_select(e, rows[i]);
+            break;
+        }
+    }
+
+    check(index >= 0 && e->midi_source_track == 2 && e->midi_source_port == 1,
+          "track name editor loads the selected event and its source");
+    const uint8_t updated[] = "Renamed track";
+    check(ed_midi_replace_payload(e, updated, sizeof(updated) - 1), "edit track-name payload");
+    e->event_beat = change;
+    int history = e->undo_count;
+    check(!ed_midi_apply_draft(e) && e->undo_count == history && *e->midi_error,
+          "editing cannot move an event outside its selected bar");
+    e->event_beat = 0;
+    check(ed_midi_apply_draft(e) && e->project.events[index].message.size == sizeof(updated) + 2 &&
+              !memcmp(e->project.events[index].message.data + 3, updated, sizeof(updated) - 1) &&
+              e->project.events[index].track == 2 && e->project.events[index].port == 1,
+          "text edit preserves event position and source");
+    ed_song_event_open_bar(e, change, false);
+    check(e->midi_draft.data[1] == MIDI_META_TIME, "meter starts the next bar's event list");
+    index = e->midi_event_index;
+    e->midi_draft.data[3] = 5;
+    check(ed_midi_apply_draft(e) && dm_meter(&e->project, change).bar == 5 &&
+              e->project.events[index].message.data[5] == 36,
+          "meter edit changes the bar length and preserves metronome ticks");
+    e->song_event = false;
+    check(dm_automation_add(&e->project, (DmAutomation){.type = MIDI_PROGRAM, .pattern = -1}),
+          "add initial instrument fixture");
     ed_midi_select(e, (MidiRow){0, 0, true});
-    e->event_program = 24;
-    ed_song_event_add(e);
-    check(e->project.channels[0].program == 24,
-          "initial program editing changes GUI-owned channel program");
+    e->midi_draft.data[1] = 24;
+    check(ed_midi_apply_draft(e) && e->project.channels[0].program == 24,
+          "initial program editing changes the channel's effective instrument");
+}
+
+static void song_program_repeats(Editor *e) {
+    fixture(e);
+    const uint8_t patch[] = {MIDI_PROGRAM, 4};
+    const uint8_t other_channel[] = {MIDI_PROGRAM | 1, 4};
+    DmBytes program = {(uint8_t *)patch, sizeof(patch), sizeof(patch)};
+    check(dm_event_add(&e->project, 1, 0, 0, &program) &&
+              dm_event_add(&e->project, 1, 0, 0, &program) &&
+              dm_event_add(&e->project, 1, 1, 0, &program) &&
+              dm_event_add(&e->project, 1, 1, 1, &program) &&
+              dm_event_add(&e->project, 2, 0, 0, &program),
+          "create repeated programs and independent track, port and time fixtures");
+    program = (DmBytes){(uint8_t *)other_channel, sizeof(other_channel), sizeof(other_channel)};
+    check(dm_event_add(&e->project, 1, 0, 0, &program), "create independent channel fixture");
+    DmAutomation a = {.beat = 1, .type = MIDI_PROGRAM, .a = 4, .pattern = -1};
+    check(dm_automation_add(&e->project, a) && dm_automation_add(&e->project, a),
+          "create repeated song-level program automation");
+    check(ed_midi_rows(e) == 8 && ed_song_event_rows(e, 0, 4) == 6,
+          "Song event folds duplicate programs without changing the underlying project");
+    ed_song_event_open_bar(e, 1, false);
+    e->midi_draft.data[1] = 12;
+    check(ed_midi_apply_draft(e) && e->project.event_count == 5 &&
+              e->project.events[0].message.data[1] == 12 &&
+              e->project.events[1].message.data[1] == 4 && ed_song_event_rows(e, 0, 4) == 6,
+          "editing a folded row replaces its copies and keeps the independent programs");
+    e->song_event = false;
 }
 
 static void native_drop(Editor *e, const char *path) {
@@ -299,9 +400,16 @@ static void drop_checks(Editor *e) {
     check(audio != NULL, "drop audio backend");
     e->audio = audio;
     e->preferences = true;
-    e->preferences_rect = (UiRect){100, 100, 600, 400};
-    event.drop.x = 200;
-    event.drop.y = 200;
+    e->preferences_raise = true;
+
+    for (int frame = 0; frame < 5; ++frame) {
+        ui_frame();
+        editor_frame(e, 1400, 900);
+        ui_render(e->renderer);
+    }
+
+    event.drop.x = (e->preferences_rect.x + e->preferences_rect.w * .5f) * ui_scale();
+    event.drop.y = (e->preferences_rect.y + e->preferences_rect.h * .5f) * ui_scale();
     event.drop.data = "agents/reports/generated-sine.sf2";
     editor_event(e, &event);
     check(e->font_request, "SoundFont drop in Preferences starts background loading");
@@ -345,6 +453,7 @@ int main(void) {
     preview_check(e);
     event_checks(e);
     source_checks(e);
+    song_program_repeats(e);
     ui_end();
     ui_render(r);
     drop_checks(e);

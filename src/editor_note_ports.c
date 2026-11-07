@@ -76,6 +76,7 @@ bool ed_delete_note_port(Editor *e, unsigned port) {
 
     ed_checkpoint(e);
     ed_release_piano(e);
+    ed_sample_clear_route(project, (int)port, channel);
 
     for (size_t c = 0; c < project->clip_count; ++c) {
         if (project->clips[c].channel != channel) {

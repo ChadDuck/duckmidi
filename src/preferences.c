@@ -131,6 +131,15 @@ bool dm_binding_parse(const char *text, Binding *binding) {
         }
 
         if (!plus) {
+            uint8_t mouse = !SDL_strcasecmp(token, DM_TEXT_MOUSE_BUTTON_4)   ? SDL_BUTTON_X1
+                            : !SDL_strcasecmp(token, DM_TEXT_MOUSE_BUTTON_5) ? SDL_BUTTON_X2
+                                                                             : 0;
+
+            if (mouse) {
+                *binding = (Binding){.mods = mods, .mouse = mouse};
+                return true;
+            }
+
             SDL_Scancode key = !SDL_strcasecmp(token, "Keypad Add")
                                    ? SDL_SCANCODE_KP_PLUS
                                    : SDL_GetScancodeFromName(token);
@@ -143,7 +152,7 @@ bool dm_binding_parse(const char *text, Binding *binding) {
                 return false;
             }
 
-            *binding = (Binding){key, mods};
+            *binding = (Binding){.key = key, .mods = mods};
             return true;
         }
 
@@ -163,8 +172,10 @@ bool dm_binding_parse(const char *text, Binding *binding) {
 }
 
 bool dm_binding_format(Binding binding, char *out, size_t cap) {
-    const char *name =
-        binding.key == SDL_SCANCODE_KP_PLUS ? "Keypad Add" : SDL_GetScancodeName(binding.key);
+    const char *name = binding.mouse == SDL_BUTTON_X1        ? DM_TEXT_MOUSE_BUTTON_4
+                       : binding.mouse == SDL_BUTTON_X2      ? DM_TEXT_MOUSE_BUTTON_5
+                       : binding.key == SDL_SCANCODE_KP_PLUS ? "Keypad Add"
+                                                             : SDL_GetScancodeName(binding.key);
 
     if (!name || !*name || strchr(name, '+')) {
         return false;
@@ -181,12 +192,15 @@ static bool valid_bindings(Binding *b) {
     unsigned allowed = SDL_KMOD_CTRL | SDL_KMOD_SHIFT | SDL_KMOD_ALT | SDL_KMOD_GUI;
 
     for (int i = 0; i < ACT_COUNT; ++i) {
-        if (b[i].key <= 0 || b[i].key >= SDL_SCANCODE_COUNT || (b[i].mods & ~allowed)) {
+        bool input = b[i].mouse ? ed_side_button(b[i].mouse) && b[i].key == SDL_SCANCODE_UNKNOWN
+                                : b[i].key > 0 && b[i].key < SDL_SCANCODE_COUNT;
+
+        if (!input || (b[i].mods & ~allowed)) {
             return false;
         }
 
         for (int k = 0; k < i; ++k) {
-            if (b[i].key == b[k].key && b[i].mods == b[k].mods) {
+            if (ed_same_binding(b[i], b[k])) {
                 return false;
             }
         }
@@ -213,14 +227,15 @@ static bool application(Ini *ini, const char *key, const char *s) {
         return true;
     }
 
-    if (!strcmp(key, "accent")) {
+    if (!strcmp(key, "accent") || !strcmp(key, "background")) {
         uint32_t color;
 
         if (!number(s, &color)) {
             return false;
         }
 
-        e->accent = color | 0xff000000u;
+        uint32_t *setting = !strcmp(key, "accent") ? &e->accent : &e->background;
+        *setting = color | 0xff000000u;
         return true;
     }
 
@@ -463,13 +478,9 @@ static bool parse(Ini *ini, char *data) {
     return ok;
 }
 
-static bool same_binding(Binding a, Binding b) {
-    return a.key == b.key && a.mods == b.mods;
-}
-
 static bool binding_taken(const Binding *b, int except, Binding binding) {
     for (int i = 0; i < ACT_COUNT; ++i) {
-        if (i != except && same_binding(b[i], binding)) {
+        if (i != except && ed_same_binding(b[i], binding)) {
             return true;
         }
     }
@@ -481,15 +492,14 @@ static bool binding_taken(const Binding *b, int except, Binding binding) {
    default P for its current default (/). Solo keeps S, which is its default again; the move below
    only applies if the defaults differ. Bindings the user changed are kept. */
 static void upgrade_shortcuts(Ini *ini, Binding *merged) {
-    Binding old_config = {SDL_SCANCODE_P, (SDL_Keymod)0},
-            old_solo = {SDL_SCANCODE_S, (SDL_Keymod)0};
+    Binding old_config = {.key = SDL_SCANCODE_P}, old_solo = {.key = SDL_SCANCODE_S};
 
     if (ini->seen[ACT_PREFERENCES] || !ini->seen[ACT_CONFIG] ||
-        !same_binding(ini->keys[ACT_CONFIG], old_config)) {
+        !ed_same_binding(ini->keys[ACT_CONFIG], old_config)) {
         return;
     }
 
-    if (ini->seen[ACT_SOLO] && same_binding(ini->keys[ACT_SOLO], old_solo) &&
+    if (ini->seen[ACT_SOLO] && ed_same_binding(ini->keys[ACT_SOLO], old_solo) &&
         !binding_taken(merged, ACT_SOLO, ini->next.bindings[ACT_SOLO])) {
         merged[ACT_SOLO] = ini->next.bindings[ACT_SOLO];
     }
@@ -512,7 +522,8 @@ static void place_new_actions(Ini *ini, Binding *merged) {
         }
 
         for (size_t k = 0; k < sizeof(extra) / sizeof(*extra); ++k) {
-            Binding candidate = {merged[i].key, (SDL_Keymod)(merged[i].mods | extra[k])};
+            Binding candidate = merged[i];
+            candidate.mods |= extra[k];
 
             if (!binding_taken(merged, i, candidate)) {
                 merged[i] = candidate;
@@ -641,9 +652,9 @@ static bool fields(DmBytes *b, Editor *e) {
 bool dm_preferences_save(Editor *e, uint32_t shortcut_schema, const char *const *names) {
     DmBytes b = {0};
     char head[256];
-    snprintf(head, sizeof(head), DM_TEXT_INI_APPLICATION_SECTION, e->accent, e->monitor ? 1 : 0,
-             e->ui_size, e->os_cursor ? 1 : 0, e->update_mode, e->update_prompted ? 1 : 0,
-             (unsigned long long)e->sample_hash);
+    snprintf(head, sizeof(head), DM_TEXT_INI_APPLICATION_SECTION, e->accent, e->background,
+             e->monitor ? 1 : 0, e->ui_size, e->os_cursor ? 1 : 0, e->update_mode,
+             e->update_prompted ? 1 : 0, (unsigned long long)e->sample_hash);
     bool ok = text(&b, head) && fields(&b, e);
     snprintf(head, sizeof(head), DM_TEXT_SHORTCUTS_NSCHEMA, shortcut_schema);
     ok = ok && text(&b, head);

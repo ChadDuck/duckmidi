@@ -143,6 +143,34 @@ static uint64_t section_end(const Compile *c) {
     return c->emit_section ? c->loop_end : c->loop_start;
 }
 
+/* Writes the preset reverb/vibrato changes for `source` up to tick `until` (48-tick units),
+   advancing `next` through the shared change list. Changes before the section are replayed at
+   its start like controllers. */
+static void fx_stream(Compile *c, Buffer *b, int source, uint64_t until, size_t *next,
+                      uint64_t *now) {
+    static const uint8_t opcodes[ES_FX_KINDS] = {0xd4, 0xd7, 0xd8};
+    uint64_t begin = section_begin(c), end = section_end(c);
+
+    for (; *next < c->fx_count; ++*next) {
+        const EsNativeFxChange *f = &c->fx[*next];
+        uint64_t t = c->quality_grid ? f->tick / c->quality_grid * c->quality_grid : f->tick;
+
+        if (t > until || t >= end) {
+            return;
+        }
+
+        if ((int)f->channel != source) {
+            continue;
+        }
+
+        t = t > begin ? t - begin : 0;
+        delay(b, 0xfd, t - *now);
+        *now = t;
+        put(b, opcodes[f->kind]);
+        put(b, f->value);
+    }
+}
+
 /* Controls before a section begins are replayed at its start, so a repeated region opens with
    the same channel state each time. */
 static bool controller_stream(Compile *c, unsigned ch, Buffer *b) {
@@ -154,13 +182,15 @@ static bool controller_stream(Compile *c, unsigned ch, Buffer *b) {
     state.pan = 64;
     state.encoded_bend = 32768;
     uint64_t now = 0, begin = section_begin(c), end = section_end(c);
+    size_t fx = 0;
 
     for (uint64_t i = 0; i < c->request->event_count; i++) {
         const M64Event *e = &c->request->events[i];
         unsigned type = e->status & MIDI_STATUS_MASK;
 
         if (e->status >= MIDI_SYSTEM || (int)(e->status & MIDI_CHANNEL_MASK) != c->sources[ch] ||
-            (type != MIDI_CONTROL && type != MIDI_PITCH_BEND)) {
+            (type != MIDI_CONTROL && type != MIDI_PITCH_BEND) ||
+            (c->curve_skip && c->curve_skip[i])) {
             continue;
         }
 
@@ -198,6 +228,7 @@ static bool controller_stream(Compile *c, unsigned ch, Buffer *b) {
             break;
         }
 
+        fx_stream(c, b, c->sources[ch], t, &fx, &now);
         t = t > begin ? t - begin : 0;
         Buffer command = {0};
         bool ok = control(c, &command, &state, e);
@@ -219,6 +250,7 @@ static bool controller_stream(Compile *c, unsigned ch, Buffer *b) {
         }
     }
 
+    fx_stream(c, b, c->sources[ch], UINT64_MAX, &fx, &now);
     put(b, 0xf3); /* Keep layers alive after the last controller. */
     return !b->failed;
 }
@@ -348,14 +380,14 @@ static bool channel_scripts(Compile *c, Buffer *b, const size_t channel_fix[16])
             put(b, 0xdd);
             put(b, 64);
             put(b, 0xdc);
-            put(b, 128);
+            put(b, c->preset_pan[c->sources[ch]] ? 0 : 128);
             put(b, 0xde);
             put(b, 0x80);
             put(b, 0);
             put(b, 0xd4);
             put(b, 0);
             put(b, 0xd7);
-            put(b, 8);
+            put(b, M64_CHANNEL_VIBRATO_RATE);
             put(b, 0xd8);
             put(b, 0);
             put(b, 0xd2);
@@ -503,9 +535,15 @@ bool sequence(Compile *c) {
     }
 
     if (c->region) {
-        /* Each pass of the region restarts its channels and restores its opening tempo. */
+        /* Each pass of the region restarts its channels and restores its opening tempo. Channels
+           finish a section with chan_hang, which sets stopScript; vanilla SM64's startchannel
+           does not clear it, so the region would stay silent. initchannels resets the channels
+           first, as the jump to the start of a whole-song loop already does. */
         size_t label = b->size;
         c->emit_section = 1;
+        put(b, 0xd7);
+        put(b, mask >> 8);
+        put(b, mask);
         start_channels(b, mask, region_fix);
         last_tempo = region_tempo(c);
         put(b, 0xdd);

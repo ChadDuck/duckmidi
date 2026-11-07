@@ -114,6 +114,10 @@ cd "$work/objects/ffmpeg"
     --enable-libmp3lame --enable-libvorbis --enable-libopus \
     --enable-encoder=pcm_s16le,pcm_s24le,libmp3lame,aac,libvorbis,libopus,flac \
     --enable-muxer=wav,mp3,ipod,ogg,opus,flac \
+    --enable-demuxer=wav,mp3,mov,ogg,flac,aiff \
+    --enable-decoder=pcm_s8,pcm_u8,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be \
+    --enable-decoder=pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,mp3float,aac,vorbis,opus,flac \
+    --enable-parser=mpegaudio,aac,vorbis,opus,flac \
     --pkg-config="$PKG_CONFIG" --pkg-config-flags=--static \
     --extra-cflags="-I$prefix/include" \
     --extra-ldflags="-L$prefix/lib $ffmpeg_ldflags"

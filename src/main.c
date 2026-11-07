@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "text/en.h"
+#include <SDL3/SDL_main.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,7 +130,9 @@ static void editor_loop(Editor *editor, SDL_Window *window, SDL_Renderer *render
         int width = 0, height = 0;
         SDL_GetWindowSize(window, &width, &height);
         editor_frame(editor, (float)width, (float)height);
-        SDL_SetRenderDrawColor(renderer, 10, 10, 10, 255);
+        uint32_t background = editor->background;
+        SDL_SetRenderDrawColor(renderer, (Uint8)background, (Uint8)(background >> 8),
+                               (Uint8)(background >> 16), 255);
         SDL_RenderClear(renderer);
         ui_render(renderer);
 
@@ -250,6 +253,10 @@ int main(int argc, char **argv) {
     editor_init(editor, window, renderer, audio, base ? base : "", settings, smoke);
 
     if (!smoke) {
+        if (argc > 1) {
+            editor_open(editor, argv[1]);
+        }
+
         ed_update_launch(editor);
     }
 

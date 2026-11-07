@@ -1,5 +1,87 @@
 # duckmidi changelog
 
+# 0.12.0
+
+## **Custom Samples**
+- Bring your own sounds into duckmidi. 
+    - **Edit > Samples** imports WAV, AIFF, FLAC, MP3.
+    - Import individual samples or entire folders.
+    - Store multiple "Sample Sets" to organize your samples.
+    - Samples are usable along with loaded SoundFonts, identical in usage.
+        - It plays everywhere SoundFont instruments play.
+        - Channels that use samples show a tinted label and the sample's name.
+    - .SFZ files are generated with imported samples, allowing you to use it outside of duckmidi.
+
+## **Sample Editor**
+- The Samples window lets you import and edit these samples as you wish.
+    - Parameters:
+        - Root note selection and tuning
+        - Playback start/end
+        - Note hold loops
+        - ADSR envelope
+        - Gain, pan, filter, vibrato, chorus, reverb
+        - Cut / Cut by groups (Most used in percussion; i.e. stopping an open Hi-Hat with a closed Hi-Hat)
+    - **Modifying a sample automatically updates playback to preview the change.**
+        - Hitting 'Save' finalizes those changes.
+    - Waveform and envelope values are modifiable with a visual graph.
+        - Click and drag along these graphs in a responsive & intuitive manner
+    - Pitch hints that read the filename and the audio have been implemented
+        - duckmidi reads filename and metadata information to populate options *for you*.
+
+## **Custom Sample Export**
+- Each mapping in the Export window can add a saved sample to the game, or replace one of the game's own samples.
+    - Converted automatically to a format the game supports.
+    - Sampler parameters are automatically converted into a format the game supports
+        - If the game doesn't support certain values, duckmidi bakes it into the export.
+        - Anything the game *can't* do is given a clear warning.
+
+## **Repository History**
+- 'Export to Repository' now remembers every change it makes to your local repository.
+    - The 'History' drawer beside the export window can revert a single export or all of them, no matter how many songs, banks and samples it's modified.
+        - **Songs that share samples or memory settings are kept intact.** Say, if you changed a sample during an export, then removed the export. All sequences which use that sample afterwards stay intact.
+    - This replaces the old 'Revert repository export' button.
+    - **Still in active testing** Please be patient with the tracking tool, and back up your projects accordingly.
+
+## Current Known Considerations/Bugs
+
+- Custom samples for percussion in duckmidi playback don't work as expected.
+    - You can still set them as percussion instruments during your export.
+- Repository history will refuse to export if it detects a .bkp file for files it edits.
+    - If this happens, and the file was not explicitly modified by you, restore the .bkp and re-initialize the repository history.
+        - This will reset all history and set the 'source of truth' to your current modifications layout.
+
+## Changes
+
+1. Opening a .duck file in your file manager launches duckmidi and loads the project.
+2. New "Background Color" setting in preferences.
+3. Text switches between light/dark lettering depending on background color.
+4. Moved playlist tools to the right edge of the playlist title bar.
+5. BPM shows tempo changes during playback (similar to the mixer volume/pan); still edits only the starting BPM.
+6. The Record button turns red when recording is enabled.
+7. Modified 'Preferences' window size logic.
+8. Allow more mouse buttons to be used in keyboard shortcuts.
+9. Opening a file asks about unsaved changes *after* you choose the file, not before.
+10. Modified 'Piano Roll' hide/show logic.
+11. Modified channel/instrument creation behavior,
+    - Use **+ New** in the playlist to choose a free MIDI channel, its type (melody/drums), and its instrument.
+12. Right-click a playlist row to edit/remove its channel, with a confirmation if it contains a pattern.
+13. Modified keyboard shortcut logic relating to creation/deletion of patterns.
+14. Keypad shortcuts step through edited patterns in both pattern categories.
+15. MIDI events are now grouped, reducing visual clutter. 
+    - A discrete bar holding all events which are contained where previous independent MIDI events were section.
+    - Click these bars to show only the events contained in that section.
+16. Modified MIDI events visual structure, should be simpler to edit.
+17. MIDI import removes redundant copies of MIDI events and merges identical program changes.
+18. Instrument selections preview on the playing song while selecting.
+19. Playlist automation expanders are visually distinct when they *contain* automation patterns.
+21. The mixer only shows a channel's route 0 strip if a channel uses it.
+24. Changed export window shown warning & errors, should be simpler and less cluttered.
+29. Export plugins now use plugin ABI 11, and any custom export plugin can use the repository history.
+32. M64 songs with loop points keep playing in SM64 after the loop start, instead of going silent there.
+33. Modified MIDI export staged compression and song simplification
+    - You should be able to fit larger songs within the game, the staged implementation minimizing audible losses as duckmidi exports (unless necessary).
+    - You should also be less likely to run into a song which won't export *at all*.
+
 ## 0.11.3
 
 1. OoT 'Export to Repository' removes songs earlier exports left behind after they were replaced, freeing their soundfonts; 'Revert repository export' brings them back.

@@ -1,4 +1,5 @@
 #include "audio.h"
+#include "audio_samples.h"
 #include "rtmidi_c.h"
 #include "text/en.h"
 #include <SDL3/SDL.h>
@@ -11,11 +12,16 @@
 #define RATE 48000
 #define BLOCK 64
 #define QUEUE 8192
+#define LIVE_SAMPLE_BANKS 4
+/* Frames of sample gain rewritten per audio lock, so a long sample never delays a buffer. */
+#define GAIN_SLICE_FRAMES 65536
+#define SAMPLE_ONE_SHOT UINT32_MAX
 
 typedef struct {
     uint8_t status, a, b;
     uint8_t port;
     bool live_only;
+    uint16_t feedback_part; /* One-based project part for isolated edit feedback. */
 } Command;
 
 typedef struct {
@@ -28,12 +34,27 @@ typedef struct {
     fluid_settings_t *settings;
     fluid_synth_t *synth;
     int tail;
+    unsigned sample_banks;
+    DmSamplePedals sample_pedals;
 } Synth;
+
+typedef struct {
+    Synth voice;
+    DmSampleSynth *bank;
+    unsigned preset;
+    int key, release_in;
+    int keyboard_route;
+    uint32_t keys[128], song_keys[128];
+    bool song_held[128];
+    int song_part;
+    bool repeating, active, keyboard, sustained, looping;
+} SampleAudition;
 
 typedef struct {
     uint8_t cc[DM_PARTS][128], program[DM_PARTS], bend[DM_PARTS][2], notes[DM_PARTS][128];
     uint8_t pressure[DM_PARTS], poly[DM_PARTS][128];
     uint8_t held[DM_PARTS][128], sostenuto[DM_PARTS][128];
+    uint16_t sample[DM_PARTS][128];
 } ChaseState;
 
 typedef struct {
@@ -51,10 +72,15 @@ typedef struct RetiredSchedule {
 struct DmAudio {
     SDL_AudioStream *stream;
     Synth live, keyboard, feedback;
+    SampleAudition sample_audition;
     Synth *port_live[DM_NOTE_PORTS], *prepared_ports[DM_NOTE_PORTS];
     bool used_ports[DM_NOTE_PORTS], job_ports[DM_NOTE_PORTS];
     DmChannel keyboard_channels[16], keyboard_applied[16];
+    DmSamplePatchState keyboard_patch[16];
+    uint8_t keyboard_programs[DM_PARTS];
+    uint32_t keyboard_sample_id[16][128];
     int keyboard_override[16];
+    bool keyboard_override_drums[16];
     bool keyboard_config, keyboard_panic;
     int keyboard_tail;
     DmSchedule schedule;
@@ -62,6 +88,11 @@ struct DmAudio {
     size_t release_count, release_capacity;
     double release_end, seek_end[DM_PARTS][128], loop_note_end[DM_PARTS][128];
     uint64_t note_token[DM_PARTS][128], token_serial;
+    uint32_t note_sample_id[DM_PARTS][128], sample_serial;
+    DmLiveSampleBank *sample_banks[LIVE_SAMPLE_BANKS];
+    int sample_bank;
+    bool sample_bank_dirty;
+    char sample_warning[256];
     int live_program[DM_PARTS];
     RetiredSchedule *retired;
     size_t cursor, beat_cursor;
@@ -79,6 +110,8 @@ struct DmAudio {
     int analyzer_cursor, analyzer_count;
     CommandQueue preview, midi, feedback_queue;
     int feedback_key, feedback_program, feedback_fraction, feedback_tail;
+    uint16_t feedback_part;
+    uint32_t feedback_sample_id;
     SDL_Thread *worker, *midi_thread;
     RtMidiOutPtr device;
     SDL_Mutex *device_lock;
@@ -91,6 +124,8 @@ struct DmAudio {
     DmAudioOptions render_options;
     Synth prepared, prepared_keyboard, prepared_feedback;
     DmSchedule render_schedule;
+    DmBytes render_project;
+    unsigned render_missing_samples;
     SDL_AtomicInt progress, cancel;
     ChaseState state, loop_state;
     /* Volume and pan each part plays with now, shown by the mixer (255: not set). */
@@ -218,16 +253,26 @@ static void send_synth(fluid_synth_t *s, uint8_t status, uint8_t a, uint8_t b) {
     }
 }
 
+static void send_route(Synth *s, uint8_t status, uint8_t a, uint8_t b) {
+    if ((status & MIDI_STATUS_MASK) == MIDI_CONTROL) {
+        dm_sample_pedal_cc(&s->sample_pedals, s->synth, status & MIDI_CHANNEL_MASK, a, b);
+    } else {
+        send_synth(s->synth, status, a, b);
+    }
+}
+
 static Synth *live_port(DmAudio *a, unsigned port) {
     return port ? a->port_live[port] : &a->live;
 }
 
 static void reset_live_ports(DmAudio *a) {
     fluid_synth_system_reset(a->live.synth);
+    memset(&a->live.sample_pedals, 0, sizeof(a->live.sample_pedals));
 
     for (unsigned p = 1; p < DM_NOTE_PORTS; p++) {
         if (a->port_live[p]) {
             fluid_synth_system_reset(a->port_live[p]->synth);
+            memset(&a->port_live[p]->sample_pedals, 0, sizeof(a->port_live[p]->sample_pedals));
         }
     }
 }
@@ -251,7 +296,20 @@ static void copy_chase(ChaseState *dst, const ChaseState *src, const bool *used)
     PART_COPY(poly);
     PART_COPY(held);
     PART_COPY(sostenuto);
+    PART_COPY(sample);
 #undef PART_COPY
+}
+
+static void instrument_preview_control(DmAudio *a, int part, uint8_t status, uint8_t first,
+                                       uint8_t second) {
+    SampleAudition *p = &a->sample_audition;
+    int type = status & MIDI_STATUS_MASK;
+
+    if (a->monitor && p->keyboard && p->song_part == part && status < MIDI_SYSTEM &&
+        type != MIDI_PROGRAM && type != MIDI_NOTE_ON && type != MIDI_NOTE_OFF &&
+        !(type == MIDI_CONTROL && (first == MIDI_CC_BANK || first == MIDI_CC_BANK_LSB))) {
+        send_route(&p->voice, (uint8_t)(type | 1), first, second);
+    }
 }
 
 static void send_live(DmAudio *a, int part, uint8_t status, uint8_t first, uint8_t second) {
@@ -260,17 +318,19 @@ static void send_live(DmAudio *a, int part, uint8_t status, uint8_t first, uint8
     }
 
     if (a->monitor) {
+        instrument_preview_control(a, part, status, first, second);
+
         Synth *s = live_port(a, (unsigned)part / 16);
 
         if (s) {
-            send_synth(s->synth, status, first, second);
+            send_route(s, status, first, second);
         }
     }
 }
 
 static void send_event(Synth *s, const DmScheduled *e) {
     if (e->status < MIDI_SYSTEM) {
-        send_synth(s->synth, e->status, e->a, e->b);
+        send_route(s, e->status, e->a, e->b);
         return;
     }
 
@@ -282,7 +342,103 @@ static void send_event(Synth *s, const DmScheduled *e) {
         }
 
         fluid_synth_sysex(s->synth, (const char *)e->sysex.data, (int)n, NULL, NULL, NULL, 0);
+        if (n >= 4 && e->sysex.data[0] == 0x7e && e->sysex.data[2] == 9 &&
+            (e->sysex.data[3] == 1 || e->sysex.data[3] == 3)) {
+            memset(&s->sample_pedals, 0, sizeof(s->sample_pedals));
+        }
     }
+}
+
+static uint32_t sample_start(DmAudio *a, Synth *s, uint32_t preset, int channel, int key,
+                             int velocity) {
+    if (!preset || a->sample_bank < 0) {
+        fluid_synth_noteon(s->synth, channel, key, velocity);
+        return 0;
+    }
+
+    /* FluidSynth's ordinary note-on IDs occupy a separate range in this session. */
+    a->sample_serial = a->sample_serial % (UINT32_MAX / 4 - 1) + 1;
+    unsigned id = UINT32_C(0x80000000) | a->sample_serial;
+    DmSampleStart result = dm_live_sample_bank_start(a->sample_banks[a->sample_bank], s->synth,
+                                                     preset, id, channel, key, velocity);
+
+    if (result == DM_SAMPLE_STOCK) {
+        fluid_synth_noteon(s->synth, channel, key, velocity);
+        return 0;
+    }
+
+    s->sample_banks |= 1u << a->sample_bank;
+
+    if (result == DM_SAMPLE_RELEASE) {
+        dm_sample_pedal_on(&s->sample_pedals, id, (unsigned)channel);
+    }
+
+    return result == DM_SAMPLE_ONE_SHOT ? SAMPLE_ONE_SHOT : id;
+}
+
+static void sample_stop(Synth *s, uint32_t id, int channel, int key) {
+    if (!id) {
+        fluid_synth_noteoff(s->synth, channel, key);
+    } else if (id != SAMPLE_ONE_SHOT) {
+        dm_sample_pedal_off(&s->sample_pedals, s->synth, id);
+    }
+}
+
+static void song_note_on(DmAudio *a, int part, int key, int velocity, uint16_t preset) {
+    Synth *s = live_port(a, (unsigned)part / 16);
+
+    if (a->monitor && s) {
+        int c = part & MIDI_CHANNEL_MASK;
+        uint32_t previous = a->note_sample_id[part][key];
+
+        if (previous) {
+            sample_stop(s, previous, c, key);
+        }
+
+        SampleAudition *p = &a->sample_audition;
+
+        if (p->keyboard && p->song_part == part) {
+            if (p->song_held[key]) {
+                sample_stop(&p->voice, p->song_keys[key], 1, key);
+            }
+
+            DmSampleStart result = p->bank
+                                       ? dm_sample_synth_start(p->bank, p->voice.synth, p->preset,
+                                                               key + 256, 1, key, velocity)
+                                       : DM_SAMPLE_STOCK;
+            p->song_keys[key] = result == DM_SAMPLE_ONE_SHOT  ? SAMPLE_ONE_SHOT
+                                : result == DM_SAMPLE_RELEASE ? (unsigned)key + 256
+                                                              : 0;
+
+            if (result == DM_SAMPLE_STOCK) {
+                fluid_synth_noteon(p->voice.synth, 1, key, velocity);
+            } else if (result == DM_SAMPLE_RELEASE) {
+                dm_sample_pedal_on(&p->voice.sample_pedals, key + 256, 1);
+            }
+
+            p->song_held[key] = true;
+            a->note_sample_id[part][key] = 0;
+        } else {
+            a->note_sample_id[part][key] = sample_start(a, s, preset, c, key, velocity);
+        }
+    }
+}
+
+static void song_note_off(DmAudio *a, int part, int key) {
+    Synth *s = live_port(a, (unsigned)part / 16);
+
+    if (a->monitor && s) {
+        SampleAudition *p = &a->sample_audition;
+
+        if (p->keyboard && p->song_part == part && p->song_held[key]) {
+            sample_stop(&p->voice, p->song_keys[key], 1, key);
+            p->song_held[key] = false;
+        } else {
+            sample_stop(s, a->note_sample_id[part][key], part & MIDI_CHANNEL_MASK, key);
+        }
+    }
+
+    a->note_sample_id[part][key] = 0;
 }
 
 static void release_push(DmAudio *a, NoteRelease item) {
@@ -335,8 +491,7 @@ static void release_due(DmAudio *a) {
         NoteRelease item = release_pop(a);
 
         if (a->note_token[item.channel][item.key] == item.token) {
-            send_live(a, item.channel, MIDI_NOTE_OFF | (item.channel & MIDI_CHANNEL_MASK), item.key,
-                      0);
+            song_note_off(a, item.channel, item.key);
             queue_put(&a->midi,
                       (Command){MIDI_NOTE_OFF | (item.channel & MIDI_CHANNEL_MASK), item.key, 0});
         }
@@ -350,7 +505,16 @@ static double playback_end(DmAudio *a) {
 static void silence(DmAudio *a) {
     a->release_count = 0;
     a->release_end = 0;
+
+    if (a->sample_audition.keyboard) {
+        fluid_synth_all_sounds_off(a->sample_audition.voice.synth, 1);
+        memset(a->sample_audition.song_held, 0, sizeof(a->sample_audition.song_held));
+    }
+
     memset(a->live_program, 255, sizeof(a->live_program));
+    if (a->live.sample_banks) {
+        memset(a->note_sample_id[0], 0, 16 * sizeof(a->note_sample_id[0]));
+    }
 
     for (int c = 0; c < 16; ++c) {
         fluid_synth_all_sounds_off(a->live.synth, c);
@@ -362,6 +526,12 @@ static void silence(DmAudio *a) {
         }
 
         queue_put(&a->midi, (Command){MIDI_CONTROL | c, MIDI_CC_SOUND_OFF, 0});
+    }
+
+    for (unsigned port = 1; port < DM_NOTE_PORTS; ++port) {
+        if (a->port_live[port] && a->port_live[port]->sample_banks) {
+            memset(a->note_sample_id[port * 16], 0, 16 * sizeof(a->note_sample_id[0]));
+        }
     }
 }
 
@@ -384,6 +554,8 @@ static bool parameter_control(int cc) {
 }
 
 static void replay_event(DmAudio *a, const DmScheduled *event) {
+    instrument_preview_control(a, event->port * 16 + (event->status & MIDI_CHANNEL_MASK),
+                               event->status, event->a, event->b);
     if ((event->status & MIDI_STATUS_MASK) == MIDI_PROGRAM) {
         a->live_program[event->port * 16 + (event->status & MIDI_CHANNEL_MASK)] = event->a;
     }
@@ -433,7 +605,7 @@ static void chase_parameters(DmAudio *a) {
 
 static void chase_voice_on(DmAudio *a, int c, int key) {
     Command on = {MIDI_NOTE_ON | (c & MIDI_CHANNEL_MASK), key, a->state.notes[c][key]};
-    send_live(a, c, on.status, on.a, on.b);
+    song_note_on(a, c, key, on.b, a->state.sample[c][key]);
 
     if (a->state.held[c][key]) {
         a->note_token[c][key] = ++a->token_serial;
@@ -480,7 +652,7 @@ static void chase_voices(DmAudio *a, int c) {
 
             if (!a->state.held[c][key]) {
                 Command off = {MIDI_NOTE_OFF | (c & MIDI_CHANNEL_MASK), key, 0};
-                send_live(a, c, off.status, off.a, 0);
+                song_note_off(a, c, key);
                 queue_put(&a->midi, off);
             }
         }
@@ -642,6 +814,7 @@ static bool dispatch_note(DmAudio *a, const DmScheduled *event) {
 
         a->note_token[channel][event->a] = ++a->token_serial;
         release_push(a, (NoteRelease){event->note_end, channel, event->a, a->token_serial});
+        song_note_on(a, channel, event->a, event->b, event->note_sample);
     }
 
     return true;
@@ -665,9 +838,11 @@ static void dispatch_due(DmAudio *a) {
         if (event->status < MIDI_SYSTEM) {
             mix_track(a, event->port * 16 + (event->status & MIDI_CHANNEL_MASK), event->status,
                       event->a, event->b);
+            instrument_preview_control(a, event->port * 16 + (event->status & MIDI_CHANNEL_MASK),
+                                       event->status, event->a, event->b);
         }
 
-        if (a->monitor) {
+        if (a->monitor && (event->status & MIDI_STATUS_MASK) != MIDI_NOTE_ON) {
             Synth *s = live_port(a, event->port);
 
             if (s) {
@@ -788,11 +963,71 @@ static void wrap_playback(DmAudio *a) {
 static void keyboard_configure(DmAudio *a);
 
 static void preview_command(DmAudio *a, Command cmd) {
-    if (a->monitor) {
-        send_synth(a->keyboard.synth, cmd.status, cmd.a, cmd.b);
-        a->keyboard_tail = RATE * 2;
+    SampleAudition *preview = &a->sample_audition;
+
+    if (preview->keyboard && preview->keyboard_route == (cmd.status & MIDI_CHANNEL_MASK)) {
         int type = cmd.status & MIDI_STATUS_MASK;
-        DmChannel *applied = &a->keyboard_applied[cmd.status & MIDI_CHANNEL_MASK];
+
+        if (type == MIDI_NOTE_ON && cmd.b) {
+            if (preview->bank) {
+                if (preview->keys[cmd.a]) {
+                    sample_stop(&preview->voice, preview->keys[cmd.a], 0, cmd.a);
+                }
+
+                DmSampleStart start =
+                    dm_sample_synth_start(preview->bank, preview->voice.synth, preview->preset,
+                                          cmd.a + 2, 0, cmd.a, cmd.b);
+                preview->keys[cmd.a] = start == DM_SAMPLE_ONE_SHOT ? SAMPLE_ONE_SHOT : cmd.a + 2;
+
+                if (start == DM_SAMPLE_RELEASE) {
+                    dm_sample_pedal_on(&preview->voice.sample_pedals, cmd.a + 2, 0);
+                }
+            } else {
+                send_synth(preview->voice.synth, MIDI_NOTE_ON, cmd.a, cmd.b);
+            }
+        } else if (type == MIDI_NOTE_OFF || (type == MIDI_NOTE_ON && !cmd.b)) {
+            if (!preview->bank || preview->keys[cmd.a]) {
+                sample_stop(&preview->voice, preview->keys[cmd.a], 0, cmd.a);
+            }
+            preview->keys[cmd.a] = 0;
+        } else if (type != MIDI_PROGRAM) {
+            send_route(&preview->voice, (uint8_t)type, cmd.a, cmd.b);
+        }
+
+        return;
+    }
+
+    if (a->monitor) {
+        a->keyboard_tail = RATE * 2;
+        int type = cmd.status & MIDI_STATUS_MASK, channel = cmd.status & MIDI_CHANNEL_MASK;
+        DmChannel *applied = &a->keyboard_applied[channel];
+        DmSamplePatchState *patch = &a->keyboard_patch[channel];
+        dm_sample_patch_state_event(patch, cmd.status, cmd.a, cmd.b);
+
+        if (type == MIDI_NOTE_ON || type == MIDI_NOTE_OFF) {
+            uint32_t *id = &a->keyboard_sample_id[channel][cmd.a];
+
+            if (type == MIDI_NOTE_ON && cmd.b) {
+                int part = a->keyboard_parts[channel];
+                DmPatchKey route = {patch->selected, part / 16, part & MIDI_CHANNEL_MASK,
+                                    patch->program, patch->drums};
+                uint32_t preset =
+                    a->sample_bank < 0
+                        ? 0
+                        : dm_live_sample_bank_patch(a->sample_banks[a->sample_bank], route);
+
+                if (*id) {
+                    sample_stop(&a->keyboard, *id, channel, cmd.a);
+                }
+
+                *id = sample_start(a, &a->keyboard, preset, channel, cmd.a, cmd.b);
+            } else {
+                sample_stop(&a->keyboard, *id, channel, cmd.a);
+                *id = 0;
+            }
+        } else {
+            send_route(&a->keyboard, cmd.status, cmd.a, cmd.b);
+        }
 
         if (type == MIDI_PROGRAM) {
             applied->program = cmd.a;
@@ -826,6 +1061,7 @@ static void preview_commands(DmAudio *a) {
         if (cmd.status == 0xf1) {
             int channel = cmd.a;
             a->keyboard_override[channel] = cmd.b == 255 ? -1 : cmd.b;
+            a->keyboard_override_drums[channel] = cmd.port != 0;
             a->keyboard_config = true;
             keyboard_configure(a);
             continue;
@@ -850,14 +1086,26 @@ static void keyboard_configure(DmAudio *a) {
     for (int c = 0; c < 16; ++c) {
         DmChannel next = a->keyboard_channels[c], *old = &a->keyboard_applied[c];
         bool override = a->keyboard_override[c] >= 0;
-        int program = override ? a->keyboard_override[c] : next.program < 0 ? 0 : next.program;
+        int part = a->keyboard_parts[c];
+        int program = override ? a->keyboard_override[c] : a->keyboard_programs[part];
+        next.drums = override ? a->keyboard_override_drums[c] : next.drums;
 
         if (!override && !(a->preview_mask & (1u << c))) {
             next.volume = 0;
         }
 
-        if (old->program != program) {
+        bool type_changed = old->program < 0 || old->drums != next.drums;
+
+        if (type_changed) {
+            fluid_synth_set_channel_type(a->keyboard.synth, c,
+                                         next.drums ? CHANNEL_TYPE_DRUM : CHANNEL_TYPE_MELODIC);
+            fluid_synth_bank_select(a->keyboard.synth, c, next.drums ? 128 : 0);
+            a->keyboard_patch[c] = (DmSamplePatchState){.drums = next.drums};
+        }
+
+        if (type_changed || old->program != program) {
             send_synth(a->keyboard.synth, MIDI_PROGRAM | c, program, 0);
+            dm_sample_patch_state_event(&a->keyboard_patch[c], MIDI_PROGRAM, program, 0);
         }
 
         if (old->volume != next.volume) {
@@ -881,6 +1129,8 @@ static void keyboard_silence(DmAudio *a) {
     }
 
     a->keyboard_tail = 0;
+    memset(&a->keyboard.sample_pedals, 0, sizeof(a->keyboard.sample_pedals));
+    memset(a->keyboard_sample_id, 0, sizeof(a->keyboard_sample_id));
 }
 
 static void keyboard_render(DmAudio *a, float *out, int frames) {
@@ -913,9 +1163,10 @@ static void keyboard_render(DmAudio *a, float *out, int frames) {
 
 static void feedback_stop(DmAudio *a) {
     if (a->feedback_key >= 0) {
-        fluid_synth_noteoff(a->feedback.synth, a->feedback_program == 128 ? MIDI_DRUM_CHANNEL : 0,
-                            a->feedback_key);
+        sample_stop(&a->feedback, a->feedback_sample_id,
+                    a->feedback_program == 128 ? MIDI_DRUM_CHANNEL : 0, a->feedback_key);
         a->feedback_key = -1;
+        a->feedback_sample_id = 0;
     }
 }
 
@@ -933,12 +1184,14 @@ static void feedback_commands(DmAudio *a) {
         }
 
         int channel = cmd.status == 128 ? MIDI_DRUM_CHANNEL : 0;
-        bool attack = a->feedback_key != cmd.a || a->feedback_program != cmd.status;
+        bool attack = a->feedback_key != cmd.a || a->feedback_program != cmd.status ||
+                      a->feedback_part != cmd.feedback_part;
 
         if (attack) {
             feedback_stop(a);
             a->feedback_program = cmd.status;
             a->feedback_key = cmd.a;
+            a->feedback_part = cmd.feedback_part;
             fluid_synth_program_change(a->feedback.synth, channel,
                                        cmd.status == 128 ? 0 : cmd.status);
         }
@@ -948,7 +1201,16 @@ static void feedback_commands(DmAudio *a) {
                                MIDI_BEND_CENTER + (int)cmd.b * MIDI_BEND_CENTER / 256);
 
         if (attack) {
-            fluid_synth_noteon(a->feedback.synth, channel, cmd.a, 100);
+            uint32_t preset = 0;
+
+            if (a->sample_bank >= 0 && cmd.feedback_part) {
+                int part = cmd.feedback_part - 1;
+                DmPatchKey route = {0, part / 16, part & MIDI_CHANNEL_MASK,
+                                    cmd.status == 128 ? 0 : cmd.status, cmd.status == 128};
+                preset = dm_live_sample_bank_patch(a->sample_banks[a->sample_bank], route);
+            }
+
+            a->feedback_sample_id = sample_start(a, &a->feedback, preset, channel, cmd.a, 100);
         }
 
         a->feedback_fraction = cmd.b;
@@ -970,6 +1232,51 @@ static void feedback_render(DmAudio *a, float *out, int frames) {
         }
 
         a->feedback_tail -= frames;
+    }
+}
+
+static void drain_muted_samples(Synth *s, int frames) {
+    if (s && s->sample_banks && fluid_synth_get_active_voice_count(s->synth)) {
+        float discard[BLOCK * 2];
+        render(s, discard, frames, NULL);
+    }
+}
+
+static void sample_audition_start(SampleAudition *preview) {
+    dm_sample_synth_start(preview->bank, preview->voice.synth, preview->preset, 1, 0, preview->key,
+                          100);
+}
+
+static void sample_audition_render(SampleAudition *preview, float *out, int frames) {
+    if (!preview->active) {
+        return;
+    }
+
+    float sound[BLOCK * 2];
+    render(&preview->voice, sound, frames, NULL);
+
+    for (int i = 0; i < frames * 2; ++i) {
+        out[i] = fmaxf(-1, fminf(1, out[i] + sound[i]));
+    }
+
+    if (preview->release_in > 0) {
+        preview->release_in -= frames;
+
+        if (preview->release_in <= 0) {
+            if (preview->bank) {
+                fluid_synth_stop(preview->voice.synth, 1);
+            } else {
+                fluid_synth_noteoff(preview->voice.synth, 0, preview->key);
+            }
+        }
+    }
+
+    if (!preview->keyboard && !fluid_synth_get_active_voice_count(preview->voice.synth)) {
+        if (preview->repeating) {
+            sample_audition_start(preview);
+        } else {
+            preview->active = false;
+        }
     }
 }
 
@@ -1028,8 +1335,16 @@ static void run_block(DmAudio *a, float *out, int frames) {
             feedback_render(a, out + offset * 2, n);
         } else {
             memset(out + offset * 2, 0, (size_t)n * 2 * sizeof(float));
+            drain_muted_samples(&a->live, n);
+            drain_muted_samples(&a->keyboard, n);
+            drain_muted_samples(&a->feedback, n);
+
+            for (unsigned port = 1; port < DM_NOTE_PORTS; ++port) {
+                drain_muted_samples(a->port_live[port], n);
+            }
         }
 
+        sample_audition_render(&a->sample_audition, out + offset * 2, n);
         render_click(a, out, offset, n);
 
         if (a->playing) {
@@ -1152,6 +1467,7 @@ DmAudio *dm_audio_create(char *error, size_t cap) {
     memset(a->mix_pan, 255, sizeof(a->mix_pan));
 
     a->device_index = -1;
+    a->sample_bank = -1;
     a->preview_mask = UINT16_MAX;
     a->monitor = true;
     a->click_bpm = 120;
@@ -1169,6 +1485,7 @@ DmAudio *dm_audio_create(char *error, size_t cap) {
         a->keyboard_channels[c].program = 0;
         a->keyboard_channels[c].volume = 100;
         a->keyboard_channels[c].pan = 64;
+        a->keyboard_channels[c].drums = c == MIDI_DRUM_CHANNEL;
         a->keyboard_override[c] = -1;
         a->keyboard_parts[c] = c;
         a->keyboard_applied[c].program = -1;
@@ -1248,10 +1565,18 @@ void dm_audio_destroy(DmAudio *a) {
     synth_free(&a->prepared);
     synth_free(&a->prepared_keyboard);
     synth_free(&a->prepared_feedback);
+    synth_free(&a->sample_audition.voice);
+    dm_sample_synth_free(a->sample_audition.bank);
     free_port_synths(a->port_live);
     free_port_synths(a->prepared_ports);
+
+    for (unsigned i = 0; i < LIVE_SAMPLE_BANKS; ++i) {
+        dm_live_sample_bank_free(a->sample_banks[i]);
+    }
+
     dm_schedule_free(&a->schedule);
     dm_schedule_free(&a->render_schedule);
+    dm_bytes_free(&a->render_project);
     free_retired(a);
     free(a->releases);
     free(a);
@@ -1382,6 +1707,7 @@ static void cache_event(DmAudio *a, const DmScheduled *event) {
     case MIDI_NOTE_ON:
         if (event->b) {
             a->state.notes[c][event->a] = event->b;
+            a->state.sample[c][event->a] = event->note_sample;
             a->state.held[c][event->a] = 1;
             a->seek_end[c][event->a] = event->note_end;
         } else {
@@ -1483,10 +1809,16 @@ static uint16_t project_preview_mask(const DmProject *p) {
     return mask;
 }
 
-static bool prepare_note_ends(DmSchedule *schedule) {
+static bool prepare_note_ends(DmSchedule *schedule, const DmProject *project,
+                              const DmPatternPreview *preview, const DmLiveSampleBank *bank) {
     size_t (*head)[128] = malloc(DM_PARTS * sizeof(*head)),
            (*tail)[128] = malloc(DM_PARTS * sizeof(*tail));
     uint8_t programs[DM_PARTS] = {0};
+    DmSamplePatchState patches[DM_PARTS];
+
+    if (bank) {
+        dm_sample_patch_state_init(project, patches);
+    }
 
     if (!head || !tail) {
         free(head);
@@ -1508,15 +1840,37 @@ static bool prepare_note_ends(DmSchedule *schedule) {
         DmScheduled *event = &schedule->items[i];
         int type = event->status & MIDI_STATUS_MASK,
             c = event->port * 16 + (event->status & MIDI_CHANNEL_MASK), key = event->a;
+        int source_channel = preview && preview->program >= 0 ? preview->channel
+                                                             : c & MIDI_CHANNEL_MASK;
+        int source_part = event->port * 16 + source_channel;
 
         if (type == MIDI_PROGRAM) {
             programs[c] = event->a;
+        }
+
+        if (bank && event->status < MIDI_SYSTEM) {
+            dm_sample_patch_state_event(&patches[source_part], event->status, event->a, event->b);
+        } else if (bank && gm_reset(event)) {
+            for (int ch = 0; ch < 16; ++ch) {
+                DmSamplePatchState *patch = &patches[event->port * 16 + ch];
+                *patch = (DmSamplePatchState){.drums = ch == MIDI_DRUM_CHANNEL};
+            }
         }
 
         if (type == MIDI_NOTE_ON && event->b) {
             event->note_program = programs[c];
             event->note_end = schedule->duration;
             links[i] = SIZE_MAX;
+
+            if (bank) {
+                DmSamplePatchState patch = patches[source_part];
+                bool drums = preview && preview->program >= 0 && !preview->follow
+                                 ? preview->program == 128
+                                 : patch.drums;
+                DmPatchKey route = {patch.selected, event->port, source_channel, patch.program,
+                                    drums};
+                event->note_sample = (uint16_t)dm_live_sample_bank_patch(bank, route);
+            }
 
             if (head[c][key] == SIZE_MAX) {
                 head[c][key] = i;
@@ -1648,27 +2002,136 @@ static bool prepare_ports(DmAudio *a, const bool *used, Synth **fresh, char *err
     return true;
 }
 
-static bool publish_schedule(DmAudio *a, const DmProject *p, DmSchedule next, double seconds,
-                             bool playing, bool editing, char *error, size_t cap) {
+static unsigned sample_bank_users(Synth *s) {
+    if (s && s->sample_banks && !fluid_synth_get_active_voice_count(s->synth)) {
+        s->sample_banks = 0;
+    }
+
+    return s ? s->sample_banks : 0;
+}
+
+static void collect_sample_banks(DmAudio *a) {
+    unsigned retired = 0;
+
+    for (int i = 0; i < LIVE_SAMPLE_BANKS; ++i) {
+        if (i != a->sample_bank && a->sample_banks[i]) {
+            retired |= 1u << i;
+        }
+    }
+
+    if (!retired) {
+        return;
+    }
+
+    if (a->stream) {
+        SDL_LockAudioStream(a->stream);
+    }
+
+    /* FluidSynth 2.5.4 counts overflow voices as active until they drop their samples. */
+    unsigned used = sample_bank_users(&a->live) | sample_bank_users(&a->keyboard) |
+                    sample_bank_users(&a->feedback);
+
+    for (unsigned port = 1; port < DM_NOTE_PORTS; ++port) {
+        used |= sample_bank_users(a->port_live[port]);
+    }
+
+    if (a->stream) {
+        SDL_UnlockAudioStream(a->stream);
+    }
+
+    for (int i = 0; i < LIVE_SAMPLE_BANKS; ++i) {
+        if ((retired & ~used) & (1u << i)) {
+            dm_live_sample_bank_free(a->sample_banks[i]);
+            a->sample_banks[i] = NULL;
+        }
+    }
+}
+
+static void DME_CALL live_sample_warning(void *user, uint32_t severity, uint32_t flags,
+                                        const char *message) {
+    (void)flags;
+    char *warning = user;
+
+    if (severity == DME_WARNING && !*warning) {
+        snprintf(warning, sizeof(((DmAudio *)0)->sample_warning), "%s", message);
+    }
+}
+
+static bool publish_schedule(DmAudio *a, const DmProject *p, const DmPatternPreview *preview,
+                             DmSchedule next, double seconds, bool playing, bool editing,
+                             char *error, size_t cap) {
+    collect_sample_banks(a);
+    int slot = a->sample_bank;
+    DmLiveSampleBank *bank = slot < 0 ? NULL : a->sample_banks[slot], *fresh_bank = NULL;
+    char warning[sizeof(a->sample_warning)] = {0};
+
+    if (a->sample_bank_dirty || !dm_live_sample_bank_matches(bank, p)) {
+        slot = -1;
+        bank = NULL;
+
+        if (p->patch_replacement_count) {
+            for (int i = 0; i < LIVE_SAMPLE_BANKS; ++i) {
+                if (!a->sample_banks[i]) {
+                    slot = i;
+                    break;
+                }
+            }
+
+            if (slot < 0) {
+                snprintf(error, cap, "%s", DM_TEXT_SAMPLE_AUDIO_BUSY);
+                dm_schedule_free(&next);
+                return false;
+            }
+
+            DmeHost host = {.user = warning, .diagnostic = live_sample_warning};
+            bank = fresh_bank = dm_live_sample_bank_create(p, &host);
+
+            if (!bank) {
+                snprintf(error, cap, "%s", DM_TEXT_SAMPLE_AUDIO_PLAYBACK);
+                dm_schedule_free(&next);
+                return false;
+            }
+        }
+    }
+
     /* Prepare seek state outside the audio lock. Swap only bounded state in the critical section.
      */
     DmAudio *scratch = calloc(1, sizeof(*scratch));
+    DmAudio *loop = NULL;
     RetiredSchedule *retired = calloc(1, sizeof(*retired));
 
-    if (!scratch || !retired || !prepare_note_ends(&next)) {
+    if (!scratch || !retired || !prepare_note_ends(&next, p, preview, bank)) {
         free(scratch);
         free(retired);
+        dm_live_sample_bank_free(fresh_bank);
         dm_schedule_free(&next);
         return false;
     }
 
     prepare_chase(scratch, &next, seconds);
+
+    if (a->loop_enabled) {
+        loop = calloc(1, sizeof(*loop));
+
+        if (!loop) {
+            free(scratch);
+            free(retired);
+            dm_live_sample_bank_free(fresh_bank);
+            dm_schedule_free(&next);
+            return false;
+        }
+
+        prepare_chase(loop, &next, a->loop_start);
+    }
+
     size_t capacity;
     NoteRelease *releases = prepare_release_storage(a, next.count, &capacity);
 
     if (!releases) {
         free(scratch);
         free(retired);
+        free(loop);
+        dm_live_sample_bank_free(fresh_bank);
         dm_schedule_free(&next);
         return false;
     }
@@ -1679,6 +2142,8 @@ static bool publish_schedule(DmAudio *a, const DmProject *p, DmSchedule next, do
         free(releases);
         free(scratch);
         free(retired);
+        free(loop);
+        dm_live_sample_bank_free(fresh_bank);
         dm_schedule_free(&next);
         return false;
     }
@@ -1696,6 +2161,18 @@ static bool publish_schedule(DmAudio *a, const DmProject *p, DmSchedule next, do
     a->release_capacity = capacity;
     DmSchedule old = a->schedule;
     a->schedule = next;
+
+    if (slot != a->sample_bank) {
+        if (fresh_bank) {
+            a->sample_banks[slot] = fresh_bank;
+        }
+
+        a->sample_bank = slot;
+        memcpy(a->sample_warning, warning, sizeof(warning));
+    }
+
+    a->sample_bank_dirty = false;
+
     a->freewheel_rate = next.final_rate;
     a->freewheel_click = next.next_beat;
 
@@ -1713,6 +2190,14 @@ static bool publish_schedule(DmAudio *a, const DmProject *p, DmSchedule next, do
 
     memcpy(a->used_ports, scratch->used_ports, sizeof(a->used_ports));
 
+    if (loop) {
+        copy_chase(&a->loop_state, &loop->state, a->used_ports);
+        copy_part_rows(a->loop_note_end, loop->seek_end, sizeof(a->loop_note_end[0]),
+                       a->used_ports);
+        a->loop_cursor = loop->cursor;
+        a->loop_beat_cursor = loop->beat_cursor;
+    }
+
     for (unsigned port = 1; port < DM_NOTE_PORTS; port++) {
         if (fresh[port]) {
             a->port_live[port] = fresh[port];
@@ -1724,6 +2209,21 @@ static bool publish_schedule(DmAudio *a, const DmProject *p, DmSchedule next, do
     mix_from_state(a);
     a->preview_mask = project_preview_mask(p);
     memcpy(a->keyboard_channels, p->channels, sizeof(a->keyboard_channels));
+
+    for (int part = 0; part < DM_PARTS; ++part) {
+        int channel = part & MIDI_CHANNEL_MASK;
+        int program = p->channels[channel].program;
+        a->keyboard_programs[part] = program < 0 ? 0 : (uint8_t)program;
+    }
+
+    for (size_t i = 0; i < p->port_mix_count; ++i) {
+        DmPortMix mix = p->port_mix[i];
+
+        if (mix.program) {
+            a->keyboard_programs[mix.port * 16 + mix.channel] = mix.program - 1;
+        }
+    }
+
     a->keyboard_config = true;
     a->chase = preserve ? a->chase : playing && scratch->chase;
     a->position = seconds;
@@ -1761,6 +2261,8 @@ static bool publish_schedule(DmAudio *a, const DmProject *p, DmSchedule next, do
 
     free(old_releases);
     free(scratch);
+    free(loop);
+    collect_sample_banks(a);
     return true;
 }
 
@@ -1777,7 +2279,13 @@ bool dm_audio_publish(DmAudio *a, const DmProject *p, double seconds, bool playi
         return false;
     }
 
-    return publish_schedule(a, p, next, seconds, playing, false, error, cap);
+    return publish_schedule(a, p, NULL, next, seconds, playing, false, error, cap);
+}
+
+void dm_audio_reload_samples(DmAudio *a) {
+    if (a) {
+        a->sample_bank_dirty = true;
+    }
 }
 
 static void preview_channels(DmProject *view, const DmPatternPreview *v) {
@@ -2003,7 +2511,7 @@ static bool publish_pattern(DmAudio *a, const DmProject *p, const DmPatternPrevi
         return false;
     }
 
-    return publish_schedule(a, p, next, seconds, playing, editing, error, cap);
+    return publish_schedule(a, p, v, next, seconds, playing, editing, error, cap);
 }
 
 bool dm_audio_publish_pattern(DmAudio *a, const DmProject *p, const DmPatternPreview *pattern,
@@ -2030,7 +2538,7 @@ bool dm_audio_update(DmAudio *a, const DmProject *p, const DmPatternPreview *pat
         return false;
     }
 
-    return publish_schedule(a, p, next, seconds, playing, true, error, cap);
+    return publish_schedule(a, p, NULL, next, seconds, playing, true, error, cap);
 }
 
 void dm_audio_transport(DmAudio *a, bool playing) {
@@ -2064,6 +2572,8 @@ void dm_audio_panic(DmAudio *a) {
         return;
     }
 
+    dm_audio_sample_audition_stop(a);
+
     if (a->stream) {
         SDL_LockAudioStream(a->stream);
     }
@@ -2072,9 +2582,18 @@ void dm_audio_panic(DmAudio *a) {
     SDL_SetAtomicInt(&a->playing_flag, 0);
     a->release_count = 0;
     a->release_end = 0;
+
+    if (a->sample_audition.keyboard) {
+        fluid_synth_all_sounds_off(a->sample_audition.voice.synth, 1);
+        memset(a->sample_audition.song_held, 0, sizeof(a->sample_audition.song_held));
+    }
+
     a->keyboard_tail = a->feedback_tail = a->audition_frames = a->click_frames = 0;
     reset_live_ports(a);
     a->feedback_key = -1;
+    a->feedback_sample_id = 0;
+    memset(a->note_sample_id, 0, sizeof(a->note_sample_id));
+    memset(a->keyboard_sample_id, 0, sizeof(a->keyboard_sample_id));
     memset(a->note_token, 0, sizeof(a->note_token));
     memset(a->state.notes, 0, sizeof(a->state.notes));
     memset(a->state.held, 0, sizeof(a->state.held));
@@ -2121,6 +2640,10 @@ bool dm_audio_playing(DmAudio *a) {
 }
 
 void dm_audio_edit_preview(DmAudio *a, int program, float pitch, bool on) {
+    dm_audio_edit_preview_part(a, -1, program, pitch, on);
+}
+
+void dm_audio_edit_preview_part(DmAudio *a, int part, int program, float pitch, bool on) {
     if (!a) {
         return;
     }
@@ -2130,7 +2653,9 @@ void dm_audio_edit_preview(DmAudio *a, int program, float pitch, bool on) {
     } else if (program >= 0 && program <= 128 && isfinite(pitch) && pitch >= 0 && pitch <= 127) {
         int key = (int)floorf(pitch);
         int fraction = (int)roundf((pitch - key) * 128);
-        queue_put(&a->feedback_queue, (Command){program, key, fraction});
+        queue_put(&a->feedback_queue,
+                  (Command){.status = program, .a = key, .b = fraction,
+                            .feedback_part = part >= 0 && part < DM_PARTS ? part + 1 : 0});
     }
 }
 
@@ -2165,6 +2690,263 @@ void dm_audio_audition(DmAudio *a, int channel, int key, int velocity, double du
     }
 }
 
+bool dm_audio_sample_audition_edit(DmAudio *a, const DmeSampleZoneParams *params) {
+    if (!a || !a->stream) {
+        return false;
+    }
+
+    SDL_LockAudioStream(a->stream);
+    SampleAudition *p = &a->sample_audition;
+    bool ok = p->active && !p->keyboard &&
+              dm_sample_synth_edit(p->bank, p->voice.synth, p->preset, NULL, params);
+    if (ok) {
+        bool looping = params->loop_mode != DME_SAMPLE_NO_LOOP;
+        p->repeating = p->sustained && !looping;
+
+        if (p->looping != looping) {
+            p->release_in = !p->sustained && looping ? RATE : 0;
+            p->looping = looping;
+        }
+    }
+
+    SDL_UnlockAudioStream(a->stream);
+
+    for (bool pending = ok; pending;) {
+        SDL_LockAudioStream(a->stream);
+        pending = dm_sample_synth_rescale(a->sample_audition.bank, GAIN_SLICE_FRAMES);
+        SDL_UnlockAudioStream(a->stream);
+    }
+
+    return ok;
+}
+
+void dm_audio_sample_edit(DmAudio *a, const char *locator, const char *set_id,
+                          const char *preset_id, uint32_t region, const char *asset,
+                          const DmeSampleZoneParams *params) {
+    if (!a || !a->stream) {
+        return;
+    }
+
+    SDL_LockAudioStream(a->stream);
+
+    for (int bank = 0; bank < LIVE_SAMPLE_BANKS; ++bank) {
+        DmLiveSampleBank *b = a->sample_banks[bank];
+        dm_live_sample_bank_edit(b, a->live.synth, locator, set_id, preset_id, region, asset,
+                                 params);
+        dm_live_sample_bank_edit(b, a->keyboard.synth, locator, set_id, preset_id, region, asset,
+                                 params);
+        dm_live_sample_bank_edit(b, a->feedback.synth, locator, set_id, preset_id, region, asset,
+                                 params);
+
+        for (unsigned port = 1; port < DM_NOTE_PORTS; ++port) {
+            if (a->port_live[port]) {
+                dm_live_sample_bank_edit(b, a->port_live[port]->synth, locator, set_id, preset_id,
+                                         region, asset, params);
+            }
+        }
+    }
+
+    SDL_UnlockAudioStream(a->stream);
+
+    for (bool pending = true; pending;) {
+        pending = false;
+        SDL_LockAudioStream(a->stream);
+
+        for (int bank = 0; bank < LIVE_SAMPLE_BANKS; ++bank) {
+            pending |= dm_live_sample_bank_rescale(a->sample_banks[bank], GAIN_SLICE_FRAMES);
+        }
+
+        SDL_UnlockAudioStream(a->stream);
+    }
+}
+
+bool dm_audio_sample_audition_loop(DmAudio *a, uint64_t start, uint64_t end) {
+    if (!a || !a->stream) {
+        return false;
+    }
+
+    SDL_LockAudioStream(a->stream);
+    SampleAudition *preview = &a->sample_audition;
+    bool ok = preview->active && !preview->keyboard &&
+              dm_sample_synth_loop(preview->bank, preview->voice.synth, start, end);
+    SDL_UnlockAudioStream(a->stream);
+    return ok;
+}
+
+static void audition_swap(DmAudio *a, SampleAudition next) {
+    if (a->stream) {
+        SDL_LockAudioStream(a->stream);
+    }
+
+    SampleAudition old = a->sample_audition;
+    a->sample_audition = next;
+
+    if (a->stream) {
+        SDL_UnlockAudioStream(a->stream);
+    }
+
+    synth_free(&old.voice);
+    dm_sample_synth_free(old.bank);
+}
+
+void dm_audio_sample_audition_stop(DmAudio *a) {
+    if (a) {
+        audition_swap(a, (SampleAudition){0});
+    }
+}
+
+bool dm_audio_instrument_preview(DmAudio *a, const DmPatchReplacement *r, int route, char *error,
+                                 size_t cap) {
+    if (!a || !a->stream || !r || route < 0 || route >= 16 || r->key.port >= DM_NOTE_PORTS) {
+        snprintf(error, cap, "%s", DM_TEXT_SAMPLE_AUDIO_AUDITION);
+        return false;
+    }
+
+    SampleAudition next = {.active = true,
+                           .keyboard = true,
+                           .keyboard_route = route,
+                           .song_part = r->key.port * 16 + route,
+                           .key = r->key.drums ? 36 : 60,
+                           .release_in = RATE / 3};
+    DmSampleExportSnapshot *snapshot = NULL;
+    DmeContext context = {0};
+    uint32_t preset = 0;
+    DmProject project = {.patch_replacements = (DmPatchReplacement *)r,
+                         .patch_replacement_count = 1};
+    bool prepared =
+        !r->generation || dm_sample_playback_snapshot(&project, &context, NULL, &preset, &snapshot);
+
+    if (prepared && preset) {
+        next.preset = preset;
+        const DmeSamplePreset *view = &context.sample_presets[preset - 1];
+        const DmeSampleZoneParams *zone = &context.sample_zones[view->first_zone].params;
+        next.key = r->key.drums ? (int)zone->key_lo : (int)zone->root;
+        next.key = (int)fmin(zone->key_hi, fmax(zone->key_lo, next.key));
+        next.bank = dm_sample_synth_create(&context, snapshot, NULL);
+        prepared = next.bank != NULL;
+    }
+
+    dm_sample_export_free(snapshot);
+
+    if (!prepared || !synth_create(&next.voice, next.bank ? NULL : a->font_path)) {
+        dm_sample_synth_free(next.bank);
+        snprintf(error, cap, "%s", DM_TEXT_SAMPLE_AUDIO_AUDITION);
+        return false;
+    }
+
+    if (!next.bank) {
+        fluid_synth_set_channel_type(next.voice.synth, 0,
+                                     r->key.drums ? CHANNEL_TYPE_DRUM : CHANNEL_TYPE_MELODIC);
+        fluid_synth_bank_select(next.voice.synth, 0,
+                                r->key.drums && !r->key.bank ? 128 : r->key.bank);
+        fluid_synth_program_change(next.voice.synth, 0, r->key.program);
+        fluid_synth_noteon(next.voice.synth, 0, next.key, 100);
+    } else {
+        sample_audition_start(&next);
+    }
+
+    if (!next.bank) {
+        fluid_synth_set_channel_type(next.voice.synth, 1,
+                                     r->key.drums ? CHANNEL_TYPE_DRUM : CHANNEL_TYPE_MELODIC);
+        fluid_synth_bank_select(next.voice.synth, 1,
+                                r->key.drums && !r->key.bank ? 128 : r->key.bank);
+        fluid_synth_program_change(next.voice.synth, 1, r->key.program);
+    }
+
+    if (a->stream) {
+        SDL_LockAudioStream(a->stream);
+    }
+
+    int part = next.song_part;
+    fluid_synth_cc(next.voice.synth, 1, MIDI_CC_VOLUME,
+                   a->mix_volume[part] < 128 ? a->mix_volume[part] : 100);
+    fluid_synth_cc(next.voice.synth, 1, MIDI_CC_PAN,
+                   a->mix_pan[part] < 128 ? a->mix_pan[part] : 64);
+    static const unsigned controls[] = {MIDI_CC_MODULATION, MIDI_CC_EXPRESSION, MIDI_CC_SUSTAIN,
+                                        MIDI_CC_SOSTENUTO};
+
+    for (unsigned i = 0; i < SDL_arraysize(controls); ++i) {
+        unsigned value = a->state.cc[part][controls[i]];
+
+        if (value < 128) {
+            send_route(&next.voice, MIDI_CONTROL | 1, (uint8_t)controls[i], (uint8_t)value);
+        }
+    }
+
+    if (a->state.bend[part][0] < 128 && a->state.bend[part][1] < 128) {
+        fluid_synth_pitch_bend(next.voice.synth, 1,
+                               a->state.bend[part][0] | a->state.bend[part][1] << 7);
+    }
+
+    if (a->stream) {
+        SDL_UnlockAudioStream(a->stream);
+    }
+
+    audition_swap(a, next);
+    return true;
+}
+
+static bool audition_begin(DmAudio *a, DmSampleSynth *bank, unsigned preset, int key,
+                            bool sustained, bool looping, char *error, size_t cap) {
+    SampleAudition next = {.bank = bank,
+                           .preset = preset,
+                           .key = key,
+                           .active = true,
+                           .release_in = !sustained && looping ? RATE : 0,
+                           .repeating = sustained && !looping,
+                           .sustained = sustained,
+                           .looping = looping};
+
+    if (!a || !a->stream || !bank || !synth_create(&next.voice, NULL)) {
+        dm_sample_synth_free(bank);
+        snprintf(error, cap, "%s", DM_TEXT_SAMPLE_AUDIO_AUDITION);
+        return false;
+    }
+
+    sample_audition_start(&next);
+    audition_swap(a, next);
+    return true;
+}
+
+bool dm_audio_sample_audition(DmAudio *a, const DmeContext *context, const DmeHost *host, int key,
+                              bool sustained, bool looping, char *error, size_t cap) {
+    DmSampleSynth *bank = dm_sample_synth_create(context, NULL, host);
+    return audition_begin(a, bank, 1, key, sustained, looping, error, cap);
+}
+
+bool dm_audio_preset_audition(DmAudio *a, const DmPatchReplacement *replacement, int key,
+                              char *error, size_t cap) {
+    DmProject project = {.patch_replacements = (DmPatchReplacement *)replacement,
+                         .patch_replacement_count = 1};
+    DmSampleExportSnapshot *snapshot = NULL;
+    DmeContext context = {0};
+    uint32_t preset = 0;
+    DmSampleSynth *bank = NULL;
+    bool looping = false;
+
+    if (dm_sample_playback_snapshot(&project, &context, NULL, &preset, &snapshot) && preset) {
+        const DmeSamplePreset *view = &context.sample_presets[preset - 1];
+
+        for (uint32_t i = 0; i < view->zone_count; ++i) {
+            const DmeSampleZoneParams *zone = &context.sample_zones[view->first_zone + i].params;
+
+            if (key < 0 || (unsigned)key < zone->key_lo || (unsigned)key > zone->key_hi) {
+                if (!i) {
+                    key = view->flags & DME_SAMPLE_PERCUSSION ? (int)zone->key_lo
+                                                               : (int)zone->root;
+                    key = (int)fmin(zone->key_hi, fmax(zone->key_lo, key));
+                }
+            }
+
+            looping |= zone->loop_mode != DME_SAMPLE_NO_LOOP;
+        }
+
+        bank = dm_sample_synth_create(&context, snapshot, NULL);
+    }
+
+    dm_sample_export_free(snapshot);
+    return audition_begin(a, bank, preset, key, false, looping, error, cap);
+}
 void dm_audio_program(DmAudio *a, int channel, int program) {
     if (a) {
         queue_put(&a->preview, (Command){MIDI_PROGRAM | (channel & MIDI_CHANNEL_MASK),
@@ -2172,9 +2954,13 @@ void dm_audio_program(DmAudio *a, int channel, int program) {
     }
 }
 
-void dm_audio_keyboard_program(DmAudio *a, int channel, int program) {
+void dm_audio_keyboard_program(DmAudio *a, int channel, int program, bool drums) {
     if (a && channel >= 0 && channel < 16 && program >= -1 && program <= 127) {
-        queue_put(&a->preview, (Command){0xf1, channel, program < 0 ? 255 : program});
+        /* Keyboard override commands use the port byte to carry the drum-bank choice. */
+        queue_put(&a->preview, (Command){.status = 0xf1,
+                                         .a = channel,
+                                         .b = program < 0 ? 255 : program,
+                                         .port = drums});
     }
 }
 
@@ -2450,6 +3236,62 @@ bool dm_audio_device(DmAudio *a, int i, char *error, size_t cap) {
     return ok;
 }
 
+static int32_t DME_CALL render_canceled(void *user) {
+    DmAudio *a = user;
+    return SDL_GetAtomicInt(&a->cancel);
+}
+
+static void DME_CALL render_sample_warning(void *user, uint32_t severity, uint32_t flags,
+                                          const char *message) {
+    (void)flags;
+    (void)message;
+    DmAudio *a = user;
+    a->render_missing_samples += severity == DME_WARNING;
+}
+
+static bool prepare_render_samples(DmAudio *a, DmeContext *context,
+                                   DmSampleExportSnapshot **snapshot, DmSampleSynth **synth) {
+    if (!a->render_project.size) {
+        return true;
+    }
+
+    DmProject project;
+    dm_project_init(&project);
+    size_t count = a->render_schedule.count;
+    DmeEvent *events = count ? calloc(count, sizeof(*events)) : NULL;
+    bool ok = (!count || events) &&
+              dm_unpack(&project, a->render_project.data, a->render_project.size,
+                        a->job_message, sizeof(a->job_message));
+
+    if (ok) {
+        for (size_t i = 0; i < count; ++i) {
+            const DmScheduled *event = &a->render_schedule.items[i];
+            events[i] = (DmeEvent){.source_id = i + 1, .status = event->status, .a = event->a,
+                                   .b = event->b, .port = event->port};
+        }
+
+        *context = (DmeContext){.events = events, .event_count = count};
+        DmeHost host = {.user = a, .cancelled = render_canceled, .diagnostic = render_sample_warning};
+        ok = dm_sample_export_snapshot(&project, context, &host, snapshot);
+
+        if (ok && context->sample_preset_count) {
+            *synth = dm_sample_synth_create(context, *snapshot, &host);
+            ok = *synth != NULL;
+        }
+    }
+
+    context->events = NULL;
+    free(events);
+    dm_project_free(&project);
+    dm_bytes_free(&a->render_project);
+
+    if (!ok && !*a->job_message) {
+        snprintf(a->job_message, sizeof(a->job_message), "%s", DM_TEXT_SAMPLE_AUDIO_PREPARE);
+    }
+
+    return ok;
+}
+
 static bool audio_render(DmAudio *a) {
     Synth s = {0};
     Synth *ports[DM_NOTE_PORTS] = {0};
@@ -2493,6 +3335,10 @@ static bool audio_render(DmAudio *a) {
 
     DmOutput output = {0};
     DmAudioEncoder *encoder = NULL;
+    DmeContext sample_context = {0};
+    DmSampleExportSnapshot *snapshot = NULL;
+    DmSampleSynth *sample_synth = NULL;
+    ok = ok && prepare_render_samples(a, &sample_context, &snapshot, &sample_synth);
 
     if (ok) {
         ok = dm_output_begin(&output, a->job_path, a->job_message, sizeof(a->job_message));
@@ -2515,8 +3361,15 @@ static bool audio_render(DmAudio *a) {
 
         while (cursor < a->render_schedule.count &&
                a->render_schedule.items[cursor].seconds * RATE <= pos + .5) {
-            const DmScheduled *event = &a->render_schedule.items[cursor++];
-            send_event(event->port ? ports[event->port] : &s, event);
+            size_t index = cursor++;
+            const DmScheduled *event = &a->render_schedule.items[index];
+            Synth *route = event->port ? ports[event->port] : &s;
+
+            if (!sample_synth ||
+                !dm_sample_synth_note(sample_synth, route->synth, &route->sample_pedals, event,
+                                     sample_context.effective_patches[index])) {
+                send_event(route, event);
+            }
         }
 
         int n = (int)fmin(BLOCK, (double)(frames - pos));
@@ -2556,6 +3409,8 @@ static bool audio_render(DmAudio *a) {
 
     free_port_synths(ports);
     synth_free(&s);
+    dm_sample_synth_free(sample_synth);
+    dm_sample_export_free(snapshot);
     return ok;
 }
 
@@ -2596,7 +3451,10 @@ static int job_worker(void *userdata) {
     } else {
         a->job_success = audio_render(a);
 
-        if (a->job_success) {
+        if (a->job_success && a->render_missing_samples) {
+            snprintf(a->job_message, sizeof(a->job_message), DM_TEXT_SAMPLE_AUDIO_MISSING,
+                     dm_audio_codec_name(a->render_options.codec), a->render_missing_samples);
+        } else if (a->job_success) {
             snprintf(a->job_message, sizeof(a->job_message), "%s export complete",
                      dm_audio_codec_name(a->render_options.codec));
         }
@@ -2648,6 +3506,19 @@ bool dm_audio_busy(DmAudio *a) {
 bool dm_audio_poll(DmAudio *a, char *message, size_t cap, bool *success, int *kind) {
     if (!a) {
         return false;
+    }
+
+    collect_sample_banks(a);
+
+    if (*a->sample_warning) {
+        if (kind) {
+            *kind = 0;
+        }
+
+        *success = true;
+        snprintf(message, cap, "%s", a->sample_warning);
+        *a->sample_warning = 0;
+        return true;
     }
 
     if (SDL_SetAtomicInt(&a->port_warning, 0)) {
@@ -2702,6 +3573,8 @@ bool dm_audio_poll(DmAudio *a, char *message, size_t cap, bool *success, int *ki
         a->keyboard = a->prepared_keyboard;
         a->feedback = a->prepared_feedback;
         a->feedback_key = -1;
+        a->feedback_sample_id = 0;
+        memset(a->keyboard_sample_id, 0, sizeof(a->keyboard_sample_id));
         a->feedback_tail = 0;
         memset(&a->prepared, 0, sizeof(a->prepared));
         memset(&a->prepared_keyboard, 0, sizeof(a->prepared_keyboard));
@@ -2729,6 +3602,7 @@ bool dm_audio_poll(DmAudio *a, char *message, size_t cap, bool *success, int *ki
     }
 
     dm_schedule_free(&a->render_schedule);
+    dm_bytes_free(&a->render_project);
     snprintf(message, cap, "%s", a->job_message);
     *success = a->job_success;
     SDL_SetAtomicInt(&a->job_done, 0);
@@ -2760,6 +3634,13 @@ bool dm_audio_export(DmAudio *a, const DmProject *p, const char *path,
         return false;
     }
 
+    if (p->patch_replacement_count && !dm_pack(p, &a->render_project)) {
+        dm_schedule_free(&a->render_schedule);
+        snprintf(error, cap, "%s", DM_TEXT_SAMPLE_AUDIO_PREPARE);
+        return false;
+    }
+
+    a->render_missing_samples = 0;
     a->render_options = chosen;
     snprintf(a->font_path, sizeof(a->font_path), "%s", p->soundfont);
 
@@ -2768,6 +3649,7 @@ bool dm_audio_export(DmAudio *a, const DmProject *p, const char *path,
     }
 
     dm_schedule_free(&a->render_schedule);
+    dm_bytes_free(&a->render_project);
     return false;
 }
 

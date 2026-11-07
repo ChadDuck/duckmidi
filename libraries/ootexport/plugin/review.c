@@ -9,7 +9,7 @@
 typedef struct {
     OotRangeIssue issue;
     int selected;
-    char id[48], label[180], description[384], current[96];
+    char id[64], label[180], description[384], current[96];
     DmeChoice recommended[8];
     unsigned recommended_count;
 } ReviewItem;
@@ -136,8 +136,10 @@ bool oot_review_build(OotPluginJob *job, const DmeContext *context, const OotRes
         const OotRangeIssue *issue = &item->issue;
         bool drum = issue->percussion;
         unsigned ch = issue->channel, p = issue->program;
-        int original = drum ? job->request.drums[p] : job->request.instruments[ch][p];
-        snprintf(item->id, sizeof(item->id), drum ? "drum.%u" : "melodic.%u.%u", drum ? p : ch, p);
+        int original = issue->value;
+        if (!es_mapping_row_id(context, issue->source_event, item->id)) {
+            return false;
+        }
         snprintf(item->label, sizeof(item->label), "Channel %u: %s (%s %u)", ch + 1,
                  drum ? context->drum_names[p] : context->program_names[p], drum ? "note" : "GM",
                  p);
@@ -243,6 +245,13 @@ int32_t DME_CALL oot_review_apply(void *instance, void *user, char *error, uint6
     for (unsigned i = 0; i < ui->count; i++) {
         const ReviewItem *item = &ui->items[i];
         unsigned p = item->issue.program, ch = item->issue.channel;
+        if (!es_mapping_job_set_stock(job->custom, 0, item->id, item->selected)) {
+            return DME_NOMEM;
+        }
+
+        if (same_font) {
+            es_mappings_set_stock(settings->custom, 0, item->id, item->selected);
+        }
 
         if (item->issue.percussion) {
             job->request.drums[p] = item->selected;

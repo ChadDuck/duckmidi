@@ -297,7 +297,6 @@ void ed_automation_line(Editor *e, double start, double end, int first, int last
         ed_curve_range(e, after, previous.range, previous.cents, previous.msb, previous.lsb, -id);
     }
 
-    e->transient_pattern = -1;
     dm_pattern_fit(&e->project, ed_pattern(e));
 }
 

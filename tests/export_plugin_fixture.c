@@ -24,6 +24,11 @@ static const DmeChoice modes[] = {{0, "Normal"},
                                   {6, "Wait for cancellation"},
                                   {7, "Popup warning"}};
 static const DmeChoice mapping[] = {{10, "Choice ten"}, {20, "Choice twenty"}};
+static const DmeMainHost *main_host;
+
+static void DME_CALL bind_main(const DmeMainHost *host) {
+    main_host = host;
+}
 
 static void DME_CALL reset(void *user) {
     State *s = user;
@@ -106,6 +111,10 @@ static int32_t DME_CALL set(void *user, const char *id, const DmeValue *v, char 
                             uint64_t cap) {
     State *s = user;
 
+    if (!strcmp(id, "request-tool") && v->type == DME_TEXT && v->text && main_host) {
+        return main_host->request_tool(main_host->user, v->text, strlen(v->text));
+    }
+
     if (!strcmp(id, "enabled") && v->type == DME_BOOL && (v->integer == 0 || v->integer == 1)) {
         s->enabled = v->integer;
         return DME_OK;
@@ -180,6 +189,16 @@ static int32_t DME_CALL run(void *user, const DmeContext *c, const DmeHost *h, c
     if (s->mode == 7) {
         h->diagnostic(h->user, DME_WARNING, DME_POPUP,
                       "Independent fixture audible-change warning.");
+        /* List items group under their heading and repeat only once. */
+        h->diagnostic(h->user, DME_WARNING, DME_POPUP | DME_LIST, "Omitted\nSysEx");
+        h->diagnostic(h->user, DME_WARNING, DME_POPUP | DME_LIST, "Converted\nTiming");
+        h->diagnostic(h->user, DME_WARNING, DME_POPUP | DME_LIST, "Omitted\nController 74");
+        h->diagnostic(h->user, DME_WARNING, DME_POPUP | DME_LIST, "Omitted\nSysEx");
+    }
+
+    if (s->mode == 7 && s->amount == 1) {
+        h->diagnostic(h->user, DME_WARNING, DME_POPUP | DME_LIST | DME_ALTERED,
+                      "Changed to fit the game\nNotes merged");
     }
 
     if (s->mode == 4) {
@@ -271,8 +290,13 @@ static const DmeExporter *DME_CALL at(uint32_t i) {
 #ifndef FIXTURE_ABI
 #define FIXTURE_ABI DME_ABI
 #endif
-static const DmePlugin plugin = {
-    FIXTURE_ABI, sizeof(DmePlugin), "org.duckmidi.fixture-module", "Fixture plugin", 1, at};
+static const DmePlugin plugin = {.abi = FIXTURE_ABI,
+                                 .size = sizeof(DmePlugin),
+                                 .id = "org.duckmidi.fixture-module",
+                                 .name = "Fixture plugin",
+                                 .exporter_count = 1,
+                                 .exporter = at,
+                                 .bind_main = bind_main};
 
 DME_PUBLIC const DmePlugin *DME_CALL duckmidi_export_plugin(uint32_t abi) {
     return abi == DME_ABI ? &plugin : NULL;

@@ -54,16 +54,16 @@ Game sample audio is not included; your checkout supplies it.
 
 ## Export to Repository
 
-1. Click **Export to Repository** and choose the checkout's root folder (it contains `include/tables/sequence_table.h` and `spec/spec`). Later exports install into the same folder without asking; change it in **Edit > Preferences** under **Export plugins**.
+1. The first time, click **Choose Folder** and choose the checkout's root folder (it contains `include/tables/sequence_table.h` and `spec/spec`). Then click **Export to Repository**. Later exports install into the same folder without asking; change it in **Edit > Preferences** under **Export plugins**.
 2. Run `make` in the checkout.
 
-The export writes `assets/audio/sequences/<name>.seq` and `assets/audio/soundfonts/Soundfont_<name>.xml`, registers the song in `include/tables/sequence_table.h`, and adds both files to `spec/spec`. A new soundfont takes the next free index; exporting again keeps it. Files with these names that duckmidi did not create are never replaced.
+The export writes `assets/audio/sequences/<name>.seq` and `assets/audio/soundfonts/Soundfont_<name>.xml`, registers the song in `include/tables/sequence_table.h`, and adds both files to `spec/spec`. A new soundfont takes the next free index; exporting again keeps it. Files with these names that were in the checkout before duckmidi first used it are never replaced.
 
-OoT has room for 48 soundfonts, 38 of them vanilla. When an export replaces a song an earlier export installed, or finds duckmidi songs the sequence table no longer uses, it removes their sequence and soundfont files and `spec/spec` lines, and renumbers the remaining duckmidi soundfonts so their indices have no gaps. Files duckmidi did not create are left alone. **Revert repository export** restores the removed files.
+OoT has room for 48 soundfonts, 38 of them vanilla. Exporting again to the same song updates that export instead of adding another. Two installed songs cannot share a name; revert the earlier one in **Repository history**, or choose another name. Reverting a song in **Repository history** removes its files and `spec/spec` lines, and the remaining exports are composed again.
 
 When a replaced song is a fanfare that loads into the small persistent cache and your song is larger, its table entry switches to the temporary cache.
 
-**Keep original files** (on by default, above the export buttons) saves a copy of each checkout file before the export changes it, as `<file>.bkp` beside it. With it off, files are replaced directly, except the audio memory files, which are always kept. **Revert repository export** restores every changed file and removes the backups the exports created.
+**Keep original files** (on by default, above the export buttons) also saves a copy of each changed checkout file as `<file>.bkp` beside it. A replaced sample always keeps one. duckmidi's own history keeps every original either way, so **Repository history** can revert any export, or all of them, even after a restart.
 
 ## Sequence memory
 
@@ -71,7 +71,7 @@ Songs load into a temporary sequence cache whose size depends on the scene: 0x38
 
 With **Enlarge**, Export to Repository raises the temporary sequence and font caches of every audio spec in `src/audio/game/session_config.c` that is too small, and grows `gAudioHeap` in `src/buffers/audio_heap.c` and `include/buffers.h` by the largest increase, so the other audio pools keep their size. The heap uses that much more RAM. With **Enlarge**, the export window does not warn about scene memory; with **Stock**, it warns where the song is too large to play.
 
-The export window reports the song's size. Repeated bars are stored once, so repetitive songs stay small.
+The export window reports the song's size. Repeated bars and channels with the same automation are stored once, and short notes are used when they save space, so repetitive songs stay small. A song over OoT's 64 KiB sequence limit has its volume, pan and pitch-bend curves simplified, within about 1 dB, 6 pan steps and 10 cents first, until it fits; notes stay as written. Only if the simplest curves still do not fit are note timing and velocity rounded to coarser grids, which the warning window reports as audible changes.
 
 ## Install into an OoT checkout manually
 

@@ -4,6 +4,7 @@
    zeldaret/oot repository patches. No editor, UI toolkit or file I/O. */
 #include "duckmidi_export_plugin.h"
 #include "duckmidi_midi.h"
+#include "../../export_support/sample.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -105,6 +106,14 @@ enum { OOT_LOOP_NONE, OOT_LOOP_SONG, OOT_LOOP_REGION };
 
 typedef struct {
     const DmeEvent *events; /* Channel messages already moved to their output channels. */
+    const EsNativeSamples *custom;
+    /* Optional, one per custom region: notes above OOT_MAX_RATE record how far over they are
+       here instead of failing. The output is then not valid until converted again. */
+    double *overspeed;
+    bool *capacity; /* Optional, per region: bank capacity requires an ordinary-row fallback. */
+    const DmeEffectivePatch *source_patches;
+    const int32_t *stock_values;
+    const char *sample_bank;
     uint64_t event_count, duration;
     uint32_t ppq;
     uint32_t loop; /* OOT_LOOP_*; REGION repeats [loop_start, loop_end) after an intro. */
@@ -120,6 +129,7 @@ typedef struct {
 
 typedef struct {
     uint32_t severity;
+    uint32_t flags; /* DME_LIST ("Heading\nItem" text) and DME_ALTERED. */
     char text[320];
 } OotDiagnostic;
 
@@ -128,6 +138,9 @@ typedef struct {
     uint32_t channel, program, low, high, count;
     bool percussion;
     double rate;
+    int value;
+    uint64_t source_event;
+    double peak_factor;
 } OotRangeIssue;
 
 typedef struct {

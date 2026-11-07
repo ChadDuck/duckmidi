@@ -23,7 +23,10 @@ typedef struct {
 
 bool ui_init(SDL_Window *window, SDL_Renderer *renderer, const char *settings);
 void ui_shutdown(void);
-void ui_theme(uint32_t accent);
+void ui_theme(uint32_t accent, uint32_t background);
+uint32_t ui_background_shade(int gray);
+uint32_t ui_text_on(uint32_t color);
+uint32_t ui_theme_text(bool muted);
 bool ui_color(const char *label, uint32_t *color);
 bool ui_port_color(const char *id, uint32_t color, bool selected, float size);
 bool ui_mouse_popup(const char *name, bool request);
@@ -91,6 +94,7 @@ void ui_mixer_wheel(void);
 void ui_piano_icon(UiRect rect);
 bool ui_frame_toggle(const char *label, bool *value);
 bool ui_button(const char *label, float w, float h);
+int ui_button_pair(const char *left, const char *right, int selected, float width);
 
 typedef enum {
     UI_PLAY,
@@ -121,7 +125,12 @@ bool ui_select(const char *label, bool selected, float w, float h);
 bool ui_check(const char *label, bool *value);
 bool ui_int(const char *label, int *value, int lo, int hi);
 bool ui_float(const char *label, float *value, float lo, float hi);
+bool ui_float_step(const char *label, float *value, float lo, float hi, float step);
 bool ui_input(const char *label, char *value, size_t cap);
+bool ui_input_submit(const char *label, char *value, size_t cap);
+bool ui_input_select_all(const char *label, char *value, size_t cap);
+void ui_readonly(const char *label, const char *value);
+bool ui_section(const char *label);
 bool ui_appearing(void);
 bool ui_dialog_enter(void);
 bool ui_content_dialog(const char *title, bool *open, float width);
@@ -131,6 +140,7 @@ bool ui_knob(const char *label, double *value, double lo, double hi, double rese
 bool ui_slider(const char *label, int *value, int lo, int hi, float width);
 bool ui_vslider(const char *label, int *value, float height);
 bool ui_combo(const char *label, const char *preview);
+bool ui_edit_combo(const char *label, const char *preview);
 bool ui_bar_combo(const char *label, const char *preview);
 void ui_bar_begin(void);
 void ui_bar_end(void);
@@ -155,8 +165,22 @@ int ui_welcome_content(void);
 void ui_confirmation_message(const char *text);
 void ui_center_row(float width);
 bool ui_dialog(const char *title, bool *open, float width, float height);
+bool ui_expanding_dialog(const char *title, bool *open, float width, float height, bool expanded);
+bool ui_resizable_dialog(const char *title, bool *open, float width, float height);
 /* Resizable width; the height fits the contents within the work area. */
 bool ui_growing_dialog(const char *title, bool *open, float width, float height);
+/* Resizable in both directions, never shorter than its contents need; attached leaves room
+   for a drawer at its right edge. Until the user resizes it, its height fits the contents;
+   height is only the first frame's. A different layout fits the contents again. */
+bool ui_flexible_dialog(const char *title, bool *open, float width, float height, bool attached,
+                        int layout);
+/* Inside a flexible dialog: minimum plus the dialog's spare height, for its one flexible row.
+   A dialog that fits its contents gives this row its preferred height. */
+float ui_flex(float minimum, float preferred);
+/* Keeps room for a drawer at the current dialog's right edge. */
+UiRect ui_attach_space(float width);
+/* A borderless drawer fixed to main's right edge, with main's height. */
+bool ui_attached_drawer(const char *id, UiRect main, float width);
 bool ui_modal(const char *title, bool *open, float width, float height);
 void ui_close_popup(void);
 bool ui_context(const char *id);
@@ -164,6 +188,8 @@ void ui_popup_end(void);
 bool ui_hover(void);
 bool ui_active(void);
 bool ui_focused(void);
+bool ui_window_focused(const char *title);
+bool ui_window_front_at(const char *title, UiPoint at);
 bool ui_text_active(void);
 bool ui_any_active(void);
 bool ui_item_changed(void);
@@ -184,6 +210,8 @@ void ui_line(UiPoint a, UiPoint b, uint32_t color, float width);
 void ui_label_fit(UiPoint at, float width, uint32_t color, const char *text);
 void ui_label(UiPoint pos, uint32_t color, const char *text);
 float ui_font_size(void);
+float ui_frame_height(void);
+float ui_text_height(const char *text, float width);
 float ui_text_width(const char *text);
 void ui_clip(UiRect r);
 void ui_unclip(void);
@@ -193,6 +221,7 @@ float ui_button_row_width(const char *const *labels, int count);
 void ui_channel_color(uint32_t color);
 void ui_channel_color_end(void);
 void ui_accent(bool enabled);
+void ui_button_color(uint32_t color);
 void ui_accent_end(void);
 void ui_scrollbar(const char *id, UiRect rect, bool vertical, float *value, float visible,
                   float total);

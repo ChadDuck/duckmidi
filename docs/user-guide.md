@@ -58,6 +58,8 @@ Use the mixer to set each channel's volume and pan.
 
 Click a volume number to type a value from 0 to 127; **Enter** applies it and **Escape** cancels.
 
+Each channel shows one strip per note color (port) it uses, numbered above the strip. The default route, **0**, appears only when the channel has notes, events or mixer settings on it, or when the channel is still empty.
+
 If a note ever gets stuck, **Shift-click on Stop** to silence everything.
 
 ## Build a song from patterns
@@ -68,6 +70,8 @@ If a note ever gets stuck, **Shift-click on Stop** to silence everything.
 2. Drag its card into a playlist row to place it in the arrangement.
 3. Double-click a placement to open its notes in the piano roll.
 
+In the current pattern category, **Keypad +** moves from an edited card to the next edited card, or creates an empty card if there is no next one. Keep pressing **Keypad +** on an empty card to create more. **Keypad −** removes the newest empty card, or moves to the previous edited card when there are no empty cards. Cards with notes, automation, or a playlist placement count as edited. New cards reuse the lowest available number and appear before higher-numbered cards.
+
 Every placement of a pattern shares the same notes, so a change to one changes them all. To make a separate version, click the card and press **Ctrl + D**, or right-click it and choose **Duplicate**. The same menu renames, recolors (**Alt + C**) and deletes patterns. With the pattern section focused, **Ctrl + C** and **Ctrl + V** copy a pattern and paste it as a new one.
 
 **Rearrange the cards** by dragging one within the pattern section. The card follows your mouse, the others close up behind it, and a space opens where it will land. Drop it there to move it. Placements in the song are not affected.
@@ -76,15 +80,91 @@ Select several placements to move them together. **Shift + drag** a placement to
 
 The copy drags can be changed in **Keyboard Shortcuts** under **Mouse**: click the gesture, then press the mouse button you want while holding any of Ctrl, Shift or Alt. Left and right drags need one of those keys.
 
+### Edit song events
+
+Click an empty bar in the playlist's **Events** row to open **Song event** in **Add** mode. Choose a type and set its beat within the bar. Click a colored bar to open **Edit** mode, then select an event on the left to change its values or delete it. Use **Mode** to switch between adding and editing within the same bar.
+
+The Events row groups tempo, meter, key signature, track name, text, SMPTE offset, markers, loop points and instrument changes. Open **MIDI Events** for the full list of MIDI messages.
+
 ### Choose instruments
 
-Click a playlist row's instrument name, or press **I** with the playlist or piano roll focused, to open the **Instrument** window.
+Click **+ New** beside **Arrangement** in the playlist to add a channel. Choose a free channel number, select **Melody** or **Drums**, and pick an instrument or drum kit.
 
 ![The Instrument window](images/instrument.png)
 
-Pick an instrument from the dropdown, or press **Up** / **Down** to step through them while listening, then click **Apply** or press **Enter**. Choose **Drum kit** to turn the channel into the drum channel (channel 10 in General MIDI). On the drum channel, the dropdown lists drum kits first, then ordinary instruments; picking an instrument moves the part back to a free channel.
+Press **Up** or **Down** to step through instruments or kits. Click **Apply** or press **Enter** to save the choice. **Cancel** or **Escape** discards the draft.
+
+Right-click a playlist row label, or press **I** with the playlist or piano roll focused, to edit an existing channel. **Remove channel** clears the row and its events. If the row contains placements, confirm to remove them from the arrangement. Their source patterns stay in the browser.
 
 The piano roll's own instrument dropdown only changes what you hear while editing. **Use selected channel** copies the selected row's instrument into it.
+
+## Use your own samples
+
+duckmidi can play your own recordings in place of SoundFont instruments. Import audio in **Edit > Samples**, shape each sample, save the result as a named sample set, then assign it to a channel. The same samples can go into M64 and OoT exports (see [Custom game samples](#custom-game-samples)).
+
+![The Samples window with two imported samples](images/samples.png)
+
+### Import audio
+
+Open **Edit > Samples**. Use **Choose files** for one or several audio files, or **Choose folder** for the audio files directly inside a directory. You can also drop files and folders over the Samples window. WAV, MP3, AAC in M4A, Ogg Vorbis, Opus, FLAC and PCM AIFF are supported. Failed files stay in the list with an error while successful imports remain editable.
+
+Folder imports skip files already in the draft; explicit file imports can add the same file again. Right-click a sample entry and choose **Open file location** to open its folder, or **Delete** and confirm to remove it from the draft. Resize the window vertically to give both panels more room.
+
+### Set the pitch and type
+
+Select a file on the left and name it on the right. Choose **Melody** for a pitched preset, or **Drums** and a trigger key for a drum sample. Each melodic file becomes a selectable preset. Drum files form one kit, with a separate trigger key for each file.
+
+The initial root uses an unambiguous filename note first, then embedded root metadata, then a confident detected pitch. MIDI 60 is C4. A conflict warning means these clues disagree; check the root by ear and edit it when needed. **Offset** corrects the source's measured pitch in cents. **Coarse** and **Fine** transpose playback. Middle-click a tuning knob to reset it. **Reset to import values** restores the name, root, loop and detected settings from the import.
+
+### Shape the sound
+
+Drag the hollow envelope handles horizontally to change delay, attack, hold, decay and release. **Sustain level** controls the held volume. The numeric fields give exact times in seconds.
+
+Saved forward WAV loops are imported automatically. Choose **No loop**, **Continuous** or **Until release** below the waveform, and drag either loop edge to set the range. Nearby matching zero crossings are selected automatically; hold **Alt** while dragging to use the exact position. **Continuous** keeps looping through the release. **Until release** leaves the loop when the note is released and plays the remaining tail.
+
+Hold **Shift** and drag the waveform to move the playback start or end (blue lines), with the same zero-crossing snap. Keep an active loop inside the playback range. Unlooped drums play once even when their key is released.
+
+Open **Gain, pan and ranges**, **Filter**, or **Vibrato and effects** for optional controls. The filter envelope uses the volume envelope's stage times and sustain level. Default pitch tracking is one semitone per key for Melody and zero for Drums; enable **Custom pitch tracking** to change it.
+
+Use **Cut** to stop earlier samples with the matching **Cut by** number in the same preset and MIDI channel. Zero disables either side. For example, give an open hi-hat **Cut by** 1 and a closed hi-hat **Cut** 1 so only the closed hat cuts the open hat.
+
+### Listen while you edit
+
+With Samples focused, **Space** auditions once and **Shift + Space** toggles sustained audition. A looping one-shot audition releases after one second; sustained audition repeats an unlooped sample. Edits to loops, envelope handles or numbers update the playing audition, and any song voices using the sample, immediately. Changing the selection or closing Samples stops the audition.
+
+While Samples has focus, **Ctrl + Z** undoes sample edits, imports and deletions; **Ctrl + Y** or **Ctrl + Shift + Z** redoes them. The **Undo sample change** and **Redo sample change** buttons do the same. A drag is one undo step. History lasts until duckmidi exits, including after saving or switching sets.
+
+### Save a sample set
+
+Enter a name beside the set dropdown and click **Apply** or press **Enter** to save the draft under that name. **Save** writes later edits to the selected set. Saving replaces the set's previous state and updates the open project's assignments right away.
+
+The dropdown at the top switches between saved sets and starts with the most recently modified one; **New set** opens an empty draft. Each set keeps its unsaved draft in memory while you switch.
+
+Each set is a folder in the sample library, the `samples` folder beside your preferences (see [Customize shortcuts](#customize-shortcuts)). Every sample is saved as a WAV named after it, with an SFZ file of the same name for other samplers, and `manifest.json` holds the set's settings:
+
+```text
+samples/
+  My drums/
+    manifest.json
+    Kick.wav
+    Kick.sfz
+    Snare.wav
+    Snare.sfz
+```
+
+Set and sample names must be valid file names, and sample names must be unique within a set. SFZ players can interpret envelopes and effects differently. The [sample manifest reference](sample-manifest.md) describes the files.
+
+### Play a sample in your song
+
+Open the channel's **Instrument** window. Keep the ordinary MIDI instrument selected, choose the sample set under **Source**, then choose its **Preset**. **Original MIDI bank** identifies the bank being replaced. **Apply** saves the assignment. While the song plays, selecting an instrument or source previews it before **Apply**; **Cancel** restores the previous sound. Selecting a sample source does not create a Program Change. The playlist shades sample-assigned channel labels and shows the original sample filename below the MIDI instrument.
+
+For channels with colored note ports, **Sample route** selects the scope of the assignment. Port 0 supplies the channel default. Other ports can choose their own preset, **SoundFont**, or **Inherit channel source**. Use **Preview sample preset** and the keyboard to audition a draft source before applying it.
+
+In a Program Change's editor, choose **Source** and **Preset**, then click **Apply source** to replace the sound of that event's target patch. The event's bank, program and route are shown beside the source controls. Use the event's own **Apply** action to save changes to its MIDI message.
+
+A later Program Change to an unreplaced patch plays the selected SoundFont, and changing back uses the sample again. If a saved set or preset is unavailable, duckmidi names it and plays the original patch while keeping the assignment. Restore the set and reopen the project, or select an available preset.
+
+Sample assignments are saved in projects and in MIDI editor metadata. Audio exports render the assigned samples. Standard MIDI files and external MIDI output keep their original bank, program and note messages. Keep the sample library with your projects when moving to another computer.
 
 ## Draw and edit notes
 
@@ -179,7 +259,7 @@ A short wobble while clicking still counts as a click, so you won't draw a line 
 
 Event changes apply to notes on the same channel and color. When a line ends, the value returns to what it was before. For a sustain pedal, choose **Sustain** and drag along the line for as long as you want it held. A pitch bend drawn on a note moves with the note.
 
-Press **Shift + Keypad +** or **Shift + Keypad −** to step through automation patterns, creating a new one after the last.
+Add **Shift** to **Keypad +** or **Keypad −** to use the same shortcuts in the **Automation** category from anywhere in the editor. Automation cards with points, an LFO, or a playlist placement count as edited.
 
 ### Make a reusable LFO
 
@@ -234,13 +314,39 @@ Audio is rendered with your SoundFont at 48 kHz stereo. A progress bar shows whi
 
 ### M64
 
-Choose **M64** in the format dropdown, review the instrument mappings (**Similar instruments** suggests close matches to the default that reach your notes; **Manual selection** lists them all), then click **Save M64 Package** or **Export to Repository** to install it into your SM64, HackerSM64 or sm64coopdx project. **Target** chooses the game of the saved package. Add **M64 - Loop Start** and **M64 - Loop End** song events to repeat part of the song. The [M64 guide](sm64-export.md) covers the details.
+![The Export window with M64 selected](images/export-m64.png)
+
+Choose **M64** in the format dropdown, review the instrument mappings (**Similar instruments** suggests close matches to the default that reach your notes; **Manual selection** lists them all), then click **Save M64 Package** or **Export to Repository** to install it into your SM64, HackerSM64 or sm64coopdx project. **Target** chooses the game of the saved package. The list on the left shows each used channel with its instrument, or the name of the custom sample it plays, and its General MIDI number; select one to change its mapping on the right. If colored ports have to merge, the warning window lists them after the export. Add **M64 - Loop Start** and **M64 - Loop End** song events to repeat part of the song. The [M64 guide](sm64-export.md) covers the details.
 
 ### OoT
 
 Choose **OoT** in the format dropdown, pick the **Area** whose song to replace (or add a new song) and a **Sample Set**, review the instrument mappings, then click **Save OoT Package** or **Export to Repository** to install it into a zeldaret/oot checkout. The M64 loop events also set the OoT loop. The [OoT guide](oot-export.md) covers the details.
 
-**Export to Repository** asks for the checkout folder once per exporter and then installs there directly. To set or change it, open **Edit > Preferences** and use **Browse** under **Export plugins**; **Clear** forgets it, so the next export asks again. The folders are saved in `duckmidi-plugins.ini` beside your preferences.
+Until an exporter has a checkout folder, its **Export to Repository** button reads **Choose Folder** and only asks for the folder; click **Export to Repository** afterwards to install. To set or change the folder, open **Edit > Preferences** and use **Browse** under **Export plugins**; **Clear** forgets it, and the button reads **Choose Folder** again. The folders are saved in `duckmidi-plugins.ini` beside your preferences.
+
+### Custom game samples
+
+Save the preset in **Edit > Samples**, then select a source row in the M64 or OoT export mappings and check **Custom** below **Default mapping**. Choose its **Sample Set** and click a preset. The list initially shows presets classified for that source's GM program or drum key; **Show all** also shows unclassified presets. Each row keeps its own choices, and Custom starts off even when playback uses samples.
+
+Choose **Add** to include new native audio with the song. Choose **Replace** to select an existing repository sample by its label and path; inspect the repository first to populate the targets. For a preset with several regions, choose the region to assign. Replace affects every repository instrument or sound effect sharing that physical file and keeps its original as an exact `.aiff.bkp` or `.wav.bkp` sidecar.
+
+OoT custom samples use **Custom** in the exporter's **Sample Set** option. With a stock Sample Set or sm64coopdx, custom selections are ignored and the ordinary instruments export with a warning. Repository export also uses the detected game's mappings when it differs from **Target**.
+
+Sample pan exports for melodic notes and drums. MIDI pan events on the channel, including explicit centre pan, and non-default mixer pan take precedence. **Cut / Cut by** shortens earlier matching notes on the same channel and preset, including pedal-held notes; the game's release tail still plays. Sustain-only loops play as continuous loops. Replacing a sample also changes the shared pan of native drums that use it; **Revert** restores those entries with the sample.
+
+Export continues when a preset has settings the game cannot play. The warning window lists each changed setting by preset. Sample reverb and vibrato become the game's channel effects unless the channel has its own MIDI reverb or modulation. Filters and chorus are baked into the exported sample, so they shift with each note's pitch; the filter envelope is left out. Melodic notes always use 100% key tracking, while custom drums keep theirs. Oversized envelopes are clamped, loud samples have their gain lowered, and samples that cannot fit use the row's ordinary game instrument. An unavailable or incompatible Replace becomes Add. The [native sample reference](native-samples.md) lists what each setting becomes.
+
+### Export warnings
+
+When a game export succeeds but had to adapt the song, the **Export warnings** window lists what changed under short headings: **Omitted** (such as SysEx or a controller the game has no use for), **Converted** (such as timing rounded to the game's grid), **Custom samples**, **Merged ports** and **May not play as expected** (such as memory limits). The headline "export was saved with audible changes or playback limitations" appears only when the exporter had to change the notes themselves as a last resort to fit the song, for example by merging notes or skipping notes that have no free channel.
+
+### Repository history
+
+Click the arrow at the right of **Export format** to open **Repository history** in a drawer beside the Export window. Choose the target, checkout and build version under **Section**; the checkout's folder shows below it. Select a modification to see its paths, or click its **Revert** button. Reverting a shared sample keeps the latest remaining songs and their unrelated edits. Repeated exports update the same current modification.
+
+**Initialize** adopts the checkout's current audio as the baseline and discards that section's previous revert records after confirmation. **Revert all** restores its initialized audio state after confirmation. Outside edits stop an operation with the conflicting path; history retains the originals for recovery. Keep builds stopped while applying or reverting repository changes. Saving a package leaves repository files and history unchanged; follow its included installation guide.
+
+History needs the `db` library (`db.dll` on Windows) that ships in the `plugins` folder beside the M64 and OoT plugins. The history itself is stored in `plugins/history`.
 
 ## Check for updates
 

@@ -680,6 +680,16 @@ void ed_paste(Editor *e) {
     dm_project_init(&from);
 
     if (dm_unpack(&from, e->clipboard.data, e->clipboard.size, e->status, sizeof(e->status))) {
+        if (focus == FOCUS_PLAYLIST && !strcmp(from.name, DM_TEXT_CLIPS)) {
+            for (size_t i = 0; i < from.clip_count; ++i) {
+                if (!e->project.channels[from.clips[i].channel].enabled) {
+                    ed_message(e, DM_TEXT_CREATE_CHANNELS_BEFORE_PASTING);
+                    dm_project_free(&from);
+                    return;
+                }
+            }
+        }
+
         ed_checkpoint(e);
         ed_deselect(e);
         double at = e->cursor_beat[e->context == 2];

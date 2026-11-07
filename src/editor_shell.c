@@ -3,7 +3,7 @@
 
 #define STATUS_DURATION_MS 5000 /* How long a status message stays in the status bar. */
 
-static void record_button(Editor *e, bool playing);
+static void record_button(Editor *e);
 static void tempo_control(Editor *e);
 static void duration_control(Editor *e);
 static void playback_selector(Editor *e);
@@ -55,25 +55,15 @@ void ed_info_box(Editor *e) {
     }
 }
 
-void ed_new_song_event(Editor *e) {
-    e->midi_events = false;
-    e->event_edit = e->event_auto_edit = -1;
-    e->event_source_kind = e->event_kind = 0;
-    e->event_beat = (float)e->cursor_beat[0];
-    e->event_bpm = (float)e->project.bpm;
-    e->event_channel = e->selected_channel;
-    e->event_numerator = e->project.numerator;
-    e->event_denominator = e->project.denominator;
-    e->song_event = true;
-}
-
 const char *ed_binding_text(Editor *e, Action action, char *out, size_t capacity) {
     Binding binding = e->bindings[action];
+    const char *name = binding.mouse == SDL_BUTTON_X1   ? DM_TEXT_MOUSE_BUTTON_4
+                       : binding.mouse == SDL_BUTTON_X2 ? DM_TEXT_MOUSE_BUTTON_5
+                                                        : SDL_GetScancodeName(binding.key);
     snprintf(out, capacity, "%s%s%s%s%s", binding.mods & SDL_KMOD_CTRL ? DM_TEXT_CTRL_PLUS : "",
              binding.mods & SDL_KMOD_SHIFT ? DM_TEXT_SHIFT_PLUS : "",
              binding.mods & SDL_KMOD_ALT ? DM_TEXT_ALT_PLUS : "",
-             binding.mods & SDL_KMOD_GUI ? DM_TEXT_WIN_CMD_PLUS : "",
-             SDL_GetScancodeName(binding.key));
+             binding.mods & SDL_KMOD_GUI ? DM_TEXT_WIN_CMD_PLUS : "", name);
     return out;
 }
 
@@ -90,9 +80,8 @@ void ed_action_tip(Editor *e, const char *name, Action ed_action) {
     ed_hover(e, text);
 }
 
-static void record_button(Editor *e, bool playing) {
-    (void)playing;
-    ui_accent(e->record);
+static void record_button(Editor *e) {
+    ui_button_color(e->record ? COLOR(177, 42, 55) : 0);
 
     if (ui_icon_button("##Record", e->record ? UI_RECORD_ON : UI_RECORD, 74, 32)) {
         ed_toggle_record(e);
@@ -103,9 +92,19 @@ static void record_button(Editor *e, bool playing) {
 }
 
 static void tempo_control(Editor *e) {
+    /* During playback the field follows the song's tempo changes. Edits always set the starting
+       BPM, so the field shows it while the pointer is over it or it is being edited. */
+    static bool editing;
     float bpm = (float)e->project.bpm;
 
-    if (ui_float(DM_TEXT_BPM, &bpm, DM_BPM_MIN, DM_BPM_MAX) && e->active) {
+    if (dm_audio_playing(e->audio) && !editing) {
+        bpm = (float)dm_playback_bpm(&e->project, dm_audio_position(e->audio));
+    }
+
+    bool changed = ui_float(DM_TEXT_BPM, &bpm, DM_BPM_MIN, DM_BPM_MAX);
+    editing = ui_hover() || ui_active();
+
+    if (changed && e->active) {
         ed_checkpoint(e);
         e->project.bpm = bpm;
         ed_commit(e);
@@ -119,6 +118,7 @@ static void tempo_control(Editor *e) {
         if (m->size >= 2 && m->data[0] == MIDI_META && m->data[1] == MIDI_META_TEMPO &&
             e->project.events[i].beat > 0) {
             variable = true;
+            break;
         }
     }
 
@@ -208,7 +208,7 @@ void ed_toolbar(Editor *e) {
     }
 
     ui_same();
-    record_button(e, playing);
+    record_button(e);
     ui_same();
     ui_align_frame();
     duration_control(e);
@@ -270,10 +270,10 @@ void ed_toolbar(Editor *e) {
     ui_accent_end();
     ed_action_tip(e, DM_TEXT_OVERLAP, ACT_OVERLAP);
     ui_same();
-    bool roll_before = e->roll;
+    const DmPattern *pattern = ed_pattern(e);
+    bool roll_visible = e->roll && !e->roll_auto_hidden && (!pattern || !pattern->kind);
 
-    if (ui_toggle(DM_TEXT_PIANO_ROLL_TITLE, &e->roll)) {
-        e->roll = roll_before;
+    if (ui_toggle(DM_TEXT_PIANO_ROLL_TITLE, &roll_visible)) {
         ed_toggle_roll(e);
     }
 
@@ -347,11 +347,13 @@ static void edit_menu(Editor *e) {
     char key[64];
 
     if (ui_menu(DM_TEXT_EDIT)) {
-        if (ui_menu_item(DM_TEXT_UNDO, DM_TEXT_CTRL_Z, e->undo_count > 0)) {
+        if (ui_menu_item(DM_TEXT_UNDO, DM_TEXT_CTRL_Z,
+                         (e->undo_count > 0 || ed_samples_history(e, false, false)))) {
             ed_undo(e, false);
         }
 
-        if (ui_menu_item(DM_TEXT_REDO, DM_TEXT_CTRL_Y, e->redo_count > 0)) {
+        if (ui_menu_item(DM_TEXT_REDO, DM_TEXT_CTRL_Y,
+                         (e->redo_count > 0 || ed_samples_history(e, true, false)))) {
             ed_undo(e, true);
         }
 
@@ -378,6 +380,10 @@ static void edit_menu(Editor *e) {
 
         if (ui_menu_item(DM_TEXT_GENERATE_PATTERNS, NULL, e->active)) {
             e->generate_window = true;
+        }
+
+        if (ui_menu_item(DM_TEXT_SAMPLE_TOOL_NAME, NULL, ed_samples_available(e))) {
+            ed_samples_open(e);
         }
 
         if (ui_menu_item(DM_TEXT_MIDI_EVENTS, NULL, e->active)) {

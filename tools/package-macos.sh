@@ -38,8 +38,13 @@ cat > "$app/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-# Copy Homebrew libraries into the bundle and point the executable at them.
-dylibbundler -of -b -cd -x "$app/Contents/MacOS/duckmidi" \
+# Copy runtime libraries and fix both the executable and dynamically loaded tools.
+fix_files=(-x "$app/Contents/MacOS/duckmidi")
+for plugin in "$app"/Contents/Resources/plugins/*.dylib; do
+  fix_files+=(-x "$plugin")
+done
+dylibbundler -of -b -cd "${fix_files[@]}" \
+  -i "$app/Contents/Resources/plugins/" \
   -d "$app/Contents/Frameworks/" -p @executable_path/../Frameworks/
 # Stripping removes the linker signature, so re-sign the plugins before the bundle.
 codesign --force --sign - "$app"/Contents/Resources/plugins/*.dylib

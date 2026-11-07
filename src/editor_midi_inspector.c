@@ -67,33 +67,56 @@ static bool midi_selection_valid(Editor *e);
 static void midi_meta_fields(Editor *e);
 static void midi_event_inspector(Editor *e);
 
-size_t ed_midi_rows(Editor *e) {
-    size_t capacity = (e->project.event_count + e->project.automation_count) * sizeof(MidiRow);
+static size_t midi_first_at(const DmProject *p, bool automation, double beat) {
+    size_t first = 0, last = automation ? p->automation_count : p->event_count;
 
-    if (!dm_reserve((void **)&e->midi_rows.data, &e->midi_rows.capacity, capacity, 1)) {
+    while (first < last) {
+        size_t middle = first + (last - first) / 2;
+        double at = automation ? p->automation[middle].beat : p->events[middle].beat;
+
+        if (at < beat) {
+            first = middle + 1;
+        } else {
+            last = middle;
+        }
+    }
+
+    return first;
+}
+
+size_t ed_midi_rows_between(Editor *e, double start, double end) {
+    const DmProject *p = &e->project;
+    size_t source = midi_first_at(p, false, start), source_end = midi_first_at(p, false, end);
+    size_t automation = midi_first_at(p, true, start), automation_end = midi_first_at(p, true, end);
+    size_t capacity = (source_end - source + automation_end - automation) * sizeof(MidiRow);
+    e->midi_rows.size = 0;
+
+    if (!capacity ||
+        !dm_reserve((void **)&e->midi_rows.data, &e->midi_rows.capacity, capacity, 1)) {
         return 0;
     }
 
     MidiRow *rows = (MidiRow *)e->midi_rows.data;
-    /* Both current project streams are beat-ordered. Merge them without re-sorting
-       every frame; source events retain precedence at an equal beat. */
-    size_t count = 0, source = 0, automation = 0;
+    /* Source events retain precedence at an equal beat. */
+    size_t count = 0;
 
-    while (source < e->project.event_count || automation < e->project.automation_count) {
-        if (source < e->project.event_count &&
-            (automation == e->project.automation_count ||
-             e->project.events[source].beat <= e->project.automation[automation].beat)) {
-            rows[count++] = (MidiRow){e->project.events[source].beat, (int)source, false};
+    while (source < source_end || automation < automation_end) {
+        if (source < source_end && (automation == automation_end ||
+                                    p->events[source].beat <= p->automation[automation].beat)) {
+            rows[count++] = (MidiRow){p->events[source].beat, (int)source, false};
             ++source;
         } else {
-            rows[count++] =
-                (MidiRow){e->project.automation[automation].beat, (int)automation, true};
+            rows[count++] = (MidiRow){p->automation[automation].beat, (int)automation, true};
             ++automation;
         }
     }
 
     e->midi_rows.size = count * sizeof(*rows);
     return count;
+}
+
+size_t ed_midi_rows(Editor *e) {
+    return ed_midi_rows_between(e, 0, INFINITY);
 }
 
 static bool midi_format_bytes(Editor *e) {
@@ -162,11 +185,11 @@ invalid:
 }
 
 void ed_midi_select(Editor *e, MidiRow row) {
-    ed_song_event_open(e, row.index, row.automation);
-    e->song_event = false;
-    e->midi_events = true;
+    e->event_beat = row.beat;
+    e->midi_selection_revision = e->export_revision;
     e->midi_event_kind = row.automation ? 1 : 0;
     e->midi_event_index = row.index;
+    e->midi_sample_dirty = false;
     e->midi_error[0] = 0;
     dm_bytes_free(&e->midi_draft);
 
@@ -176,7 +199,7 @@ void ed_midi_select(Editor *e, MidiRow row) {
         dm_bytes(&e->midi_draft, bytes,
                  a.type == MIDI_PROGRAM || a.type == MIDI_CHANNEL_PRESSURE ? 2 : 3);
         e->midi_source_track = a.channel;
-        e->midi_source_port = 0;
+        e->midi_source_port = a.port;
     } else {
         DmEvent *source = &e->project.events[row.index];
         dm_bytes(&e->midi_draft, source->message.data, source->message.size);
@@ -184,13 +207,13 @@ void ed_midi_select(Editor *e, MidiRow row) {
         e->midi_source_port = source->port;
     }
 
-    if (!e->midi_draft.size || !midi_format_bytes(e)) {
+    if (!e->midi_draft.size) {
         e->midi_event_index = -1;
         ed_message(e, DM_TEXT_CANNOT_ALLOCATE_MIDI);
         return;
     }
 
-    if (!row.automation && row.beat == 0) {
+    if (row.beat == 0 && (!row.automation || e->project.automation[row.index].pattern < 0)) {
         uint8_t *m = e->midi_draft.data;
         int c = m[0] & MIDI_CHANNEL_MASK;
 
@@ -223,40 +246,11 @@ void ed_midi_select(Editor *e, MidiRow row) {
             m[3] = e->project.numerator;
             m[4] = power;
         }
-
-        midi_format_bytes(e);
     }
 
-    if (row.beat != 0) {
-        return;
-    }
-
-    if (row.automation) {
-        if (e->event_kind == 3) {
-            e->event_program = (int)fmax(0, e->project.channels[e->event_channel].program);
-        }
-
-        return;
-    }
-
-    DmEvent event = e->project.events[row.index];
-    const uint8_t *m = event.message.data;
-
-    if (event.message.size < 2) {
-        return;
-    }
-
-    if (m[0] == MIDI_META && m[1] == MIDI_META_TEMPO) {
-        e->event_bpm = e->project.bpm;
-    }
-
-    if (m[0] == MIDI_META && m[1] == MIDI_META_TIME) {
-        e->event_numerator = e->project.numerator;
-        e->event_denominator = e->project.denominator;
-    }
-
-    if ((m[0] & MIDI_STATUS_MASK) == MIDI_PROGRAM) {
-        e->event_program = (int)fmax(0, e->project.channels[m[0] & MIDI_CHANNEL_MASK].program);
+    if (!e->song_event && !midi_format_bytes(e)) {
+        e->midi_event_index = -1;
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_MIDI);
     }
 }
 
@@ -275,12 +269,12 @@ const char *ed_midi_row_name(Editor *e, MidiRow row) {
         first = a.a;
     } else {
         DmBytes *m = &e->project.events[row.index].message;
-        status = m->data[0];
-        first = m->data[1];
-
-        if (status >= MIDI_SYSTEM) {
+        if (m->size < 2 || m->data[0] >= MIDI_SYSTEM) {
             return ed_event_label(m);
         }
+
+        status = m->data[0];
+        first = m->data[1];
     }
 
     switch (status & MIDI_STATUS_MASK) {
@@ -331,7 +325,7 @@ static void midi_event_list(Editor *e, size_t count) {
 }
 
 static bool midi_selection_valid(Editor *e) {
-    if (e->midi_event_index < 0) {
+    if (e->midi_event_index < 0 || e->midi_selection_revision != e->export_revision) {
         return false;
     }
 
@@ -383,7 +377,7 @@ bool ed_midi_replace_payload(Editor *e, const uint8_t *payload, size_t size) {
 }
 
 /* Named fields for a channel message, shared by the MIDI Events and song event windows. */
-void ed_midi_channel_fields(uint8_t *m, size_t size) {
+static void midi_channel_fields(Editor *e, uint8_t *m, size_t size) {
     int type = m[0] & MIDI_STATUS_MASK, channel = (m[0] & MIDI_CHANNEL_MASK) + 1;
 
     if (ui_int(DM_TEXT_MIDI_CHANNEL, &channel, 1, 16)) {
@@ -391,9 +385,14 @@ void ed_midi_channel_fields(uint8_t *m, size_t size) {
     }
 
     if (type == MIDI_PROGRAM) {
-        if (ui_combo(DM_TEXT_INSTRUMENT, dm_program_name(m[1]))) {
+        bool drums = dm_channel_drums(&e->project, channel - 1);
+        const char *current = drums ? dm_drum_kit_name(m[1]) : dm_program_name(m[1]);
+
+        if (ui_combo(DM_TEXT_INSTRUMENT, current ? current : DM_TEXT_DRUM_KIT)) {
             for (int i = 0; i < 128; ++i) {
-                if (ui_select(dm_program_name(i), m[1] == i, 0, 0)) {
+                const char *name = drums ? dm_drum_kit_name(i) : dm_program_name(i);
+
+                if (name && ui_select(name, m[1] == i, 0, 0)) {
                     m[1] = (uint8_t)i;
                 }
             }
@@ -404,6 +403,7 @@ void ed_midi_channel_fields(uint8_t *m, size_t size) {
         char number[80];
         snprintf(number, sizeof(number), DM_TEXT_PROGRAM_MIDI_VALUE, m[1] + 1, m[1]);
         ui_dim(number);
+        ed_sample_program_source(e);
     } else if (type == MIDI_CONTROL) {
         char label[128];
         snprintf(label, sizeof(label), "%s", controller_name(m[1]));
@@ -502,6 +502,46 @@ void ed_midi_channel_fields(uint8_t *m, size_t size) {
     }
 }
 
+static void midi_smpte_fields(uint8_t *payload) {
+    static const char *rates[] = {DM_TEXT_SMPTE_24, DM_TEXT_SMPTE_25, DM_TEXT_SMPTE_29,
+                                  DM_TEXT_SMPTE_30};
+    static const int frame_counts[] = {24, 25, 30, 30};
+    static const char *labels[] = {DM_TEXT_MINUTES, DM_TEXT_SECONDS, DM_TEXT_FRAMES,
+                                   DM_TEXT_SUBFRAMES};
+    int rate = (payload[0] >> 5) & 3;
+
+    if (ui_combo(DM_TEXT_SMPTE_RATE, rates[rate])) {
+        for (int i = 0; i < 4; ++i) {
+            if (ui_select(rates[i], rate == i, 0, 0)) {
+                rate = i;
+                payload[0] = (uint8_t)((payload[0] & 31) | (rate << 5));
+
+                if (payload[3] >= frame_counts[rate]) {
+                    payload[3] = (uint8_t)(frame_counts[rate] - 1);
+                }
+            }
+        }
+
+        ui_combo_end();
+    }
+
+    int hours = payload[0] & 31;
+
+    if (ui_int(DM_TEXT_SMPTE_HOURS, &hours, 0, 23)) {
+        payload[0] = (uint8_t)((rate << 5) | hours);
+    }
+
+    int maxima[] = {59, 59, frame_counts[rate] - 1, 99};
+
+    for (int i = 0; i < 4; ++i) {
+        int value = payload[i + 1];
+
+        if (ui_int(labels[i], &value, 0, maxima[i])) {
+            payload[i + 1] = (uint8_t)value;
+        }
+    }
+}
+
 static void midi_meta_fields(Editor *e) {
     DmBytes *draft = &e->midi_draft;
     uint8_t *m = draft->data;
@@ -515,14 +555,25 @@ static void midi_meta_fields(Editor *e) {
         return;
     }
 
-    ui_text(ed_event_label(draft));
+    if (!e->song_event || !e->song_event_add) {
+        ui_text(ed_event_label(draft));
+    }
 
-    if (m[1] >= 1 && m[1] <= 9 && size < 4096) {
-        char text[4096];
+    if (e->song_event && dm_loop_marker(draft)) {
+        ui_wrap(DM_TEXT_LOOP_POINT_HELP);
+    } else if (m[1] >= MIDI_META_TEXT && m[1] <= 9) {
+        size_t capacity = size + 4096;
+
+        if (!dm_reserve((void **)&e->midi_text.data, &e->midi_text.capacity, capacity, 1)) {
+            ui_dim(DM_TEXT_CANNOT_ALLOCATE_MIDI);
+            return;
+        }
+
+        char *text = (char *)e->midi_text.data;
         memcpy(text, payload, size);
         text[size] = 0;
 
-        if (ui_multiline("##Event text", text, sizeof(text), 90)) {
+        if (ui_multiline("##Event text", text, e->midi_text.capacity, 90)) {
             ed_midi_replace_payload(e, (const uint8_t *)text, strlen(text));
         }
     } else if (m[1] == MIDI_META_TEMPO && size == 3) {
@@ -598,19 +649,47 @@ static void midi_meta_fields(Editor *e) {
             payload[0] = sequence >> 8;
             payload[1] = sequence;
         }
-    } else if (m[1] == 0x54 && size == 5) {
-        const char *labels[] = {DM_TEXT_HOURS_FRAME_RATE, DM_TEXT_MINUTES, DM_TEXT_SECONDS,
-                                DM_TEXT_FRAMES, DM_TEXT_SUBFRAMES};
-
-        for (int i = 0; i < 5; ++i) {
-            int value = payload[i];
-
-            if (ui_int(labels[i], &value, 0, 255)) {
-                payload[i] = (uint8_t)value;
-            }
-        }
+    } else if (m[1] == MIDI_META_SMPTE && size == 5) {
+        midi_smpte_fields(payload);
     } else {
-        ui_dim(DM_TEXT_USE_MIDI_VALUES);
+        ui_dim(e->song_event ? DM_TEXT_SONG_EVENT_EDIT_MIDI : DM_TEXT_USE_MIDI_VALUES);
+    }
+}
+
+void ed_midi_event_fields(Editor *e) {
+    if (!e->midi_draft.size) {
+        return;
+    }
+
+    if (e->midi_draft.data[0] < MIDI_SYSTEM) {
+        midi_channel_fields(e, e->midi_draft.data, e->midi_draft.size);
+    } else {
+        midi_meta_fields(e);
+    }
+}
+
+void ed_midi_apply_initial(Editor *e, const uint8_t *m) {
+    int type = m[0] & MIDI_STATUS_MASK;
+
+    if (type == MIDI_PROGRAM) {
+        e->project.channels[m[0] & MIDI_CHANNEL_MASK].program = m[1];
+    }
+
+    if (type == MIDI_CONTROL && m[1] == MIDI_CC_VOLUME) {
+        e->project.channels[m[0] & MIDI_CHANNEL_MASK].volume = m[2];
+    }
+
+    if (type == MIDI_CONTROL && m[1] == MIDI_CC_PAN) {
+        e->project.channels[m[0] & MIDI_CHANNEL_MASK].pan = m[2];
+    }
+
+    if (m[0] == MIDI_META && m[1] == MIDI_META_TEMPO) {
+        e->project.bpm = 60000000.0 / ((m[3] << 16) | (m[4] << 8) | m[5]);
+    }
+
+    if (m[0] == MIDI_META && m[1] == MIDI_META_TIME) {
+        e->project.numerator = m[3];
+        e->project.denominator = 1 << m[4];
     }
 }
 
@@ -621,7 +700,11 @@ bool ed_midi_apply_draft(Editor *e) {
         return false;
     }
 
-    if (e->midi_values && !ed_midi_parse_bytes(e)) {
+    if (e->song_event && !ed_song_event_position_valid(e)) {
+        return false;
+    }
+
+    if (!e->song_event && e->midi_values && !ed_midi_parse_bytes(e)) {
         return false;
     }
 
@@ -647,6 +730,10 @@ bool ed_midi_apply_draft(Editor *e) {
     }
 
     ed_checkpoint(e);
+
+    if (e->song_event) {
+        dm_collapse_program_repeats(&e->project, e->midi_event_index, e->midi_event_kind);
+    }
 
     if (e->midi_event_kind) {
         DmAutomation *a = &e->project.automation[e->midi_event_index];
@@ -678,26 +765,11 @@ bool ed_midi_apply_draft(Editor *e) {
     }
 
     if (initial && e->event_beat == 0) {
-        if (type == MIDI_PROGRAM) {
-            e->project.channels[m[0] & MIDI_CHANNEL_MASK].program = m[1];
-        }
+        ed_midi_apply_initial(e, m);
+    }
 
-        if (type == MIDI_CONTROL && m[1] == MIDI_CC_VOLUME) {
-            e->project.channels[m[0] & MIDI_CHANNEL_MASK].volume = m[2];
-        }
-
-        if (type == MIDI_CONTROL && m[1] == MIDI_CC_PAN) {
-            e->project.channels[m[0] & MIDI_CHANNEL_MASK].pan = m[2];
-        }
-
-        if (m[0] == MIDI_META && m[1] == MIDI_META_TEMPO) {
-            e->project.bpm = 60000000.0 / ((m[3] << 16) | (m[4] << 8) | m[5]);
-        }
-
-        if (m[0] == MIDI_META && m[1] == MIDI_META_TIME) {
-            e->project.numerator = m[3];
-            e->project.denominator = 1 << m[4];
-        }
+    if (e->song_event) {
+        e->song_event_anchor = e->event_beat;
     }
 
     ed_commit(e);
@@ -714,49 +786,52 @@ static void midi_event_inspector(Editor *e) {
 
     ed_song_event_position(e);
     ui_separator();
-    bool raw = e->midi_values;
 
-    if (ui_check(DM_TEXT_MIDI_VALUES, &raw)) {
-        if (raw) {
-            if (midi_format_bytes(e)) {
-                e->midi_values = true;
-            }
-        } else if (ed_midi_parse_bytes(e)) {
-            e->midi_values = false;
-        }
-    }
-
-    if (e->midi_values) {
-        bool hex = e->midi_hex;
-
-        if (ui_check(DM_TEXT_HEXADECIMAL, &hex) && ed_midi_parse_bytes(e)) {
-            e->midi_hex = hex;
-            midi_format_bytes(e);
-        }
-
-        ui_dim(e->midi_hex ? DM_TEXT_HEX_BYTES_SEPARATED : DM_TEXT_DECIMAL_BYTES_SEPARATED);
-        ui_multiline("##Message bytes", (char *)e->midi_text.data, e->midi_text.capacity, 100);
-        ui_dim(DM_TEXT_INCLUDES_STATUS_BYTE);
-    } else if (e->midi_draft.size && e->midi_draft.data[0] < MIDI_SYSTEM) {
-        ed_midi_channel_fields(e->midi_draft.data, e->midi_draft.size);
+    if (e->song_event) {
+        ed_midi_event_fields(e);
     } else {
-        midi_meta_fields(e);
+        bool raw = e->midi_values;
+
+        if (ui_check(DM_TEXT_MIDI_VALUES, &raw)) {
+            if (raw) {
+                if (midi_format_bytes(e)) {
+                    e->midi_values = true;
+                }
+            } else if (ed_midi_parse_bytes(e)) {
+                e->midi_values = false;
+            }
+        }
+
+        if (e->midi_values) {
+            bool hex = e->midi_hex;
+
+            if (ui_check(DM_TEXT_HEXADECIMAL, &hex) && ed_midi_parse_bytes(e)) {
+                e->midi_hex = hex;
+                midi_format_bytes(e);
+            }
+
+            ui_dim(e->midi_hex ? DM_TEXT_HEX_BYTES_SEPARATED : DM_TEXT_DECIMAL_BYTES_SEPARATED);
+            ui_multiline("##Message bytes", (char *)e->midi_text.data, e->midi_text.capacity, 100);
+            ui_dim(DM_TEXT_INCLUDES_STATUS_BYTE);
+        } else {
+            ed_midi_event_fields(e);
+        }
     }
 
     if (*e->midi_error) {
         ui_text(e->midi_error);
     }
 
-    if (e->event_edit >= 0) {
-        DmEvent *source = &e->project.events[e->event_edit];
+    if (!e->midi_event_kind) {
         int track = e->midi_source_track + 1;
 
         if (ui_int(DM_TEXT_SOURCE_TRACK, &track, 1, 65536)) {
             e->midi_source_track = track - 1;
         }
 
-        ui_int(DM_TEXT_SOURCE_MIDI_PORT, &e->midi_source_port, 0, 255);
-        (void)source;
+        if (!e->song_event) {
+            ui_int(DM_TEXT_SOURCE_MIDI_PORT, &e->midi_source_port, 0, 255);
+        }
     } else {
         DmAutomation a = e->project.automation[e->midi_event_index];
 
@@ -765,16 +840,59 @@ static void midi_event_inspector(Editor *e) {
         }
     }
 
-    if (ui_button(DM_TEXT_APPLY_EVENT, 120, 0)) {
-        ed_midi_apply_draft(e);
+    if (ui_button(DM_TEXT_APPLY_EVENT, 120, 0) && ed_midi_apply_draft(e)) {
+        return;
     }
 
     if (ui_button(DM_TEXT_DELETE_EVENT, 120, 0)) {
         ed_checkpoint(e);
-        ed_song_event_remove(e);
+        size_t i = (size_t)e->midi_event_index;
+
+        if (e->song_event) {
+            dm_collapse_program_repeats(&e->project, (int)i, e->midi_event_kind);
+        }
+
+        if (e->midi_event_kind) {
+            memmove(e->project.automation + i, e->project.automation + i + 1,
+                    (e->project.automation_count - i - 1) * sizeof(DmAutomation));
+            --e->project.automation_count;
+        } else {
+            dm_bytes_free(&e->project.events[i].message);
+            memmove(e->project.events + i, e->project.events + i + 1,
+                    (e->project.event_count - i - 1) * sizeof(DmEvent));
+            --e->project.event_count;
+        }
+
+        e->midi_error[0] = 0;
         ed_commit(e);
         e->midi_event_index = -1;
     }
+}
+
+void ed_midi_event_panels(Editor *e, size_t count, float *split) {
+    UiPoint size = ui_available();
+    float spacing = ui_item_spacing_x();
+
+    if (*split <= 0) {
+        *split = (size.x - 8 - spacing * 2) * .5f;
+    }
+
+    float left = ed_clampf(*split, 130, fmaxf(130, size.x - 260));
+    *split = left;
+    ui_child(DM_TEXT_MIDI_EVENT_LIST, left, size.y, true);
+
+    if (e->song_event && !count) {
+        ui_dim(DM_TEXT_SONG_EVENT_EMPTY);
+    } else {
+        midi_event_list(e, count);
+    }
+    ui_child_end();
+    ui_same();
+    ui_splitter(split, 130, fmaxf(130, size.x - 260), size.y);
+    ui_same();
+    ui_child(DM_TEXT_MIDI_EVENT_DETAILS, 0, size.y, true);
+    midi_event_inspector(e);
+    ui_child_end();
 }
 
 void ed_midi_event_window(Editor *e) {
@@ -789,24 +907,7 @@ void ed_midi_event_window(Editor *e) {
     float h = ui_display().y * .6f;
 
     if (ui_dialog(DM_TEXT_MIDI_EVENTS, &e->midi_events, fminf(1000, ui_display().x - 40), h)) {
-        UiPoint size = ui_available();
-        float spacing = ui_item_spacing_x();
-
-        if (e->midi_split <= 0) {
-            e->midi_split = (size.x - 8 - spacing * 2) * .5f;
-        }
-
-        float left = ed_clampf(e->midi_split, 130, fmaxf(130, size.x - 260));
-        e->midi_split = left;
-        ui_child(DM_TEXT_MIDI_EVENT_LIST, left, size.y, true);
-        midi_event_list(e, count);
-        ui_child_end();
-        ui_same();
-        ui_splitter(&e->midi_split, 130, fmaxf(130, size.x - 260), size.y);
-        ui_same();
-        ui_child(DM_TEXT_MIDI_EVENT_DETAILS, 0, size.y, true);
-        midi_event_inspector(e);
-        ui_child_end();
+        ed_midi_event_panels(e, count, &e->midi_split);
     }
 
     ui_end();

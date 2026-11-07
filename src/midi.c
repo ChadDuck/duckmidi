@@ -16,6 +16,7 @@ typedef struct {
     size_t order;
     int phase;       /* Endpoints, restoration, setup, then notes at a shared tick. */
     bool persistent; /* Detached source points retain explicit restoration values. */
+    bool generated_default;
     DmBytes bytes;
 } Raw;
 
@@ -24,6 +25,9 @@ typedef struct {
     size_t count, capacity;
     int format, tracks, division;
     uint64_t end_tick;
+    bool scan_pan;
+    int scan_port, scan_sequence;
+    uint64_t first_note[16], first_pan[16];
 } Midi;
 
 static uint32_t read_be(Reader *r, int count) {
@@ -211,7 +215,22 @@ static bool parse_track(Reader *r, Midi *m, int track) {
         bool eot = raw.bytes.size >= 3 && raw.bytes.data[0] == MIDI_META &&
                    raw.bytes.data[1] == MIDI_META_END;
 
-        if (!raw_add(m, &raw)) {
+        if (m->scan_pan) {
+            const uint8_t *b = raw.bytes.data;
+
+            if (b[0] < MIDI_SYSTEM && (m->format != 2 || track == m->scan_sequence) &&
+                (m->scan_port == DM_PORT_COMBINED || port == m->scan_port)) {
+                unsigned ch = b[0] & MIDI_CHANNEL_MASK;
+
+                if ((b[0] & MIDI_STATUS_MASK) == MIDI_NOTE_ON && b[2]) {
+                    m->first_note[ch] = tick < m->first_note[ch] ? tick : m->first_note[ch];
+                } else if ((b[0] & MIDI_STATUS_MASK) == MIDI_CONTROL && b[1] == MIDI_CC_PAN) {
+                    m->first_pan[ch] = tick < m->first_pan[ch] ? tick : m->first_pan[ch];
+                }
+            }
+
+            dm_bytes_free(&raw.bytes);
+        } else if (!raw_add(m, &raw)) {
             dm_bytes_free(&raw.bytes);
             return false;
         }
@@ -496,6 +515,159 @@ static void remove_embedded_events(DmProject *p, bool strip_foreign) {
     p->event_count = write;
 }
 
+/* Only volume and pan can separate repeat program changes without affecting the patch
+   or triggering it. Other messages on the route conservatively start a new group. */
+static int program_repeat(DmProgramHistory history[16], double position, int track, int index,
+                          const uint8_t *message, size_t size) {
+    uint8_t status = message[0];
+
+    if (status == MIDI_SYSEX || status == MIDI_SYSEX_END) {
+        memset(history, 0, 16 * sizeof(*history));
+    }
+
+    if (status >= MIDI_SYSTEM) {
+        return -1;
+    }
+
+    int type = status & MIDI_STATUS_MASK;
+    DmProgramHistory *last = &history[status & MIDI_CHANNEL_MASK];
+
+    if (type == MIDI_PROGRAM && size == 2) {
+        uint8_t program = message[1] + 1;
+
+        if (last->program_plus_one == program && last->position == position &&
+            last->track == track) {
+            return last->index;
+        }
+
+        *last = (DmProgramHistory){position, track, index, program};
+    } else if (type != MIDI_CONTROL || size != 3 ||
+               (message[1] != MIDI_CC_VOLUME && message[1] != MIDI_CC_PAN)) {
+        last->program_plus_one = 0;
+    }
+
+    return -1;
+}
+
+int dm_project_program_repeat(DmProgramHistory history[DM_PORT_COMBINED][16], const DmProject *p,
+                              int index, bool automation) {
+    if (!automation) {
+        const DmEvent *event = &p->events[index];
+        return program_repeat(history[event->port], event->beat, event->track, index,
+                              event->message.data, event->message.size);
+    }
+
+    const DmAutomation *a = &p->automation[index];
+
+    if (a->pattern >= 0) {
+        return -1;
+    }
+
+    if (a->type == MIDI_PROGRAM &&
+        (a->curve || a->anchor || a->bend || a->ramp || a->hold || a->b)) {
+        history[a->port][a->channel].program_plus_one = 0;
+        return -1;
+    }
+
+    const uint8_t message[] = {a->type | a->channel, a->a, a->b};
+    size_t size = a->type == MIDI_PROGRAM || a->type == MIDI_CHANNEL_PRESSURE ? 2 : 3;
+    return program_repeat(history[a->port], a->beat, -1, index, message, size);
+}
+
+/* Index -1 collapses the entire stream. A selected row collapses only its own copies. */
+bool dm_collapse_program_repeats(DmProject *p, int index, bool automation) {
+    DmProgramHistory history[DM_PORT_COMBINED][16] = {0};
+    size_t *count = automation ? &p->automation_count : &p->event_count;
+    size_t first = index < 0 ? 0 : (size_t)index;
+
+    if (first >= *count) {
+        return false;
+    }
+
+    double start = automation ? p->automation[first].beat : p->events[first].beat;
+    size_t write = first, i = first;
+
+    for (; i < *count; ++i) {
+        double beat = automation ? p->automation[i].beat : p->events[i].beat;
+
+        if (index >= 0 && beat != start) {
+            break;
+        }
+
+        int prior = dm_project_program_repeat(history, p, (int)i, automation);
+
+        if (prior >= 0 && (index < 0 || prior == index)) {
+            if (!automation) {
+                dm_bytes_free(&p->events[i].message);
+            }
+
+            continue;
+        }
+
+        if (write != i) {
+            if (automation) {
+                p->automation[write] = p->automation[i];
+            } else {
+                p->events[write] = p->events[i];
+            }
+        }
+
+        ++write;
+    }
+
+    if (write == i) {
+        return false;
+    }
+
+    if (i < *count) {
+        if (automation) {
+            memmove(p->automation + write, p->automation + i, (*count - i) * sizeof(DmAutomation));
+        } else {
+            memmove(p->events + write, p->events + i, (*count - i) * sizeof(DmEvent));
+        }
+    }
+
+    *count -= i - write;
+    return true;
+}
+
+static bool collapse_restored_programs(DmProject *p, char *error, size_t cap) {
+    dm_collapse_program_repeats(p, -1, false);
+    dm_collapse_program_repeats(p, -1, true);
+
+    for (size_t i = 0; i < p->view_count; ++i) {
+        DmBytes *state = &p->views[i].state;
+        DmProject view;
+        dm_project_init(&view);
+        bool ok = dm_unpack(&view, state->data, state->size, error, cap);
+
+        if (ok) {
+            bool source = dm_collapse_program_repeats(&view, -1, false);
+            bool automation = dm_collapse_program_repeats(&view, -1, true);
+
+            if (source || automation) {
+                DmBytes packed = {0};
+                ok = dm_pack(&view, &packed);
+
+                if (ok) {
+                    dm_bytes_free(state);
+                    *state = packed;
+                } else {
+                    snprintf(error, cap, DM_TEXT_CANNOT_ALLOCATE_MIDI);
+                }
+            }
+        }
+
+        dm_project_free(&view);
+
+        if (!ok) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 /* 0: absent; 1: restored; 2: stale (ordinary import); -1: malformed/unsupported. */
 static int restore_editor(DmProject *p, const Midi *m, int port, int sequence, char *error,
                           size_t cap) {
@@ -561,7 +733,7 @@ static int restore_editor(DmProject *p, const Midi *m, int port, int sequence, c
         ok = dm_view_switch(&next, port, sequence, error, cap);
     }
 
-    if (!ok) {
+    if (!ok || !collapse_restored_programs(&next, error, cap)) {
         dm_project_free(&next);
         return -1;
     }
@@ -762,12 +934,12 @@ static bool sysex_body(const uint8_t *b, size_t size, const uint8_t **body, uint
 
 /* Roland GS "use for rhythm part" (address 40 1x 15): the MIDI channel of part block x and
    whether it now plays a drum map. Block 0 is channel 10, 1-9 channels 1-9, A-F channels 11-16. */
-static bool gs_rhythm_part(const uint8_t *b, size_t size, int *channel, bool *drums) {
+bool dm_midi_rhythm_part(const DmBytes *message, int *channel, bool *drums) {
     const uint8_t *d;
     uint32_t n;
 
-    if (!sysex_body(b, size, &d, &n) || n < 8 || d[0] != 0x41 || d[2] != 0x42 || d[3] != 0x12 ||
-        d[4] != 0x40 || (d[5] & 0xF0) != 0x10 || d[6] != 0x15) {
+    if (!sysex_body(message->data, message->size, &d, &n) || n < 8 || d[0] != 0x41 ||
+        d[2] != 0x42 || d[3] != 0x12 || d[4] != 0x40 || (d[5] & 0xF0) != 0x10 || d[6] != 0x15) {
         return false;
     }
 
@@ -794,14 +966,14 @@ static bool layout_reset(const uint8_t *b, size_t size) {
 
 /* Percussion parts from the file's setup: GS rhythm parts, and XG (bank 127) or GM2 (bank 120)
    drum banks selected before a channel's first note. */
-static void import_drum_parts(DmProject *p, const ImportState *state, const uint8_t *b,
-                              size_t size) {
+static void import_drum_parts(DmProject *p, const ImportState *state, const DmBytes *message) {
+    const uint8_t *b = message->data;
     int channel;
     bool drums;
 
-    if (gs_rhythm_part(b, size, &channel, &drums)) {
+    if (dm_midi_rhythm_part(message, &channel, &drums)) {
         p->channels[channel].drums = drums;
-    } else if (layout_reset(b, size)) {
+    } else if (layout_reset(b, message->size)) {
         for (int c = 0; c < 16; ++c) {
             p->channels[c].drums = c == MIDI_DRUM_CHANNEL;
         }
@@ -813,10 +985,6 @@ static void import_drum_parts(DmProject *p, const ImportState *state, const uint
 }
 
 static bool import_one(DmProject *p, const Midi *m, ImportState *state, const Raw *r) {
-    if (!active_raw(p, r)) {
-        return true;
-    }
-
     const uint8_t *b = r->bytes.data;
     int type = b[0] & MIDI_STATUS_MASK, c = b[0] & MIDI_CHANNEL_MASK;
     double beat = tick_beat(m, r->tick);
@@ -834,7 +1002,7 @@ static bool import_one(DmProject *p, const Midi *m, ImportState *state, const Ra
         return import_meta(p, m, r, beat);
     }
 
-    import_drum_parts(p, state, b, r->bytes.size);
+    import_drum_parts(p, state, &r->bytes);
 
     if (b[0] < MIDI_SYSTEM) {
         p->channels[c].enabled = true;
@@ -970,6 +1138,44 @@ static void import_initial_controls(DmProject *p) {
     }
 }
 
+/* A tempo sent before the first note can supply the starting BPM when the file has no
+   explicit tick-zero tempo. Keep subsequent events at their original beats. */
+static void import_initial_tempo(DmProject *p) {
+    double first_note = INFINITY;
+
+    for (size_t i = 0; i < p->pattern_count; ++i) {
+        const DmPattern *pattern = &p->patterns[i];
+
+        for (size_t n = 0; n < pattern->count; ++n) {
+            first_note = fmin(first_note, pattern->notes[n].beat);
+        }
+    }
+
+    if (!isfinite(first_note) || first_note <= 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < p->event_count; ++i) {
+        DmEvent *event = &p->events[i];
+        const uint8_t *b = event->message.data;
+
+        if (event->beat > first_note) {
+            break;
+        }
+
+        if (event->message.size == 6 && b[0] == MIDI_META && b[1] == MIDI_META_TEMPO) {
+            if (event->beat > 0) {
+                p->bpm = 60000000.0 / ((b[3] << 16) | (b[4] << 8) | b[5]);
+                dm_bytes_free(&event->message);
+                memmove(event, event + 1, (p->event_count - i - 1) * sizeof(*event));
+                --p->event_count;
+            }
+
+            break;
+        }
+    }
+}
+
 static void discard_unused_programs(DmProject *p, const ImportState *state) {
     bool content[16] = {0};
 
@@ -1031,6 +1237,7 @@ static bool import_finish(DmProject *p, ImportState *s, const Midi *m) {
     }
 
     import_initial_controls(p);
+    import_initial_tempo(p);
     double end = source_end(p, m);
 
     for (size_t i = 0; i < p->pattern_count; ++i) {
@@ -1062,10 +1269,19 @@ static bool import_finish(DmProject *p, ImportState *s, const Midi *m) {
 static bool import_events(DmProject *p, Midi *m) {
     ImportState state;
     import_init(p, &state);
+    /* Each import pass handles one source port and sequence. */
+    DmProgramHistory history[16] = {0};
     bool ok = true;
 
     for (size_t i = 0; i < m->count; ++i) {
-        if (!import_one(p, m, &state, &m->items[i])) {
+        const Raw *raw = &m->items[i];
+
+        if (!active_raw(p, raw) || program_repeat(history, raw->tick, raw->track, (int)i,
+                                                  raw->bytes.data, raw->bytes.size) >= 0) {
+            continue;
+        }
+
+        if (!import_one(p, m, &state, raw)) {
             ok = false;
             break;
         }
@@ -1373,6 +1589,8 @@ static bool collect_channels(const DmProject *p, Midi *m) {
                 !add_message(m, 0, c + 1, pan, 3)) {
                 return false;
             }
+
+            m->items[m->count - 1].generated_default = p->channels[c].pan == 64;
         }
     }
 
@@ -1655,6 +1873,7 @@ typedef struct {
     double start;
     size_t order;
     int rpn_msb, rpn_lsb;
+    bool generated_default;
 } ModEvent;
 
 typedef struct {
@@ -1827,6 +2046,8 @@ static bool mod_emit(Midi *m, ModEvent e, int value) {
         m->items[m->count - 1].phase = 5;
     }
 
+    m->items[m->count - 1].generated_default = e.generated_default;
+
     return true;
 }
 
@@ -1862,6 +2083,12 @@ static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events,
     int last = -1;
     bool ok = true;
 
+    bool authored = false;
+
+    for (size_t i = 0; i < count; i++) {
+        authored |= events[i].key % 260 == MIDI_CC_PAN && !events[i].generated_default;
+    }
+
     for (size_t i = 0; i < count && ok;) {
         uint64_t tick = events[i].tick;
 
@@ -1883,6 +2110,7 @@ static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events,
         fallback.value = mod_default(p, events[0].key);
         fallback.rpn_msb = fallback.rpn_lsb = 127;
         ModEvent chosen = mod_winner(states, used, fallback);
+        chosen.generated_default &= !authored;
         chosen.tick = tick;
         /* Reassert the winning transaction when source parameters change underneath it. */
         bool range_changed = chosen.key % 260 == 259;
@@ -2056,7 +2284,8 @@ static bool mod_capture(ModList *list, Midi *source, int owner, int priority, do
                       .value = mod_value(bytes),
                       .priority = priority,
                       .active = active,
-                      .start = start};
+                      .start = start,
+                      .generated_default = r->generated_default};
 
         if (!mod_capture_event(list, e, boundary)) {
             return false;
@@ -2249,8 +2478,8 @@ static bool collect_drum_parts(const DmProject *p, Midi *m) {
             int channel;
             bool value;
             const DmBytes *message = &p->events[i].message;
-            sent |= gs_rhythm_part(message->data, message->size, &channel, &value) &&
-                    channel == c && value == drums;
+            sent |=
+                dm_midi_rhythm_part(message, &channel, &value) && channel == c && value == drums;
         }
 
         if (sent) {
@@ -2557,6 +2786,47 @@ static int export_compare(const void *a, const void *b) {
     return x->order < y->order ? -1 : x->order > y->order;
 }
 
+/* Opening MIDI pan can have become a mixer setting during import. Its source identity survives
+   in the retained MIDI, so an explicit centre pan remains different from an unset mixer. This
+   reads the retained MIDI again, so only exports call it, not the timeline itself. */
+unsigned dm_export_authored_pan(const DmProject *p) {
+    unsigned mask = 0;
+
+    for (size_t i = 0; i < p->event_count; i++) {
+        const DmEvent *e = &p->events[i];
+
+        if (e->beat == 0 && e->message.size >= 3 &&
+            (e->message.data[0] & MIDI_STATUS_MASK) == MIDI_CONTROL &&
+            e->message.data[1] == MIDI_CC_PAN) {
+            mask |= 1u << (e->message.data[0] & MIDI_CHANNEL_MASK);
+        }
+    }
+
+    if (!p->original.size) {
+        return mask;
+    }
+
+    Midi source = {.scan_pan = true, .scan_port = p->port, .scan_sequence = p->sequence};
+
+    for (unsigned ch = 0; ch < 16; ch++) {
+        source.first_note[ch] = source.first_pan[ch] = UINT64_MAX;
+    }
+
+    /* Unreadable source MIDI keeps every channel's pan authoritative. */
+    if (!parse_midi(&source, p->original.data, p->original.size)) {
+        mask = 0xffff;
+    }
+
+    for (unsigned ch = 0; ch < 16; ch++) {
+        if (source.first_pan[ch] != UINT64_MAX && source.first_pan[ch] <= source.first_note[ch]) {
+            mask |= 1u << ch;
+        }
+    }
+
+    midi_free(&source);
+    return mask;
+}
+
 bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *count,
                         uint64_t *duration, char *error, size_t cap) {
     *events = NULL;
@@ -2582,6 +2852,7 @@ bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *coun
             e.source_id = i + 1;
             e.status = b[0];
             e.port = (uint32_t)r->port;
+            e.flags = r->generated_default ? DM_EXPORT_DEFAULT_CONTROL : 0;
 
             if (b[0] < MIDI_SYSTEM) {
                 e.a = b[1];
@@ -3260,7 +3531,7 @@ double dm_beat_seconds(const DmProject *p, double beat) {
     return seconds + (beat - last) * rate;
 }
 
-double dm_seconds_beat(const DmProject *p, double seconds) {
+static double seconds_beat(const DmProject *p, double seconds, double *bpm) {
     double last = 0, elapsed = 0, rate = 60 / p->bpm;
 
     for (size_t i = 0; i < p->event_count; ++i) {
@@ -3274,7 +3545,7 @@ double dm_seconds_beat(const DmProject *p, double seconds) {
         double span = (e->beat - last) * rate;
 
         if (elapsed + span > seconds) {
-            return last + (seconds - elapsed) / rate;
+            break;
         }
 
         elapsed += span;
@@ -3282,7 +3553,21 @@ double dm_seconds_beat(const DmProject *p, double seconds) {
         rate = next;
     }
 
+    if (bpm) {
+        *bpm = 60 / rate;
+    }
+
     return last + (seconds - elapsed) / rate;
+}
+
+double dm_seconds_beat(const DmProject *p, double seconds) {
+    return seconds_beat(p, seconds, NULL);
+}
+
+double dm_playback_bpm(const DmProject *p, double seconds) {
+    double bpm;
+    seconds_beat(p, seconds, &bpm);
+    return bpm;
 }
 
 static bool schedule_append(DmSchedule *s, const Raw *raw, double seconds) {

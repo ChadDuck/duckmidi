@@ -1,5 +1,6 @@
 /* M64 pre-export mapping UI data and recommendation policy. No editor/UI toolkit. */
 #include "m64_plugin.h"
+#include "../src/custom.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,7 +9,7 @@
 typedef struct {
     M64RangeIssue issue;
     int selected;
-    char id[48], label[180], description[384], current[256];
+    char id[64], label[180], description[384], current[256];
     DmeChoice recommended[8];
     unsigned recommended_count;
 } ReviewItem;
@@ -183,9 +184,16 @@ bool m64_review_build(M64PluginJob *job, const DmeContext *context, const M64Res
 
         M64RangeIssue *issue = &item->issue;
         unsigned ch = issue->channel, p = issue->program;
-        int original = issue->percussion ? job->drum_presets[p] : job->presets[ch][p];
-        snprintf(item->id, 48, issue->percussion ? "drum.%u" : "melodic.%u.%u",
-                 issue->percussion ? p : ch, p);
+        uint64_t origin;
+        if (!m64_range_origin(result, i, &origin) ||
+            !es_mapping_row_id(context, origin, item->id)) {
+            return false;
+        }
+
+        int original = job->stock_values && job->stock_values[origin] >= 0
+                           ? job->stock_values[origin]
+                       : issue->percussion ? job->drum_presets[p]
+                                           : job->presets[ch][p];
         snprintf(item->label, 180, "Channel %u: %s (%s %u)", ch + 1,
                  issue->percussion ? context->drum_names[p] : context->program_names[p],
                  issue->percussion ? "note" : "GM", p);
@@ -268,6 +276,13 @@ int32_t DME_CALL m64_review_apply(void *instance, void *user, char *error, uint6
             ReviewItem *item = &ui->items[i];
             unsigned p = item->issue.program, ch = item->issue.channel;
             int selected = item->selected;
+            if (!es_mapping_job_set_stock(job->custom, (uint32_t)job->target, item->id, selected)) {
+                return DME_NOMEM;
+            }
+
+            if (settings->target == job->target) {
+                es_mappings_set_stock(settings->custom, (uint32_t)job->target, item->id, selected);
+            }
 
             if (item->issue.percussion) {
                 job->drums[p] = *api->default_drum((unsigned)selected);

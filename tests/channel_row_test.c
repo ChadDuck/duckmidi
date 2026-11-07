@@ -10,11 +10,50 @@ static void check(bool ok, const char *text) {
     }
 }
 
-static void label_check(Editor *e, int channel, const char *expected) {
-    int list[] = {channel};
-    char text[128];
-    ed_playlist_label_text(e, (UiRect){0, 0, 600, 400}, 240, 64, list, 1, 0, text, sizeof(text));
-    check(strstr(text, expected) != NULL, "channel label matches its current assignment");
+void test_channel_row_ui(Editor *e, void (*check)(bool, const char *));
+
+static void removal(Editor *e) {
+    ed_new_project(e);
+    e->project.channels[2] = (DmChannel){true, true, false, 25, 80, 64, true};
+    e->project.lane_count[2] = 1;
+    e->channel_expanded[2] = true;
+    snprintf(e->project.lane_names[2][0], sizeof(e->project.lane_names[2][0]), "Modulation");
+    int lane = dm_pattern_add(&e->project, "Automation");
+    check(lane >= 0, "automation pattern fixture");
+    e->project.patterns[lane].kind = 1;
+    check(ed_place_pattern(e, 0, 2, 0) >= 0 && ed_place_pattern(e, lane, 2 + 16, 1) >= 0 &&
+              ed_place_pattern(e, 0, 0, 0) >= 0,
+          "note and automation placements share a channel");
+    DmAutomation point = {
+        .channel = 2, .type = MIDI_CONTROL, .a = MIDI_CC_MODULATION, .b = 60, .pattern = -1};
+    check(dm_automation_add(&e->project, point), "channel automation fixture");
+    point.pattern = lane;
+    check(dm_automation_add(&e->project, point), "pattern automation fixture");
+    uint8_t cc[] = {MIDI_CONTROL | 2, MIDI_CC_MODULATION, 70};
+    DmBytes message = {cc, sizeof(cc), sizeof(cc)};
+    check(dm_event_add(&e->project, 1, 0, 0, &message), "channel MIDI event fixture");
+    check(
+        dm_port_mix_set(&e->project, (DmPortMix){.port = 2, .channel = 2, .volume = 90, .pan = 64}),
+        "channel port mixer fixture");
+    int undo = e->undo_count;
+    check(ed_remove_channel(e, 2), "remove a populated channel");
+    check(!e->project.channels[2].enabled && !e->project.channels[2].mute &&
+              !e->project.lane_count[2] && !e->project.lane_names[2][0][0] &&
+              !e->channel_expanded[2] && !e->project.event_count && !e->project.port_mix_count,
+          "removal clears channel settings, lanes, events and port mixes");
+    check(e->project.pattern_count == 2 && e->project.clip_count == 1 &&
+              e->project.clips[0].channel == 0 && e->project.automation_count == 1 &&
+              e->project.automation[0].pattern == lane,
+          "removal keeps other rows and the source patterns and their automation");
+    check(e->selected_clip == 0 && e->undo_count == undo + 1,
+          "removal preserves surviving selection and creates one undo entry");
+    ed_undo(e, false);
+    check(e->project.channels[2].enabled && e->project.channels[2].drums &&
+              e->project.clip_count == 3 && e->project.event_count == 1,
+          "undo restores the removed row and its content");
+    ed_undo(e, true);
+    check(!e->project.channels[2].enabled && e->project.clip_count == 1,
+          "redo removes the channel again");
 }
 
 int main(void) {
@@ -24,98 +63,34 @@ int main(void) {
     check(w && r && ui_init(w, r, NULL), "hidden renderer");
     Editor *e = calloc(1, sizeof(*e));
     editor_init(e, w, r, NULL, "", "", true);
-    int startup[16];
-    check(ed_channels(e, startup) == 2 && startup[0] == 0 && startup[1] == 9,
-          "actual editor initialization shows only Channel 1 and percussion");
-    editor_smoke(e);
-    e->project.clip_count = 0;
-
-    for (int c = 0; c < 16; ++c) {
-        e->project.channels[c] = dm_channel_default(c);
-    }
-
-    int list[16 * (DM_LANES + 1)];
-    check(ed_channels(e, list) == 1 && list[0] == 0, "empty playlist offers first channel");
-    e->project.channels[0].enabled = e->project.channels[9].enabled = true;
-    e->project.channels[9].program = 0;
-    check(ed_channels(e, list) == 2 && list[0] == 0 && list[1] == 9,
-          "startup reuses unassigned channel 1 instead of showing a duplicate option");
-    check(ed_available_channel(e) == 0, "Mixer also reuses the existing unassigned channel");
-    e->project.channels[0].program = 0;
-    check(ed_channels(e, list) == 3 && list[0] == 0 && list[1] == 1 && list[2] == 9,
-          "next spare sits above percussion for channels 1 through 9");
-    e->project.channels[1].program = 36;
-    e->channel_expanded[1] = true;
-    e->project.lane_count[1] = 2;
-    check(ed_playlist_channels(e, list) == 3, "spare never exposes leftover automation subrows");
-    ui_frame();
-    ui_root(0, 900);
-    label_check(e, 1, "+ Choose instrument");
-    UiMouse mouse = {.clicked = true};
-    ed_playlist_label_action(e, 1, 0, mouse);
-    check(e->instrument_channel == 1 && !e->project.channels[1].enabled,
-          "spare click opens instrument picker without activating channel");
-    ed_choose_program(e, 1, 36);
-    check(e->project.channels[1].enabled && e->project.channels[1].program == 36,
-          "instrument selection activates spare");
-    label_check(e, 1, dm_program_name(36));
-    check(ed_channels(e, list) == 4 && list[2] == 2, "assignment offers the next free channel");
-    e->project.channels[1].mute = e->project.channels[1].solo = true;
-    check(ed_remove_empty_channel(e, 1), "assigned empty channel can be removed");
-    check(!e->project.channels[1].enabled && e->project.channels[1].program == -1 &&
-              !e->project.channels[1].mute && !e->project.channels[1].solo,
-          "removal clears stale instrument, mute and solo");
-    check(!e->channel_selected && !e->channel_expanded[1], "removal clears active row state");
-    label_check(e, 1, "+ Choose instrument");
-    check(ed_channels(e, list) == 3 && list[1] == 1, "removed slot returns as the spare");
-    check(!ed_remove_empty_channel(e, 1), "repeated removal is a no-op");
-    ed_undo(e, false);
-    check(e->project.channels[1].enabled && e->project.channels[1].program == 36,
-          "undo restores instrument assignment");
-    ed_undo(e, true);
-    check(!e->project.channels[1].enabled && e->project.channels[1].program == -1,
-          "redo restores clean spare state");
+    int list[16];
+    check(ed_channels(e, list) == 2 && list[0] == 0 && list[1] == MIDI_DRUM_CHANNEL,
+          "new projects show only channels 1 and 10");
+    ed_new_project(e);
+    test_channel_row_ui(e, check);
+    removal(e);
+    ed_new_project(e);
+    check(ed_place_pattern(e, 0, 1, 0) < 0 && !e->project.channels[1].enabled,
+          "placing a pattern cannot activate an unused channel");
+    ed_open_instrument(e, -1, false);
+    ed_apply_instrument(e);
+    check(ed_place_pattern(e, 0, 1, 0) >= 0, "place a pattern on a newly created channel");
+    ed_focus_edit(e, FOCUS_PLAYLIST);
+    ed_clipboard(e, 0);
+    check(e->clipboard.size && ed_remove_channel(e, 1), "copy a placement and remove its channel");
+    int undo = e->undo_count;
+    ed_paste(e);
+    check(!e->project.channels[1].enabled && !e->project.clip_count && e->undo_count == undo &&
+              strstr(e->status, "+ New"),
+          "pasting requires an existing destination and cannot recreate a channel");
 
     for (int c = 0; c < 16; ++c) {
         e->project.channels[c].enabled = true;
-        e->project.channels[c].program = 0;
     }
 
-    check(ed_channels(e, list) == 16, "full playlist has only 16 MIDI rows plus Events");
-
-    for (int c = 0; c < 16; ++c) {
-        check(ed_remove_empty_channel(e, c), "each channel can be removed when empty");
-        check(ed_channels(e, list) == 16 - c && list[0] == 0,
-              "only one spare remains as channels are removed");
-        label_check(e, c, "+ Choose instrument");
-    }
-
-    for (int c = 0; c < 10; ++c) {
-        e->project.channels[c] =
-            (DmChannel){true, false, false, 0, 100, 64, c == MIDI_DRUM_CHANNEL};
-    }
-
-    check(ed_channels(e, list) == 11 && list[9] == 9 && list[10] == 10,
-          "spare moves below percussion once channels 1 through 9 are assigned");
-    e->project.channels[3].enabled = false;
-    check(ed_channels(e, list) == 10 && list[3] == 3 && list[9] == 9,
-          "removed lower slot restores spare above percussion without an upper spare");
-
-    for (int c = 0; c < 16; ++c) {
-        e->project.channels[c].enabled = false;
-    }
-
-    ed_choose_program(e, 9, 0);
-    label_check(e, 9, "Percussion");
-    check(ed_remove_empty_channel(e, 9), "percussion can be removed when empty");
-    label_check(e, 9, "+ Choose instrument");
-    bool clip =
-        dm_clip_add(&e->project, (DmClip){.pattern = 0, .channel = 3, .beat = 0, .length = 4});
-    check(clip && ed_channel_has_clips(e, 3), "placement marks channel occupied");
-    check(!ed_remove_empty_channel(e, 3) && e->project.channels[3].enabled,
-          "channel containing a placement cannot be removed");
-    ui_end();
-    ui_render(r);
+    ed_open_instrument(e, -1, false);
+    check(ed_channels(e, list) == 16 && e->instrument_channel < 0,
+          "a full playlist cannot open the new channel dialog");
     printf("PASS channel rows: %d checks\n", checks);
     editor_free(e);
     free(e);

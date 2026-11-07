@@ -34,6 +34,85 @@ static bool choices(const DmeField *f, int value) {
     return false;
 }
 
+static bool view_string(DmeString s, size_t max) {
+    return s.length <= max &&
+           (!s.length || (s.data && SDL_strnlen(s.data, (size_t)s.length + 1) == s.length));
+}
+
+static bool custom_mapping(const DmeMappingRow *row, const DmeCustomMapping *previous) {
+    const DmeCustomMapping *m = row->custom;
+
+    if (!m) {
+        return true;
+    }
+
+    const DmeCustomSelection *s = &m->selection;
+
+    if (m->size != sizeof(*m) || m->available > 1 || s->size != sizeof(*s) || s->enabled > 1 ||
+        s->show_all > 1 || s->region_set > 1 || s->operation > DME_SAMPLE_REPLACE ||
+        s->sample.size != sizeof(s->sample) || (s->sample.flags & ~DME_SAMPLE_PERCUSSION) ||
+        !view_string(s->sample.locator, 8192) || !view_string(s->sample.set_id, 128) ||
+        !view_string(s->sample.preset_id, 128) || !view_string(s->physical_target, 16384) ||
+        !view_string(m->unavailable_reason, 4096) || m->target_count > 20000 ||
+        (m->target_count && !m->targets) || row->source.channel >= 16 || row->source.port >= 128 ||
+        row->source.bank >= 16384 || row->source.program >= 128 || row->source.drum_key >= 128 ||
+        (row->source.flags & ~DME_SAMPLE_PERCUSSION)) {
+        return false;
+    }
+
+    bool same_targets =
+        previous && previous->targets == m->targets && previous->target_count == m->target_count;
+
+    for (uint32_t i = 0; !same_targets && i < m->target_count; i++) {
+        if (!m->targets[i].id.length || !m->targets[i].path.length ||
+            !view_string(m->targets[i].id, 16384) || !view_string(m->targets[i].label, 16384) ||
+            !view_string(m->targets[i].path, 8192)) {
+            return false;
+        }
+    }
+
+    const DmeSampleCatalog *c = m->catalog;
+
+    if (!c) {
+        return !m->available;
+    }
+
+    if (previous && previous->catalog == c) {
+        return true;
+    }
+
+    if (c->size != sizeof(*c) || c->set_count > 1024 || c->preset_count > 8192 ||
+        c->zone_count > 32768 || (c->set_count && !c->sets) || (c->preset_count && !c->presets) ||
+        (c->zone_count && !c->zones)) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < c->set_count; i++) {
+        const DmeSampleCatalogSet *set = &c->sets[i];
+
+        if (set->size != sizeof(*set) || set->available > 1 ||
+            set->first_preset > c->preset_count ||
+            set->preset_count > c->preset_count - set->first_preset || !set->id.length ||
+            !view_string(set->id, 128) || !view_string(set->name, 512) ||
+            !view_string(set->locator, 8192) || !view_string(set->error, 4096)) {
+            return false;
+        }
+    }
+
+    for (uint32_t i = 0; i < c->preset_count; i++) {
+        const DmeSampleCatalogPreset *p = &c->presets[i];
+
+        if (p->size != sizeof(*p) || p->set >= c->set_count || p->suggested_program > 128 ||
+            (p->flags & ~DME_SAMPLE_PERCUSSION) || p->first_zone > c->zone_count ||
+            p->zone_count > c->zone_count - p->first_zone || !p->id.length ||
+            !view_string(p->id, 128) || !view_string(p->name, 512)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool dm_export_ui_valid(const DmeUi *ui, char *error, size_t cap) {
     const char *why = DM_TEXT_INVALID_PLUGIN_SETTINGS_SCHEMA;
 
@@ -105,7 +184,8 @@ bool dm_export_ui_valid(const DmeUi *ui, char *error, size_t cap) {
 
                 if (!identifier(r->id) || !text(r->label, 512) || !choices(f, r->value) ||
                     !choices(f, r->default_value) || r->similar_count > 512 ||
-                    (r->similar_count && !r->similar)) {
+                    (r->similar_count && !r->similar) ||
+                    !custom_mapping(r, j ? f->rows[j - 1].custom : NULL)) {
                     goto fail;
                 }
 
@@ -217,7 +297,7 @@ static bool exporter_valid(const DmeExporter *a) {
         }
     }
 
-    bool install = (a->install_label != NULL) == (a->install != NULL) &&
+    bool install = (a->install_label != NULL) == (a->history != NULL) &&
                    (!a->install_label || text(a->install_label, 128));
     return install && a->create && a->destroy && a->inspect && a->describe && a->set && a->reset &&
            a->create_job && a->run && a->destroy_job && a->preflight && a->review &&
@@ -234,8 +314,80 @@ static void error(DmExportRegistry *r, const char *file, const char *reason) {
              reason);
 }
 
+DmNativeTool *dm_export_registry_tool(DmExportRegistry *r, const char *id) {
+    for (size_t i = 0; i < r->tool_count; ++i) {
+        if (!strcmp(id, r->tools[i].api->id)) {
+            return &r->tools[i];
+        }
+    }
+
+    return NULL;
+}
+
+int32_t dm_export_registry_request_tool(DmExportRegistry *r, const char *id) {
+    if (SDL_GetCurrentThreadID() != r->main_thread) {
+        return DME_INVALID;
+    }
+
+    DmNativeTool *tool = dm_export_registry_tool(r, id);
+
+    if (!tool) {
+        return DME_UNAVAILABLE;
+    }
+
+    if (tool->opening) {
+        return DME_FAILED;
+    }
+
+    tool->opening = true;
+    int32_t status = tool->api->open(tool->instance);
+    tool->opening = false;
+    tool->open_requested |= status == DME_OK;
+    return status;
+}
+
+static int32_t DME_CALL request_tool(void *user, const char *id, uint64_t length) {
+    char name[128];
+
+    if (!id || !length || length >= sizeof(name) || memchr(id, 0, (size_t)length)) {
+        return DME_INVALID;
+    }
+
+    memcpy(name, id, (size_t)length);
+    name[length] = 0;
+    return identifier(name) ? dm_export_registry_request_tool(user, name) : DME_INVALID;
+}
+
+static const char *register_tool(DmExportRegistry *r, const DmeTool *api) {
+    if (!api || api->size != sizeof(*api) || !identifier(api->id) || !text(api->name, 128) ||
+        !api->create || !api->destroy || !api->open || !api->interface_at) {
+        return DM_TEXT_INVALID_TOOL_DESCRIPTOR;
+    }
+
+    if (r->tool_count == DM_EXPORT_MAX_TOOLS) {
+        return DM_TEXT_TOO_MANY_REGISTERED_TOOLS;
+    }
+
+    if (dm_export_registry_tool(r, api->id)) {
+        return DM_TEXT_DUPLICATE_TOOL_ID;
+    }
+
+    void *instance = api->create();
+
+    if (!instance) {
+        return DM_TEXT_CANNOT_ALLOCATE_TOOL;
+    }
+
+    r->tools[r->tool_count++] = (DmNativeTool){.api = api, .instance = instance};
+    return NULL;
+}
+
 void dm_export_registry_load(DmExportRegistry *r, const char *directory) {
     memset(r, 0, sizeof(*r));
+    r->main_thread = SDL_GetCurrentThreadID();
+    snprintf(r->directory, sizeof(r->directory), "%s", directory);
+    r->main_host =
+        (DmeMainHost){sizeof(DmeMainHost), r, request_tool, {r->directory, strlen(r->directory)}};
     SDL_PathInfo info;
 
     if (!SDL_GetPathInfo(directory, &info)) {
@@ -263,10 +415,51 @@ void dm_export_registry_load(DmExportRegistry *r, const char *directory) {
 
     qsort(files, (size_t)count, sizeof(*files), compare);
 
+    /* The history runtime is a dependency of exporters, not a plugin entry point. Load it first so
+       exporters resolve it, and retain it until all modules unload. */
+    char runtime_file[32];
+    snprintf(runtime_file, sizeof(runtime_file), "%s%s", DM_HISTORY_RUNTIME_NAME, pattern + 1);
+
+    for (int i = 0; i < count; ++i) {
+        if (SDL_strcasecmp(files[i], runtime_file)) {
+            continue;
+        }
+
+        char path[4096];
+
+        if (snprintf(path, sizeof(path), "%s/%s", directory, files[i]) >= (int)sizeof(path)) {
+            error(r, files[i], DM_TEXT_PATH_TOO_LONG);
+            break;
+        }
+
+        SDL_SharedObject *helper = SDL_LoadObject(path);
+
+        if (!helper) {
+            error(r, files[i], SDL_GetError());
+            break;
+        }
+
+        r->dependencies[r->dependency_count++] = helper;
+        DmeHistoryRuntimeEntry entry =
+            (DmeHistoryRuntimeEntry)SDL_LoadFunction(helper, "duckmidi_history_runtime");
+        const DmeHistoryRuntime *runtime = entry ? entry(DME_REPOSITORY_API) : NULL;
+
+        if (runtime && runtime->size == sizeof(*runtime) &&
+            runtime->version == DME_REPOSITORY_API) {
+            r->history_runtime = runtime;
+        }
+
+        break;
+    }
+
     for (int i = 0; i < count; i++) {
         if (r->module_count == 64) {
             error(r, files[i], DM_TEXT_TOO_MANY_EXPORTER_MODULES);
             break;
+        }
+
+        if (!SDL_strcasecmp(files[i], runtime_file)) {
+            continue;
         }
 
         char path[4096];
@@ -291,18 +484,36 @@ void dm_export_registry_load(DmExportRegistry *r, const char *directory) {
             why = DM_TEXT_MISSING_DUCKMIDI_EXPORT_PLUGIN;
         } else if (!plugin || plugin->abi != DME_ABI || plugin->size != sizeof(*plugin)) {
             why = DM_TEXT_UNSUPPORTED_EXPORTER_API_ABI;
-        } else if (!identifier(plugin->id) || !text(plugin->name, 128) || !plugin->exporter ||
-                   !plugin->exporter_count || plugin->exporter_count > 32) {
+        } else if (!identifier(plugin->id) || !text(plugin->name, 128) ||
+                   (!plugin->exporter_count && !plugin->tool_count) ||
+                   plugin->exporter_count > 32 || plugin->tool_count > 32 ||
+                   (plugin->exporter_count != 0) != (plugin->exporter != NULL) ||
+                   (plugin->tool_count != 0) != (plugin->tool != NULL)) {
             why = DM_TEXT_INVALID_PLUGIN_REGISTRATION;
         }
 
         size_t first = r->count;
+        size_t first_tool = r->tool_count;
 
         for (uint32_t j = 0; !why && j < plugin->exporter_count; j++) {
             const DmeExporter *a = plugin->exporter(j);
 
             if (!exporter_valid(a)) {
                 why = DM_TEXT_INVALID_EXPORTER_DESCRIPTOR;
+                break;
+            }
+
+            const DmeHistoryAdapter *history = a->history ? a->history(DME_REPOSITORY_API) : NULL;
+
+            if (a->history && (!history || history->size != sizeof(*history) ||
+                               history->version != DME_REPOSITORY_API || !history->detect ||
+                               !history->render || !history->install)) {
+                why = DM_TEXT_INVALID_EXPORTER_DESCRIPTOR;
+                break;
+            }
+
+            if (history && !r->history_runtime) {
+                why = DM_TEXT_HISTORY_RUNTIME_MISSING;
                 break;
             }
 
@@ -341,10 +552,21 @@ void dm_export_registry_load(DmExportRegistry *r, const char *directory) {
 
             DmExportFormat *f = &r->formats[r->count++];
             f->api = a;
+            f->history = history;
             f->instance = instance;
         }
 
+        for (uint32_t j = 0; !why && j < plugin->tool_count; ++j) {
+            why = register_tool(r, plugin->tool(j));
+        }
+
         if (why) {
+            while (r->tool_count > first_tool) {
+                DmNativeTool *tool = &r->tools[--r->tool_count];
+                tool->api->destroy(tool->instance);
+                memset(tool, 0, sizeof(*tool));
+            }
+
             while (r->count > first) {
                 DmExportFormat *f = &r->formats[--r->count];
                 f->api->destroy(f->instance);
@@ -354,20 +576,45 @@ void dm_export_registry_load(DmExportRegistry *r, const char *directory) {
             error(r, files[i], why);
             SDL_UnloadObject(module);
         } else {
+            r->plugins[r->module_count] = plugin;
             r->modules[r->module_count++] = module;
         }
     }
 
     SDL_free(files);
+
+    for (size_t i = 0; i < r->module_count; ++i) {
+        if (r->plugins[i]->bind_main) {
+            r->plugins[i]->bind_main(&r->main_host);
+        }
+    }
 }
 
 void dm_export_registry_free(DmExportRegistry *r) {
+    for (size_t i = 0; i < r->module_count; ++i) {
+        if (r->plugins[i]->bind_main) {
+            r->plugins[i]->bind_main(NULL);
+        }
+    }
+
     for (size_t i = 0; i < r->count; i++) {
+        if (r->formats[i].history_job) {
+            r->history_runtime->destroy_job(r->formats[i].history_job);
+        }
+
         r->formats[i].api->destroy(r->formats[i].instance);
+    }
+
+    for (size_t i = 0; i < r->tool_count; ++i) {
+        r->tools[i].api->destroy(r->tools[i].instance);
     }
 
     for (size_t i = 0; i < r->module_count; i++) {
         SDL_UnloadObject(r->modules[i]);
+    }
+
+    for (size_t i = r->dependency_count; i > 0; --i) {
+        SDL_UnloadObject(r->dependencies[i - 1]);
     }
 
     memset(r, 0, sizeof(*r));

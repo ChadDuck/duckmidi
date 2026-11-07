@@ -425,6 +425,28 @@ static bool pack_views(const DmProject *p, DmBytes *b) {
     return true;
 }
 
+static bool pack_patch_replacements(const DmProject *p, DmBytes *b) {
+    size_t count = p->patch_replacement_count;
+
+    if (count > DM_PATCH_REPLACEMENTS_MAX || !u32(b, (uint32_t)count)) {
+        return false;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        const DmPatchReplacement *r = &p->patch_replacements[i];
+        DmPatchKey k = r->key;
+
+        if (!dm_patch_replacement_valid(r) || !u32(b, k.port) || !u32(b, k.channel) ||
+            !u32(b, k.bank) || !u32(b, k.program) || !u32(b, k.drums) ||
+            !u32(b, r->generation != 0) || !string(b, r->locator) || !string(b, r->set_id) ||
+            !string(b, r->preset_id)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool dm_pack(const DmProject *p, DmBytes *out) {
     DmBytes b = {0};
     bool ok = pack_metadata(p, &b);
@@ -441,6 +463,8 @@ bool dm_pack(const DmProject *p, DmBytes *out) {
         ok = u32(&b, mix.port) && u32(&b, mix.channel) && u32(&b, mix.volume) && u32(&b, mix.pan) &&
              u32(&b, mix.mute) && u32(&b, mix.solo) && u32(&b, (uint32_t)mix.program);
     }
+
+    ok = ok && pack_patch_replacements(p, &b);
 
     /* The body is compressed; the header and checksum describe the stored bytes. */
     DmBytes stored = {0};
@@ -1032,6 +1056,37 @@ static bool unpack_content(DmProject *p, Input *in) {
     return in->ok;
 }
 
+static bool unpack_patch_replacements(DmProject *p, Input *in) {
+    uint32_t count = get32(in);
+
+    if (!in->ok || count > DM_PATCH_REPLACEMENTS_MAX || count > in->left / 9) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t port = get32(in), channel = get32(in), bank = get32(in), program = get32(in);
+        uint32_t drums = get32(in), generation = get32(in);
+
+        if (!in->ok || port >= DM_NOTE_PORTS || channel > 15 || bank > 16383 || program > 127 ||
+            drums > 1 || (in->schema >= 14 && generation > 1)) {
+            return false;
+        }
+
+        DmPatchReplacement r = {
+            .key = {(uint16_t)bank, (uint8_t)port, (uint8_t)channel, (uint8_t)program, drums != 0},
+            .generation = generation};
+
+        if (!getstring(in, r.locator, sizeof(r.locator)) ||
+            !getstring(in, r.set_id, sizeof(r.set_id)) ||
+            !getstring(in, r.preset_id, sizeof(r.preset_id)) ||
+            dm_patch_replacement_exact(p, r.key) || !dm_patch_replacement_set(p, &r)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool unpack_body(DmProject *p, Input *in, bool allow_views) {
     if (!getstring(in, p->name, sizeof(p->name)) ||
         !getstring(in, p->soundfont, sizeof(p->soundfont))) {
@@ -1119,6 +1174,10 @@ static bool unpack_body(DmProject *p, Input *in, bool allow_views) {
     }
 
     if (p->view_count && !p->original.size) {
+        return false;
+    }
+
+    if (in->schema >= 13 && !unpack_patch_replacements(p, in)) {
         return false;
     }
 

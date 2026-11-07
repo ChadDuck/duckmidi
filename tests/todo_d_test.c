@@ -29,7 +29,7 @@ static void new_project_channels(Editor *e) {
     check(e->project.channels[0].enabled && e->project.channels[0].program == 0,
           "new projects start with channel 1 on program 0");
     check(e->project.channels[MIDI_DRUM_CHANNEL].enabled, "new projects keep the drum channel");
-    check(ed_available_channel(e) == 1, "the spare instrument row follows channel 1");
+    check(ed_available_channel(e) == 1, "+ New defaults to the first free channel");
 }
 
 static void percussion_window(Editor *e) {

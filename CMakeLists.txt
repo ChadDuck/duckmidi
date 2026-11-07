@@ -37,11 +37,19 @@ add_library(duckversion STATIC src/version.c)
 target_include_directories(duckversion PRIVATE "${DUCKMIDI_GENERATED}" src)
 add_dependencies(duckversion duckmidi_version)
 add_library(duckcore STATIC shared/spectrum.c src/core.c src/midi.c src/import_ports.c src/project.c src/project_compat.c src/compress.c src/instruments.c)
+add_subdirectory(libraries/export_support)
 add_subdirectory(libraries/m64export)
 add_subdirectory(libraries/ootexport)
 include(tools/ffmpeg.cmake)
-add_library(duckmedia STATIC shared/audio_export.c)
-target_link_libraries(duckmedia PUBLIC duckcore ${FFMPEG_LIBRARIES})
+add_library(duckmedia STATIC shared/audio_export.c shared/sample_import.c shared/sample_analysis.c
+  shared/sample_batch.c shared/sample_manifest.c shared/sample_library.c
+  shared/sample_export_snapshot.c shared/sample_export_catalog.c vendor/yyjson-0.12.0/yyjson.c)
+target_include_directories(duckmedia PRIVATE vendor/yyjson-0.12.0)
+target_link_libraries(duckmedia PUBLIC duckcore ${FFMPEG_LIBRARIES} PRIVATE SDL3::SDL3)
+set_target_properties(duckcore duckmedia PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_subdirectory(libraries/sampletool)
+add_library(ducksamplesynth STATIC src/audio_samples.c)
+target_link_libraries(ducksamplesynth PUBLIC duckmedia fluidsynth)
 target_include_directories(duckcore PUBLIC src)
 if(NOT WIN32)
   target_link_libraries(duckcore PUBLIC m)
@@ -79,12 +87,14 @@ else()
   target_link_libraries(duckmidi_io PRIVATE ALSA::ALSA Threads::Threads)
 endif()
 add_executable(duckmidi src/main.c src/editor.c src/editor_browser.c src/editor_dialogs.c src/editor_event_view.c src/editor_events.c src/editor_input.c src/editor_midi_inspector.c src/editor_notes.c src/editor_pitch.c src/editor_playlist.c src/editor_preferences.c src/editor_project.c src/editor_selection.c src/editor_shell.c src/editor_song_events.c src/editor_state.c src/editor_timeline.c src/editor_transport.c src/audio.c src/preferences.c)
-target_sources(duckmidi PRIVATE shared/pattern_generation.c src/editor_generate.c src/editor_percussion.c src/editor_note_ports.c src/editor_pattern_colors.c src/editor_save.c src/export_plugins.c src/editor_export.c src/editor_export_ui.c src/editor_update.c src/update.c)
-add_dependencies(duckmidi m64export ootexport)
+target_sources(duckmidi PRIVATE shared/pattern_generation.c src/editor_generate.c src/editor_percussion.c src/editor_note_ports.c src/editor_pattern_colors.c src/editor_save.c src/editor_samples.c src/export_plugins.c src/editor_export.c src/editor_export_ui.c src/editor_update.c src/update.c)
+add_dependencies(duckmidi m64export ootexport sampletool)
 add_custom_command(TARGET duckmidi POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:duckmidi>/plugins"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:duck_export_support>" "$<TARGET_FILE_DIR:duckmidi>/plugins/"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:m64export>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:m64export>"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:ootexport>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:ootexport>")
-target_link_libraries(duckmidi PRIVATE duckversion duckcore duckgui duckmidi_io fluidsynth duckmedia)
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:ootexport>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:ootexport>"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:sampletool>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:sampletool>")
+target_link_libraries(duckmidi PRIVATE duckversion duckcore duckgui duckmidi_io fluidsynth duckmedia ducksamplesynth)
 set_target_properties(duckmidi PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(duckmidi PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
 if(MINGW)
@@ -116,32 +126,89 @@ endif()
 include(tools/package.cmake)
 include(CTest)
 if(BUILD_TESTING)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME repository_audio_discovery
+    COMMAND "${Python3_EXECUTABLE}" -I -B "${PROJECT_SOURCE_DIR}/tests/repository_audio_scan_test.py")
+  add_executable(repository_history_test tests/repository_history_test.c)
+  add_executable(native_sample_test tests/native_sample_test.c)
+  target_link_libraries(native_sample_test PRIVATE duck_export_support)
+  if(NOT WIN32)
+    target_link_libraries(native_sample_test PRIVATE m)
+  endif()
+  target_compile_options(native_sample_test PRIVATE $<$<NOT:$<C_COMPILER_ID:MSVC>>:-UNDEBUG>
+    $<$<C_COMPILER_ID:MSVC>:/UNDEBUG>)
+  add_test(NAME native_sample_configuration COMMAND native_sample_test)
+  target_link_libraries(repository_history_test PRIVATE duck_export_support SDL3::SDL3)
+  target_compile_options(repository_history_test PRIVATE $<$<NOT:$<C_COMPILER_ID:MSVC>>:-UNDEBUG>
+    $<$<C_COMPILER_ID:MSVC>:/UNDEBUG>)
+  file(MAKE_DIRECTORY "${PROJECT_SOURCE_DIR}/agents/reports/repository-history")
+  add_test(NAME repository_history COMMAND repository_history_test
+    "${PROJECT_SOURCE_DIR}/agents/reports/repository-history")
+  add_executable(sample_playback_spike EXCLUDE_FROM_ALL tests/sample_playback_spike.c)
+  target_link_libraries(sample_playback_spike PRIVATE fluidsynth SDL3::SDL3)
+  add_dependencies(sample_playback_spike duckmidi)
   add_executable(audio_export_test tests/audio_export_test.c)
-  target_link_libraries(audio_export_test PRIVATE duckmedia)
+  target_link_libraries(audio_export_test PRIVATE duckmedia SDL3::SDL3)
   add_dependencies(audio_export_test duckmidi)
   file(MAKE_DIRECTORY "${PROJECT_SOURCE_DIR}/agents/reports/audio-export")
   add_test(NAME audio_export_formats COMMAND audio_export_test "${PROJECT_SOURCE_DIR}/agents/reports/audio-export")
+  set_tests_properties(audio_export_formats PROPERTIES FIXTURES_SETUP sample_import_audio)
+  add_executable(sample_tool_test tests/sample_tool_test.c src/export_plugins.c)
+  target_include_directories(sample_tool_test PRIVATE src)
+  target_link_libraries(sample_tool_test PRIVATE duckmedia SDL3::SDL3)
+  add_dependencies(sample_tool_test duckmidi)
+  add_test(NAME sample_tool COMMAND sample_tool_test "$<TARGET_FILE_DIR:duckmidi>/plugins"
+    "${PROJECT_SOURCE_DIR}/agents/reports/audio-export")
+  set_tests_properties(sample_tool PROPERTIES FIXTURES_REQUIRED sample_import_audio LABELS plugins)
+  add_executable(sample_synth_test tests/sample_synth_test.c)
+  target_link_libraries(sample_synth_test PRIVATE ducksamplesynth SDL3::SDL3)
+  add_dependencies(sample_synth_test duckmidi)
+  add_test(NAME sample_synth COMMAND sample_synth_test)
   add_executable(m64export_api_test tests/m64export_api_test.c)
   target_link_libraries(m64export_api_test PRIVATE m64export_static)
   add_test(NAME native_m64_export_api COMMAND m64export_api_test)
   add_executable(m64_coopdx_test tests/m64_coopdx_test.c)
   target_link_libraries(m64_coopdx_test PRIVATE m64export_static)
   add_test(NAME m64_coopdx_target COMMAND m64_coopdx_test)
-  add_executable(m64_install_test tests/m64_install_test.c libraries/m64export/plugin/ui.c
+  add_executable(m64_install_test tests/m64_install_test.c tests/repository_install.c
+    tests/native_repository_fixture.c libraries/m64export/plugin/ui.c
     libraries/m64export/plugin/review.c libraries/m64export/plugin/samples.c
     libraries/m64export/plugin/memory.c libraries/m64export/plugin/ports.c
     libraries/m64export/plugin/coopdx.c
+    libraries/m64export/plugin/repository.c
     libraries/m64export/plugin/exporter.c)
-  target_link_libraries(m64_install_test PRIVATE m64export_static)
-  add_test(NAME m64_repository_install COMMAND m64_install_test)
+  target_link_libraries(m64_install_test PRIVATE m64export_static duck_export_support SDL3::SDL3)
+  add_executable(custom_m64_export_test tests/custom_m64_export_test.c
+    libraries/m64export/plugin/ui.c libraries/m64export/plugin/review.c
+    libraries/m64export/plugin/samples.c libraries/m64export/plugin/memory.c
+    libraries/m64export/plugin/ports.c libraries/m64export/plugin/coopdx.c
+    libraries/m64export/plugin/exporter.c libraries/m64export/plugin/repository.c)
+  target_link_libraries(custom_m64_export_test PRIVATE m64export_static duck_export_support SDL3::SDL3)
+  target_compile_options(custom_m64_export_test PRIVATE -UNDEBUG)
+  add_test(NAME custom_m64_export COMMAND custom_m64_export_test)
+  target_sources(custom_m64_export_test PRIVATE tests/native_sequence_decode.c)
+  add_test(NAME m64_repository_install COMMAND m64_install_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
   add_executable(oot_export_test tests/oot_export_test.c)
   target_link_libraries(oot_export_test PRIVATE ootexport_static)
   add_test(NAME oot_export_conversion COMMAND oot_export_test)
-  add_executable(oot_install_test tests/oot_install_test.c libraries/ootexport/plugin/ui.c
+  add_executable(oot_install_test tests/oot_install_test.c tests/repository_install.c
+    tests/native_repository_fixture.c libraries/ootexport/plugin/ui.c
     libraries/ootexport/plugin/review.c libraries/ootexport/plugin/ports.c
     libraries/ootexport/plugin/exporter.c)
-  target_link_libraries(oot_install_test PRIVATE ootexport_static)
-  add_test(NAME oot_repository_install COMMAND oot_install_test)
+  target_sources(oot_install_test PRIVATE libraries/ootexport/plugin/repository.c)
+  add_executable(custom_oot_export_test tests/custom_m64_export_test.c
+    libraries/ootexport/plugin/ui.c libraries/ootexport/plugin/review.c
+    libraries/ootexport/plugin/ports.c libraries/ootexport/plugin/exporter.c
+    libraries/ootexport/plugin/repository.c)
+  target_compile_definitions(custom_oot_export_test PRIVATE CUSTOM_TEST_OOT)
+  target_compile_options(custom_oot_export_test PRIVATE -UNDEBUG)
+  target_link_libraries(custom_oot_export_test PRIVATE ootexport_static duck_export_support SDL3::SDL3)
+  add_test(NAME custom_oot_export COMMAND custom_oot_export_test)
+  target_sources(custom_oot_export_test PRIVATE tests/native_sequence_decode.c)
+  target_link_libraries(oot_install_test PRIVATE ootexport_static duck_export_support SDL3::SDL3)
+  add_test(NAME oot_repository_install COMMAND oot_install_test
+    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
   add_executable(core_test tests/core_test.c)
   target_link_libraries(core_test PRIVATE duckcore)
   add_test(NAME midi_project_core COMMAND core_test)
@@ -156,6 +223,10 @@ if(BUILD_TESTING)
   add_executable(project_compat_test tests/project_compat_test.c)
   target_link_libraries(project_compat_test PRIVATE duckcore)
   add_test(NAME project_compat COMMAND project_compat_test)
+  # Developer tool: exports a MIDI file through the built M64 plugin (see tools/m64-export-midi.c).
+  add_executable(m64_export_midi tools/m64-export-midi.c src/export_plugins.c)
+  target_include_directories(m64_export_midi PRIVATE src)
+  target_link_libraries(m64_export_midi PRIVATE duckcore SDL3::SDL3)
   add_executable(release_export_test tests/release_export_test.c src/export_plugins.c)
   target_include_directories(release_export_test PRIVATE src)
   target_link_libraries(release_export_test PRIVATE SDL3::SDL3)
@@ -165,7 +236,7 @@ if(BUILD_TESTING)
   target_link_libraries(update_test PRIVATE duckcore SDL3::SDL3 $<$<BOOL:${WIN32}>:winhttp>)
   add_test(NAME update_check COMMAND update_test)
   set_tests_properties(midi_project_core PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  foreach(TEST_TARGET audio_export_test m64export_api_test m64_coopdx_test m64_install_test oot_export_test oot_install_test core_test spectrum_test ports_test project_compat_test release_export_test update_test)
+  foreach(TEST_TARGET audio_export_test sample_tool_test sample_synth_test m64export_api_test m64_coopdx_test m64_install_test oot_export_test oot_install_test core_test spectrum_test ports_test project_compat_test release_export_test update_test)
     if(MSVC)
       target_compile_options(${TEST_TARGET} PRIVATE /UNDEBUG)
     else()

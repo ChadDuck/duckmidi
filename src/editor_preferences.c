@@ -1,5 +1,6 @@
 #include "editor_internal.h"
 #include "text/en.h"
+#include "../shared/sample_export_snapshot.h"
 
 static bool source_port_controls(Editor *e, const char *text, int *port);
 static void source_settings(Editor *e);
@@ -122,6 +123,8 @@ static void source_settings(Editor *e) {
             dm_audio_recording(e->audio, false);
 
             if (dm_view_switch(&e->project, port, sequence, e->status, sizeof(e->status))) {
+                ed_close_instrument(e);
+                e->last_note_pattern_uid = 0;
                 e->selected_pattern = e->project.pattern_count ? 0 : -1;
                 e->drag = 0;
                 e->marquee = false;
@@ -256,184 +259,471 @@ void ed_settings(Editor *e) {
     }
 }
 
-void ed_choose_program(Editor *e, int channel, int program) {
-    if (channel < 0 || channel >= 16 || program < 0 || program > 127) {
+static int instrument_sample_key(bool drums) {
+    return drums ? 36 : 60;
+}
+
+static void stop_instrument_preview(Editor *e) {
+    ed_release_piano(e);
+    int c = e->instrument_channel;
+
+    if (e->instrument_audition) {
+        dm_audio_sample_audition_stop(e->audio);
+        e->instrument_audition = false;
+    }
+
+    if (c >= 0 && e->preview_route == c) {
+        dm_audio_preview(e->audio, c, instrument_sample_key(e->instrument_drums), 0, false);
+        dm_audio_keyboard_program(e->audio, c, -1, false);
+        e->preview_route = -1;
+    }
+}
+
+void ed_close_instrument(Editor *e) {
+    if (e->instrument_channel >= 0) {
+        stop_instrument_preview(e);
+    }
+
+    e->instrument_channel = -1;
+    e->instrument_new = e->instrument_preview = e->instrument_remove = e->instrument_raise = false;
+    e->instrument_source_dirty = false;
+}
+
+int ed_initial_bank(const DmProject *p, int port, int channel) {
+    DmExportEvent *events = NULL;
+    size_t count = 0;
+    uint64_t duration;
+    char error[256];
+    DmSamplePatchState state = {0};
+    unsigned opening_bank = 0;
+
+    if (dm_export_timeline(p, &events, &count, &duration, error, sizeof(error))) {
+        for (size_t i = 0; i < count; ++i) {
+            DmExportEvent ev = events[i];
+
+            if (ev.port != (unsigned)port || ev.status >= MIDI_SYSTEM ||
+                (ev.status & MIDI_CHANNEL_MASK) != (unsigned)channel) {
+                continue;
+            }
+
+            if ((ev.status & MIDI_STATUS_MASK) == MIDI_NOTE_ON && ev.b) {
+                opening_bank = state.selected;
+                break;
+            }
+
+            dm_sample_patch_state_event(&state, ev.status, ev.a, ev.b);
+
+            if (!ev.tick) {
+                opening_bank = state.selected;
+            }
+        }
+    }
+
+    free(events);
+    return (int)opening_bank;
+}
+
+static void instrument_route(Editor *e, int port) {
+    int c = e->instrument_channel;
+    DmPortMix mix = dm_port_mix(&e->project, port, c);
+    e->instrument_port = port;
+    e->instrument_program = e->instrument_new ? 0
+                            : mix.program     ? mix.program - 1
+                                              : (int)fmax(0, e->project.channels[c].program);
+    e->instrument_bank = e->instrument_new ? 0 : ed_initial_bank(&e->project, port, c);
+    e->instrument_source_dirty = false;
+}
+
+static void preview_sample_source(Editor *e, const DmPatchReplacement *replacement) {
+    stop_instrument_preview(e);
+
+    DmPatchReplacement routed = *replacement;
+    routed.key.port = (uint8_t)e->instrument_port;
+    routed.key.channel = (uint8_t)e->instrument_channel;
+
+    if (dm_audio_instrument_preview(e->audio, &routed, e->instrument_channel, e->status,
+                                    sizeof(e->status))) {
+        e->instrument_audition = true;
+        e->preview_route = e->instrument_channel;
+    }
+}
+
+void ed_open_instrument(Editor *e, int channel, bool preview) {
+    bool create = channel < 0;
+    int c = create ? ed_available_channel(e) : channel;
+
+    if (!e->active || c < 0 || c >= 16 || (!create && !e->project.channels[c].enabled)) {
         return;
     }
 
-    if (dm_set_initial_program(&e->project, channel, program, false)) {
-        ed_checkpoint(e);
-        dm_set_initial_program(&e->project, channel, program, true);
-        ed_commit(e);
-    }
-
-    if (e->preview_route == channel) {
-        dm_audio_keyboard_program(e->audio, channel, -1);
-        e->preview_route = -1;
-    }
-
-    dm_audio_preview(e->audio, channel, 60, 0, false);
-    dm_audio_program(e->audio, channel, program);
-    dm_audio_audition(e->audio, channel, 60, 100, .3);
+    ed_close_instrument(e);
+    ed_release_piano(e);
+    e->instrument_channel = c;
+    e->instrument_new = create;
+    e->instrument_preview = preview;
+    e->instrument_drums = create ? c == MIDI_DRUM_CHANNEL : e->project.channels[c].drums;
+    instrument_route(e, create ? 0 : e->note_ports[c]);
+    e->instrument_raise = true;
 }
 
-bool ed_remove_empty_channel(Editor *e, int channel) {
-    if (!e->project.channels[channel].enabled || ed_channel_has_clips(e, channel)) {
-        return false;
+static void select_instrument(Editor *e, int program, bool drums) {
+    stop_instrument_preview(e);
+    e->instrument_source_dirty = false;
+    e->instrument_program = program;
+    e->instrument_drums = drums;
+    int c = e->instrument_channel;
+
+    if (e->preview_route >= 0 && e->preview_route != c) {
+        dm_audio_keyboard_program(e->audio, e->preview_route, -1, false);
     }
 
-    ed_checkpoint(e);
-    ed_release_piano(e);
-    e->project.channels[channel] = dm_channel_default(channel);
-    e->channel_expanded[channel] = false;
-
-    if (e->selected_channel == channel) {
-        e->channel_selected = false;
-    }
-
-    ed_commit(e);
-    return true;
+    DmPatchKey key = {(uint16_t)e->instrument_bank, (uint8_t)e->instrument_port, (uint8_t)c,
+                      (uint8_t)program, drums};
+    const DmPatchReplacement *replacement = dm_patch_replacement(&e->project, key);
+    DmPatchReplacement stock = {.key = key};
+    preview_sample_source(e, replacement ? replacement : &stock);
 }
 
-/* Moves a channel's placements, settings and events to another, unused channel. */
-static bool move_channel(Editor *e, int from, int to) {
-    DmProject *p = &e->project;
+void ed_step_instrument(Editor *e, int direction) {
+    for (int program = e->instrument_program + direction; program >= 0 && program < 128;
+         program += direction) {
+        if (!e->instrument_drums || dm_drum_kit_name(program)) {
+            select_instrument(e, program, e->instrument_drums);
+            return;
+        }
+    }
+}
 
-    if (from == to || ed_channel_has_clips(e, to)) {
-        return false;
+/* Clear channel-owned MIDI when removing a row, or the imported mode settings when changing
+   between Melody and Drums. Song-wide events and pattern-local events are kept. */
+/* Whether an event belongs to channel: its voice messages, or its GS/XG rhythm-part setup. A
+   type change keeps the voice messages and drops only setup that no longer applies. */
+static bool channel_event(const DmProject *p, const DmEvent *event, int channel, bool remove) {
+    const DmBytes *m = &event->message;
+    int part;
+    bool drums;
+    bool rhythm = dm_midi_rhythm_part(m, &part, &drums) && part == channel;
+    bool voice = m->size && m->data[0] >= MIDI_STATUS && m->data[0] < MIDI_SYSTEM &&
+                 (m->data[0] & MIDI_CHANNEL_MASK) == channel;
+    bool drum_bank = voice && m->size == 3 && m->data[0] == (MIDI_CONTROL | channel) &&
+                     m->data[1] == MIDI_CC_BANK && (m->data[2] == 120 || m->data[2] == 127);
+    return rhythm || (remove && voice) || (!p->channels[channel].drums && drum_bank);
+}
+
+static void clear_channel_events(DmProject *p, int channel, bool remove) {
+    size_t write = 0;
+
+    for (size_t i = 0; i < p->event_count; ++i) {
+        DmEvent *event = &p->events[i];
+
+        if (channel_event(p, event, channel, remove)) {
+            dm_bytes_free(&event->message);
+        } else {
+            p->events[write++] = *event;
+        }
     }
 
-    ed_checkpoint(e);
-    ed_release_piano(e);
-    /* A part moved to channel 10 plays drums there; one moved elsewhere plays an instrument. */
-    p->channels[to] = p->channels[from];
-    p->channels[to].drums = to == DM_DRUM_CHANNEL;
-    p->channels[from] = dm_channel_default(from);
-    p->lane_count[to] = p->lane_count[from];
-    p->lane_count[from] = 0;
-    memcpy(p->lane_names[to], p->lane_names[from], sizeof(p->lane_names[to]));
-    memset(p->lane_names[from], 0, sizeof(p->lane_names[from]));
-    e->channel_expanded[to] = e->channel_expanded[from];
-    e->channel_expanded[from] = false;
+    p->event_count = write;
+}
 
-    for (size_t i = 0; i < p->clip_count; ++i) {
-        if (p->clips[i].channel == from) {
-            p->clips[i].channel = to;
+/* Removing a channel deletes more than its placements, so it asks first whenever any of it
+   would be lost. */
+static bool channel_has_content(Editor *e, int channel) {
+    const DmProject *p = &e->project;
+
+    if (ed_channel_has_clips(e, channel)) {
+        return true;
+    }
+
+    for (size_t i = 0; i < p->event_count; ++i) {
+        if (channel_event(p, &p->events[i], channel, true)) {
+            return true;
         }
     }
 
     for (size_t i = 0; i < p->automation_count; ++i) {
-        if (p->automation[i].pattern < 0 && p->automation[i].channel == from) {
-            p->automation[i].channel = to;
+        if (p->automation[i].pattern < 0 && p->automation[i].channel == channel) {
+            return true;
         }
     }
 
-    for (size_t i = 0; i < p->event_count; ++i) {
-        DmBytes *m = &p->events[i].message;
+    return false;
+}
 
-        if (m->size && m->data[0] >= MIDI_STATUS && m->data[0] < MIDI_SYSTEM &&
-            (m->data[0] & MIDI_CHANNEL_MASK) == from) {
-            m->data[0] = (uint8_t)((m->data[0] & MIDI_STATUS_MASK) | to);
+bool ed_remove_channel(Editor *e, int channel) {
+    if (channel < 0 || channel >= 16 || !e->project.channels[channel].enabled) {
+        return false;
+    }
+
+    ed_release_piano(e);
+    ed_checkpoint(e);
+    DmProject *p = &e->project;
+
+    for (size_t i = p->clip_count; i > 0; --i) {
+        if (p->clips[i - 1].channel == channel) {
+            ed_remove_placement(e, i - 1);
         }
     }
+
+    size_t write = 0;
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        DmAutomation point = p->automation[i];
+
+        if (point.pattern >= 0 || point.channel != channel) {
+            p->automation[write++] = point;
+        }
+    }
+
+    p->automation_count = write;
+    write = 0;
 
     for (size_t i = 0; i < p->port_mix_count; ++i) {
-        if (p->port_mix[i].channel == from) {
-            p->port_mix[i].channel = to;
+        if (p->port_mix[i].channel != channel) {
+            p->port_mix[write++] = p->port_mix[i];
         }
     }
 
-    e->selected_channel = e->selected_channel == from ? to : e->selected_channel;
-    e->pattern_channel = e->pattern_channel == from ? to : e->pattern_channel;
+    p->port_mix_count = write;
+    ed_sample_clear_route(p, -1, channel);
+    clear_channel_events(p, channel, true);
+    p->channels[channel] = dm_channel_default(channel);
+    p->lane_count[channel] = 0;
+    memset(p->lane_names[channel], 0, sizeof(p->lane_names[channel]));
+    e->note_ports[channel] = 0;
+    e->channel_expanded[channel] = false;
+    e->song_event = e->midi_events = false;
+    e->midi_event_index = -1;
+
+    if (e->lane_settings && e->lane_channel == channel) {
+        e->lane_settings = false;
+    }
+
+    if (e->selected_channel == channel) {
+        int channels[16];
+        e->selected_channel = ed_channels(e, channels) ? channels[0] : 0;
+        e->channel_selected = false;
+    }
+
+    if (e->pattern_channel == channel || e->preview_source_channel == channel) {
+        ed_bind_pattern_channel(e);
+    }
+
     ed_commit(e);
     return true;
 }
 
-void ed_choose_drums(Editor *e, int channel) {
-    if (dm_channel_drums(&e->project, channel)) {
+void ed_apply_instrument(Editor *e) {
+    int c = e->instrument_channel;
+
+    if (c < 0 || c >= 16 || e->project.channels[c].enabled == e->instrument_new) {
         return;
     }
 
-    if (!move_channel(e, channel, DM_DRUM_CHANNEL)) {
-        ed_message(e, DM_TEXT_DRUM_CHANNEL_USE);
+    if (e->instrument_remove) {
+        ed_close_instrument(e);
+        ed_remove_channel(e, c);
         return;
     }
 
-    ed_choose_program(e, DM_DRUM_CHANNEL, 0);
-    e->instrument_channel = DM_DRUM_CHANNEL;
-}
+    bool create = e->instrument_new, drums = e->instrument_drums, preview = e->instrument_preview;
+    int program = e->instrument_program;
+    int port = e->instrument_port;
+    bool type_changed = e->project.channels[c].drums != drums;
+    bool assign = e->instrument_source_dirty, inherit = e->instrument_source_inherit;
+    DmPatchReplacement source = e->instrument_source;
+    DmPortMix mix = dm_port_mix(&e->project, port, c);
+    int original = mix.program && port ? mix.program - 1 : e->project.channels[c].program;
+    bool midi_change = create || type_changed || program != (int)fmax(0, original);
 
-/* Moves a percussion channel's part to a free melodic channel playing program. */
-static void choose_melodic(Editor *e, int from, int program) {
-    int to = ed_available_channel(e);
+    if (!assign && !port) {
+        midi_change |= dm_set_initial_program(&e->project, c, program, false);
+    }
 
-    if (to < 0 || to == DM_DRUM_CHANNEL || !move_channel(e, from, to)) {
-        ed_message(e, DM_TEXT_NO_FREE_INSTRUMENT_CHANNEL);
+    if (port && midi_change &&
+        !dm_reserve((void **)&e->project.port_mix, &e->project.port_mix_capacity,
+                    e->project.port_mix_count + 1, sizeof(*e->project.port_mix))) {
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PORT_MIXER);
         return;
     }
 
-    e->project.channels[to].enabled = true;
-    ed_choose_program(e, to, program);
-    e->instrument_channel = to;
-}
+    ed_close_instrument(e);
 
-/* General MIDI plays drums on channel 10. Its programs select drum kits; other channels offer a
-   Drum kit entry that moves them to channel 10. */
-static void instrument_combo(Editor *e, int c) {
-    char text[128];
-    int program = e->project.channels[c].program;
-    bool drums = dm_channel_drums(&e->project, c);
-    const char *kit = dm_drum_kit_name(program);
+    if (midi_change || assign) {
+        bool pushed = ed_checkpoint(e);
 
-    if (drums) {
-        snprintf(text, sizeof(text), DM_TEXT_PROGRAM_NUMBERED, kit ? kit : DM_TEXT_DRUM_KIT,
-                 program);
-    } else {
-        snprintf(text, sizeof(text), DM_TEXT_PROGRAM_NUMBERED, dm_program_name(program), program);
-    }
-
-    /* The dropdown fills the row beside its label. */
-    ui_width(ui_available().x - ui_text_width(DM_TEXT_PROGRAM) - ui_item_spacing_x());
-
-    if (!ui_combo(DM_TEXT_PROGRAM, text)) {
-        return;
-    }
-
-    if (!drums && ui_select(DM_TEXT_DRUM_KIT, false, 0, 0)) {
-        ed_choose_drums(e, c);
-    }
-
-    for (int i = 0; i < 128; ++i) {
-        const char *name = drums ? dm_drum_kit_name(i) : dm_program_name(i);
-
-        if (!name) {
-            continue;
+        if (assign && !ed_sample_store_replacement(e, &source, inherit)) {
+            ed_checkpoint_abandon(e, pushed);
+            return;
         }
 
-        snprintf(text, sizeof(text), DM_TEXT_PROGRAM_NUMBERED, name, i);
+        if (midi_change) {
+            e->project.channels[c].drums = drums;
 
-        if (ui_select(text, program == i, 0, 0)) {
-            ed_choose_program(e, c, i);
-        }
-    }
-
-    /* The drum channel also lists instruments, which move its part to a free channel. */
-    if (drums) {
-        ui_separator();
-
-        for (int i = 0; i < 128; ++i) {
-            snprintf(text, sizeof(text), DM_TEXT_PROGRAM_NUMBERED, dm_program_name(i), i);
-            ui_id(1000 + i);
-
-            if (ui_select(text, false, 0, 0)) {
-                choose_melodic(e, c, i);
+            if (type_changed && !create) {
+                clear_channel_events(&e->project, c, false);
+                e->song_event = e->midi_events = false;
+                e->midi_event_index = -1;
             }
 
-            ui_pop_id();
+            if (port) {
+                mix.program = program + 1;
+
+                if (!dm_port_mix_set(&e->project, mix)) {
+                    /* Undo the type and event changes already made for this channel. */
+                    ed_checkpoint_abandon(e, pushed);
+                    ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PORT_MIXER);
+                    return;
+                }
+            } else {
+                dm_set_initial_program(&e->project, c, program, true);
+            }
+        }
+
+        if (type_changed && dm_audio_playing(e->audio)) {
+            /* Replay channel setup at the current position so the new bank takes effect. */
+            ed_changed(e);
+            ed_transport_publish(e, dm_audio_position(e->audio), true);
+        } else {
+            ed_commit(e);
+
+            if (midi_change && !port) {
+                dm_audio_program(e->audio, c, program);
+            }
         }
     }
 
-    ui_combo_end();
+    if (create) {
+        e->reset_channels[c] = e->project.channels[c];
+        e->selected_channel = c;
+        e->channel_selected = true;
+    }
+
+    if (preview) {
+        ed_preview_channel(e, c, true);
+    }
+}
+
+static void instrument_fields(Editor *e) {
+    char text[128];
+    int c = e->instrument_channel;
+    float width = ui_available().x, spacing = ui_item_spacing_x();
+    float channel_width = fminf(width * .5f, 150);
+    snprintf(text, sizeof(text), DM_TEXT_CHANNEL, c + 1);
+    ui_width(channel_width);
+    ui_disabled(!e->instrument_new);
+
+    if (ui_edit_combo(DM_TEXT_CHANNEL_SELECT, text)) {
+        for (int i = 0; i < 16; ++i) {
+            snprintf(text, sizeof(text), DM_TEXT_CHANNEL, i + 1);
+            ui_disabled(e->project.channels[i].enabled);
+
+            if (ui_select(text, c == i, 0, 0) && i != c) {
+                stop_instrument_preview(e);
+                e->instrument_channel = i;
+                instrument_route(e, 0);
+            }
+
+            ui_disabled_end();
+        }
+
+        ui_combo_end();
+    }
+
+    ui_disabled_end();
+    ui_same();
+    bool drums = ui_button_pair(DM_TEXT_MELODY, DM_TEXT_DRUMS, e->instrument_drums,
+                                width - channel_width - spacing);
+
+    if (drums != e->instrument_drums) {
+        select_instrument(e, 0, drums);
+    }
+
+    int program = e->instrument_program;
+    const char *name = drums ? dm_drum_kit_name(program) : dm_program_name(program);
+    snprintf(text, sizeof(text), DM_TEXT_PROGRAM_NUMBERED, name ? name : DM_TEXT_DRUM_KIT, program);
+    ui_width(ui_available().x);
+
+    if (ui_combo(DM_TEXT_INSTRUMENT_SELECT, text)) {
+        for (int i = 0; i < 128; ++i) {
+            name = drums ? dm_drum_kit_name(i) : dm_program_name(i);
+
+            if (!name) {
+                continue;
+            }
+
+            snprintf(text, sizeof(text), DM_TEXT_PROGRAM_NUMBERED, name, i);
+
+            if (ui_select(text, program == i, 0, 0)) {
+                select_instrument(e, i, drums);
+            }
+        }
+
+        ui_combo_end();
+    }
+
+    const bool *used = ed_channel_ports(e, c); /* Cached until the project changes. */
+    bool colored = false;
+
+    for (int port = 1; port < DM_NOTE_PORTS; ++port) {
+        colored |= used[port];
+    }
+
+    if (!e->instrument_new && colored) {
+        snprintf(text, sizeof(text), DM_TEXT_PORT, e->instrument_port);
+
+        if (ui_combo(DM_TEXT_SAMPLE_ROUTE, text)) {
+            for (int port = 0; port < DM_NOTE_PORTS; ++port) {
+                if (!port || used[port]) {
+                    snprintf(text, sizeof(text), DM_TEXT_PORT, port);
+
+                    if (ui_select(text, e->instrument_port == port, 0, 0)) {
+                        stop_instrument_preview(e);
+                        instrument_route(e, port);
+                    }
+                }
+            }
+
+            ui_combo_end();
+        }
+    }
+
+    if (ui_int(DM_TEXT_SAMPLE_MIDI_BANK, &e->instrument_bank, 0, 16383)) {
+        select_instrument(e, e->instrument_program, e->instrument_drums);
+    }
+
+    DmPatchKey key = {(uint16_t)e->instrument_bank, (uint8_t)e->instrument_port, (uint8_t)c,
+                      (uint8_t)e->instrument_program, e->instrument_drums};
+    const DmPatchReplacement *current =
+        e->instrument_source_dirty ? (e->instrument_source_inherit ? NULL : &e->instrument_source)
+                                   : dm_patch_replacement_exact(&e->project, key);
+    DmPatchReplacement next = {.key = key};
+    bool inherit = false;
+
+    if (ed_sample_source_picker(e, key, current, &next, &inherit)) {
+        e->instrument_source = next;
+        e->instrument_source_dirty = true;
+        e->instrument_source_inherit = inherit;
+        DmPatchKey inherited = key;
+        inherited.port = 0;
+        const DmPatchReplacement *preview =
+            !inherit ? &e->instrument_source : dm_patch_replacement(&e->project, inherited);
+        DmPatchReplacement stock = {.key = key};
+        preview_sample_source(e, preview ? preview : &stock);
+    }
+
+    if (e->instrument_source_dirty) {
+        current = inherit || e->instrument_source_inherit ? NULL : &e->instrument_source;
+    }
+
+    if (!current && key.port) {
+        key.port = 0;
+        current = dm_patch_replacement_exact(&e->project, key);
+    }
+
+    if (current && current->generation && ui_button(DM_TEXT_SAMPLE_PREVIEW, 0, 0)) {
+        preview_sample_source(e, current);
+    }
 }
 
 void ed_instrument(Editor *e) {
@@ -441,51 +731,68 @@ void ed_instrument(Editor *e) {
         return;
     }
 
+    if (e->instrument_raise) {
+        ui_raise_next();
+        e->instrument_raise = false;
+    }
+
     bool open = true;
-    bool show = ui_fitted_dialog(DM_TEXT_INSTRUMENT, &open, 460);
-    int c = e->instrument_channel;
 
-    if (show) {
-        char text[128];
-        snprintf(text, sizeof(text), DM_TEXT_CHANNEL_NUMBER, c + 1,
-                 c == MIDI_DRUM_CHANNEL && dm_channel_drums(&e->project, c)
-                     ? DM_TEXT_GM_PERCUSSION_SUFFIX
-                 : dm_channel_drums(&e->project, c) ? DM_TEXT_PERCUSSION_SUFFIX
-                                                    : "");
-        ui_text(text);
-        ui_separator();
-        instrument_combo(e, c);
-
-        if (c == MIDI_DRUM_CHANNEL && dm_channel_drums(&e->project, c)) {
-            ui_dim(DM_TEXT_CHANNEL_10_USES);
+    if (ui_fitted_dialog(DM_TEXT_INSTRUMENT, &open, 460)) {
+        if (e->instrument_remove) {
+            char text[160];
+            snprintf(text, sizeof(text), DM_TEXT_REMOVE_CHANNEL_WARNING, e->instrument_channel + 1);
+            ui_wrap(text);
+        } else {
+            instrument_fields(e);
         }
 
-        if (e->project.channels[c].enabled && !ed_channel_has_clips(e, c) &&
-            ui_button(DM_TEXT_REMOVE_EMPTY_CHANNEL, 0, 0) && ed_remove_empty_channel(e, c)) {
-            open = false;
+        float half = (ui_available().x - ui_item_spacing_x()) * .5f;
+        bool removing = e->instrument_remove;
+
+        if (ui_button(DM_TEXT_CANCEL, half, 0)) {
+            if (removing) {
+                e->instrument_remove = false;
+            } else {
+                open = false;
+            }
         }
 
-        if (ui_button(DM_TEXT_APPLY, ui_available().x, 0) || e->instrument_accept) {
-            open = false;
+        ui_same();
+        bool unavailable = e->project.channels[e->instrument_channel].enabled == e->instrument_new;
+        ui_disabled(unavailable);
+
+        if (ui_button(removing ? DM_TEXT_REMOVE_CHANNEL : DM_TEXT_APPLY, half, 0)) {
+            ed_apply_instrument(e);
+        }
+
+        ui_disabled_end();
+
+        if (e->instrument_channel >= 0 && !unavailable && !removing && !e->instrument_new &&
+            ui_button(DM_TEXT_REMOVE_CHANNEL, ui_available().x, 0)) {
+            e->instrument_remove = channel_has_content(e, e->instrument_channel);
+
+            if (!e->instrument_remove) {
+                int c = e->instrument_channel;
+                ed_close_instrument(e);
+                ed_remove_channel(e, c);
+            }
         }
     }
 
     ui_end();
 
     if (!open) {
-        /* Opened with the instrument shortcut, the choice also becomes the pattern editor's
-           instrument, which then follows the channel. */
-        if (e->instrument_preview && e->project.channels[c].enabled) {
-            ed_preview_channel(e, c, true);
-        }
-
-        e->instrument_accept = false;
-        e->instrument_preview = false;
-        e->instrument_channel = -1;
+        ed_close_instrument(e);
     }
 }
 
 static void midi_preferences(Editor *e) {
+    float retry_width = ui_button_row_width((const char *const[]){DM_TEXT_RETRY_AUDIO_DEVICE}, 1);
+    float combo_width = ui_available().x - retry_width - ui_text_width(DM_TEXT_MIDI_OUTPUT) -
+                        3 * ui_item_spacing_x();
+    ui_width(fmaxf(90, combo_width));
+
     if (ui_combo(DM_TEXT_MIDI_OUTPUT,
                  e->device < 0 ? DM_TEXT_SOUNDFONT_ONLY : DM_TEXT_EXTERNAL_MIDI)) {
         if (ui_select(DM_TEXT_SOUNDFONT_ONLY, e->device < 0, 0, 0) &&
@@ -517,13 +824,26 @@ static void midi_preferences(Editor *e) {
 
         ui_combo_end();
     }
+
+    ui_same();
+
+    if (ui_button(DM_TEXT_RETRY_AUDIO_DEVICE, retry_width, 0)) {
+        if (!e->audio) {
+            e->audio = dm_audio_create(e->status, sizeof(e->status));
+        } else {
+            dm_audio_retry(e->audio, e->status, sizeof(e->status));
+        }
+
+        ed_publish(e);
+    }
 }
 
 /* Every exporter with Export to Repository gets a folder row; the picker sets it too. */
 static void export_plugin_preferences(Editor *e) {
-    ui_separator();
-    ui_text(DM_TEXT_EXPORT_PLUGINS);
-    ui_separator();
+    if (!ui_section(DM_TEXT_PLUGINS)) {
+        return;
+    }
+
     bool any = false;
 
     for (size_t i = 0; i < ed_export_count(e); i++) {
@@ -577,11 +897,15 @@ void ed_preferences(Editor *e) {
         e->preferences_raise = false;
     }
 
-    bool show = ui_dialog(DM_TEXT_PREFERENCES, &e->preferences, 630, 400);
+    bool show = ui_growing_dialog(DM_TEXT_PREFERENCES, &e->preferences, 730, 540);
     e->preferences_rect = ui_window_rect();
 
     if (show) {
         if (ui_color(DM_TEXT_APPLICATION_COLOR, &e->accent)) {
+            ed_preference_save(e);
+        }
+
+        if (ui_color(DM_TEXT_BACKGROUND_COLOR, &e->background)) {
             ed_preference_save(e);
         }
 
@@ -595,16 +919,6 @@ void ed_preferences(Editor *e) {
         ui_separator();
         midi_preferences(e);
 
-        if (ui_button(DM_TEXT_RETRY_AUDIO_DEVICE, 160, 0)) {
-            if (!e->audio) {
-                e->audio = dm_audio_create(e->status, sizeof(e->status));
-            } else {
-                dm_audio_retry(e->audio, e->status, sizeof(e->status));
-            }
-
-            ed_publish(e);
-        }
-
         if (e->device >= 0 && ui_check(DM_TEXT_ALSO_MONITOR_SOUNDFONT, &e->monitor)) {
             dm_audio_monitor(e->audio, e->monitor);
             ed_preference_save(e);
@@ -613,12 +927,18 @@ void ed_preferences(Editor *e) {
 
         /* An external MIDI output does not use the SoundFont choice. */
         if (e->device < 0) {
-            if (ui_button(DM_TEXT_CHOOSE_SOUNDFONT, 170, 0)) {
+            ui_text(DM_TEXT_SOUNDFONT_LABEL);
+            ui_width(fmaxf(120, ui_available().x - 80 - ui_item_spacing_x()));
+            ui_readonly("##soundfont", *e->project.soundfont ? e->project.soundfont
+                                                             : DM_TEXT_SOUNDFONT_SELECTED_CHOOSE);
+            ui_same();
+            ui_disabled(e->dialog_busy);
+
+            if (ui_button(DM_TEXT_BROWSE, 80, 0)) {
                 ed_dialog(e, DIALOG_FONT);
             }
 
-            ui_text(*e->project.soundfont ? e->project.soundfont
-                                          : DM_TEXT_SOUNDFONT_SELECTED_CHOOSE);
+            ui_disabled_end();
         }
 
         if (dm_audio_busy(e->audio)) {
@@ -644,19 +964,21 @@ static void shortcut_row(Editor *e, int i) {
     ui_id(i);
 
     /* Action names are also preference keys; these labels changed after release. */
-    ui_text(i == ACT_NOTE_COLOR   ? DM_TEXT_COLOR_NOTES_PATTERNS
-            : i == ACT_SONG_EVENT ? DM_TEXT_EVENTS_SHORTCUT
-                                  : ed_action_names[i]);
+    ui_text(i == ACT_NOTE_COLOR            ? DM_TEXT_COLOR_NOTES_PATTERNS
+            : i == ACT_SONG_EVENT          ? DM_TEXT_EVENTS_SHORTCUT
+            : i == ACT_NEXT                ? DM_TEXT_CREATE_PATTERN
+            : i == ACT_PREVIOUS            ? DM_TEXT_REMOVE_EMPTY_PATTERN
+            : i == ACT_NEXT_AUTOMATION     ? DM_TEXT_CREATE_AUTOMATION
+            : i == ACT_PREVIOUS_AUTOMATION ? DM_TEXT_REMOVE_EMPTY_AUTOMATION
+                                           : ed_action_names[i]);
     ui_same();
     UiPoint cursor = ui_cursor(), window = ui_window();
     ui_position(window.x + 360, cursor.y);
-    Binding b = e->bindings[i];
     char label[128];
-    snprintf(label, sizeof(label), "%s%s%s%s%s", b.mods & SDL_KMOD_CTRL ? DM_TEXT_CTRL : "",
-             b.mods & SDL_KMOD_SHIFT ? DM_TEXT_SHIFT : "", b.mods & SDL_KMOD_ALT ? DM_TEXT_ALT : "",
-             b.mods & SDL_KMOD_GUI ? DM_TEXT_WIN_CMD : "", SDL_GetScancodeName(b.key));
+    ed_binding_text(e, (Action)i, label, sizeof(label));
 
     if (ui_button(e->capture == i ? DM_TEXT_PRESS_KEYS : label, 190, 0)) {
+        e->gesture_capture = -1;
         e->capture = i;
     }
 

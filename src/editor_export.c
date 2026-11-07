@@ -3,6 +3,7 @@
 #include <limits.h>
 
 static bool begin(Editor *e, bool inspection, int index, const char *path, bool install);
+static bool refresh_catalog(Editor *e);
 
 /* duckmidi-plugins.ini sits beside the preferences file. */
 static bool folders_path(const Editor *e, char *out, size_t capacity) {
@@ -100,6 +101,7 @@ DmExportPlugins *ed_export_host(Editor *e) {
     h->message_format = -1;
     h->folder_format = -1;
     h->keep_originals = true;
+    h->history_width = 380;
     const char *base = SDL_GetBasePath();
     char directory[DM_PATH];
 
@@ -154,6 +156,8 @@ static void DME_CALL progress(void *user, uint32_t percent) {
     SDL_SetAtomicInt(&((DmPluginWork *)user)->progress, (int)(percent > 100 ? 100 : percent));
 }
 
+static void list_item(DmPluginWork *w, const char *heading, size_t length, const char *item);
+
 static void DME_CALL diagnostic(void *user, uint32_t severity, uint32_t flags,
                                 const char *message) {
     DmPluginWork *w = user;
@@ -170,7 +174,15 @@ static void DME_CALL diagnostic(void *user, uint32_t severity, uint32_t flags,
         w->warnings++;
     }
 
+    const char *split = flags & DME_LIST ? strchr(message, '\n') : NULL;
+
     if ((flags & DME_POPUP) && severity == DME_WARNING) {
+        w->altered |= (flags & DME_ALTERED) != 0;
+    }
+
+    if ((flags & DME_POPUP) && severity == DME_WARNING && split && split > message) {
+        list_item(w, message, (size_t)(split - message), split + 1);
+    } else if ((flags & DME_POPUP) && severity == DME_WARNING) {
         size_t used = strlen(w->popup), remaining = sizeof(w->popup) - used;
 
         if (!w->popup_truncated) {
@@ -184,9 +196,207 @@ static void DME_CALL diagnostic(void *user, uint32_t severity, uint32_t flags,
 
     if (flags & DME_DISPLAY) {
         size_t used = strlen(w->summary);
-        snprintf(w->summary + used, sizeof(w->summary) - used, "%s%.1000s", used ? "\n" : "",
-                 message);
+
+        if (split) {
+            snprintf(w->summary + used, sizeof(w->summary) - used, "%s%.*s: %.1000s",
+                     used ? "\n" : "", (int)(split - message), message, split + 1);
+        } else {
+            snprintf(w->summary + used, sizeof(w->summary) - used, "%s%.1000s", used ? "\n" : "",
+                     message);
+        }
     }
+}
+
+/* Adds one list item under its heading, once. */
+static void list_item(DmPluginWork *w, const char *heading, size_t length, const char *item) {
+    unsigned g = 0;
+
+    while (g < w->group_count && (strlen(w->groups[g].heading) != length ||
+                                  memcmp(w->groups[g].heading, heading, length))) {
+        ++g;
+    }
+
+    if (g == w->group_count) {
+        if (g == SDL_arraysize(w->groups) || length >= sizeof(w->groups[g].heading)) {
+            w->popup_truncated = true;
+            return;
+        }
+
+        memcpy(w->groups[g].heading, heading, length);
+        w->groups[g].heading[length] = 0;
+        w->groups[g].items[0] = 0;
+        ++w->group_count;
+    }
+
+    char line[1024];
+    snprintf(line, sizeof(line), "- %s\n", item);
+    char *items = w->groups[g].items;
+    size_t used = strlen(items);
+
+    if (strstr(items, line)) {
+        return;
+    }
+
+    if (used + strlen(line) >= sizeof(w->groups[g].items)) {
+        w->popup_truncated = true;
+        return;
+    }
+
+    memcpy(items + used, line, strlen(line) + 1);
+}
+
+/* The completion warning: the last-resort headline, each heading with its items, other warnings,
+   and where the output went. */
+static void compose_warning(const DmPluginWork *w, char *out, size_t cap) {
+    size_t used = 0;
+    out[0] = 0;
+#define ADD(...)                                                                                   \
+    do {                                                                                           \
+        int n = snprintf(out + used, cap - used, __VA_ARGS__);                                     \
+        used += n > 0 && (size_t)n < cap - used ? (size_t)n : cap - used - 1;                      \
+    } while (0)
+
+    if (w->altered) {
+        ADD(DM_TEXT_EXPORT_WARNING_ALTERED, w->api->name);
+        ADD("\n\n");
+    }
+
+    for (unsigned g = 0; g < w->group_count; ++g) {
+        ADD("%s:\n%s\n", w->groups[g].heading, w->groups[g].items);
+    }
+
+    if (*w->popup) {
+        ADD("%s\n\n", w->popup);
+    }
+
+    if (w->popup_truncated) {
+        ADD("%s\n\n", DM_TEXT_EXPORT_WARNING_POPUP_TRUNCATED);
+    }
+
+    ADD(DM_TEXT_EXPORT_WARNING_SAVED, w->destination);
+#undef ADD
+}
+
+static int32_t DME_CALL read_sample(void *user, uint32_t asset, uint64_t start, uint64_t frames,
+                                   float *pcm, uint64_t capacity) {
+    DmPluginWork *w = user;
+
+    if (cancelled(w)) {
+        return DME_CANCELLED;
+    }
+
+    return dm_sample_export_read(w->samples, asset, start, frames, pcm, capacity);
+}
+
+static bool copy_sample_string(char *out, size_t cap, DmeString value) {
+    if (!value.data || !value.length || value.length >= cap ||
+        memchr(value.data, 0, (size_t)value.length)) {
+        return false;
+    }
+
+    memcpy(out, value.data, (size_t)value.length);
+    out[value.length] = 0;
+    return true;
+}
+
+static int32_t DME_CALL freeze_sample(void *user, const DmeSampleSelection *selected,
+                                      DmeFrozenSample *out, char *error, uint64_t cap) {
+    DmPluginWork *w = user;
+    DmPatchReplacement reference = {0};
+
+    if (!selected || selected->size != sizeof(*selected) || !out || !selected->generation ||
+        !copy_sample_string(reference.locator, sizeof(reference.locator), selected->locator) ||
+        !copy_sample_string(reference.set_id, sizeof(reference.set_id), selected->set_id) ||
+        !copy_sample_string(reference.preset_id, sizeof(reference.preset_id),
+                            selected->preset_id)) {
+        snprintf(error, (size_t)cap, "%s", DM_TEXT_SAMPLE_MANIFEST_INVALID);
+        return DME_INVALID;
+    }
+
+    reference.generation = selected->generation;
+    reference.key.drums = (selected->flags & DME_SAMPLE_PERCUSSION) != 0;
+    DmFrozenExportSample *frozen = NULL;
+
+    for (size_t i = 0; i < w->frozen_count; ++i) {
+        const DmPatchReplacement *r = &w->frozen[i].selection;
+
+        if (r->generation == reference.generation && r->key.drums == reference.key.drums &&
+            !strcmp(r->locator, reference.locator) && !strcmp(r->set_id, reference.set_id) &&
+            !strcmp(r->preset_id, reference.preset_id)) {
+            frozen = &w->frozen[i];
+            break;
+        }
+    }
+
+    if (!frozen) {
+        DmFrozenExportSample prepared = {.selection = reference};
+        uint32_t index;
+        DmeHost callbacks = {.user = w, .cancelled = cancelled};
+
+        if (!dm_sample_export_selection_snapshot(&reference, 1, &prepared.context, &callbacks,
+                                                 &index, &prepared.snapshot, error, (size_t)cap)) {
+            return cancelled(w) ? DME_CANCELLED : DME_UNAVAILABLE;
+        }
+
+        if (prepared.context.sample_presets[0].generation != reference.generation) {
+            dm_sample_export_free(prepared.snapshot);
+            snprintf(error, (size_t)cap, "%s", DM_TEXT_SAMPLE_EXPORT_CHANGED);
+            return DME_UNAVAILABLE;
+        }
+
+        uint64_t values = 0;
+
+        for (uint32_t i = 0; i < prepared.context.sample_asset_count; ++i) {
+            const DmeSampleAsset *asset = &prepared.context.sample_assets[i];
+            values += asset->frames * asset->channels;
+        }
+
+        if (values > 64 * 1024 * 1024 - w->frozen_values || w->frozen_count >= 2048 ||
+            !dm_reserve((void **)&w->frozen, &w->frozen_capacity, w->frozen_count + 1,
+                        sizeof(*w->frozen))) {
+            dm_sample_export_free(prepared.snapshot);
+            snprintf(error, (size_t)cap, "%s", DM_TEXT_SAMPLE_EXPORT_MEMORY);
+            return DME_NOMEM;
+        }
+
+        static SDL_SpinLock token_lock;
+        static uint64_t next_token;
+        SDL_LockSpinlock(&token_lock);
+        prepared.handle = ++next_token;
+        SDL_UnlockSpinlock(&token_lock);
+        w->frozen_values += (size_t)values;
+        frozen = &w->frozen[w->frozen_count++];
+        *frozen = prepared;
+    }
+
+    *out = (DmeFrozenSample){.size = sizeof(*out),
+                             .handle = frozen->handle,
+                             .preset_count = frozen->context.sample_preset_count,
+                             .zone_count = frozen->context.sample_zone_count,
+                             .asset_count = frozen->context.sample_asset_count,
+                             .presets = frozen->context.sample_presets,
+                             .zones = frozen->context.sample_zones,
+                             .assets = frozen->context.sample_assets};
+    return DME_OK;
+}
+
+static int32_t DME_CALL read_frozen_sample(void *user, uint64_t handle, uint32_t asset,
+                                           uint64_t start, uint64_t frames, float *pcm,
+                                           uint64_t capacity) {
+    DmPluginWork *w = user;
+
+    if (cancelled(w)) {
+        return DME_CANCELLED;
+    }
+
+    for (size_t i = 0; i < w->frozen_count; ++i) {
+        if (w->frozen[i].handle == handle) {
+            return dm_sample_export_read(w->frozen[i].snapshot, asset, start, frames, pcm,
+                                         capacity);
+        }
+    }
+
+    return DME_INVALID;
 }
 
 static bool artifact_name(const char *name) {
@@ -206,8 +416,12 @@ static bool artifact_name(const char *name) {
 
 /* ZIP artifacts may place files in folders with "/"; each part follows the name rules. */
 static bool artifact_path(const char *name, bool folders) {
-    if (!folders || !name || SDL_strnlen(name, 256) >= 256) {
+    if (!folders) {
         return artifact_name(name);
+    }
+
+    if (!name || !*name || SDL_strnlen(name, 8192) >= 8192) {
+        return false;
     }
 
     char part[256];
@@ -215,6 +429,10 @@ static bool artifact_path(const char *name, bool folders) {
     for (const char *s = name;;) {
         const char *slash = strchr(s, '/');
         size_t length = slash ? (size_t)(slash - s) : strlen(s);
+
+        if (length >= sizeof(part)) {
+            return false;
+        }
         memcpy(part, s, length);
         part[length] = 0;
 
@@ -243,8 +461,8 @@ static int32_t DME_CALL artifact(void *user, const char *name, const uint8_t *da
     }
 
     if (!artifact_path(name, w->api->container == DME_ZIP) || (!data && size) ||
-        size > 512ULL * 1024 * 1024 || w->artifact_count == 64 ||
-        size > SIZE_MAX - w->total_bytes) {
+        size > 512ULL * 1024 * 1024 || w->artifact_count == 20000 ||
+        size > 512ULL * 1024 * 1024 - w->total_bytes) {
         snprintf(w->message, sizeof(w->message), DM_TEXT_EXPORTER_RETURNED_INVALID_ARTIFACT);
         return 0;
     }
@@ -257,14 +475,22 @@ static int32_t DME_CALL artifact(void *user, const char *name, const uint8_t *da
         }
     }
 
-    DmPluginArtifact *a = &w->artifacts[w->artifact_count];
-
-    if (!dm_bytes(&a->data, data, (size_t)size)) {
+    if (!dm_reserve((void **)&w->artifacts, &w->artifact_capacity, w->artifact_count + 1,
+                    sizeof(*w->artifacts))) {
         snprintf(w->message, sizeof(w->message), DM_TEXT_NOT_ENOUGH_MEMORY_EXPORTED);
         return 0;
     }
 
-    snprintf(a->name, sizeof(a->name), "%s", name);
+    DmPluginArtifact *a = &w->artifacts[w->artifact_count];
+    *a = (DmPluginArtifact){.name = SDL_strdup(name)};
+
+    if (!a->name || !dm_bytes(&a->data, data, (size_t)size)) {
+        SDL_free(a->name);
+        dm_bytes_free(&a->data);
+        snprintf(w->message, sizeof(w->message), DM_TEXT_NOT_ENOUGH_MEMORY_EXPORTED);
+        return 0;
+    }
+
     w->artifact_count++;
     w->total_bytes += (size_t)size;
     return 1;
@@ -289,7 +515,12 @@ static bool publish(DmPluginWork *w) {
     bool ok = true;
 
     if (w->api->container == DME_ZIP) {
-        DmArchiveEntry entries[64];
+        DmArchiveEntry *entries = calloc(w->artifact_count, sizeof(*entries));
+
+        if (!entries) {
+            snprintf(w->message, sizeof(w->message), DM_TEXT_NOT_ENOUGH_MEMORY_EXPORTED);
+            return false;
+        }
 
         for (size_t i = 0; i < w->artifact_count; i++) {
             entries[i] = (DmArchiveEntry){w->artifacts[i].name, w->artifacts[i].data.data,
@@ -297,6 +528,7 @@ static bool publish(DmPluginWork *w) {
         }
 
         ok = dm_zip(entries, w->artifact_count, &archive, w->message, sizeof(w->message));
+        free(entries);
         data = archive.data;
         size = archive.size;
     }
@@ -358,9 +590,19 @@ static bool resolve(DmPluginWork *w) {
     }
 
     if (ok) {
+        unsigned authored = dm_export_authored_pan(&p);
+
         for (size_t i = 0; i < count; i++) {
-            w->events[i] = (DmeEvent){events[i].tick, events[i].source_id, events[i].status,
-                                      events[i].a,    events[i].b,         events[i].port};
+            const DmExportEvent *e = &events[i];
+            bool generated = (e->flags & DM_EXPORT_DEFAULT_CONTROL) &&
+                             !(authored & (1u << (e->status & MIDI_CHANNEL_MASK)));
+            w->events[i] = (DmeEvent){e->tick,
+                                      e->source_id,
+                                      e->status,
+                                      e->a,
+                                      e->b,
+                                      e->port,
+                                      generated ? DME_EVENT_DEFAULT_CONTROL : 0};
         }
 
         /* An unnamed project gives no name, so exporters fall back to the source file's. */
@@ -370,6 +612,7 @@ static bool resolve(DmPluginWork *w) {
                                   .event_count = count,
                                   .duration = duration,
                                   .project_session = w->session,
+                                  .project_revision = w->revision,
                                   .ppq = DM_PPQ,
                                   .project_name = w->project_name,
                                   .source_name = w->source_name};
@@ -381,6 +624,25 @@ static bool resolve(DmPluginWork *w) {
         for (unsigned i = 0; i < 128; i++) {
             w->context.program_names[i] = dm_program_name((int)i);
             w->context.drum_names[i] = dm_drum_name((int)i);
+        }
+
+        if (w->inspection) {
+            DmeHost host = {.user = w, .cancelled = cancelled};
+            ok = dm_sample_export_identities(&p, &w->context, &host, &w->samples);
+        } else {
+            DmeHost host = {.user = w, .cancelled = cancelled, .diagnostic = diagnostic};
+            ok = dm_sample_export_snapshot(&p, &w->context, &host, &w->samples);
+
+            if (!ok && !cancelled(w)) {
+                snprintf(w->message, sizeof(w->message), "%s", DM_TEXT_SAMPLE_EXPORT_MEMORY);
+            }
+        }
+
+        if (w->inspection && ok) {
+            DmeHost callbacks = {.user = w, .cancelled = cancelled};
+            ok = dm_sample_export_catalog(w->catalog_program, w->catalog_writable, &callbacks,
+                                          &w->catalog, w->message, sizeof(w->message));
+            w->context.library = dm_sample_export_catalog_view(w->catalog);
         }
 
         /* Loop points reach exporters in timeline ticks, limited to the exported duration. */
@@ -404,252 +666,61 @@ static bool resolve(DmPluginWork *w) {
     return ok && !cancelled(w);
 }
 
-/* Folder installs accept relative paths inside the chosen folder only. */
-static bool install_path(const char *path) {
-    if (!path || !*path || SDL_strnlen(path, 256) >= 256 || path[0] == '/' || strchr(path, ':') ||
-        strchr(path, '\\')) {
-        return false;
-    }
-
-    for (const char *part = path; *part;) {
-        const char *slash = strchr(part, '/');
-        size_t length = slash ? (size_t)(slash - part) : strlen(part);
-
-        if (!length || (length == 1 && part[0] == '.') ||
-            (length == 2 && part[0] == '.' && part[1] == '.')) {
-            return false;
-        }
-
-        part += length + (slash ? 1 : 0);
-    }
-
-    return true;
-}
-
-/* Joins the folder and a relative path with the separator the folder already uses. */
-static bool repository_file(const char *folder, const char *path, char *out, size_t capacity) {
-    bool backslash = strchr(folder, '\\') != NULL;
-    size_t length = strlen(folder);
-    const char *separator = length && (folder[length - 1] == '/' || folder[length - 1] == '\\') ? ""
-                            : backslash ? "\\"
-                                        : "/";
-
-    if (snprintf(out, capacity, "%s%s%s", folder, separator, path) >= (int)capacity) {
-        return false;
-    }
-
-    for (char *c = out + length; backslash && *c; ++c) {
-        *c = *c == '/' ? '\\' : *c;
-    }
-
-    return true;
-}
-
-static int32_t DME_CALL read_file(void *user, const char *path, const uint8_t **data,
-                                  uint64_t *size) {
-    DmPluginWork *w = user;
-    char full[DM_PATH], error[256];
-
-    if (!install_path(path) || w->read_count == DM_PLUGIN_FILES ||
-        !repository_file(w->destination, path, full, sizeof(full))) {
-        return 0;
-    }
-
-    DmPluginFile *file = &w->reads[w->read_count];
-
-    if (!dm_read(full, &file->data, error, sizeof(error))) {
-        return 0;
-    }
-
-    snprintf(file->path, sizeof(file->path), "%s", path);
-    ++w->read_count;
-    *data = file->data.data;
-    *size = file->data.size;
-    return 1;
-}
-
-static int32_t DME_CALL install_file(void *user, const char *path, const uint8_t *data,
-                                     uint64_t size, uint32_t flags) {
-    DmPluginWork *w = user;
-
-    bool remove = flags & DME_INSTALL_REMOVE;
-
-    if (!install_path(path) || w->install_count == DM_PLUGIN_FILES || (!data && size) ||
-        size > 64ULL * 1024 * 1024 || (flags & ~(DME_INSTALL_BACKUP | DME_INSTALL_REMOVE)) ||
-        (remove && size)) {
-        snprintf(w->message, sizeof(w->message), DM_TEXT_EXPORTER_QUEUED_INVALID_REPOSITORY);
-        return 0;
-    }
-
-    DmPluginFile *file = &w->installs[w->install_count];
-
-    if (!dm_bytes(&file->data, data, (size_t)size)) {
-        snprintf(w->message, sizeof(w->message), DM_TEXT_NOT_ENOUGH_MEMORY_REPOSITORY);
-        return 0;
-    }
-
-    snprintf(file->path, sizeof(file->path), "%s", path);
-    file->flags = flags;
-    ++w->install_count;
-    return 1;
-}
-
-/* Cuts path to its parent folder; false when it has none. */
-static bool parent_folder(char *path) {
-    char *slash = strrchr(path, '/'), *backslash = strrchr(path, '\\');
-    char *cut = slash > backslash ? slash : backslash;
-
-    if (!cut) {
-        return false;
-    }
-
-    *cut = 0;
-    return true;
-}
-
-/* Finds the highest missing folder between the repository root and folder, or leaves out empty
-   when folder already exists. */
-static void missing_folder(const char *root, const char *folder, char *out, size_t capacity) {
-    char current[DM_PATH];
-    snprintf(current, sizeof(current), "%s", folder);
-    out[0] = 0;
-
-    while (strlen(current) > strlen(root) && !SDL_GetPathInfo(current, NULL)) {
-        snprintf(out, capacity, "%s", current);
-
-        if (!parent_folder(current)) {
-            break;
-        }
-    }
-}
-
-/* Removes the folders an install created for path, deepest first, while they are empty. */
-static void remove_created_folders(const DmRepositoryChange *change) {
-    if (!*change->created) {
-        return;
-    }
-
-    char folder[DM_PATH];
-    snprintf(folder, sizeof(folder), "%s", change->path);
-
-    while (parent_folder(folder) && strlen(folder) >= strlen(change->created)) {
-        if (!SDL_RemovePath(folder)) {
-            return; /* Not empty: something else lives there now. */
-        }
-
-        if (!strcmp(folder, change->created)) {
-            return;
-        }
-    }
-}
-
-/* Writes the queued files. Each change is recorded before it is made, so a failure part way can
-   still be reverted. Originals are kept beside their files as .bkp when the user keeps originals
-   or the exporter asks for it; an existing .bkp is never overwritten. */
-static bool commit_install(DmPluginWork *w) {
-    w->changes = calloc(w->install_count + 1, sizeof(*w->changes));
-
-    if (!w->changes) {
-        snprintf(w->message, sizeof(w->message), DM_TEXT_NOT_ENOUGH_MEMORY_RECORD);
-        return false;
-    }
-
-    for (size_t i = 0; i < w->install_count; ++i) {
-        DmPluginFile *file = &w->installs[i];
-        DmRepositoryChange *change = &w->changes[w->change_count];
-        char error[1024] = {0}, backup[DM_PATH];
-
-        if (!repository_file(w->destination, file->path, change->path, sizeof(change->path)) ||
-            snprintf(backup, sizeof(backup), "%s.bkp", change->path) >= (int)sizeof(backup)) {
-            snprintf(w->message, sizeof(w->message), DM_TEXT_REPOSITORY_PATH_TOO_LONG, file->path);
-            return false;
-        }
-
-        change->existed = dm_read(change->path, &change->original, error, sizeof(error));
-        bool remove = file->flags & DME_INSTALL_REMOVE;
-
-        if (remove && !change->existed) {
-            continue; /* Already gone: nothing to remove or revert. */
-        }
-
-        ++w->change_count;
-        bool keep = w->keep_originals || (file->flags & DME_INSTALL_BACKUP);
-
-        if (change->existed && keep && !SDL_GetPathInfo(backup, NULL)) {
-            if (!dm_write(backup, change->original.data, change->original.size, error,
-                          sizeof(error))) {
-                snprintf(w->message, sizeof(w->message), DM_TEXT_CANNOT_KEEP_ORIGINAL, file->path,
-                         error);
-                return false;
-            }
-
-            change->backup_created = true;
-        }
-
-        /* A new file may go in a folder the checkout has not created yet. The highest folder
-           created is recorded so Revert can remove the folders again. */
-        if (!change->existed) {
-            char folder[DM_PATH];
-            snprintf(folder, sizeof(folder), "%s", change->path);
-
-            if (parent_folder(folder)) {
-                missing_folder(w->destination, folder, change->created, sizeof(change->created));
-                SDL_CreateDirectory(folder);
-            }
-        }
-
-        if (remove) {
-            if (!SDL_RemovePath(change->path)) {
-                snprintf(w->message, sizeof(w->message), DM_TEXT_CANNOT_WRITE, file->path,
-                         SDL_GetError());
-                return false;
-            }
-
-            continue;
-        }
-
-        if (!dm_write(change->path, file->data.data, file->data.size, error, sizeof(error))) {
-            snprintf(w->message, sizeof(w->message), DM_TEXT_CANNOT_WRITE, file->path, error);
-            return false;
-        }
-    }
-
-    return true;
-}
-
 static int worker(void *user) {
     DmPluginWork *w = user;
-    bool ok = w->prepared || resolve(w);
+    bool ok;
+
+    if (w->catalog_only) {
+        DmeHost callbacks = {.user = w, .cancelled = cancelled};
+        ok = dm_sample_export_catalog(w->catalog_program, w->catalog_writable, &callbacks,
+                                      &w->catalog, w->message, sizeof(w->message)) &&
+             !cancelled(w);
+    } else {
+        ok = w->prepared || resolve(w);
+    }
     w->prepared = ok;
 
     if (ok && w->inspection) {
         w->success = true;
     } else if (ok) {
-        DmeHost host = {w, cancelled, progress, diagnostic, artifact};
+        DmeHost host = {.user = w,
+                        .cancelled = cancelled,
+                        .progress = progress,
+                        .diagnostic = diagnostic,
+                        .artifact = artifact,
+                        .read_sample = read_sample,
+                        .freeze_sample = freeze_sample,
+                        .read_frozen_sample = read_frozen_sample,
+                        .plugins_directory = {w->plugins_directory, strlen(w->plugins_directory)}};
         char error[2048] = {0};
         int32_t status;
 
-        if (w->review) {
+        const DmeHistoryRuntime *runtime = w->history_runtime;
+
+        /* Repository jobs own their writes; a saved export is published by the host. */
+        if (runtime) {
+            status =
+                w->review
+                    ? runtime->prepare(w->repository_job, &w->context, &host, error, sizeof(error))
+                    : runtime->run(w->repository_job, &w->context, &host, error, sizeof(error));
+        } else if (w->review) {
             status = w->api->preflight(w->job, &w->context, &host, error, sizeof(error));
-        } else if (w->install) {
-            host.read_file = read_file;
-            host.install_file = install_file;
-            status = w->api->install(w->job, &w->context, &host, error, sizeof(error));
         } else {
             status = w->api->run(w->job, &w->context, &host, error, sizeof(error));
         }
 
-        if (status == DME_OK && !*w->message && !cancelled(w)) {
-            w->success = w->review || (w->install ? commit_install(w) : publish(w));
+        if (status == DME_OK && !*w->message && (runtime || !cancelled(w))) {
+            w->success = w->review || runtime || publish(w);
         } else if (!*w->message) {
             snprintf(w->message, sizeof(w->message), "%s",
                      *error ? error : DM_TEXT_EXPORTER_FAILED_WITHOUT_DIAGNOSTIC);
         }
 
-        if (w->success && !w->review) {
-            snprintf(w->message, sizeof(w->message), "%.128s %s (%u warnings): %.4095s%s%.3700s",
-                     w->api->name, w->install ? "exported to repository" : "export complete",
-                     w->warnings, w->destination, *w->summary ? "\n" : "", w->summary);
+        /* Exports report their result here; history actions report their own outcome. */
+        if (w->success && !w->review && (!runtime || w->install)) {
+            snprintf(w->message, sizeof(w->message), DM_TEXT_EXPORT_RESULT_FORMAT, w->api->name,
+                     w->install ? DM_TEXT_EXPORT_RESULT_INSTALLED : DM_TEXT_EXPORT_RESULT_SAVED,
+                     w->warnings, w->destination);
         }
     }
 
@@ -663,120 +734,31 @@ static int worker(void *user) {
 }
 
 static void clear_work(DmPluginWork *w) {
+    if (w->repository_job) {
+        w->history_runtime->destroy_job(w->repository_job);
+    }
+
     if (w->job) {
         w->api->destroy_job(w->job);
     }
 
-    for (size_t i = 0; i < 64; i++) {
+    for (size_t i = 0; i < w->artifact_count; i++) {
+        SDL_free(w->artifacts[i].name);
         dm_bytes_free(&w->artifacts[i].data);
     }
 
-    for (size_t i = 0; i < DM_PLUGIN_FILES; i++) {
-        dm_bytes_free(&w->reads[i].data);
-        dm_bytes_free(&w->installs[i].data);
-    }
-
-    for (size_t i = 0; i < w->change_count; i++) {
-        dm_bytes_free(&w->changes[i].original);
-    }
-
-    free(w->changes);
+    free(w->artifacts);
     free(w->events);
+    dm_sample_export_free(w->samples);
+    dm_sample_export_catalog_free(w->catalog);
+
+    for (size_t i = 0; i < w->frozen_count; ++i) {
+        dm_sample_export_free(w->frozen[i].snapshot);
+    }
+
+    free(w->frozen);
     dm_bytes_free(&w->snapshot);
     memset(w, 0, sizeof(*w));
-}
-
-static void free_changes(DmExportPlugins *h) {
-    for (size_t i = 0; i < h->change_count; i++) {
-        dm_bytes_free(&h->changes[i].original);
-    }
-
-    free(h->changes);
-    h->changes = NULL;
-    h->change_count = 0;
-    h->changed_repository[0] = 0;
-}
-
-/* Keeps a revert record for every repository change since the last revert. A file changed again
-   keeps its first original, so reverting restores the folder as it was before any export. */
-static void keep_changes(DmExportPlugins *h, DmPluginWork *w) {
-    if (strcmp(h->changed_repository, w->destination)) {
-        free_changes(h);
-        snprintf(h->changed_repository, sizeof(h->changed_repository), "%s", w->destination);
-    }
-
-    for (size_t i = 0; i < w->change_count; i++) {
-        DmRepositoryChange *change = &w->changes[i];
-        DmRepositoryChange *known = NULL;
-
-        for (size_t j = 0; j < h->change_count && !known; j++) {
-            known = !strcmp(h->changes[j].path, change->path) ? &h->changes[j] : NULL;
-        }
-
-        /* The file keeps its first original, but a backup a later export made (of an earlier
-           export's output) is still duckmidi's to remove on Revert. */
-        if (known) {
-            known->backup_created |= change->backup_created;
-            continue;
-        }
-
-        DmRepositoryChange *grown =
-            realloc(h->changes, (h->change_count + 1) * sizeof(*h->changes));
-
-        if (!grown) {
-            continue;
-        }
-
-        h->changes = grown;
-        h->changes[h->change_count++] = *change;
-        change->original = (DmBytes){0};
-    }
-}
-
-bool ed_export_has_changes(Editor *e) {
-    return e->export_plugins && e->export_plugins->change_count;
-}
-
-/* Restores every changed file and removes the backups the exports created. */
-void ed_export_revert(Editor *e) {
-    DmExportPlugins *h = e->export_plugins;
-
-    if (!h || !h->change_count || ed_export_busy(e)) {
-        return;
-    }
-
-    char error[1024] = {0};
-    size_t failed = 0;
-
-    for (size_t i = h->change_count; i > 0; i--) {
-        DmRepositoryChange *change = &h->changes[i - 1];
-        char backup[DM_PATH];
-        snprintf(backup, sizeof(backup), "%s.bkp", change->path);
-        bool ok = change->existed ? dm_write(change->path, change->original.data,
-                                             change->original.size, error, sizeof(error))
-                                  : SDL_RemovePath(change->path);
-
-        if (ok && change->backup_created) {
-            ok = SDL_RemovePath(backup);
-        }
-
-        if (ok && !change->existed) {
-            remove_created_folders(change);
-        }
-
-        failed += !ok;
-    }
-
-    if (failed) {
-        snprintf(h->message, sizeof(h->message), DM_TEXT_REVERTED_REPOSITORY_EXPORT_BUT, failed);
-    } else {
-        snprintf(h->message, sizeof(h->message), DM_TEXT_REPOSITORY_REVERTED_DETAIL,
-                 h->changed_repository);
-    }
-
-    h->message_format = -1;
-    ed_message(e, failed ? h->message : DM_TEXT_REPOSITORY_EXPORT_REVERTED);
-    free_changes(h);
 }
 
 /* The repository folder picker; the export starts once a folder is chosen. */
@@ -784,7 +766,7 @@ bool ed_export_repository_picker(Editor *e, const char **start) {
     DmExportPlugins *h = ed_export_host(e);
     DmExportFormat *f = ed_export_selected(e);
 
-    if (!h || !f || !f->api->install || h->work.thread || h->review_pending) {
+    if (!h || !f || !f->history || h->work.thread || h->review_pending) {
         ed_export_error(e, DM_TEXT_SELECTED_EXPORTER_UNAVAILABLE_BUSY);
         return false;
     }
@@ -834,7 +816,7 @@ void ed_export_to_repository(Editor *e) {
 
 bool ed_export_installs(Editor *e, size_t index) {
     DmExportPlugins *h = ed_export_host(e);
-    return h && index < h->registry.count && h->registry.formats[index].api->install;
+    return h && index < h->registry.count && h->registry.formats[index].history;
 }
 
 const char *ed_export_repository(Editor *e, size_t index) {
@@ -860,6 +842,14 @@ void ed_export_set_repository(Editor *e, size_t index, const char *folder) {
     if (entry >= 0 && strcmp(h->folders[entry].repository, folder)) {
         snprintf(h->folders[entry].repository, DM_PATH, "%s", folder);
         save_folders(e, h);
+        DmExportFormat *format = &h->registry.formats[index];
+
+        if (format->history_job) {
+            h->registry.history_runtime->destroy_job(format->history_job);
+            format->history_job = NULL;
+        }
+
+        format->history_scope = 0;
     }
 }
 
@@ -930,6 +920,8 @@ void ed_export_review_decide(Editor *e, int decision) {
     w->review = false;
     w->success = false;
     w->message[0] = w->summary[0] = w->popup[0] = 0;
+    w->group_count = 0;
+    w->popup_truncated = w->altered = false;
     w->warnings = 0;
     SDL_SetAtomicInt(&w->done, 0);
     SDL_SetAtomicInt(&w->progress, 0);
@@ -941,6 +933,38 @@ void ed_export_review_decide(Editor *e, int decision) {
     }
 }
 
+static void poll_catalog(Editor *e, DmExportPlugins *h) {
+    DmPluginWork *w = &h->catalog_work;
+
+    /* Keep the published catalog alive while a foreground job or its review can use it. */
+    if (!w->thread || !SDL_GetAtomicInt(&w->done) || h->work.thread || h->review_pending) {
+        return;
+    }
+
+    SDL_WaitThread(w->thread, NULL);
+    w->thread = NULL;
+
+    if (w->catalog_revision == h->catalog_revision && w->revision == e->export_revision &&
+        w->session == e->project_session && h->context_valid) {
+        h->catalog_dirty = false;
+
+        if (w->success) {
+            if (!dm_sample_export_catalog_equal(h->catalog, w->catalog)) {
+                dm_sample_export_catalog_free(h->catalog);
+                h->catalog = w->catalog;
+                w->catalog = NULL;
+                h->context.library = dm_sample_export_catalog_view(h->catalog);
+                memset(h->inspected, 0, sizeof(h->inspected));
+            }
+        } else {
+            snprintf(h->message, sizeof(h->message), "%s", w->message);
+            h->message_format = -1;
+        }
+    }
+
+    clear_work(w);
+}
+
 void ed_export_poll(Editor *e) {
     DmExportPlugins *h = e->export_plugins;
 
@@ -948,6 +972,7 @@ void ed_export_poll(Editor *e) {
         return;
     }
 
+    poll_catalog(e, h);
     DmPluginWork *w = &h->work;
 
     if (!w->thread || !SDL_GetAtomicInt(&w->done)) {
@@ -965,7 +990,7 @@ void ed_export_poll(Editor *e) {
             h->review_pending = true;
             h->review_selected = 0;
 
-            if (!review.count) {
+            if (!review.count && !w->warnings) {
                 ed_export_review_decide(e, 1);
             }
 
@@ -980,11 +1005,22 @@ void ed_export_poll(Editor *e) {
     }
 
     if (w->inspection) {
+        if (w->success && w->catalog_revision == h->catalog_revision) {
+            h->catalog_dirty = false;
+        }
+
         if (w->success && w->revision == e->export_revision && w->session == e->project_session) {
             free(h->events);
             h->events = w->events;
             w->events = NULL;
             h->context = w->context;
+            dm_sample_export_free(h->identities);
+            h->identities = w->samples;
+            w->samples = NULL;
+            dm_sample_export_catalog_free(h->catalog);
+            h->catalog = w->catalog;
+            w->catalog = NULL;
+            h->context.library = dm_sample_export_catalog_view(h->catalog);
             h->context.events = h->events;
             snprintf(h->project_name, sizeof(h->project_name), "%s", w->project_name);
             snprintf(h->source_name, sizeof(h->source_name), "%s", w->source_name);
@@ -1004,35 +1040,61 @@ void ed_export_poll(Editor *e) {
             h->message_format = -1;
         }
     } else {
-        snprintf(h->message, sizeof(h->message), "%s", w->message);
-        h->message_format = w->format_index;
+        DmExportFormat *format = &h->registry.formats[w->format_index];
+        const char *folder = ed_export_repository(e, (size_t)w->format_index);
 
-        if (w->install && w->change_count) {
-            keep_changes(h, w);
+        /* The job becomes the history view unless the folder changed while it ran. */
+        if (w->success && w->history_runtime && w->repository_job &&
+            (w->install || !strcmp(folder, w->destination))) {
+            if (w->history_runtime->finish(w->repository_job, w->message, sizeof(w->message)) ==
+                DME_OK) {
+                if (format->history_job) {
+                    w->history_runtime->destroy_job(format->history_job);
+                }
+
+                format->history_job = w->repository_job;
+                w->repository_job = NULL;
+                DmeRepositoryView view = {0};
+                w->history_runtime->describe(format->history_job, &view);
+                format->history_scope = view.selected_scope;
+            } else {
+                w->success = false;
+            }
+        }
+
+        bool inspection = w->history_runtime && w->repository_action == DME_REPOSITORY_INSPECT;
+
+        /* A routine history refresh keeps the last export result on screen. */
+        if (!inspection || !w->success) {
+            snprintf(h->message, sizeof(h->message), "%s", w->message);
+            h->message_format = w->format_index;
         }
 
         /* Warnings stay in the export window and popup; the status bar only reports the result. */
-        if (w->success) {
+        if (w->success && !inspection) {
             char done[512];
-            snprintf(done, sizeof(done), "%.128s export complete", w->api->name);
+            const char *message = DM_TEXT_EXPORT_COMPLETE_FORMAT;
+
+            if (w->history_runtime && w->repository_action == DME_REPOSITORY_INITIALIZE) {
+                message = DM_TEXT_REPOSITORY_INITIALIZED_FORMAT;
+            } else if (w->history_runtime && (w->repository_action == DME_REPOSITORY_REVERT ||
+                                              w->repository_action == DME_REPOSITORY_REVERT_ALL)) {
+                message = DM_TEXT_REPOSITORY_REVERTED_FORMAT;
+            }
+
+            snprintf(done, sizeof(done), message, w->api->name);
             ed_message(e, done);
-        } else {
+        } else if (!w->success) {
             ed_message(e, w->message);
         }
 
-        if (w->success && *w->popup) {
-            snprintf(h->warning, sizeof(h->warning),
-                     "%s export was saved with audible changes or playback "
-                     "limitations.\n\n%s%s\n\nSaved to: %s\n\nYour source project was not changed.",
-                     w->api->name, w->popup,
-                     w->popup_truncated ? "\n\nAdditional warnings were omitted from this popup; "
-                                          "review the exporter's diagnostics."
-                                        : "",
-                     w->destination);
+        if (w->success && (*w->popup || w->group_count)) {
+            /* Warnings go to the warning window; the status line has the result. */
+            compose_warning(w, h->warning, sizeof(h->warning));
             h->warning_open = true;
         }
 
-        if (!w->success) {
+        if (!w->success && !inspection) {
             e->export_window = true;
             e->export_type = w->format_index + 1;
         }
@@ -1062,9 +1124,19 @@ static bool begin(Editor *e, bool inspection, int index, const char *path, bool 
     w->inspection = inspection;
     w->revision = e->export_revision;
     w->session = e->project_session;
+    w->catalog_revision = h->catalog_revision;
     w->format_index = index;
     w->install = install;
     w->keep_originals = h->keep_originals;
+    snprintf(w->plugins_directory, sizeof(w->plugins_directory), "%s", h->registry.directory);
+
+    if (!dm_sample_library_roots(e->base_path, e->settings_path, w->catalog_program,
+                                 sizeof(w->catalog_program), w->catalog_writable,
+                                 sizeof(w->catalog_writable))) {
+        ed_export_error(e, DM_TEXT_SAMPLE_LIBRARY_PATH);
+        clear_work(w);
+        return false;
+    }
     snprintf(w->source_name, sizeof(w->source_name), "%s", e->export_source);
 
     if (!inspection) {
@@ -1090,6 +1162,28 @@ static bool begin(Editor *e, bool inspection, int index, const char *path, bool 
         }
 
         snprintf(w->destination, sizeof(w->destination), "%s", path);
+
+        DmExportFormat *format = &h->registry.formats[index];
+
+        if (install && format->history) {
+            DmeRepositoryRequest request = {
+                .size = sizeof(request),
+                .action = DME_REPOSITORY_INSTALL,
+                .keep_originals = h->keep_originals,
+                .plugins_directory = {w->plugins_directory, strlen(w->plugins_directory)},
+                .checkout = {w->destination, strlen(w->destination)}};
+            w->history_runtime = h->registry.history_runtime;
+            w->repository_action = request.action;
+            w->repository_job =
+                w->history_runtime->create_job(format->history, w->api->id, format->instance,
+                                               w->job, &request, w->message, sizeof(w->message));
+
+            if (!w->repository_job) {
+                ed_export_error(e, w->message);
+                clear_work(w);
+                return false;
+            }
+        }
     }
 
     if (!dm_pack(&e->project, &w->snapshot)) {
@@ -1110,7 +1204,54 @@ static bool begin(Editor *e, bool inspection, int index, const char *path, bool 
 
     if (!inspection) {
         h->message[0] = 0;
-        ed_message(e, "Exporting...");
+        ed_message(e, DM_TEXT_EXPORTING_STATUS);
+    }
+
+    return true;
+}
+
+bool ed_export_repository_action(Editor *e, uint32_t action, uint64_t scope, const char *key) {
+    DmExportPlugins *h = ed_export_host(e);
+    DmExportFormat *format = ed_export_selected(e);
+
+    if (!h || !format || !format->history || ed_export_busy(e) || e->dialog_busy ||
+        action == DME_REPOSITORY_INSTALL || action > DME_REPOSITORY_REVERT_ALL) {
+        return false;
+    }
+
+    DmPluginWork *w = &h->work;
+    memset(w, 0, sizeof(*w));
+    w->api = format->api;
+    w->format_index = e->export_type - 1;
+    w->history_runtime = h->registry.history_runtime;
+    w->repository_action = action;
+    w->prepared = true;
+    snprintf(w->plugins_directory, sizeof(w->plugins_directory), "%s", h->registry.directory);
+    snprintf(w->destination, sizeof(w->destination), "%s",
+             ed_export_repository(e, (size_t)w->format_index));
+    DmeRepositoryRequest request = {
+        .size = sizeof(request),
+        .action = action,
+        .scope = scope,
+        .plugins_directory = {w->plugins_directory, strlen(w->plugins_directory)},
+        .checkout = {w->destination, strlen(w->destination)},
+        .logical_key = {key ? key : "", key ? strlen(key) : 0}};
+    w->repository_job =
+        w->history_runtime->create_job(format->history, format->api->id, format->instance, NULL,
+                                       &request, w->message, sizeof(w->message));
+
+    if (!w->repository_job) {
+        ed_export_error(e, w->message);
+        clear_work(w);
+        return false;
+    }
+
+    w->thread = SDL_CreateThread(worker, "Repository", w);
+
+    if (!w->thread) {
+        ed_export_error(e, DM_TEXT_CANNOT_START_EXPORT_WORKER);
+        clear_work(w);
+        return false;
     }
 
     return true;
@@ -1124,6 +1265,11 @@ bool ed_export_context(Editor *e) {
     }
 
     ed_export_poll(e);
+
+    if (h->context_valid && h->revision == e->export_revision && h->session == e->project_session &&
+        !h->work.thread && !h->review_pending && !h->catalog_work.thread && h->catalog_dirty) {
+        refresh_catalog(e);
+    }
 
     if (!h->context_valid || h->revision != e->export_revision ||
         h->session != e->project_session) {
@@ -1154,6 +1300,24 @@ bool ed_export_settings(Editor *e, size_t index, DmeUi *ui) {
     DmExportFormat *f = &h->registry.formats[index];
 
     if (!h->inspected[index]) {
+        struct {
+            char field[97], row[97];
+        } selected[64] = {0};
+
+        DmeUi before = {0};
+
+        if (f->api->describe(f->instance, &before) == DME_OK && before.count <= 64) {
+            for (uint32_t i = 0; i < before.count; i++) {
+                const DmeField *field = &before.fields[i];
+                int row = f->selected_rows[i];
+
+                if (field->type == DME_MAPPING && row >= 0 && (uint32_t)row < field->row_count) {
+                    snprintf(selected[i].field, sizeof(selected[i].field), "%s", field->id);
+                    snprintf(selected[i].row, sizeof(selected[i].row), "%s", field->rows[row].id);
+                }
+            }
+        }
+
         char error[512] = {0};
 
         if (f->api->inspect(f->instance, &h->context, error, sizeof(error)) != DME_OK) {
@@ -1163,6 +1327,25 @@ bool ed_export_settings(Editor *e, size_t index, DmeUi *ui) {
 
         h->inspected[index] = 1;
         memset(f->selected_rows, 0, sizeof(f->selected_rows));
+        DmeUi after = {0};
+
+        if (f->api->describe(f->instance, &after) == DME_OK && after.count <= 64) {
+            for (uint32_t i = 0; i < after.count; i++) {
+                const DmeField *field = &after.fields[i];
+
+                for (unsigned old = 0; field->type == DME_MAPPING && old < 64; old++) {
+                    if (strcmp(field->id, selected[old].field)) {
+                        continue;
+                    }
+
+                    for (uint32_t row = 0; row < field->row_count; row++) {
+                        if (!strcmp(field->rows[row].id, selected[old].row)) {
+                            f->selected_rows[i] = (int)row;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     char error[512];
@@ -1206,14 +1389,22 @@ void ed_export_free(Editor *e) {
     }
 
     SDL_SetAtomicInt(&h->work.cancel, 1);
+    SDL_SetAtomicInt(&h->catalog_work.cancel, 1);
 
     if (h->work.thread) {
         SDL_WaitThread(h->work.thread, NULL);
     }
 
     clear_work(&h->work);
+
+    if (h->catalog_work.thread) {
+        SDL_WaitThread(h->catalog_work.thread, NULL);
+    }
+
+    clear_work(&h->catalog_work);
     free(h->events);
-    free_changes(h);
+    dm_sample_export_catalog_free(h->catalog);
+    dm_sample_export_free(h->identities);
     dm_export_registry_free(&h->registry);
     free(h);
     e->export_plugins = NULL;
@@ -1335,8 +1526,48 @@ void ed_export_picker_done(Editor *e, const char *path) {
    cleared when the export window opens again and when another project is opened or created. */
 void ed_export_reset_results(Editor *e) {
     e->audio_exported[0] = 0;
+    e->audio_export_message[0] = 0;
 
     if (e->export_plugins && !ed_export_busy(e)) {
         e->export_plugins->message[0] = 0;
     }
+
+    ed_export_catalog_changed(e);
+}
+
+void ed_export_catalog_changed(Editor *e) {
+    if (e->export_plugins) {
+        e->export_plugins->catalog_revision++;
+        e->export_plugins->catalog_dirty = true;
+    }
+}
+
+static bool refresh_catalog(Editor *e) {
+    DmExportPlugins *h = e->export_plugins;
+    DmPluginWork *w = &h->catalog_work;
+    memset(w, 0, sizeof(*w));
+    w->inspection = w->catalog_only = true;
+    w->catalog_revision = h->catalog_revision;
+    w->revision = e->export_revision;
+    w->session = e->project_session;
+
+    if (!dm_sample_library_roots(e->base_path, e->settings_path, w->catalog_program,
+                                 sizeof(w->catalog_program), w->catalog_writable,
+                                 sizeof(w->catalog_writable))) {
+        clear_work(w);
+        h->catalog_dirty = false;
+        ed_export_error(e, DM_TEXT_SAMPLE_LIBRARY_PATH);
+        return false;
+    }
+
+    w->thread = SDL_CreateThread(worker, "Sample catalog", w);
+
+    if (!w->thread) {
+        clear_work(w);
+        h->catalog_dirty = false;
+        ed_export_error(e, DM_TEXT_CANNOT_START_EXPORT_WORKER);
+        return false;
+    }
+
+    return true;
 }

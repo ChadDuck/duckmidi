@@ -18,9 +18,11 @@ static void configuration(Editor *e) {
     snprintf(e->settings_path, DM_PATH, "%s", path);
     ed_defaults(e);
     e->bindings[ACT_PLAY_MODE].key = SDL_SCANCODE_F9;
+    e->bindings[ACT_PLAY] = (Binding){.mods = SDL_KMOD_CTRL, .mouse = SDL_BUTTON_X2};
     e->gestures[GESTURE_COPY_PLACEMENTS] =
         (MouseBinding){MOUSE_MIDDLE, (SDL_Keymod)(SDL_KMOD_CTRL | SDL_KMOD_ALT)};
     e->accent = 0xff123456;
+    e->background = 0xffe2dbce;
     snprintf(e->preferred_font, DM_PATH, "C:\\fonts\\a \"quoted\" \\font.sf2");
     snprintf(e->midi_folder, DM_PATH, "C:\\MIDI\\");
     snprintf(e->font_folder, DM_PATH, "D:\\Fonts\\");
@@ -28,6 +30,7 @@ static void configuration(Editor *e) {
     e->monitor = false;
     check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names), "save INI configuration");
     e->accent = 0;
+    e->background = 0;
     e->preferred_font[0] = e->midi_folder[0] = e->font_folder[0] = e->output_name[0] = 0;
     ed_defaults(e);
     check(dm_preferences_load(e, ed_shortcut_schema()), "load generated INI");
@@ -37,6 +40,19 @@ static void configuration(Editor *e) {
     check(!e->monitor && !strcmp(e->output_name, "My MIDI output"),
           "output choice and monitoring persist");
     check(e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9, "custom binding restored");
+    check(e->background == 0xffe2dbce, "background color survives a preference round trip");
+    check(e->bindings[ACT_PLAY].mouse == SDL_BUTTON_X2 &&
+              e->bindings[ACT_PLAY].mods == SDL_KMOD_CTRL,
+          "side mouse shortcut survives a preference round trip");
+    e->capture = ACT_PIANO;
+    SDL_Event click = {.button = {.type = SDL_EVENT_MOUSE_BUTTON_DOWN, .button = SDL_BUTTON_X1}};
+    editor_event(e, &click);
+    check(e->capture == -1 && e->bindings[ACT_PIANO].mouse == SDL_BUTTON_X1,
+          "Mouse Button 4 captured as a shortcut");
+    bool piano = e->piano;
+    editor_event(e, &click);
+    check(e->piano != piano, "side mouse shortcut dispatches its action");
+    e->piano = piano;
     check(e->gestures[GESTURE_COPY_PLACEMENTS].button == MOUSE_MIDDLE &&
               e->gestures[GESTURE_COPY_PLACEMENTS].mods == (SDL_KMOD_CTRL | SDL_KMOD_ALT) &&
               e->gestures[GESTURE_COPY_NOTES].button == MOUSE_MIDDLE &&
@@ -128,6 +144,39 @@ static void startup(SDL_Window *window, SDL_Renderer *renderer) {
     free(e);
 }
 
+static void launch_project(Editor *e) {
+    const char *path = "agents/reports/workspace_navigation-startup/Open \xc3\xa9.duck";
+    DmBytes project = {0};
+    char error[256];
+    check(dm_pack(&e->project, &project) &&
+              dm_write(path, project.data, project.size, error, sizeof(error)),
+          "write startup fixture with spaces and Unicode in the name");
+    dm_bytes_free(&project);
+    editor_open(e, path);
+    check(e->active && !e->dirty && !strcmp(e->path, path), "open a project through startup");
+
+    ed_new_project(e);
+    e->dialog_busy = true;
+    SDL_Event event = {
+        .user = {.type = ed_dialog_event, .code = DIALOG_OPEN, .data1 = SDL_strdup(path)}};
+    editor_event(e, &event);
+    check(!e->dialog_busy && e->confirm && e->pending_action == PENDING_PATH &&
+              !strcmp(e->pending_path, path) && e->dirty && !*e->path,
+          "selecting a file prompts before replacing the dirty project");
+    ui_frame();
+    editor_frame(e, 1400, 900);
+    ui_render(e->renderer);
+    ed_shortcut(e, SDL_SCANCODE_ESCAPE, SDL_KMOD_NONE, false);
+    check(!e->confirm && !e->pending_action && e->dirty && !*e->path,
+          "cancel keeps the unsaved project");
+    e->dialog_busy = true;
+    event.user.data1 = SDL_strdup(path);
+    editor_event(e, &event);
+    ed_pending_execute(e);
+    check(!e->confirm && !e->pending_action && !e->dirty && !strcmp(e->path, path),
+          "discard opens the file selected in the picker");
+}
+
 static void navigation(Editor *e) {
     editor_smoke(e);
     check(ed_piano_key(SDL_SCANCODE_Z) == 48 && ed_piano_key(SDL_SCANCODE_Q) == 60,
@@ -171,11 +220,10 @@ static void navigation(Editor *e) {
     }
 
     e->project.clip_count = 0;
-    check(ed_channels(e, list) == 1 && list[0] == 0, "empty arrangement offers one spare channel");
+    check(ed_channels(e, list) == 0, "empty arrangement has no unused rows");
     e->project.channels[0].enabled = true;
     e->project.channels[0].program = 2;
-    check(ed_channels(e, list) == 2 && list[0] == 0 && list[1] == 1,
-          "enabled channel is followed by one spare");
+    check(ed_channels(e, list) == 1 && list[0] == 0, "only the enabled channel has a row");
 
     for (int c = 0; c < 16; ++c) {
         e->project.channels[c] =
@@ -212,9 +260,11 @@ int main(void) {
     editor_init(e, w, r, NULL, "", "", true);
     configuration(e);
     startup(w, r);
+    launch_project(e);
     navigation(e);
     selection(e);
     e->accent = 0xff56eeffu;
+    e->background = 0xff0a0a0au;
     ed_message(e, "Ready");
     test_workspace_navigation_ui(e, check);
     printf("PASS workspace_navigation: %d checks\n", checks);

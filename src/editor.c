@@ -18,8 +18,9 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     ed_reset_layout(e);
     e->automation_center = 60;
     e->accent = 0xff56eeffu;
-    e->transient_pattern = e->pattern_drag = e->rename_pattern = e->pattern_color_target = -1;
-    e->automation_node = e->event_edit = e->event_auto_edit = -1;
+    e->background = 0xff0a0a0au;
+    e->pattern_drag = e->rename_pattern = e->pattern_color_target = -1;
+    e->automation_node = -1;
     e->percussion_note = 36;
     e->focused = true;
     e->display = SDL_GetDisplayForWindow(window);
@@ -140,6 +141,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
 void editor_free(Editor *e) {
     ed_generate_free(e);
     ed_save_free(e);
+    ed_samples_free(e);
     ed_export_free(e);
     dm_update_destroy(e->update);
     e->update = NULL;
@@ -153,6 +155,7 @@ void editor_free(Editor *e) {
     dm_bytes_free(&e->event_selection);
     dm_bytes_free(&e->record_original);
     dm_bytes_free(&e->midi_rows);
+    dm_bytes_free(&e->song_event_groups);
     dm_bytes_free(&e->midi_draft);
     dm_bytes_free(&e->midi_text);
     dm_bytes_free(&e->event_drag);
@@ -178,6 +181,7 @@ void editor_background(Editor *e) {
     ed_generate_poll(e);
     ed_save_poll(e);
     ed_export_poll(e);
+    ed_samples_poll(e);
 
     bool success = false;
     int job = 0;
@@ -191,6 +195,7 @@ void editor_background(Editor *e) {
             }
 
             e->audio_export_pending[0] = 0;
+            snprintf(e->audio_export_message, sizeof(e->audio_export_message), "%s", e->status);
         }
 
         if (job == 1 && e->font_request) {
@@ -316,7 +321,7 @@ void editor_frame(Editor *e, float width, float height) {
         e->cursor_beat[e->pattern_mode] = dm_seconds_beat(&e->project, dm_audio_position(e->audio));
     }
 
-    ui_theme(e->accent);
+    ui_theme(e->accent, e->background);
     ui_clamp_windows();
     editor_background(e);
     e->hover[0] = 0;
@@ -371,11 +376,17 @@ void editor_frame(Editor *e, float width, float height) {
     ui_end();
     ed_dialogs(e);
 
-    if (e->drop_active && !e->drop_handled) {
-        bool font = e->preferences && ed_inside(e->drop_position, e->preferences_rect);
+    if (e->drop_active && !e->drop_handled && e->drop_position.x >= 0 && e->drop_position.y >= 0) {
+        bool font = e->preferences && ui_window_front_at(DM_TEXT_PREFERENCES, e->drop_position);
         UiPoint display = ui_display();
-        ui_drop_overlay(font ? e->preferences_rect : (UiRect){0, 0, display.x, display.y},
-                        font ? DM_TEXT_DROP_SOUNDFONT_HERE : DM_TEXT_DROP_FILE_HERE);
+        UiRect samples;
+
+        if (ed_samples_drop_target(e, e->drop_position, &samples)) {
+            ui_drop_overlay(samples, DM_TEXT_SAMPLE_DROP);
+        } else {
+            ui_drop_overlay(font ? e->preferences_rect : (UiRect){0, 0, display.x, display.y},
+                            font ? DM_TEXT_DROP_SOUNDFONT_HERE : DM_TEXT_DROP_FILE_HERE);
+        }
     }
 
     finish_frame(e);

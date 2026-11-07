@@ -3,6 +3,7 @@
 extern void recording_feedback_audio_pause(DmAudio *);
 extern void recording_feedback_audio_render(DmAudio *, int);
 extern int recording_feedback_audio_preset(DmAudio *, int, bool);
+extern int recording_feedback_audio_bank(DmAudio *, int, bool);
 extern unsigned recording_feedback_audio_voice(DmAudio *, int, int);
 extern void test_channel_routing_ui(Editor *, void (*)(bool, const char *));
 static int checks;
@@ -83,6 +84,7 @@ static bool same_notes(const DmExportEvent *a, size_t a_count, const DmExportEve
 
 static void linked_slices(Editor *e) {
     fixture(e);
+    e->project.channels[2].enabled = true;
     int placed = ed_place_pattern(e, 0, 2, 4);
     e->project.clips[placed].length = 6.5; /* Resized before slicing; hides the last note. */
     DmExportEvent before[32], after[32];
@@ -165,33 +167,65 @@ static void note_curves(Editor *e) {
     check(untouched, "curves on other notes stay in place");
 }
 
-/* Any channel can become the drum channel when channel 10 has no placements. */
+/* A channel's type changes in place, including when channel 10 is already in use. */
 static void drum_channel(Editor *e) {
     fixture(e);
-    ed_remove_empty_channel(e, DM_DRUM_CHANNEL);
-    int placed = ed_place_pattern(e, 0, 2, 0);
-    check(placed >= 0 && !e->project.channels[DM_DRUM_CHANNEL].enabled, "drum fixture");
-    ed_choose_drums(e, 2);
-    check(e->project.clips[placed].channel == DM_DRUM_CHANNEL &&
-              e->project.channels[DM_DRUM_CHANNEL].enabled &&
-              e->project.channels[DM_DRUM_CHANNEL].program == 0 && !e->project.channels[2].enabled,
-          "choosing Drum kit moves the channel and its placements to channel 10");
-    int other = ed_place_pattern(e, 0, 3, 0);
-    ed_choose_drums(e, 3);
-    check(e->project.clips[other].channel == 3, "an occupied channel 10 is left untouched");
-    check(dm_drum_kit_name(25) && !dm_drum_kit_name(1), "channel 10 programs name drum kits");
+    e->project.channels[2].enabled = true;
+    int placed = ed_place_pattern(e, 0, 2, 0), drum = ed_place_pattern(e, 0, MIDI_DRUM_CHANNEL, 0);
+    check(placed >= 0 && drum >= 0, "drum fixture");
+    ed_open_instrument(e, 2, false);
+    e->instrument_drums = true;
+    e->instrument_program = 25;
+    ed_apply_instrument(e);
+    check(e->project.clips[placed].channel == 2 && dm_channel_drums(&e->project, 2) &&
+              e->project.channels[2].program == 25 &&
+              e->project.clips[drum].channel == MIDI_DRUM_CHANNEL &&
+              dm_channel_drums(&e->project, MIDI_DRUM_CHANNEL),
+          "changing type keeps the selected channel and other percussion parts");
+    DmProject imported;
+    dm_project_init(&imported);
+    DmBytes midi = {0};
+    char error[256] = {0};
+    check(dm_midi_export(&e->project, &midi, false, DM_METADATA_STRIP_ALL, error, sizeof(error)) &&
+              dm_import(&imported, midi.data, midi.size, 0, 0, error, sizeof(error)) &&
+              dm_channel_drums(&imported, 2) && imported.channels[2].program == 25,
+          "a drum kit on channel 3 survives a standard MIDI round trip");
+    dm_bytes_free(&midi);
+    dm_project_free(&imported);
+    ed_open_instrument(e, 2, false);
+    e->instrument_program = 0;
+    SDL_KeyboardEvent key = {.scancode = SDL_SCANCODE_Z};
+    check(ed_instrument_note(e, &key), "audition the draft drum kit");
+    recording_feedback_audio_render(e->audio, 256);
+    check(recording_feedback_audio_bank(e->audio, 2, true) == 128,
+          "audition uses the drum bank on channel 3");
+    ed_apply_instrument(e);
+    check(ed_transport_publish(e, 0, true), "start playback with the new drum kit");
+    recording_feedback_audio_render(e->audio, 256);
+    check(recording_feedback_audio_bank(e->audio, 2, false) == 128,
+          "song playback uses the drum bank on channel 3");
+    ed_open_instrument(e, 2, false);
+    e->instrument_drums = false;
+    ed_apply_instrument(e);
+    recording_feedback_audio_render(e->audio, 256);
+    check(dm_audio_playing(e->audio) && recording_feedback_audio_bank(e->audio, 2, false) == 0,
+          "editing the type switches the bank during playback");
+    dm_audio_transport(e->audio, false);
 }
 
 /* Opening program changes after beat 0 follow the Instrument dialog; later ones are kept. */
 static void late_initial_program(Editor *e) {
     fixture(e);
+    e->project.channels[3].enabled = true;
     ed_place_pattern(e, 0, 3, 2);
     uint8_t opening[] = {0xc3, 66}, later[] = {0xc3, 40};
     DmBytes message = {opening, 2, 2};
     dm_event_add(&e->project, 1, 3, 0, &message);
     message = (DmBytes){later, 2, 2};
     dm_event_add(&e->project, 5, 3, 0, &message);
-    ed_choose_program(e, 3, 0);
+    ed_open_instrument(e, 3, false);
+    e->instrument_program = 0;
+    ed_apply_instrument(e);
     int opening_program = -1, later_program = -1;
 
     for (size_t i = 0; i < e->project.event_count; ++i) {
@@ -239,7 +273,9 @@ static void programs(Editor *e) {
     }
 
     double position = dm_audio_position(e->audio);
-    ed_choose_program(e, 3, 40);
+    ed_open_instrument(e, 3, false);
+    e->instrument_program = 40;
+    ed_apply_instrument(e);
     recording_feedback_audio_render(e->audio, 256);
     check(dm_audio_playing(e->audio) && dm_audio_position(e->audio) >= position,
           "instrument choice preserves uninterrupted transport");
@@ -261,7 +297,7 @@ static void programs(Editor *e) {
     recording_feedback_audio_render(e->audio, 60000);
     check(recording_feedback_audio_preset(e->audio, 3, false) == 40,
           "later scheduled notes retain the chosen instrument without restart");
-    e->instrument_channel = 3;
+    ed_open_instrument(e, 3, false);
     SDL_KeyboardEvent key = {.scancode = SDL_SCANCODE_Z};
     check(ed_instrument_note(e, &key), "audition instrument-dialog key");
     recording_feedback_audio_render(e->audio, 256);
@@ -271,8 +307,7 @@ static void programs(Editor *e) {
     check(recording_feedback_audio_voice(e->audio, 0, e->held[SDL_SCANCODE_Z]) == UINT32_MAX &&
               recording_feedback_audio_preset(e->audio, 0, false) == before[0],
           "audition does not touch unrelated channel one");
-    ed_release_piano(e);
-    e->instrument_channel = -1;
+    ed_close_instrument(e);
     dm_audio_transport(e->audio, false);
 }
 
@@ -325,6 +360,7 @@ static void placements(Editor *e) {
     check(e->selected_clip == -1 && e->playlist_context_clip == -1,
           "deleting selected placement clears references");
     fixture(e);
+    e->project.channels[2].enabled = true;
     int trimmed = ed_place_pattern(e, 0, 2, 10);
     e->project.clips[trimmed].length = 3;
     ed_split_clip(e, (size_t)trimmed, 11);

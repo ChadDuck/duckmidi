@@ -180,12 +180,15 @@ void ed_save(Editor *e, bool as) {
 }
 
 void ed_open_audio_location(Editor *e) {
-    if (!*e->audio_exported) {
+    ed_open_file_location(e, e->audio_exported);
+}
+
+void ed_open_file_location(Editor *e, const char *source) {
+    if (!source || !*source) {
         return;
     }
 
     char path[DM_PATH], url[DM_PATH * 3 + 16];
-    const char *source = e->audio_exported;
     bool absolute = source[0] == '/' || source[0] == '\\' || (source[0] && source[1] == ':');
     char *cwd = absolute ? NULL : SDL_GetCurrentDirectory();
 
@@ -239,10 +242,11 @@ void ed_open_audio_location(Editor *e) {
 }
 
 static void reset_regions(Editor *e) {
+    ed_close_instrument(e);
     ++e->export_revision;
     ++e->project_session;
     ed_export_reset_results(e);
-    e->midi_events = false;
+    e->song_event = e->midi_events = false;
     e->event_ruler_drag = false;
     e->midi_error[0] = 0;
     e->midi_event_index = -1;
@@ -272,6 +276,7 @@ static void reset_percussion(Editor *e) {
 
 void ed_new_project(Editor *e) {
     reset_regions(e);
+    e->last_note_pattern_uid = 0;
     e->pattern_mode = false;
     e->automation_cc = -2;
     e->edit_focus = FOCUS_NONE;
@@ -296,7 +301,6 @@ void ed_new_project(Editor *e) {
     memcpy(e->reset_channels, e->project.channels, sizeof(e->reset_channels));
     memset(e->start_beat, 0, sizeof(e->start_beat));
     memset(e->cursor_beat, 0, sizeof(e->cursor_beat));
-    e->transient_pattern = -1;
     e->active = true;
     e->dirty = true;
     e->path[0] = 0;
@@ -312,8 +316,13 @@ void ed_new_project(Editor *e) {
     e->roll_view = (View){1, 0, 55 * 20, 0};
     ed_clear_history(e->undo, &e->undo_count);
     ed_clear_history(e->redo, &e->redo_count);
+    dm_audio_reload_samples(e->audio);
     dm_audio_publish(e->audio, &e->project, 0, false, e->status, sizeof(e->status));
     reset_percussion(e);
+}
+
+void editor_open(Editor *e, const char *path) {
+    ed_request(e, PENDING_PATH, path);
 }
 
 void ed_load(Editor *e, const char *path) {
@@ -341,6 +350,8 @@ void ed_load(Editor *e, const char *path) {
         return;
     }
 
+    e->last_note_pattern_uid = 0;
+    e->roll_auto_hidden = false;
     snprintf(e->export_source, sizeof(e->export_source), "%s", project ? "" : path);
 
     if (!project) {
@@ -358,7 +369,6 @@ void ed_load(Editor *e, const char *path) {
     memcpy(e->reset_channels, e->project.channels, sizeof(e->reset_channels));
     memset(e->start_beat, 0, sizeof(e->start_beat));
     memset(e->cursor_beat, 0, sizeof(e->cursor_beat));
-    e->transient_pattern = -1;
     e->active = true;
     e->dirty = !project;
     e->roll = true;
@@ -384,6 +394,7 @@ void ed_load(Editor *e, const char *path) {
 
     ed_clear_history(e->undo, &e->undo_count);
     ed_clear_history(e->redo, &e->redo_count);
+    dm_audio_reload_samples(e->audio);
     dm_audio_publish(e->audio, &e->project, 0, false, e->status, sizeof(e->status));
     reset_percussion(e);
 
@@ -563,8 +574,6 @@ void ed_pending_execute(Editor *e) {
         e->new_numerator = e->new_denominator = 4;
         e->new_mode = 1;
         e->config = true;
-    } else if (ed_action == PENDING_OPEN) {
-        ed_dialog(e, DIALOG_OPEN);
     } else if (ed_action == PENDING_PATH) {
         ed_load(e, e->pending_path);
     } else if (ed_action == PENDING_QUIT) {
@@ -583,7 +592,12 @@ void ed_request(Editor *e, int ed_action, const char *path) {
         return;
     }
 
-    if (e->dialog_busy) {
+    if (e->dialog_busy || e->confirm) {
+        return;
+    }
+
+    if (ed_action == PENDING_OPEN) {
+        ed_dialog(e, DIALOG_OPEN);
         return;
     }
 

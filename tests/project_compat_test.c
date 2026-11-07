@@ -1,4 +1,4 @@
-/* Loads generated schema-9 and schema-10 projects and checks their conversion to the current
+/* Loads generated schema-9 through schema-13 projects and checks their conversion to the current
    schema. The writers below follow those layouts field by field; they exist only to produce these
    fixtures. */
 #include "duck.h"
@@ -49,8 +49,8 @@ static uint32_t crc32(const uint8_t *p, size_t size) {
     return ~crc;
 }
 
-/* One pattern with one note on port 2, one placement on channel 1, a port-2 mixer entry and a
-   program change event that schema 9 stored with source port 3. */
+/* One pattern with a note and modulation point on port 2, one placement on channel 1, a port-2
+   mixer entry and a program change event that schema 9 stored with source port 3. */
 static DmBytes schema_9_project(void) {
     DmBytes body = {0}, file = {0};
     text(&body, "Old song");
@@ -119,8 +119,19 @@ static DmBytes schema_9_project(void) {
     u32(&body, 0);
     real(&body, 0);
     u32(&body, 0);
-    u32(&body, 0); /* Automation count. */
-    u32(&body, 1); /* Event: program change with source port 3. */
+    u32(&body, 1); /* Automation count. */
+    real(&body, 0);
+    u32(&body, MIDI_CONTROL);
+    u32(&body, 0); /* Channel. */
+    u32(&body, MIDI_CC_MODULATION);
+    u32(&body, 64); /* Value. */
+    u32(&body, 0);  /* Pattern. */
+    u32(&body, 1);  /* Curve. */
+    u32(&body, 60); /* Anchor. */
+    real(&body, 0); /* Bend. */
+    u32(&body, 0);  /* Ramp. */
+    u32(&body, 2);  /* Note port. */
+    u32(&body, 1);  /* Event: program change with source port 3. */
     real(&body, 0);
     u32(&body, 1);
     u32(&body, 3);
@@ -188,7 +199,7 @@ static void point10(DmBytes *b, uint32_t schema, double beat, double previous, i
 
 /* One pattern with one note, one placement, a modulation line (two nodes of curve 1 and its
    restoration node) and a discrete point curving toward the next discrete point, saved as schema
-   10 or 11 (which differ only by the point hold flag). */
+   10, 11 or 12. */
 static DmBytes line_project(uint32_t schema) {
     DmBytes body = {0}, stored = {0}, file = {0};
     t10(&body, "Line song");
@@ -215,6 +226,10 @@ static DmBytes line_project(uint32_t schema) {
         v10(&body, c == 0 ? 0 : UINT32_MAX);
         v10(&body, 100);
         v10(&body, 64);
+
+        if (schema >= 12) {
+            v10(&body, c == 10);
+        }
     }
 
     for (int c = 0; c < 16; ++c) {
@@ -268,6 +283,22 @@ static DmBytes line_project(uint32_t schema) {
     v10(&body, 0); /* Views. */
     v10(&body, 0); /* Port mixer. */
 
+    if (schema >= 13) {
+        v10(&body, 2); /* Patch replacements. */
+
+        for (unsigned i = 0; i < 2; ++i) {
+            v10(&body, i);          /* Port. */
+            v10(&body, 0);          /* Channel. */
+            v10(&body, 130);        /* Bank. */
+            v10(&body, 6);          /* Program. */
+            v10(&body, 0);          /* Drums. */
+            v10(&body, i ? 0 : 73); /* Old revision / explicit SoundFont. */
+            t10(&body, i ? "" : "generated/library");
+            t10(&body, i ? "" : "generated-set");
+            t10(&body, i ? "" : "generated-preset");
+        }
+    }
+
     check(dm_compress(body.data, body.size, &stored), "fixture memory");
     check(dm_bytes(&file, "DUCKMIDI", 8), "fixture memory");
     u32(&file, schema);
@@ -279,7 +310,137 @@ static DmBytes line_project(uint32_t schema) {
     return file;
 }
 
+static void be32(DmBytes *b, uint32_t value) {
+    uint8_t bytes[] = {(uint8_t)(value >> 24), (uint8_t)(value >> 16), (uint8_t)(value >> 8),
+                       (uint8_t)value};
+    check(dm_bytes(b, bytes, sizeof(bytes)), "MIDI fixture bytes");
+}
+
+static void midi_length(DmBytes *b, uint32_t size) {
+    uint8_t bytes[4];
+    size_t start = sizeof(bytes);
+    bytes[--start] = (uint8_t)(size & 127u);
+
+    while ((size >>= 7)) {
+        bytes[--start] = (uint8_t)((size & 127u) | 128u);
+    }
+
+    check(dm_bytes(b, bytes + start, sizeof(bytes) - start), "MIDI fixture length");
+}
+
+static DmBytes old_metadata_midi(const DmProject *p, const DmBytes *old) {
+    DmBytes midi = {0}, result = {0}, track = {0};
+    char error[256];
+    check(dm_midi_export(p, &midi, false, DM_METADATA_DUCKMIDI_ONLY, error, sizeof(error)), error);
+    check(midi.size > 46 && !memcmp(midi.data + 14, "MTrk", 4) && !midi.data[22] &&
+              midi.data[23] == MIDI_META && midi.data[24] == MIDI_META_SEQUENCER,
+          "fixture metadata leads track zero");
+    uint32_t track_size = (uint32_t)midi.data[18] << 24 | (uint32_t)midi.data[19] << 16 |
+                          (uint32_t)midi.data[20] << 8 | midi.data[21];
+    size_t payload = 25;
+    uint32_t previous_length = 0;
+
+    do {
+        check(payload < 29, "fixture metadata length");
+        previous_length = (previous_length << 7) | (midi.data[payload] & 127u);
+    } while (midi.data[payload++] & 128);
+
+    size_t next = payload + previous_length;
+    check(previous_length > 21 && next <= 22 + track_size && 22 + track_size <= midi.size,
+          "fixture track bounds");
+    check(dm_bytes(&track, midi.data + 22, 3), "fixture MIDI meta event");
+    midi_length(&track, (uint32_t)old->size + 21);
+    check(dm_bytes(&track, midi.data + payload, 21) && dm_bytes(&track, old->data, old->size) &&
+              dm_bytes(&track, midi.data + next, 22 + track_size - next),
+          "old fixture MIDI track");
+    check(dm_bytes(&result, midi.data, 18), "old fixture MIDI header");
+    be32(&result, (uint32_t)track.size);
+    check(dm_bytes(&result, track.data, track.size) &&
+              dm_bytes(&result, midi.data + 22 + track_size, midi.size - 22 - track_size),
+          "old fixture MIDI contents");
+    dm_bytes_free(&track);
+    dm_bytes_free(&midi);
+    return result;
+}
+
+static void check_patch_replacements(void) {
+    DmProject p, q;
+    dm_project_init(&p);
+    dm_project_init(&q);
+    char error[256] = {0};
+    DmBytes previous = line_project(12);
+    check(dm_unpack(&p, previous.data, previous.size, error, sizeof(error)), error);
+    check(!p.patch_replacement_count && p.channels[10].drums && !p.channels[9].drums,
+          "schema-12 projects retain their percussion mapping and have no replacements");
+    DmBytes old_midi = old_metadata_midi(&p, &previous);
+    check(dm_import(&q, old_midi.data, old_midi.size, -1, 0, error, sizeof(error)), error);
+    check(!q.patch_replacement_count && q.channels[10].drums && q.pattern_count == 1,
+          "embedded schema-12 project is converted on MIDI import");
+    dm_bytes_free(&old_midi);
+    dm_bytes_free(&previous);
+
+    previous = line_project(13);
+    check(dm_unpack(&q, previous.data, previous.size, error, sizeof(error)), error);
+    check(q.patch_replacement_count == 2 && q.patch_replacements[0].generation == 1 &&
+              !q.patch_replacements[1].generation &&
+              !strcmp(q.patch_replacements[0].set_id, "generated-set") &&
+              !strcmp(q.patch_replacements[0].preset_id, "generated-preset"),
+          "schema-13 sample references become current references and retain SoundFont overrides");
+    dm_bytes_free(&previous);
+
+    DmBytes plain = {0}, after = {0}, packed = {0}, midi = {0};
+    check(dm_midi_export(&p, &plain, false, DM_METADATA_STRIP_ALL, error, sizeof(error)), error);
+    DmPatchReplacement channel = {.key = {.channel = 0, .bank = 130, .program = 0},
+                                  .generation = 3,
+                                  .locator = "test/sample-library",
+                                  .set_id = "generated-set",
+                                  .preset_id = "one"};
+    check(dm_patch_replacement_set(&p, &channel), "add channel replacement");
+    DmPatchKey other = channel.key;
+    other.port = 2;
+    const DmPatchReplacement *inherited = dm_patch_replacement(&p, other);
+    check(inherited && inherited->generation == 3, "a note port inherits its channel replacement");
+    DmPatchReplacement stock = {.key = other};
+    check(dm_patch_replacement_set(&p, &stock) && !dm_patch_replacement(&p, other)->generation,
+          "an explicit SoundFont port selection masks the channel replacement");
+    DmPatchReplacement port = channel;
+    port.key.port = 3;
+    port.generation = 4;
+    strcpy(port.preset_id, "two");
+    check(dm_patch_replacement_set(&p, &port), "same original patch can have two routed samples");
+    other.program = 1;
+    check(!dm_patch_replacement(&p, other), "a different program uses the original SoundFont");
+    check(dm_midi_export(&p, &after, false, DM_METADATA_STRIP_ALL, error, sizeof(error)) &&
+              plain.size == after.size && !memcmp(plain.data, after.data, plain.size),
+          "ordinary MIDI bytes remain identical");
+
+    check(dm_project_copy(&q, &p) && q.patch_replacements != p.patch_replacements,
+          "project copy owns independent patch replacements");
+    dm_patch_replacement_clear(&q, stock.key);
+    check(dm_patch_replacement(&q, stock.key)->generation == 3 && q.patch_replacement_count == 2,
+          "clearing an override restores inheritance");
+    check(dm_pack(&p, &packed) && packed.data[8] == DM_PROJECT_SCHEMA &&
+              dm_unpack(&q, packed.data, packed.size, error, sizeof(error)),
+          error);
+    check(q.patch_replacement_count == 3 && dm_patch_replacement(&q, port.key)->generation == 1,
+          "current project preserves independent routes");
+    check(dm_midi_export(&p, &midi, true, DM_METADATA_DUCKMIDI_ONLY, error, sizeof(error)) &&
+              dm_import(&q, midi.data, midi.size, -1, 0, error, sizeof(error)),
+          error);
+    const DmPatchReplacement *restored = dm_patch_replacement(&q, port.key);
+    check(restored && restored->generation == 1 && !strcmp(restored->locator, port.locator) &&
+              !strcmp(restored->preset_id, "two"),
+          "editor MIDI metadata preserves a reference even without its library");
+    dm_bytes_free(&plain);
+    dm_bytes_free(&after);
+    dm_bytes_free(&packed);
+    dm_bytes_free(&midi);
+    dm_project_free(&p);
+    dm_project_free(&q);
+}
+
 int main(void) {
+    check_patch_replacements();
     DmProject p, again;
     dm_project_init(&p);
     dm_project_init(&again);
@@ -295,6 +456,14 @@ int main(void) {
           "fields added in schema 10 take their defaults");
     check(p.event_count == 1 && p.events[0].port == 0,
           "schema-9 events move to the default note port they played on");
+    check(p.automation_count == 1 && p.automation[0].port == 2 &&
+              dm_automation_curves(p.automation[0]),
+          "schema 9 keeps curving points through the schema-11 upgrade");
+
+    for (int c = 0; c < 16; ++c) {
+        check(p.channels[c].drums == (c == MIDI_DRUM_CHANNEL),
+              "schema 9 uses the schema-12 percussion mapping");
+    }
 
     check(dm_pack(&p, &current) && current.data[8] == DM_PROJECT_SCHEMA,
           "converted projects save as the current schema");

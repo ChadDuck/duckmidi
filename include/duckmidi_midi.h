@@ -30,11 +30,13 @@
 /* Meta event types, the byte after MIDI_META */
 
 #define MIDI_META_TEXT 0x01
+#define MIDI_META_TRACK_NAME 0x03
 #define MIDI_META_LYRIC 0x05
 #define MIDI_META_MARKER 0x06
 #define MIDI_META_PORT 0x21
 #define MIDI_META_END 0x2f
 #define MIDI_META_TEMPO 0x51
+#define MIDI_META_SMPTE 0x54
 #define MIDI_META_TIME 0x58
 #define MIDI_META_KEY 0x59
 #define MIDI_META_SEQUENCER 0x7f
