@@ -711,11 +711,11 @@ static bool context_action(int a) {
 }
 
 static bool piano_blocks(Editor *e, int ed_action, SDL_Scancode key, SDL_Keymod mods) {
-    if (!e->piano || ed_action == ACT_BRUSH) {
+    if (!e->piano) {
         return false;
     }
 
-    if (ed_action >= ACT_ZOOM_IN && ed_action <= ACT_DELETE) {
+    if (ed_action >= ACT_ZOOM_IN && ed_action <= ACT_BRUSH) {
         return true;
     }
 

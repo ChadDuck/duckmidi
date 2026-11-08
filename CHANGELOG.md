@@ -1,5 +1,9 @@
 # duckmidi changelog
 
+# 0.12.2
+
+1. The brush tool shortcut was always active, regardless of the keyboard piano state. This has now been fixed.
+
 # 0.12.1
 
 1. Added a repository history **Enable/Disable** checkbox, saved with your preferences; when it is off, it won't use the repository history plugin.

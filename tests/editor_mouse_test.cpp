@@ -2908,9 +2908,16 @@ extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const ch
     p.count = 0;
     p.kind = 0;
     mouse_frame(e, 0, 0, false);
+    e->tool = 0;
     direct_key(e, SDL_SCANCODE_5);
-    check(e->tool == 4 && e->held[SDL_SCANCODE_5] < 0,
-          "5 selects Brush while keyboard piano is enabled");
+    check(e->tool == 0 && e->held[SDL_SCANCODE_5] >= 0,
+          "5 plays a note instead of selecting Brush while keyboard piano is enabled");
+    SDL_Event release;
+    SDL_zero(release);
+    release.type = SDL_EVENT_KEY_UP;
+    release.key.scancode = SDL_SCANCODE_5;
+    editor_event(e, &release);
+    e->tool = 4;
     auto grid = roll_origin();
     float x = grid.x + 20, y = grid.y + 90;
     mouse_frame(e, x, y, false);
