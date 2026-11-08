@@ -13,7 +13,7 @@ The bundled M64 plugin exports music for the SM64 US audio engine: stock [n64dec
 7. Review the instrument mappings, then click **Save M64 Package**, or **Export to Repository** to install into your checkout.
 8. Choose a filename and extract the saved ZIP.
 
-The export uses the active arrangement, including mute and solo. The last save folder is remembered. Keep `m64.dll` in the application's `plugins/` directory.
+Muted channels are left out, and solo works as it does in playback. duckmidi remembers the last folder you saved to. The exporter itself is `m64.dll` in duckmidi's `plugins/` folder.
 
 ## Targets
 
@@ -88,7 +88,9 @@ For sm64coopdx, it writes `mods/duckmidi_<sequence>/main.lua` and `mods/duckmidi
 
 Once the folder is chosen, later exports install there without asking. Change it in **Edit > Preferences** under **Export plugins**.
 
-**Keep original files** (on by default, above the export buttons) also saves a copy of each changed checkout file as `<file>.bkp` beside it. A replaced sample always keeps one. duckmidi's own history keeps every original either way, so **Repository history** can revert any export, or all of them, even after a restart.
+duckmidi's **Repository history** remembers every original, so you can revert any export, or all of them, even after a restart. **Keep original files** (on by default, above the export buttons) also saves a `<file>.bkp` copy beside each changed file. A replaced sample always gets one while history is on.
+
+If you turn history off (**Enable** in **Repository history**), exports write files directly and can't be reverted. **Keep original files** then decides whether the first original is kept as `<file>.bkp`; with both off, files are simply overwritten.
 
 ## Install into an SM64 checkout manually
 

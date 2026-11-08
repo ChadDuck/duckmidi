@@ -157,6 +157,7 @@ typedef struct {
     bool song_event_add, song_event_bound;
     int ui_size;
     bool os_cursor;
+    bool repository_history; /* Export to Repository records history; else .bkp copies. */
     bool event_ruler_drag;
     bool event_free;           /* Alt was held when an event point or line was started. */
     bool event_connect;        /* Shift was held: the clicked point connects to the nearest one. */

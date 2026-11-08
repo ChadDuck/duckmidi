@@ -100,5 +100,7 @@ DmExportFormat *ed_export_selected(Editor *e);
 void ed_export_render_fields(Editor *e, DmExportFormat *format, const DmeUi *ui);
 void ed_export_history_toggle(Editor *e);
 void ed_export_history_panel(Editor *e, UiRect main);
+/* Drops every history view so the drawer inspects again, after history is turned on or off. */
+void ed_export_history_reset(Editor *e);
 bool ed_export_repository_action(Editor *, uint32_t action, uint64_t scope, const char *key);
 #endif

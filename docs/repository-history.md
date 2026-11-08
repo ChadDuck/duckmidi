@@ -1,41 +1,65 @@
-# Repository runtime
+# How repository history works
 
-Every exporter with Export to Repository shares one history runtime, `db` (`db.dll`, `db.so` or `db.dylib` in the plugins folder), which contains SQLite 3.50.4, yyjson 0.12.0 and pugixml 1.15. The desktop and core do not link SQLite. The host finds the runtime's `duckmidi_history_runtime` entry point and passes each exporter's [`DmeHistoryAdapter`](../include/duckmidi_repository_plugin.h) to it.
+Every exporter with **Export to Repository** shares one history runtime. It records what each export changed so you can revert it, even after a restart. This page explains how it stores and protects your files. To use it, see [Repository history](user-guide.md#repository-history) in the user guide.
 
-## Scopes and baselines
+The runtime is the `db` library in the plugins folder (`db.dll`, `db.so` or `db.dylib`), which bundles SQLite 3.50.4, yyjson 0.12.0 and pugixml 1.15. duckmidi finds its `duckmidi_history_runtime` entry point and hands it each exporter's [`DmeHistoryAdapter`](../include/duckmidi_repository_plugin.h).
 
-A scope binds the exporter, the detected target, the physical checkout identity and the build version, and records the target's display name and capabilities for the history panel. Separate checkouts, targets and versions keep separate histories.
+## Sections and starting points
 
-An adapter with an inventory gets its baseline when the scope is first opened: every listed file, including dirty and untracked inputs. An adapter without one gets a first-touch baseline: each path is captured the first time an install writes it. Git and existing `.bkp` files are never treated as history. Initialize adopts the current files as the new baseline and discards that scope's recorded changes.
+Each history section belongs to one exporter, game, checkout and game version, so different checkouts and versions never mix. The section also stores the name and options shown in the history panel.
 
-## Ledger
+The starting point (the baseline) is what duckmidi reverts to:
 
-The database at `plugins/history/repositories.sqlite3` stores:
+- If the exporter can list its files, they're all captured when the section is first opened, including uncommitted edits.
+- Otherwise, each file is captured the first time an export writes it.
 
-- content-addressed file bytes, shared between scopes and verified by SHA-256 when read;
-- one row per managed path with its baseline content, the content duckmidi expects there now, and the size, timestamp and mode last observed on disk;
-- the current logical modifications, each with its recipe and affected paths;
-- directories duckmidi created;
-- the pending transaction, while one is applying.
+Git and existing `.bkp` files are never used as history. **Initialize** makes the current files the new starting point and clears that section's recorded changes.
 
-Applying an intent with an existing key replaces it. Rendering recomposes every current intent over the baseline, so removing one never restores a stale file over a later export. Intents whose effects equal the baseline are dropped, and unreferenced content is removed after each operation.
+## What's stored
 
-## Sample replacement recipes
+The database lives at `plugins/history/repositories.sqlite3` and holds:
 
-Native sample replacement recipes may include an optional `drum-pan` override. When present, the SM64/HackerSM64 and OoT adapters apply it to every drum entry sharing the replaced physical sample and record those bank edits with the sample. Without an override, existing drum pan is preserved; earlier stored recipes retain their original behavior.
+- File contents, stored once and shared between sections, checked by SHA-256 when read.
+- For each managed file: its original content, the content duckmidi expects there now, and its size, timestamp and mode when last seen.
+- The current changes, each with its recipe and the files it touches.
+- Folders duckmidi created.
+- The transaction in progress, if any.
+
+Each change has a key, such as a song slot. Exporting the same key again replaces the earlier change. Every time something changes, all current changes are rebuilt on top of the starting point, so reverting one never puts an old file back over a later export. Changes that leave everything as it started are dropped, and unused file contents are cleaned up.
+
+## Replaced samples
+
+A sample replacement can carry a `drum-pan` value. If it does, the SM64/HackerSM64 and OoT exporters apply it to every drum that shares the replaced sample, and record those bank edits with the sample. Without one, drum pan stays as it was. Older recipes keep their original behavior.
+
+## With history off
+
+When **Enable** is off in the history drawer (`DmeRepositoryRequest.untracked`), exports skip the database entirely: nothing is opened, created or recorded. Each export is applied to the checkout as it is now, so exporting the same song again finds and updates its earlier files.
+
+Changed files are written in place. With **Keep original files** on (`keep_originals`), each file's previous content is first saved as `<path>.bkp`, unless one already exists. With it off, files are simply overwritten. **Initialize** and reverting aren't available in this mode.
 
 ## Outside edits
 
-Before changing anything, the runtime compares each managed path's directory entry with its recorded size, timestamp and mode. A file whose entry is unchanged is not read. A changed entry is hashed; if the content still matches, only the recorded entry is refreshed, otherwise the operation stops and names the path. A recognized file that appeared after initialization also stops it. Initialize resolves the conflict by adopting the current files.
+Before changing anything, the runtime checks each managed file's size, timestamp and mode against what it recorded. Unchanged files aren't read. If something changed, the file is hashed: when the content still matches, the record is just refreshed; otherwise the operation stops and names the file. A recognized file that appeared after initialization also stops it. **Initialize** resolves the conflict by accepting the current files.
 
-## Transactions and recovery
+## Safe writes and recovery
 
-An OS lock on the history folder and one on the physical checkout serialize changes across instances and processes. History must be on a local disk; unwritable or remote storage fails instead of falling back to memory. Anchored directory handles refuse traversal, linked parents and aliased destinations; they are reused during an operation and block outside renames of those folders while it runs.
+Locks on the history folder and on the checkout keep two duckmidi windows, or two programs, from changing things at once. History must be on a local disk; remote or read-only storage fails instead of quietly keeping history in memory. The runtime refuses paths that leave the checkout or pass through links, and keeps the folders it's using open so they can't be renamed mid-operation.
 
-Each transaction validates the desired state and its declared dependencies, stores every before and after file in the ledger, then writes each file through a flushed temporary file and rename. Cancellation rolls back completed steps, and the ledger is updated only after the result is verified. Build tools should stay stopped while a transaction applies, since files do not change at one instant.
+Each change follows the same steps:
 
-Recovery after a crash compares every pending path with its recorded before and after states, restores removed directories, restores files, then removes empty directories it created. If an outside edit or access failure prevents that, the pending record and its bytes are kept and further changes to that scope are blocked until the conflict is resolved.
+1. Check the new files and anything they depend on.
+2. Save every before and after version in the database.
+3. Write each file to a temporary file, flush it and rename it into place.
+4. Verify the result, then update the database.
+
+Cancelling rolls back finished steps. Keep your build tools stopped while an export or revert runs, since the files don't all change at the same instant.
+
+After a crash, the runtime compares each pending file with its saved before and after versions, then puts back removed folders and files and removes empty folders it made. If an outside edit or access error gets in the way, it keeps the pending record and blocks further changes to that section until the conflict is resolved.
 
 ## Limits
 
-20,000 paths per scope and 256 MiB per file or recipe. The runtime keeps up to 64 MiB of recently read content in memory during an operation. Older history databases from development builds are refused with an explicit schema message.
+- 20,000 files per section.
+- 256 MiB per file or recipe.
+- Up to 64 MiB of recently read content cached during an operation.
+
+History databases from development builds are refused with a message naming the schema.

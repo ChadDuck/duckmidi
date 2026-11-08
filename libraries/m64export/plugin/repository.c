@@ -165,7 +165,10 @@ bool m64_repository_bank(M64PluginJob *job, EsRepository *repo, char *error, siz
     char file[128];
     snprintf(file, sizeof(file), "%s.json", requested);
     size_t length = strlen(maximum);
-    int n = strcmp(file, maximum) > 0
+    /* With history off the current files are the baseline, so an earlier export's own bank
+       may already be the last one; it is reused. */
+    int order = strcmp(file, maximum);
+    int n = order > 0 || (!order && es_repository_untracked(repo))
                 ? snprintf(job->bank, sizeof(job->bank), "%s", requested)
                 : snprintf(job->bank, sizeof(job->bank), "%.*s_%s",
                            (int)(length > 5 ? length - 5 : 0), maximum, requested);

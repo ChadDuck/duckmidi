@@ -325,6 +325,46 @@ int main(void) {
            present(checkout, "sound/sequences/us/03_custom_worker.m64") &&
            !present(checkout, "sound/sequences/us/03_level_grass.m64"));
 
+    /* History off: a repeated export rewrites its own entry and bank instead of adding more, and
+       the first originals stay in .bkp files. */
+    char direct[512], direct_plugins[600];
+    make_checkout(direct, direct_plugins, "sm64-untracked", sm64, 4);
+    char *paths[2][3] = {{0}};
+
+    for (int pass = 0; pass < 2; pass++) {
+        int32_t status =
+            repository_install_untracked(exporter, settings, &context, &host, direct_plugins,
+                                         direct, error_text, sizeof(error_text));
+
+        if (status != DME_OK) {
+            fprintf(stderr, "untracked install: %s\n", error_text);
+        }
+
+        assert(status == DME_OK);
+        paths[pass][0] = checkout_read(direct, "sound/sequences.json");
+        paths[pass][1] = checkout_read(direct, "sound/sound_banks/26_custom_duckmidi.json");
+        paths[pass][2] = checkout_read(direct, "sound/sequences.json.bkp");
+        assert(paths[pass][0] && paths[pass][1] && paths[pass][2] &&
+               !strcmp(paths[pass][2], sequences));
+    }
+
+    assert(!strcmp(paths[0][0], paths[1][0]) && !strcmp(paths[0][1], paths[1][1]) &&
+           strstr(paths[1][0], "\"03_level_grass\": [\"26_custom_duckmidi\"]") &&
+           !present(direct, "sound/sound_banks/26_custom_duckmidi_duckmidi.json") &&
+           !present(direct, "sound/sound_banks/duckmidi.json") &&
+           present(direct, "sound/sequences/us/03_level_grass.m64") &&
+           present(direct, "sound/sequences/us/03_custom_worker.m64.bkp"));
+
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < 3; i++) {
+            SDL_free(paths[pass][i]);
+        }
+    }
+
+    char database[700];
+    snprintf(database, sizeof(database), "%s/history/repositories.sqlite3", direct_plugins);
+    assert(!SDL_GetPathInfo(database, NULL));
+
     /* A custom song name takes the next free sequence ID. */
     DmeValue custom = {DME_CHOICE, 35, NULL}, name = {DME_TEXT, 0, "my_song"};
     assert(exporter->set(settings, "sequence", &custom, error, sizeof(error)) == DME_OK &&

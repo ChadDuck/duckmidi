@@ -17,6 +17,8 @@ typedef struct {
     uint64_t scope;
     uint64_t generation;
     bool prepared;
+    bool untracked;      /* History off; see DmeRepositoryRequest.untracked. */
+    bool keep_originals; /* Keep original files; used by untracked installs. */
     char *plugins, *checkout, *key;
     DmeHistoryTarget target;
     char identity[96], notice[2048];
@@ -112,7 +114,9 @@ static void *DME_CALL create_job(const DmeHistoryAdapter *adapter, const char *e
     if (!adapter || adapter->size != sizeof(*adapter) || adapter->version != DME_REPOSITORY_API ||
         !adapter->detect || !adapter->render || !adapter->install || !exporter || !request ||
         request->size != sizeof(*request) || request->action > DME_REPOSITORY_REVERT_ALL ||
-        (request->action == DME_REPOSITORY_INSTALL && !export_job)) {
+        (request->action == DME_REPOSITORY_INSTALL && !export_job) ||
+        (request->untracked && request->action != DME_REPOSITORY_INSPECT &&
+         request->action != DME_REPOSITORY_INSTALL)) {
         es_fail(error, (size_t)cap, DM_TEXT_REPOSITORY_INVALID_REPOSITORY_ACTION);
         return NULL;
     }
@@ -129,6 +133,8 @@ static void *DME_CALL create_job(const DmeHistoryAdapter *adapter, const char *e
                .export_job = export_job,
                .action = request->action,
                .scope = request->scope,
+               .untracked = request->untracked != 0,
+               .keep_originals = request->keep_originals != 0,
                .plugins = copy(request->plugins_directory),
                .checkout = copy(request->checkout),
                .key = copy(request->logical_key)};
@@ -148,7 +154,7 @@ static void *DME_CALL create_job(const DmeHistoryAdapter *adapter, const char *e
 
 static EsRepository *open_repository(Job *b, const DmeHost *host, char *error, size_t cap) {
     /* A selected history section names its checkout; otherwise the request's folder is used. */
-    if (b->scope) {
+    if (b->scope && !b->untracked) {
         EsScopes scopes = {0};
         const EsScope *scope = NULL;
 
@@ -189,6 +195,19 @@ static EsRepository *open_repository(Job *b, const DmeHost *host, char *error, s
     b->target.id[sizeof(b->target.id) - 1] = 0;
     b->target.name[sizeof(b->target.name) - 1] = 0;
     b->target.version[sizeof(b->target.version) - 1] = 0;
+
+    if (b->untracked) {
+        EsRepository *repo =
+            es_repository_open_untracked(b->checkout, b->adapter, host, b->keep_originals, error,
+                                         cap);
+
+        if (repo) {
+            snprintf(b->identity, sizeof(b->identity), "%s", es_repository_identity(repo));
+        }
+
+        return repo;
+    }
+
     EsOpen options = {.plugins = b->plugins,
                       .checkout = b->checkout,
                       .exporter = b->exporter,
@@ -227,7 +246,7 @@ static int32_t DME_CALL prepare(void *job, const DmeContext *c, const DmeHost *h
     EsRepository *repo = open_repository(b, host, error, (size_t)cap);
     int32_t status = repo ? DME_OK : DME_FAILED;
 
-    if (repo) {
+    if (repo && !b->untracked) {
         b->scope = es_repository_scope_id(repo);
     }
 
@@ -238,7 +257,7 @@ static int32_t DME_CALL prepare(void *job, const DmeContext *c, const DmeHost *h
 
     if (status == DME_OK) {
         b->generation = es_repository_generation(repo);
-        b->prepared = b->generation != 0;
+        b->prepared = b->untracked || b->generation != 0;
         status = b->prepared ? DME_OK : DME_FAILED;
     }
 
@@ -311,9 +330,11 @@ static int32_t DME_CALL run(void *job, const DmeContext *c, const DmeHost *host,
     EsRepository *repo = open_repository(b, host, error, (size_t)cap);
     bool ok = repo != NULL;
 
-    if (ok) {
+    if (ok && !b->untracked) {
         b->scope = es_repository_scope_id(repo);
+    }
 
+    if (ok) {
         switch (b->action) {
         case DME_REPOSITORY_INSTALL:
             if (b->prepared && b->generation != es_repository_generation(repo)) {
@@ -348,7 +369,8 @@ static int32_t DME_CALL run(void *job, const DmeContext *c, const DmeHost *host,
     if (repo) {
         char view_error[1024] = {0};
         bool viewed =
-            es_repository_modifications(repo, &b->modifications, view_error, sizeof(view_error)) &&
+            (b->untracked || es_repository_modifications(repo, &b->modifications, view_error,
+                                                         sizeof(view_error))) &&
             (!b->adapter->targets ||
              b->adapter->targets(es_history_api(), (DmeHistory *)repo,
                                  (DmeHistoryTargets *)&b->targets, view_error, sizeof(view_error)));

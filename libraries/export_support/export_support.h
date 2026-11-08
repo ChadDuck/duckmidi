@@ -121,6 +121,13 @@ DES_API EsRepository *es_repository_open(const EsOpen *, char *error, size_t cap
 /* Read-only native inspection for packages; creates no history directory or database. */
 DES_API EsRepository *es_repository_probe(const char *checkout, const DmeHistoryAdapter *, char *,
                                           size_t);
+/* History off: no database; installs render over the current files and write them directly.
+   With keep_originals, each file's previous content is kept as "<path>.bkp" unless one already
+   exists; without it, files are simply overwritten. */
+DES_API EsRepository *es_repository_open_untracked(const char *checkout, const DmeHistoryAdapter *,
+                                                   const DmeHost *, bool keep_originals, char *,
+                                                   size_t);
+DES_API bool es_repository_untracked(const EsRepository *);
 /* Renders intents through the repository.s adapter without writing anything. */
 DES_API bool es_render(EsRepository *, const EsModifications *, EsPlan *, char *, size_t);
 /* The callback table given to adapters; DmeHistory, DmeHistoryPlan and DmeHistoryList are

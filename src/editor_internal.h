@@ -386,7 +386,7 @@ void ed_apply_instrument(Editor *e);
 void ed_step_instrument(Editor *e, int direction);
 bool ed_remove_channel(Editor *e, int channel);
 int ed_initial_bank(const DmProject *project, int port, int channel);
-const char *ed_sample_channel_filename(Editor *e, int channel);
+const char *ed_sample_channel_name(Editor *e, int channel);
 void ed_instrument(Editor *e);
 void ed_preferences(Editor *e);
 void ed_shortcuts(Editor *e);

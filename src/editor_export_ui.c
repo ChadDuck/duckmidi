@@ -439,51 +439,56 @@ void ed_export_history_panel(Editor *e, UiRect main) {
         busy = ed_export_busy(e);
     }
 
+    /* The section follows the exporter's repository folder; it is not chosen here. */
+    const DmeRepositoryScope *selected = NULL;
+
+    for (uint32_t i = 0; valid && e->repository_history && i < view.scope_count; i++) {
+        if (view.scopes[i].id == format->history_scope) {
+            selected = &view.scopes[i];
+        }
+    }
+
     /* A drawer of the Export window: the arrow in Export format shows and hides it. */
-    if (ui_attached_drawer("##repository-history-drawer", main, h->history_width)) {
+    bool open = ui_attached_drawer("##repository-history-drawer", main, h->history_width);
+
+    if (open) {
         ui_disabled(busy);
         ui_text(DM_TEXT_REPOSITORY_HISTORY);
         ui_separator();
-        const DmeRepositoryScope *selected = NULL;
-
-        for (uint32_t i = 0; valid && i < view.scope_count; i++) {
-            if (view.scopes[i].id == format->history_scope) {
-                selected = &view.scopes[i];
-            }
-        }
-
-        ui_text(DM_TEXT_REPOSITORY_SECTION);
-        ui_width(ui_available().x);
-
-        if (ui_combo("##repository-scope",
-                     selected ? selected->target_name.data : DM_TEXT_REPOSITORY_SELECT)) {
-            for (uint32_t i = 0; valid && i < view.scope_count; i++) {
-                const DmeRepositoryScope *scope = &view.scopes[i];
-                char label[4608];
-                snprintf(label, sizeof(label), "%.*s / %.*s / %.*s##scope%llu",
-                         (int)scope->target_name.length, scope->target_name.data,
-                         (int)scope->game_version.length, scope->game_version.data,
-                         (int)scope->checkout.length, scope->checkout.data,
-                         (unsigned long long)scope->id);
-
-                if (ui_select(label, selected == scope, 0, 0)) {
-                    h->history_key[0] = 0;
-                    ed_export_repository_action(e, DME_REPOSITORY_INSPECT, scope->id, NULL);
-                }
-            }
-
-            ui_combo_end();
-        }
 
         if (selected) {
-            ui_wrap(selected->checkout.data);
+            char section[256];
+            snprintf(section, sizeof(section), DM_TEXT_REPOSITORY_SECTION_FORMAT,
+                     (int)selected->target_name.length, selected->target_name.data);
+            ui_text(section);
         }
+
+        if (ui_check(DM_TEXT_REPOSITORY_HISTORY_ENABLE, &e->repository_history)) {
+            ed_export_history_reset(e);
+            ed_preference_save(e);
+        }
+
+        ui_tip(DM_TEXT_REPOSITORY_HISTORY_ENABLE_HELP);
 
         if (valid && view.notice.length) {
             ui_wrap(view.notice.data);
         }
 
         ui_separator();
+
+        if (!e->repository_history) {
+            ui_wrap(DM_TEXT_REPOSITORY_HISTORY_OFF);
+            ui_disabled_end();
+        }
+    }
+
+    if (!e->repository_history) {
+        ui_end();
+        h->history_confirm = 0;
+        return;
+    }
+
+    if (open) {
         /* Selection follows the logical key, so it survives reverts and new exports. */
         const DmeRepositoryRow *chosen = NULL;
 
@@ -506,16 +511,21 @@ void ed_export_history_panel(Editor *e, UiRect main) {
             for (uint32_t i = 0; valid && i < view.row_count; i++) {
                 const DmeRepositoryRow *row = &view.rows[i];
                 ui_id((int)i);
-                float width = fmaxf(40, ui_available().x - 76);
+                /* The label wraps beside the Revert button, which is centred on the row. */
+                float button = 68, frame = ui_frame_height();
+                float width = fmaxf(40, ui_available().x - button - ui_item_spacing_x());
+                float rows = fmaxf(frame, ui_text_height(row->label.data, width));
+                UiPoint at = ui_cursor();
 
-                if (ui_select(row->label.data, row == chosen, width, 0)) {
+                if (ui_select_wrapped("##row", row->label.data, row == chosen, width, rows)) {
                     snprintf(h->history_key, sizeof(h->history_key), "%s", row->key.data);
                 }
 
                 ui_same();
+                ui_position(ui_cursor().x, at.y + (rows - frame) / 2);
                 ui_disabled(!row->can_revert);
 
-                if (ui_button(DM_TEXT_REPOSITORY_REVERT, 68, 0)) {
+                if (ui_button(DM_TEXT_REPOSITORY_REVERT, button, 0)) {
                     ed_export_repository_action(e, DME_REPOSITORY_REVERT, view.selected_scope,
                                                 row->key.data);
                 }

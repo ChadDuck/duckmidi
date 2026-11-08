@@ -853,6 +853,27 @@ void ed_export_set_repository(Editor *e, size_t index, const char *folder) {
     }
 }
 
+void ed_export_history_reset(Editor *e) {
+    DmExportPlugins *h = ed_export_host(e);
+
+    if (!h || ed_export_busy(e)) {
+        return;
+    }
+
+    for (size_t i = 0; i < h->registry.count; i++) {
+        DmExportFormat *format = &h->registry.formats[i];
+
+        if (format->history_job) {
+            h->registry.history_runtime->destroy_job(format->history_job);
+            format->history_job = NULL;
+        }
+
+        format->history_scope = 0;
+    }
+
+    h->history_key[0] = 0;
+}
+
 /* Preferences: choose an exporter's repository folder without exporting. */
 bool ed_export_folder_picker(Editor *e, size_t index) {
     DmExportPlugins *h = ed_export_host(e);
@@ -1170,6 +1191,7 @@ static bool begin(Editor *e, bool inspection, int index, const char *path, bool 
                 .size = sizeof(request),
                 .action = DME_REPOSITORY_INSTALL,
                 .keep_originals = h->keep_originals,
+                .untracked = !e->repository_history,
                 .plugins_directory = {w->plugins_directory, strlen(w->plugins_directory)},
                 .checkout = {w->destination, strlen(w->destination)}};
             w->history_runtime = h->registry.history_runtime;
@@ -1215,7 +1237,8 @@ bool ed_export_repository_action(Editor *e, uint32_t action, uint64_t scope, con
     DmExportFormat *format = ed_export_selected(e);
 
     if (!h || !format || !format->history || ed_export_busy(e) || e->dialog_busy ||
-        action == DME_REPOSITORY_INSTALL || action > DME_REPOSITORY_REVERT_ALL) {
+        action == DME_REPOSITORY_INSTALL || action > DME_REPOSITORY_REVERT_ALL ||
+        (!e->repository_history && action != DME_REPOSITORY_INSPECT)) {
         return false;
     }
 
@@ -1235,7 +1258,8 @@ bool ed_export_repository_action(Editor *e, uint32_t action, uint64_t scope, con
         .scope = scope,
         .plugins_directory = {w->plugins_directory, strlen(w->plugins_directory)},
         .checkout = {w->destination, strlen(w->destination)},
-        .logical_key = {key ? key : "", key ? strlen(key) : 0}};
+        .logical_key = {key ? key : "", key ? strlen(key) : 0},
+        .untracked = !e->repository_history};
     w->repository_job =
         w->history_runtime->create_job(format->history, format->api->id, format->instance, NULL,
                                        &request, w->message, sizeof(w->message));

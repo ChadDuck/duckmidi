@@ -30,7 +30,7 @@ While the design, usability, UI, and goals of this program were dictated by a hu
 - Export MIDI, WAV (PCM), MP3, AAC, Ogg Vorbis, Opus, and FLAC.
 - Add export formats through the plugin API. 
    - The bundled M64 & OoT plugins converts General MIDI arrangements into their respective sequences; transforming a previously arduous task into a quick and painless experience.
-   - Your custom samples come along too, and every change made to your game repository can be reverted with a click.
+   - Your custom samples can be exported as well, and every change made to your game repository can be quickly reverted.
 
 ## Performance
 
@@ -44,7 +44,7 @@ Estimates; tested against a *Release* candidate v0.11.1 using a complex midi com
 - Core
    - Performance
       - Improve Resource consumption
-      - ~~Improve GUI performance; it suffers with complex MIDI compositions~~
+      - ~~Improve GUI performance~~
    - GUI
       - ~~Pattern colors~~
       - 'Unslop' parts of the GUI
@@ -71,65 +71,50 @@ See the [user guide](docs/user-guide.md), [M64 export guide](docs/sm64-export.md
 
 ## Building
 
-*duckmidi* builds with [CMake](https://cmake.org/download/) 3.22 or newer, Ninja, and a C17/C++17 compiler. Run every build command from the project folder, the one containing `CMakeLists.txt`.
+You'll need [CMake](https://cmake.org/download/) 3.22+, Ninja, a C17/C++17 compiler and Python 3 (for the tests). Run the commands below from the project folder.
 
-Windows builds use the SDL3, FluidSynth, and FFmpeg libraries included in `vendor/`. Other platforms use installed packages: SDL 3.2 or newer, FluidSynth 2.5.4 or newer, and FFmpeg 7.1 or newer with the LAME, Vorbis, and Opus encoders.
+On Windows, SDL3, FluidSynth and FFmpeg are already in `vendor/`. Elsewhere, install SDL 3.2+, FluidSynth 2.5.4+ and FFmpeg 7.1+ (with LAME, Vorbis and Opus).
 
-The macOS and Linux steps have not been tested yet.
+Once it's running, pick a SoundFont in **Edit > Preferences**.
+
+The macOS and Linux steps haven't had in-depth testing yet.
 
 ### Windows
 
-1. Install [MSYS2](https://www.msys2.org/) to its default folder, `C:\msys64`.
-2. Open the **MSYS2 UCRT64** terminal from the Start menu and update its packages:
+1. Install [MSYS2](https://www.msys2.org/) to `C:\msys64`.
+2. Open **MSYS2 UCRT64** from the Start menu and install the tools. If `pacman -Syu` closes the terminal, reopen it and run it again.
 
    ```sh
    pacman -Syu
+   pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-python
    ```
 
-   If the update closes the terminal, reopen it and run the command again.
-
-3. Install the compiler and build tools:
-
-   ```sh
-   pacman -S --needed mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
-   ```
-
-4. Go to the project folder, then configure, build, and test:
+3. Build, test and launch:
 
    ```sh
    cd /c/path/to/duckmidi
    cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
    cmake --build build/development/cmake
    ctest --test-dir build/development/cmake --output-on-failure
-   ```
-
-5. Launch the editor:
-
-   ```sh
    ./build/development/cmake/bin/duckmidi.exe
    ```
 
-The executable is `build/development/cmake/bin/duckmidi.exe`, with its DLLs and `plugins/` folder beside it. Choose `vendor/TimGM6mb.sf2` or another SoundFont in **Edit > Preferences**.
+`vendor/TimGM6mb.sf2` works as a SoundFont.
 
-To build from Command Prompt or PowerShell instead, add `C:\msys64\ucrt64\bin` to your user PATH in Windows Environment Variables, reopen the terminal, and add `-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++` to the configure command. Launch `build\development\cmake\bin\duckmidi.exe`.
+To use Command Prompt or PowerShell instead, add `C:\msys64\ucrt64\bin` to your PATH and add `-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++` to the first `cmake` command.
 
-The included FFmpeg libraries contain only the audio-export components. To rebuild them, see [minimal FFmpeg build instructions](docs/ffmpeg-build.md).
+The bundled FFmpeg only includes what audio export needs. To rebuild it, see [docs/ffmpeg-build.md](docs/ffmpeg-build.md).
 
 ### macOS
 
-1. Open **Terminal** and install Apple's [Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/):
+1. In **Terminal**, install Apple's [Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/), then [Homebrew](https://brew.sh/) and the dependencies:
 
    ```sh
    xcode-select --install
+   brew install cmake ninja pkgconf python sdl3 fluid-synth ffmpeg
    ```
 
-2. Install [Homebrew](https://brew.sh/) and follow its PATH instructions, then install the dependencies:
-
-   ```sh
-   brew install cmake ninja pkgconf sdl3 fluid-synth ffmpeg
-   ```
-
-3. From the project folder, build, test, and launch:
+2. Build, test and launch:
 
    ```sh
    cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -138,17 +123,17 @@ The included FFmpeg libraries contain only the audio-export components. To rebui
    ./build/development/cmake/bin/duckmidi
    ```
 
-The executable is `build/development/cmake/bin/duckmidi`. If CMake cannot find the Homebrew packages, add `-DCMAKE_PREFIX_PATH="$(brew --prefix)"` to the first command.
+If CMake can't find the Homebrew packages, add `-DCMAKE_PREFIX_PATH="$(brew --prefix)"` to the first `cmake` command.
 
 ### Arch Linux
 
-1. In a terminal, install the compiler and [development packages](https://archlinux.org/packages/extra/x86_64/sdl3/):
+1. In a terminal, install the tools and [libraries](https://archlinux.org/packages/extra/x86_64/sdl3/):
 
    ```sh
-   sudo pacman -Syu --needed base-devel cmake ninja pkgconf sdl3 fluidsynth alsa-lib ffmpeg
+   sudo pacman -Syu --needed base-devel cmake ninja pkgconf python sdl3 fluidsynth alsa-lib ffmpeg
    ```
 
-2. From the project folder, build, test, and launch:
+2. Build, test and launch:
 
    ```sh
    cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -157,20 +142,18 @@ The executable is `build/development/cmake/bin/duckmidi`. If CMake cannot find t
    ./build/development/cmake/bin/duckmidi
    ```
 
-The executable is `build/development/cmake/bin/duckmidi`.
-
 ### Ubuntu / Debian
 
-These steps need Ubuntu 26.04+ or Debian 13+, which package SDL3. On older releases, [install SDL3 from source](https://wiki.libsdl.org/SDL3/README-linux) first.
+You'll need Ubuntu 26.04+ or Debian 13+ for SDL3. On older releases, [build SDL3 from source](https://wiki.libsdl.org/SDL3/README-linux) first.
 
-1. In a terminal, install the build tools and development packages:
+1. In a terminal, install the tools and libraries:
 
    ```sh
    sudo apt update
-   sudo apt install build-essential cmake ninja-build pkg-config git libsdl3-dev libasound2-dev libglib2.0-dev libsndfile1-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
+   sudo apt install build-essential cmake ninja-build pkg-config git python3 libsdl3-dev libasound2-dev libglib2.0-dev libsndfile1-dev libavcodec-dev libavformat-dev libavutil-dev libswresample-dev
    ```
 
-2. Distribution packages may ship an older FluidSynth. From the project folder, build [FluidSynth 2.5.4](https://github.com/FluidSynth/fluidsynth/tree/v2.5.4) into a local folder:
+2. Your distribution's FluidSynth may be too old, so build [FluidSynth 2.5.4](https://github.com/FluidSynth/fluidsynth/tree/v2.5.4) locally:
 
    ```sh
    git clone --depth 1 --branch v2.5.4 https://github.com/FluidSynth/fluidsynth.git build/development/deps/fluidsynth
@@ -179,7 +162,7 @@ These steps need Ubuntu 26.04+ or Debian 13+, which package SDL3. On older relea
    cmake --install build/development/deps/fluidsynth-build
    ```
 
-3. Build, test, and launch *duckmidi* with that FluidSynth:
+3. Build, test and launch *duckmidi* with it:
 
    ```sh
    cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH:PATH=build/development/deps/install
@@ -188,28 +171,24 @@ These steps need Ubuntu 26.04+ or Debian 13+, which package SDL3. On older relea
    ./build/development/cmake/bin/duckmidi
    ```
 
-The executable is `build/development/cmake/bin/duckmidi`. Select a SoundFont in **Edit > Preferences**.
-
 ### Package a Build
 
-After building, create a delivery folder from the same terminal:
+To make a portable folder with the program, plugins, libraries, docs and licenses:
 
 ```sh
 cmake --build build/development/cmake --target deliver
 ```
 
-Each delivery goes to `build/duckmidi-vVERSION-Core/`, containing the executable, the M64 plugin, required runtime libraries, documentation, and licenses. A new delivery of the same version and type replaces the previous one.
+It lands in `build/duckmidi-vVERSION-Core/`. Set the version with `-DDUCKMIDI_DELIVERY_VERSION=0.12.1` when configuring; without one, the build is named after its build time.
 
-For a *Full* build, which also includes the *TimGM6mb* SoundFont and sample project, enable the *Production* option, then rebuild and deliver to `build/duckmidi-vVERSION-Full/`:
+For a *Full* build with the *TimGM6mb* SoundFont and sample project, turn on production mode first. The folder ends in `-Full` instead:
 
 ```sh
 cmake -S . -B build/development/cmake -DDUCKMIDI_PRODUCTION=ON
 cmake --build build/development/cmake --target deliver
 ```
 
-Use `-DDUCKMIDI_PRODUCTION=OFF` to return to *Core* builds.
-
-To stage the files in a folder of your choice instead, run `cmake --install build/development/cmake --prefix build/development/package --strip`.
+Set `-DDUCKMIDI_PRODUCTION=OFF` to go back to *Core* builds.
 
 ## Libraries and Assets
 

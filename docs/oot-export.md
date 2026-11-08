@@ -13,7 +13,7 @@ The bundled OoT plugin exports music for the Ocarina of Time audio engine in a [
 7. Set the loop options (see [Loop points](#loop-points)).
 8. Review the instrument mappings, then click **Save OoT Package**, or **Export to Repository** to install into your checkout.
 
-The export uses the active arrangement, including mute and solo. Keep `OoT.dll` in the application's `plugins/` directory.
+Muted channels are left out, and solo works as it does in playback. The exporter itself is `OoT.dll` in duckmidi's `plugins/` folder.
 
 ## Choose a sample set
 
@@ -63,7 +63,9 @@ OoT has room for 48 soundfonts, 38 of them vanilla. Exporting again to the same 
 
 When a replaced song is a fanfare that loads into the small persistent cache and your song is larger, its table entry switches to the temporary cache.
 
-**Keep original files** (on by default, above the export buttons) also saves a copy of each changed checkout file as `<file>.bkp` beside it. A replaced sample always keeps one. duckmidi's own history keeps every original either way, so **Repository history** can revert any export, or all of them, even after a restart.
+duckmidi's **Repository history** remembers every original, so you can revert any export, or all of them, even after a restart. **Keep original files** (on by default, above the export buttons) also saves a `<file>.bkp` copy beside each changed file. A replaced sample always gets one while history is on.
+
+If you turn history off (**Enable** in **Repository history**), exports write files directly and can't be reverted. **Keep original files** then decides whether the first original is kept as `<file>.bkp`; with both off, files are simply overwritten.
 
 ## Sequence memory
 

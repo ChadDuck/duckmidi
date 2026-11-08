@@ -95,6 +95,8 @@ struct EsRepository {
     size_t observed_count, observed_capacity;
     EsMap observed_index;
     bool observing;
+    bool untracked;      /* History off: installs write files directly. */
+    bool keep_originals; /* History off: keep each changed file's original as .bkp. */
 };
 
 static const char schema[] =
@@ -1990,9 +1992,83 @@ static bool valid_intent(const EsModification *m) {
            m->data && m->size <= ES_MAX_RECIPES;
 }
 
+/* Directories above path, created when missing. */
+static bool make_parents(EsRoot *root, const char *path, char *error, size_t cap) {
+    char parent[8192];
+    size_t length = strlen(path);
+
+    if (length >= sizeof(parent)) {
+        return es_fail(error, cap, DM_TEXT_REPOSITORY_INVALID_REPOSITORY_WRITE_S, path);
+    }
+
+    memcpy(parent, path, length + 1);
+    bool ok = true;
+
+    for (char *slash = strchr(parent, '/'); ok && slash; slash = strchr(slash + 1, '/')) {
+        *slash = 0;
+        ok = ensure_directory(root, parent, error, cap);
+        *slash = '/';
+    }
+
+    return ok;
+}
+
+/* History off: renders only these intents over the current files and writes the changed paths
+   directly. With Keep original files on, a file's current content is kept beside it as .bkp
+   before it first changes, and an existing .bkp is never overwritten. With it off, files are
+   simply overwritten. */
+static bool apply_untracked(EsRepository *r, const EsModification *incoming, size_t count,
+                            char *error, size_t cap) {
+    EsModifications mods = {.items = (EsModification *)incoming, .count = count};
+    EsPlan plan = {0};
+    bool ok = es_render(r, &mods, &plan, error, cap) && validate_graph(r, &plan, &mods, error, cap);
+
+    for (size_t i = 0; ok && i < plan.count; ++i) {
+        const EsWrite *write = &plan.writes[i];
+        EsFile current = {0};
+        char sidecar[8192];
+        ok = (allowed(r, write->path) ||
+              es_fail(error, cap,
+                      DM_TEXT_REPOSITORY_PATH_IS_OUTSIDE_THE_INITIALIZED_AUDIO_NAMESPACE_S,
+                      write->path)) &&
+             backup_path(write->path, sidecar) &&
+             es_fs_read(r->root, write->path, &current, error, cap);
+        bool same = ok && current.exists == write->file.exists &&
+                    (!current.exists ||
+                     (current.size == write->file.size &&
+                      (!current.size || !memcmp(current.data, write->file.data, current.size))));
+
+        if (ok && !same && current.exists && r->keep_originals) {
+            EsStat backup;
+            ok = es_fs_stat(r->root, sidecar, &backup, error, cap);
+
+            if (ok && !backup.exists) {
+                ok = es_fs_write(r->root, sidecar, &current, 0, i, error, cap);
+            }
+        }
+
+        if (ok && !same) {
+            EsFile desired = write->file;
+            desired.mode = desired.mode ? desired.mode : current.mode ? current.mode : 0644;
+            ok = (!desired.exists || make_parents(r->root, write->path, error, cap)) &&
+                 es_fs_write(r->root, write->path, &desired, 0, i, error, cap);
+        }
+
+        es_file_free(&current);
+    }
+
+    es_plan_free(&plan);
+    return ok || described(error, cap);
+}
+
 /* Upserts incoming intents by logical key, or removes one key (all when key is NULL). */
 static bool modify(EsRepository *r, const EsModification *incoming, size_t count,
                    const char *remove_key, bool remove, char *error, size_t cap) {
+    if (r->untracked) {
+        return !remove ? apply_untracked(r, incoming, count, error, cap)
+                       : es_fail(error, cap, DM_TEXT_REPOSITORY_INVALID_REPOSITORY_ACTION);
+    }
+
     if (!r->db || !recover(r, error, cap) || !check_drift(r, error, cap)) {
         return false;
     }
@@ -2196,6 +2272,30 @@ EsRepository *es_repository_probe(const char *checkout, const DmeHistoryAdapter 
     }
 
     return r;
+}
+
+EsRepository *es_repository_open_untracked(const char *checkout, const DmeHistoryAdapter *adapter,
+                                           const DmeHost *host, bool keep_originals, char *error,
+                                           size_t cap) {
+    EsRepository *r = es_repository_probe(checkout, adapter, error, cap);
+
+    if (r) {
+        r->host = host;
+        r->untracked = true;
+        r->keep_originals = keep_originals;
+        r->checkout_lock = es_checkout_lock(r->root, error, cap);
+
+        if (!r->checkout_lock) {
+            es_repository_close(r);
+            r = NULL;
+        }
+    }
+
+    return r;
+}
+
+bool es_repository_untracked(const EsRepository *r) {
+    return r && r->untracked;
 }
 
 uint64_t es_repository_generation(const EsRepository *r) {

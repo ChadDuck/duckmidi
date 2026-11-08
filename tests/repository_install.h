@@ -10,6 +10,12 @@ int32_t repository_install(const DmeExporter *exporter, void *settings, const Dm
                            const DmeHost *, const char *plugins, const char *checkout, char *error,
                            size_t capacity);
 
+/* Export to Repository with history off and Keep original files on: files are written
+   directly, keeping .bkp originals. */
+int32_t repository_install_untracked(const DmeExporter *exporter, void *settings,
+                                     const DmeContext *, const DmeHost *, const char *plugins,
+                                     const char *checkout, char *error, size_t capacity);
+
 /* Reverts every recorded change of the checkout's history scope. */
 int32_t repository_revert_all(const DmeExporter *exporter, void *settings, const DmeHost *,
                               const char *plugins, const char *checkout, char *error,

@@ -57,6 +57,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->sample_hash = 0;
     e->status_shown[0] = 0;
     e->os_cursor = false;
+    e->repository_history = true;
     e->midi_values = false;
     e->event_ruler_drag = false;
     e->midi_hex = true;

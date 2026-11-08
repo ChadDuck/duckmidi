@@ -39,6 +39,10 @@ typedef struct {
     uint32_t size, action, keep_originals;
     uint64_t scope;
     DmeString plugins_directory, checkout, logical_key;
+    /* Nonzero when repository history is off: INSPECT and INSTALL run without the ledger,
+       and an install writes files directly, keeping "<path>.bkp" originals only when
+       keep_originals is nonzero. */
+    uint32_t untracked;
 } DmeRepositoryRequest;
 
 typedef struct {

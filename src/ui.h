@@ -122,6 +122,8 @@ void ui_custom_cursor(bool enabled);
 void ui_gesture_cursor(bool point);
 bool ui_editor_menu(void);
 bool ui_select(const char *label, bool selected, float w, float h);
+/* A selectable row whose text wraps within w; h should fit ui_text_height(text, w). */
+bool ui_select_wrapped(const char *id, const char *text, bool selected, float w, float h);
 bool ui_check(const char *label, bool *value);
 bool ui_int(const char *label, int *value, int lo, int hi);
 bool ui_float(const char *label, float *value, float lo, float hi);

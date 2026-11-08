@@ -1,39 +1,44 @@
-# Export plugin API reference
+# Export plugin API
 
-The public interface is [`duckmidi_export_plugin.h`](../include/duckmidi_export_plugin.h). Registration requires **ABI 11**. A plugin is a native library placed in `plugins/` beside the application. It can expose export formats, tools, or both. Duckmidi draws each exporter's declared settings and review controls. The public headers require no editor, SDL, or UI toolkit headers.
+Plugins add export formats and tools to duckmidi. A plugin is a native library in the `plugins/` folder beside duckmidi, built against [`duckmidi_export_plugin.h`](../include/duckmidi_export_plugin.h). duckmidi draws your settings and review windows, so a plugin needs no UI code.
 
-Plugins run inside the application. Use trusted libraries that match its architecture and ABI. Rebuild independently maintained earlier modules with the ABI 11 headers and replace their old binaries. Settings last for the session. Restart the application after adding or replacing a plugin.
+Plugins run inside duckmidi, so only install ones you trust. Restart duckmidi after adding or replacing one.
 
-## Conventions and ownership
+## Basics
 
-Use `DME_CALL` on callbacks and `DME_PUBLIC` on the exported entry point. Define `DME_BUILD_PLUGIN` when compiling a Windows DLL. Strings are UTF-8, terminated by a zero byte. Capacity arguments count bytes including that terminator. Fill an error buffer when returning failure. Do not throw exceptions across this C API.
+Mark callbacks with `DME_CALL` and the entry point with `DME_PUBLIC`, and define `DME_BUILD_PLUGIN` when building a Windows DLL. Strings are UTF-8 and zero-terminated, and buffer capacities count that terminator. When you return a failure, write the reason into the error buffer. Don't let exceptions cross the API.
 
-Descriptors and function tables live until module unload. Instances and jobs are allocated and freed by their own plugin. Contexts and host callbacks are borrowed for a call; copy anything retained. Settings/review views are borrowed by the host, so their strings and arrays must stay valid for the documented lifecycle. Independent instances and jobs must not share mutable state.
+Ownership is simple:
+
+- Descriptors and function tables live until the module unloads.
+- Your plugin allocates and frees its own instances and jobs. Instances and jobs must not share mutable state.
+- Contexts and host callbacks are only borrowed for the call, so copy anything you keep.
+- Settings and review views you hand to duckmidi must stay valid until the next call that replaces them.
 
 | Constant | Meaning |
 | --- | --- |
-| `DME_ABI` | Required registration ABI, currently 11. |
-| `DME_OK` | Operation succeeded. |
+| `DME_ABI` | The ABI a plugin must register with, currently 11. |
+| `DME_OK` | Success. |
 | `DME_INVALID` | Invalid input or setting. |
-| `DME_CANCELLED` | Work was cancelled. |
-| `DME_FAILED` | Operation failed; explain why. |
-| `DME_NOMEM` | Allocation failed. |
-| `DME_UNAVAILABLE` | The requested tool is absent or the operation is unavailable for the input. |
+| `DME_CANCELLED` | The user cancelled. |
+| `DME_FAILED` | Failure; explain why in the error buffer. |
+| `DME_NOMEM` | Out of memory. |
+| `DME_UNAVAILABLE` | The tool or operation isn't available for this input. |
 | `DME_INFO`, `DME_WARNING`, `DME_ERROR` | Diagnostic severity. |
-| `DME_DISPLAY` | Include a diagnostic in the export panel summary. |
-| `DME_POPUP` | Include a warning in the completion popup after successful output. |
-| `DME_LIST` | With `DME_POPUP`, the message is one list item written `"Heading\nItem"`; the popup lists items under their headings and shows each item once. |
-| `DME_ALTERED` | With `DME_POPUP`, the export changed notes as a last resort to fit the target; the popup then opens with a headline saying the output has audible changes. |
-| `DME_SINGLE_FILE`, `DME_ZIP` | Save exactly one artifact, or package artifacts into ZIP. |
-| `DME_LOOP_START`, `DME_LOOP_END` | Bits of `DmeContext.loop_points`: the arrangement marks a loop start, a loop end, or both. |
+| `DME_DISPLAY` | Show the diagnostic in the export panel. |
+| `DME_POPUP` | Show the warning in the popup after a successful export. |
+| `DME_LIST` | With `DME_POPUP`: the message is a `"Heading\nItem"` list entry. Repeated items are shown once. |
+| `DME_ALTERED` | With `DME_POPUP`: notes had to change to fit the target, so the popup warns of audible changes. |
+| `DME_SINGLE_FILE`, `DME_ZIP` | Save one file, or package every file into a ZIP. |
+| `DME_LOOP_START`, `DME_LOOP_END` | Bits of `DmeContext.loop_points` for the song's loop markers. |
 
-## Public data types
+## Data types
 
 ### `DmeEvent`
 
-A resolved playback event has absolute `tick`, stable `source_id`, MIDI `status`, data bytes `a` and `b`, and logical `port`. Events are already routed and filtered for mute/solo, and remain ordered at equal ticks. Status `0xff` denotes tempo with microseconds per quarter in `a`; `0xf0` denotes unsupported source messages. Ports are independent controller namespaces, not extra MIDI channel bits.
+One playback event: absolute `tick`, stable `source_id`, MIDI `status`, data bytes `a` and `b`, and a logical `port`. Events arrive routed, with muted channels removed, and keep their order at equal ticks. Status `0xff` is a tempo change (microseconds per quarter note in `a`), and `0xf0` marks a message duckmidi can't pass through. Ports are separate controller spaces, not extra MIDI channels.
 
-`flags` is zero for authored/imported events. `DME_EVENT_DEFAULT_CONTROL` marks an unset mixer control generated by the host; it does not claim precedence over a preset setting. Non-default mixer pan and explicit centre-pan events are unflagged. Opening pan absorbed into the mixer during MIDI import retains its authored identity through the project's original MIDI; this also works after loading existing project schemas. ABI 11 adds this event field, so older plugin binaries must be rebuilt.
+`flags` is zero for events the user wrote or imported. `DME_EVENT_DEFAULT_CONTROL` marks a mixer default duckmidi filled in, which shouldn't override a preset's own setting. Non-default mixer pan and explicit centre pan are left unflagged.
 
 ```c
 DmeEvent note = { .tick=0, .source_id=1, .status=0x90,
@@ -42,20 +47,34 @@ DmeEvent note = { .tick=0, .source_id=1, .status=0x90,
 
 ### `DmeContext`
 
-The context borrows `events` and `event_count`, supplies `duration` in ticks, `ppq`, a `project_session` identifier, project/source names (the project name is empty for an unnamed project; the source name is the imported MIDI file's path, or empty), and 128 program/drum name pointers. Bit `c` of `percussion_channels` is set when MIDI channel `c + 1` is a percussion part; channel 10 usually is, and imported GS, XG or GM2 files can add others or make channel 10 melodic. `loop_points` says which of `loop_start` and `loop_end` (in the same ticks as events) the arrangement marks with its **M64 - Loop Start** and **M64 - Loop End** events. Use the session identifier to reset source-specific settings when another project opens. A job receives the same frozen arrangement for preflight and conversion even if the live editor changes.
+The song being exported:
+
+- `events` and `event_count`, plus `duration` in ticks and `ppq`.
+- `project_session`, which changes when another project opens. Use it to reset song-specific settings.
+- The project name (empty if unsaved), the imported MIDI file's path (or empty), and the 128 program and drum names.
+- `percussion_channels`: bit `c` is set when MIDI channel `c + 1` plays drums. That's usually channel 10, but GS, XG and GM2 files can change it.
+- `loop_points`, `loop_start` and `loop_end`: where the song's **M64 - Loop Start** and **M64 - Loop End** events sit, in event ticks.
+
+A job sees the same frozen song from preflight through conversion, even if the user keeps editing.
 
 ```c
 double beats = (double)context->duration / context->ppq;
 const char *name = context->program_names[40];
 ```
 
-During export, `project_revision` identifies the frozen arrangement. If the project has sample replacements, `effective_patches` is parallel to the MIDI event array. Its bank is the original 14-bit bank value and its program is the original MIDI program. Note-off entries carry the patch, source ID and velocity of their corresponding note-on. A nonzero `sample_preset` selects a one-based preset entry. A missing replacement has a zero index and sets `DME_SAMPLE_MISSING` while retaining the original patch.
+#### Custom samples in the context
 
-Preset views expose the saved locator, set and preset IDs, and a runtime `generation` fingerprint for cache invalidation; it does not select saved history. Zones refer to zero-based asset entries. Each asset supplies its channel count, rate and frame count. `DmeHost.read_sample` copies interleaved normalized float PCM into caller-owned storage, with capacity measured in float values. Loops are half-open ranges at the asset's native rate. These views and the PCM callback remain tied to the same frozen input for the job.
+During an export, `project_revision` identifies the frozen song. If channels play custom samples, `effective_patches` runs parallel to the events. Each entry holds the original 14-bit bank and MIDI program, and a nonzero `sample_preset` picks a preset (counting from one). Note-offs carry the patch, source ID and velocity of their note-on. A missing sample has a zero index and sets `DME_SAMPLE_MISSING`, keeping the original patch.
+
+Presets list their saved IDs and a `generation` value that changes whenever the sample changes. Zones point at assets (counting from zero), and each asset gives its channel count, rate and length. `DmeHost.read_sample` copies interleaved float PCM into your buffer, with capacity counted in floats. Loops are half-open ranges at the asset's own rate.
 
 ### `DmeValue`, `DmeChoice`, `DmeMappingRow`
 
-`DmeValue` carries a setting's `type` and either `integer` or borrowed `text`. `DmeChoice` pairs an integer value with its label. A `DmeMappingRow` has a stable `id`, label, selected `value` and `default_value`; its choices come from the parent mapping field. Optional `similar` and `similar_count` list choices close to the default value that still suit the source, best first, and stay the same when the user picks one of them; the host shows them as **Similar instruments** above the full **Manual selection** list. Each similar value must be one of the field's choices. IDs identify settings independently of visible labels.
+`DmeValue` holds a setting's `type` and either an `integer` or borrowed `text`. `DmeChoice` pairs a value with its label.
+
+A `DmeMappingRow` is one line of a mapping list: a stable `id`, a label, the selected `value` and a `default_value`. Its choices come from the parent field. Optionally, `similar` lists good alternatives to the default, best first, which duckmidi shows as **Similar instruments** above **Manual selection**. Every similar value must also be one of the field's choices, and the list shouldn't change when the user picks from it.
+
+IDs identify settings, so labels can change freely.
 
 ```c
 DmeValue enabled = { DME_BOOL, 1, NULL };
@@ -65,26 +84,33 @@ DmeMappingRow row = { "source.0", "Channel 1", 0, 0 };
 
 ### `DmeField`, `DmeUi`
 
-A `DmeUi` views an array of fields. Each field has `id`, `label`, optional `help`, `type`, and the appropriate value/limits/choices/rows. Supported types are BOOL, INT, TEXT, CHOICE, MAPPING, NOTICE and ACTION. Text capacities include the zero terminator. Actions appear as buttons beside Save; a mapping field creates a source list and choice panel. Views remain valid through setters until the next describe, inspect, or reset callback.
+A `DmeUi` is a list of fields. Each field has an `id`, a `label`, optional `help`, a `type`, and the value, limits, choices or rows that type needs. Types are BOOL, INT, TEXT, CHOICE, MAPPING, NOTICE and ACTION. ACTION fields are buttons beside Save, and a MAPPING field becomes a source list with a choice panel. Text capacities include the terminator.
+
+A view stays valid until the next describe, inspect or reset.
 
 ```c
 DmeField field = { .id="loop", .label="Loop", .type=DME_BOOL,
                    .value={DME_BOOL,1,NULL} };
-DmeUi view = { &field, 1 }; /* Store field persistently in real plugin state. */
+DmeUi view = { &field, 1 }; /* Keep the field in your plugin's state. */
 ```
 
 ### `DmeReviewRow`, `DmeReview`
 
-A review contains a description and affected-source rows. Each row supplies its stable ID, label, issue description, original `current_mapping`, selected draft `value`, `supported` flag, recommendations, and complete manual choices. This draft belongs to the job and must not modify frozen conversion settings until review_apply is called. Return zero rows to proceed without a review window.
+A review asks the user about problems before an export. It has a description and one row per affected source. Each row has a stable ID, label, issue text, the original `current_mapping`, the draft `value`, a `supported` flag, recommendations and the full list of choices. The draft belongs to the job and shouldn't touch the frozen settings until `review_apply`. Return zero rows to skip the review.
 
 ```c
-*review = (DmeReview){0}; /* No decision needed. */
+*review = (DmeReview){0}; /* Nothing to ask. */
 /* Or: *review = (DmeReview){ state->description, state->rows, state->count }; */
 ```
 
 ### `DmeHost`, `DmeExporter`, `DmePlugin`
 
-`DmeHost` carries worker callbacks and a `user` pointer passed back unchanged. `DmeExporter` describes one format and its lifecycle callbacks. `DmePlugin` registers a module with ABI, structure size, ID and name, plus separate exporter and tool counts and lookup callbacks. A zero capability count has a NULL lookup callback. Each registered capability has its own instance. Every callback in the exporter table is required except the optional repository install, `install_label` and `history`, which are both set or both NULL, and `set_custom`.
+`DmeHost` holds the worker callbacks and a `user` pointer to pass back unchanged. `DmeExporter` describes one format and its callbacks. `DmePlugin` registers the module: ABI, struct size, ID, name, and the number of exporters and tools with a lookup callback for each. Leave a lookup NULL when its count is zero.
+
+Every exporter callback is required except these optional ones:
+
+- `install_label` and `history`, which are set together or left NULL together.
+- `set_custom`.
 
 ```c
 static const DmePlugin module = {
@@ -93,23 +119,17 @@ static const DmePlugin module = {
 };
 ```
 
-### `DmeMainHost` and `DmeTool`
+### Tools and the main thread
 
-An optional `bind_main` callback receives the main-thread host after registration. It receives NULL before unload. Its `request_tool` callback takes a stable UTF-8 tool ID and byte length, and requests the existing instance on the main thread. It is separate from the worker host.
+An optional `bind_main` callback receives the main-thread host after registration, and NULL before unload. Its `request_tool` asks for a tool by ID on the main thread.
 
-`DmeTool.interface_at` returns an immutable function table for a supported interface version. The bundled tool uses `org.duckmidi.samples` and exposes [`DmeSamplesApi`](../include/duckmidi_samples_tool.h). The caller creates an import job on the main thread, runs it on a worker, joins the worker, then finishes or discards the job on the main thread. Finishing transfers the results to the draft. Draft views remain valid through the next read and expire at the next mutation. The module frees all of its own instances and jobs.
+`DmeTool.interface_at` returns a function table for a given interface version. duckmidi's Samples tool, `org.duckmidi.samples`, is documented in [`duckmidi_samples_tool.h`](../include/duckmidi_samples_tool.h). Its jobs are created on the main thread, run on a worker, then finished or discarded back on the main thread.
 
-The desktop owns the Samples window, native file and directory pickers, batch drop collection, publication jobs and audition synth. The module owns the editable draft, analysis and peak buffers. Interface version 5 exposes stable draft tokens, asset names and in-memory undo/redo through `history_group`, `can_undo` and `undo`. `history_group` coalesces a pointer gesture into one undo step. Undo swaps complete draft metadata while sharing immutable PCM and peak buffers; new changes clear redo. History is limited to 128 steps per set and is discarded on reset or destruction. Draft views are invalidated by undo/redo as well as other mutations.
-
-`create_load` takes a library root and stable set ID and uses the import worker/finish/destroy lifecycle. It replaces the active set only after successful completion. `published` associates the active draft with its saved identity without clearing history. Switching sets retains unsaved drafts and history until reset or destruction. Draft views expose saved asset/preset IDs, asset names and original source filenames so publication preserves shared assets and layered presets. `remove` deletes an indexed draft and invalidates earlier views and pending imports. Folder imports skip paths already present, while explicit file inputs can repeat a path. Its loop snap operation uses shared stereo frame boundaries and reports when no suitable nearby crossing exists. `reset_edit` restores original import detection and defaults, with filename-first pitch. `DmeSampleEdit` retains the previous melodic key range while its category is Drums. Publication copies the draft into worker-owned storage before replacing the single saved set; no saved revisions are retained.
-
-Sample zones also expose validated tone settings for coarse and fine tuning, optional key tracking, filter cutoff and resonance, filter envelope depth, vibrato, chorus and reverb sends. Rates, frame boundaries and channel layouts retain the asset's native geometry. The set manifest documents the units and SFZ projection.
-
-## Registration functions
+## Registration
 
 ### `duckmidi_export_plugin(uint32_t abi)`
 
-This is the library's single exported entry point. Return the persistent plugin descriptor for `DME_ABI`, or NULL when the requested ABI is unsupported. The host also checks the descriptor's `abi` and exact `size`. `DmePluginEntry` is the function-pointer type used to load this symbol.
+The library's one exported function. Return your plugin descriptor when `abi` is `DME_ABI`, or NULL otherwise. duckmidi also checks the descriptor's `abi` and `size`. Plugins built for an older ABI must be rebuilt.
 
 ```c
 DME_PUBLIC const DmePlugin *DME_CALL duckmidi_export_plugin(uint32_t abi) {
@@ -119,7 +139,7 @@ DME_PUBLIC const DmePlugin *DME_CALL duckmidi_export_plugin(uint32_t abi) {
 
 ### `DmePlugin.exporter(uint32_t index)`
 
-Return the persistent exporter descriptor at an index below `exporter_count`. Return NULL for other indices. Give each module and exporter a unique stable ID; duplicate exporter IDs prevent that module from registering.
+Return the exporter at `index`, or NULL past `exporter_count`. Module and exporter IDs must be unique; a duplicate exporter ID stops the module from loading.
 
 ```c
 static const DmeExporter *DME_CALL exporter_at(uint32_t index) {
@@ -127,11 +147,13 @@ static const DmeExporter *DME_CALL exporter_at(uint32_t index) {
 }
 ```
 
-## Settings callbacks (main thread)
+## Settings (main thread)
+
+Settings last until duckmidi closes.
 
 ### `create(void)`
 
-Allocate and initialize a format's settings, including defaults needed before an arrangement is inspected. Return the plugin-owned instance pointer, or NULL on allocation failure. The host immediately validates its settings declaration.
+Allocate settings with their defaults. Return NULL if allocation fails.
 
 ```c
 static void *DME_CALL create(void) {
@@ -143,7 +165,7 @@ static void *DME_CALL create(void) {
 
 ### `destroy(void *instance)`
 
-Release every resource owned by a settings instance. The host calls this before unloading the module, including if registration fails after instance creation. Jobs own independent copies and use destroy_job for their cleanup.
+Free everything the settings own. duckmidi calls this before unloading, even when registration fails. Jobs clean up separately in `destroy_job`.
 
 ```c
 static void DME_CALL destroy(void *instance) { free(instance); }
@@ -151,7 +173,7 @@ static void DME_CALL destroy(void *instance) { free(instance); }
 
 ### `inspect(instance, context, error, capacity)`
 
-Refresh lightweight source-dependent settings, such as the list of instruments in use. The host resolves the arrangement on a worker before this callback and calls it again after edits. Copy names or other data needed after returning; do not retain the context pointer or alter the project.
+Update settings that depend on the song, such as the list of instruments in use. duckmidi calls this again after edits. Copy anything you need afterwards, and don't keep the context pointer.
 
 ```c
 static int32_t DME_CALL inspect(void *s,const DmeContext *c,char *e,uint64_t n) {
@@ -163,7 +185,7 @@ static int32_t DME_CALL inspect(void *s,const DmeContext *c,char *e,uint64_t n) 
 
 ### `describe(instance, DmeUi *ui)`
 
-Return a borrowed settings view backed by persistent instance storage. Rebuild field values from the current settings before assigning the view. The host renders and validates the declaration; no UI toolkit calls belong here.
+Fill in the fields from the current settings and return a view of them, stored in your instance.
 
 ```c
 static int32_t DME_CALL describe(void *user,DmeUi *ui) {
@@ -176,7 +198,7 @@ static int32_t DME_CALL describe(void *user,DmeUi *ui) {
 
 ### `set(instance, id, value, error, capacity)`
 
-Validate the field or mapping-row ID, value type and allowed value before changing settings. Copy accepted text into instance-owned storage. An ACTION value represents a button click. Reject unknown IDs and invalid values with an explanation rather than silently correcting them.
+Check the ID, type and value before changing anything, and copy accepted text into your own storage. An ACTION value is a button click. Reject unknown IDs and bad values with a message instead of quietly fixing them.
 
 ```c
 if (!strcmp(id,"loop") && value->type==DME_BOOL &&
@@ -188,7 +210,7 @@ snprintf(error,(size_t)capacity,"Invalid loop setting."); return DME_INVALID;
 
 ### `reset(instance)`
 
-Restore the format's current defaults. Reset does not edit the arrangement or publish output. It can also be called by an action handled in set; keep its borrowed-view lifetime consistent with describe.
+Restore the defaults. An action handled in `set` may call it too.
 
 ```c
 static void DME_CALL reset(void *user) { ((Settings *)user)->loop=1; }
@@ -196,7 +218,7 @@ static void DME_CALL reset(void *user) { ((Settings *)user)->loop=1; }
 
 ### `create_job(instance, error, capacity)`
 
-Freeze settings into an independent job before worker processing begins. Deep copy any owned strings, arrays or buffers rather than copying their pointers. Return NULL with an explanation on failure. UI changes after this call must not change the job's original conversion settings.
+Copy the settings into a new job before the export starts. Deep-copy strings, arrays and buffers. Later changes to the settings must not affect the job.
 
 ```c
 Job *job=calloc(1,sizeof(*job));
@@ -207,9 +229,9 @@ return job;
 
 ## Preflight and review
 
-### `preflight(job, context, host, error, capacity)` — worker
+### `preflight(job, context, host, error, capacity)` (worker)
 
-Analyze the frozen arrangement after the user chooses a destination, without returning artifacts or writing files. Prepare job-owned review data and poll cancellation during lengthy work. Return DME_OK even when a valid review is needed; use a failure status for unsupported input or analysis errors.
+Check the song after the user picks a destination, and prepare any review. Don't write files or artifacts here, and check for cancellation during long work. Return `DME_OK` even when a review is needed; fail only for unsupported input or errors.
 
 ```c
 if (host->cancelled(host->user)) return DME_CANCELLED;
@@ -217,18 +239,18 @@ job->issue_count=analyze_ranges(context,job);
 return DME_OK;
 ```
 
-### `review(job, DmeReview *view)` — main thread
+### `review(job, DmeReview *view)` (main thread)
 
-Return the current job-owned review view, or an empty view when no decision is needed. The host shows affected sources, recommendations, manual choices and three export decisions. Keep borrowed arrays/strings valid until the next review callback and update the support flag when the draft selection changes.
+Return the job's review, or an empty one. duckmidi shows the affected sources, your recommendations, the full choices and three buttons: **Export with Changes**, **Export Anyways** and **Cancel**. Keep the view valid until the next review call, and update `supported` when the draft changes.
 
 ```c
 *view=(DmeReview){job->description,job->rows,job->issue_count};
 return DME_OK;
 ```
 
-### `review_set(job, id, value, error, capacity)` — main thread
+### `review_set(job, id, value, error, capacity)` (main thread)
 
-Validate a review-row ID and manual/recommended choice, then update only the review draft. The original frozen settings remain available for Export Anyways. Unsupported manual choices may be accepted with `supported=0` so the user can make an informed decision.
+Check the row ID and choice, then update only the draft. You can accept an unsupported choice with `supported=0` so the user can decide for themselves.
 
 ```c
 if (!strcmp(id,"source.0") && value>=0 && value<128) {
@@ -237,9 +259,9 @@ if (!strcmp(id,"source.0") && value>=0 && value<128) {
 snprintf(error,(size_t)capacity,"Unknown review choice."); return DME_INVALID;
 ```
 
-### `review_apply(instance, job, error, capacity)` — main thread
+### `review_apply(instance, job, error, capacity)` (main thread)
 
-Commit the reviewed draft only after Export with Changes is chosen. Update the job's conversion settings and, if appropriate, the settings instance. Cancel destroys the job without this call; Export Anyways runs the unchanged job. The host rejects a review if its source arrangement has changed.
+Called when the user picks **Export with Changes**. Apply the draft to the job, and to the settings if that makes sense. **Export Anyways** runs the job unchanged, and **Cancel** destroys it. duckmidi rejects a review if the song changed in the meantime.
 
 ```c
 job->preset=job->draft_preset;
@@ -249,9 +271,9 @@ return DME_OK;
 
 ## Conversion and cleanup
 
-### `run(job, context, host, error, capacity)` — worker
+### `run(job, context, host, error, capacity)` (worker)
 
-Convert the frozen arrangement and return artifacts through the host. Poll cancellation, report progress and actionable diagnostics, and stop when an artifact callback returns zero. Callbacks are synchronous and must not be used after returning. The host handles packaging and atomic publication after a successful conversion; plugins never publish destination files themselves.
+Convert the song and hand each output file to `host->artifact`. Check for cancellation, report progress and useful diagnostics, and stop if a callback returns zero. Don't use host callbacks after returning. duckmidi writes the final files itself, safely, once the export succeeds.
 
 ```c
 if (host->cancelled(host->user)) return DME_CANCELLED;
@@ -261,13 +283,13 @@ host->progress(host->user,100);
 return DME_OK;
 ```
 
-### Export to Repository — optional
+### Export to Repository (optional)
 
-Install into a folder the user chooses, such as a game's source checkout. Set `install_label` to name the button and `history` to return a `DmeHistoryAdapter` for `DME_REPOSITORY_API`; both are set or both NULL. The host opens a folder picker, runs preflight and review as for a save, then hands the job to duckmidi's history runtime. The runtime records the folder's initialized state in the shared history ledger, writes the files durably and lets the user revert any export later, even after a restart. Plugins never write repository files themselves. See [Repository history](#repository-history).
+Lets the user install straight into a folder, such as a game's source checkout. Set `install_label` to name the button and `history` to return a `DmeHistoryAdapter` for `DME_REPOSITORY_API`. duckmidi asks for the folder, runs preflight and review as usual, then installs through its history runtime, which can revert any export later, even after a restart. Plugins never write repository files themselves. See [Repository history](#repository-history).
 
-### `destroy_job(job)` — main thread
+### `destroy_job(job)` (main thread)
 
-Free all job-owned conversion buffers, frozen settings and review storage after the worker joins, whether it succeeded, failed, or was cancelled. The host also joins workers and destroys pending review jobs before unloading a module.
+Free everything the job owns. This runs after the worker finishes, whether the export succeeded, failed or was cancelled.
 
 ```c
 static void DME_CALL destroy_job(void *user) {
@@ -277,9 +299,11 @@ static void DME_CALL destroy_job(void *user) {
 
 ## Host callbacks (worker thread)
 
+Always pass `host->user` back unchanged.
+
 ### `cancelled(host->user)`
 
-Return value zero means work may continue; nonzero means stop promptly and return DME_CANCELLED. Check at sensible intervals during analysis and conversion. The supplied user pointer must be passed unchanged.
+Nonzero means stop soon and return `DME_CANCELLED`. Check it every so often during long loops.
 
 ```c
 for(size_t i=0;i<count;i++) {
@@ -290,7 +314,7 @@ for(size_t i=0;i<count;i++) {
 
 ### `progress(host->user, percent)`
 
-Report an integer percentage from 0 through 100. The host displays progress without letting the worker manipulate UI state. Report stages at useful intervals instead of calling once per byte or sample.
+Report progress from 0 to 100. Every stage or so is plenty.
 
 ```c
 host->progress(host->user,50);
@@ -298,9 +322,9 @@ host->progress(host->user,50);
 
 ### `diagnostic(host->user, severity, flags, message)`
 
-Send a readable explanation at INFO, WARNING or ERROR severity. DISPLAY adds it to the inline summary. POPUP warning messages are consolidated into a scrollable warning after output is successfully saved; failed or cancelled exports do not produce a completion warning. Use ERROR to explain a failure, and return a failure status to prevent publication.
+Send a readable message. `DME_DISPLAY` shows it in the export panel. `DME_POPUP` warnings are gathered into one popup after a successful save; failed or cancelled exports show none. To stop an export, send an error and return a failure.
 
-Prefer short list items for routine conversions, and keep plain sentences for warnings that need advice.
+Short list items work best for routine changes. Save full sentences for warnings that need advice.
 
 ```c
 host->diagnostic(host->user,DME_WARNING,DME_POPUP|DME_LIST,"Omitted\nController 74");
@@ -310,16 +334,16 @@ host->diagnostic(host->user,DME_WARNING,DME_DISPLAY|DME_POPUP,
 
 ### `artifact(host->user, name, data, size)`
 
-Provide a unique filename and bytes. In a ZIP, `/` places the file in a folder, as in `"mod/sound/song.m64"`, and each part follows the filename rules; the host copies the buffer before returning, so temporary conversion memory can then be reused. Return zero means failure or cancellation. Paths, duplicate names and excessive output are rejected; an ignored rejection still prevents publication. Preflight must not call this.
+Hand over one output file with a unique name. In a ZIP, `/` makes folders, as in `"mod/sound/song.m64"`. duckmidi copies the data before returning, so you can reuse the buffer right away. Zero means the file was rejected or the export was cancelled. A rejection still stops the export even if you ignore it. Don't call this during preflight.
 
 ```c
 if (!host->artifact(host->user,"bank.json",buffer,length)) return DME_FAILED;
-free(buffer); /* Safe after the callback has copied it. */
+free(buffer); /* Safe: duckmidi already copied it. */
 ```
 
-## Registration example and limits
+## Putting it together
 
-The examples above use plugin-owned `Settings` and `Job` types. Assemble the callbacks into one persistent descriptor using designated initializers, and register it with exporter_at and duckmidi_export_plugin shown earlier.
+Gather the callbacks above into one descriptor and return it from `exporter_at`:
 
 ```c
 static const DmeExporter format = {
@@ -333,33 +357,41 @@ static const DmeExporter format = {
 };
 ```
 
-IDs contain ASCII letters, digits, `.`, `_`, `/` or `-` and are at most 96 bytes. Extensions contain lowercase ASCII letters/digits, without a dot, and are at most 16 bytes. The host accepts up to 64 modules/formats, 32 exporters per module, 64 setting fields, 512 choices per field, 4,096 mapping rows, 2,048 review rows, and text fields with capacities up to 4,096 bytes. A review selection must appear in its manual choices, and recommendations must be a subset of those choices. Setting IDs and row IDs must be unique in their scope.
+### Limits
 
-Output is limited to 20,000 artifacts and 512 MiB total. ZIP paths use `/`, are shorter than 8,192 UTF-8 bytes, and contain components shorter than 256 bytes. SINGLE_FILE requires exactly one artifact. The host supplies Save As, remembered folders, workers, cancellation, validation, temporary writes and atomic publication.
+| What | Limit |
+| --- | --- |
+| IDs | ASCII letters, digits, `.`, `_`, `/` or `-`; up to 96 bytes; unique in their scope |
+| Extensions | Lowercase letters and digits, no dot; up to 16 bytes |
+| Modules and formats | 64 total, 32 exporters per module |
+| Settings | 64 fields, 512 choices per field, 4,096 mapping rows, text up to 4,096 bytes |
+| Reviews | 2,048 rows; a selection must be one of the row's choices, and recommendations must come from them too |
+| Output | 20,000 files and 512 MiB total; `DME_SINGLE_FILE` needs exactly one |
+| ZIP paths | Use `/`; under 8,192 bytes, each part under 256 bytes |
 
-## Custom selections
+## Custom samples
 
-`DmeContext.library` is a metadata-only catalog of saved sets, presets and zones. Set modification time chooses the default set; locator/set/preset IDs identify a selection. `DmeMappingRow.source` preserves the original channel, route, bank and program or percussion key. Its optional `custom` descriptor supplies Custom/Show all defaults, the catalog, Add/Replace state and physical repository targets. `set_custom` receives a complete typed selection. Copy retained strings; descriptor views remain instance-owned and can change after a setter or inspection.
+`DmeContext.library` lists saved sample sets, presets and zones, without audio. The most recently changed set is the default, and saved IDs identify a choice. `DmeMappingRow.source` keeps the original channel, route, bank, and program or drum key. Its optional `custom` part supplies the Custom and Show all defaults, the catalog, Add/Replace state and the repository files a sample can replace. `set_custom` receives the full selection. Copy any strings you keep, since these views can change after a setter or inspect.
 
-Jobs copy mapping choices on the main thread. During worker preparation, `freeze_sample` validates a selected generation and returns a job-local handle with immutable preset/zone/asset views. `read_frozen_sample` reads normalized float PCM for that handle and returns `DME_OK` on success. The host retains decoded audio through preflight and conversion, including when the saved set changes. It bounds retained selections to 64 million float values.
+Jobs copy mapping choices on the main thread. On the worker, `freeze_sample` checks a selection's `generation` and returns a handle to fixed preset, zone and asset views. `read_frozen_sample` reads that handle's float PCM and returns `DME_OK`. Frozen audio stays available for the whole export, even if the user edits the set meanwhile, up to 64 million float values.
 
 ## Repository history
 
-The adapter, defined in [`duckmidi_repository_plugin.h`](../include/duckmidi_repository_plugin.h), describes only what is specific to the format. duckmidi's history runtime, `plugins/db`, owns the SQLite ledger at `plugins/history/repositories.sqlite3`, the durable write transaction, crash recovery, outside-edit detection and the history panel. The same runtime serves every exporter.
+The history adapter, in [`duckmidi_repository_plugin.h`](../include/duckmidi_repository_plugin.h), only covers what's specific to your format. duckmidi's runtime handles the rest for every exporter: the history database, safe writes, crash recovery, spotting outside edits and the history panel.
 
 | Callback | Thread | Purpose |
 | --- | --- | --- |
-| `detect` | worker | Recognize the checkout and fill `DmeHistoryTarget`: an ID, a version, the section name shown in the history panel, and `DME_REPOSITORY_CUSTOM` when custom samples apply. Fail with a reason otherwise. |
-| `inventory` | worker, optional | List the files snapshotted as the initialized baseline with `list_directory` and `list_add`. Without it, each path's baseline is captured the first time an install writes it. |
-| `allow` | any, optional | Limit writes to the format's namespace. |
-| `render` | worker | Turn every current intent into the complete desired state with `plan_put`, `plan_affect` and, when needed, `plan_backup` and `plan_depend`. Paths no longer rendered return to their baseline. |
-| `prepare` | worker, optional | Install preflight with read access to the repository. |
-| `install` | worker | Convert the export job into intents and call `apply`. |
-| `targets` | worker, optional | List physical files a custom sample may replace. |
+| `detect` | worker | Recognize the checkout and fill in `DmeHistoryTarget`: an ID, a version, the section name for the history panel, and `DME_REPOSITORY_CUSTOM` if custom samples work there. Fail with a reason otherwise. |
+| `inventory` | worker, optional | List the files that make up the starting state, with `list_directory` and `list_add`. Without it, each file's original is captured the first time an export writes it. |
+| `allow` | any, optional | Limit which paths the format may write. |
+| `render` | worker | Turn every current intent into the full desired files with `plan_put` and `plan_affect`, plus `plan_backup` and `plan_depend` when needed. Paths no longer rendered go back to their original. |
+| `prepare` | worker, optional | Check the checkout before installing. |
+| `install` | worker | Turn the export job into intents and call `apply`. |
+| `targets` | worker, optional | List the files a custom sample may replace. |
 | `finish` | main, optional | Receive the detected checkout, target and replace targets after any action. |
-| `begin_install` | main, optional | Copy request settings, such as Keep original files, into the export job. |
+| `begin_install` | main, optional | Copy request settings, such as **Keep original files**, into the export job. |
 
-An intent has a stable key, such as a song slot, a short label for the history list and a recipe in the adapter's own format. Applying an intent with an existing key replaces it, so the history keeps one row per logical change. The runtime renders all current intents together, so reverting one keeps later exports intact.
+An intent is one logical change, such as a song slot. It has a stable key, a short label for the history list and a recipe in your own format. Applying an intent with an existing key replaces it, so each song keeps one history row. Because every intent is rendered together, reverting one export leaves later ones intact.
 
 ```c
 static int32_t DME_CALL render(const DmeHistoryApi *api, DmeHistory *history,
@@ -377,12 +409,12 @@ static int32_t DME_CALL render(const DmeHistoryApi *api, DmeHistory *history,
 }
 ```
 
-Every callback receives the runtime's `DmeHistoryApi`; its handles are valid only during the call. Read the initialized content with `baseline` or `baseline_exists`, and current files with `read`. A repository-relative path uses `/`; traversal, links and aliased destinations are refused. [`repository_history_test.c`](../tests/repository_history_test.c) includes a complete adapter written only against this interface. See the [repository runtime reference](repository-history.md) for storage and recovery.
+Each callback gets the runtime's `DmeHistoryApi`, whose handles only last for that call. Read original files with `baseline` or `baseline_exists`, and current ones with `read`. Paths are relative to the checkout and use `/`; traversal, links and aliased paths are refused. For storage and recovery details, see the [repository history reference](repository-history.md).
 
-## Plugin directory
-
-`DmeHost.plugins_directory` and `DmeMainHost.plugins_directory` identify the host-selected local module directory. Plugins copy the view when retaining it.
+`DmeHost.plugins_directory` and `DmeMainHost.plugins_directory` give the plugin folder. Copy the path if you keep it.
 
 ## Examples
 
-For a complete independent exporter, see [`export_plugin_fixture.c`](../tests/export_plugin_fixture.c). For a real plugin with separate settings, review policy, conversion code and a repository adapter, see [`libraries/m64export/plugin/`](../libraries/m64export/plugin/).
+- [`export_plugin_fixture.c`](../tests/export_plugin_fixture.c): a complete standalone exporter.
+- [`repository_history_test.c`](../tests/repository_history_test.c): a complete history adapter.
+- [`libraries/m64export/plugin/`](../libraries/m64export/plugin/): a real plugin with settings, review, conversion and a history adapter.

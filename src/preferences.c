@@ -279,6 +279,17 @@ static bool application(Ini *ini, const char *key, const char *s) {
         return true;
     }
 
+    if (!strcmp(key, "repository_history")) {
+        uint32_t on;
+
+        if (!number(s, &on) || on > 1) {
+            return false;
+        }
+
+        e->repository_history = on != 0;
+        return true;
+    }
+
     if (!strcmp(key, "os_cursor")) {
         uint32_t on;
 
@@ -654,7 +665,8 @@ bool dm_preferences_save(Editor *e, uint32_t shortcut_schema, const char *const 
     char head[256];
     snprintf(head, sizeof(head), DM_TEXT_INI_APPLICATION_SECTION, e->accent, e->background,
              e->monitor ? 1 : 0, e->ui_size, e->os_cursor ? 1 : 0, e->update_mode,
-             e->update_prompted ? 1 : 0, (unsigned long long)e->sample_hash);
+             e->update_prompted ? 1 : 0, (unsigned long long)e->sample_hash,
+             e->repository_history ? 1 : 0);
     bool ok = text(&b, head) && fields(&b, e);
     snprintf(head, sizeof(head), DM_TEXT_SHORTCUTS_NSCHEMA, shortcut_schema);
     ok = ok && text(&b, head);

@@ -1,5 +1,6 @@
 extern "C" {
 #include "editor_export_internal.h"
+#include "preferences.h"
 }
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -230,6 +231,46 @@ extern "C" void test_export_history_panel(Editor *e) {
     assert((history->Flags & ImGuiWindowFlags_NoTitleBar) &&
            (history->Flags & ImGuiWindowFlags_NoResize) && !history->HasCloseButton);
 
+    /* Enable off: the drawer explains the .bkp copies and hides the history actions; the
+       choice round-trips through the preferences file (smoke editors do not save on their
+       own). */
+    char saved_settings[DM_PATH];
+    std::snprintf(saved_settings, sizeof(saved_settings), "%s", e->settings_path);
+    std::snprintf(e->settings_path, DM_PATH,
+                  "agents/reports/export-plugins/history-preferences.ini");
+    auto settle = [&]() {
+        uint64_t deadline = SDL_GetTicks() + 15000;
+
+        do {
+            frame(e, -100, -100, false);
+            SDL_Delay(1);
+        } while (ed_export_busy(e) && SDL_GetTicks() < deadline);
+
+        frame(e, -100, -100, false);
+    };
+    click(e, history, "Enable");
+    settle();
+    assert(!e->repository_history);
+    assert(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names));
+    e->repository_history = true;
+    assert(dm_preferences_load(e, ed_shortcut_schema()) && !e->repository_history);
+    char *ini = static_cast<char *>(
+        SDL_LoadFile("agents/reports/export-plugins/history-preferences.ini", nullptr));
+    assert(ini && std::strstr(ini, "repository_history=0"));
+    SDL_free(ini);
+    SDL_Surface *off = SDL_RenderReadPixels(e->renderer, nullptr);
+    assert(off && SDL_SaveBMP(off, "agents/reports/export-plugins/history-off.bmp"));
+    SDL_DestroySurface(off);
+    click(e, history, "Enable");
+    settle();
+    assert(e->repository_history);
+    click(e, history, "Initialize");
+    frame(e, -100, -100, false);
+    auto *confirm = ImGui::FindWindowByName("Confirm repository action");
+    assert(confirm && confirm->Active);
+    click(e, confirm, "Cancel");
+    std::snprintf(e->settings_path, DM_PATH, "%s", saved_settings);
+
     /* Export resizes vertically; the drawer and the mapping panels follow it. The window never
        becomes shorter than its contents need. */
     ImGuiWindow *panel = nullptr;
@@ -239,8 +280,15 @@ extern "C" void test_export_history_panel(Editor *e) {
     }
 
     assert(panel);
+    /* Drag the bottom-right resize grip, as a user would: until the user resizes it, the
+       window keeps its default height, so setting its size directly is undone next frame. */
     auto resize = [&](float height) {
-        ImGui::SetWindowSize(main, {main->Size.x, height});
+        float x = main->Pos.x + main->Size.x - 4, y = main->Pos.y + main->Size.y - 4;
+        float target = y + height - main->Size.y;
+        frame(e, x, y, false);
+        frame(e, x, y, true);
+        frame(e, x, target, true);
+        frame(e, x, target, false);
 
         for (int i = 0; i < 3; i++) {
             frame(e, -100, -100, false);

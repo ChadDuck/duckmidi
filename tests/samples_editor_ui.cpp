@@ -384,9 +384,9 @@ extern "C" void test_samples_ui(Editor *e, const char *root, void (*check)(bool,
     check(e->project.patch_replacement_count == 1 &&
               e->project.patch_replacements[0].generation != 0,
           "apply sample source to the original MIDI program");
-    const char *filename = ed_sample_channel_filename(e, 0);
-    check(filename && !std::strcmp(filename, "codec-0-0.wav"),
-          "playlist sample label uses the original filename");
+    const char *label = ed_sample_channel_name(e, 0);
+    check(label && !std::strcmp(label, "codec-0-0"),
+          "playlist sample label uses the sample's name");
     int automation = dm_pattern_add(&e->project, "Label automation");
     check(automation >= 0, "create populated subrow fixture");
     e->project.patterns[automation].kind = 1;

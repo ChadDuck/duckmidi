@@ -52,6 +52,7 @@ struct DmEditorSamples {
     float split, drag_start, drag_width;
     double drag_value;
     int envelope_handle, loop_handle;
+    int history_request; /* 1 undo, 2 redo: applied after the editor panel is drawn. */
     uint32_t selected;
     char set_name[DM_SAMPLE_NAME_CAP], update_id[DM_SAMPLE_ID_CAP];
     SamplePaths *drop;
@@ -548,7 +549,8 @@ static const DmSampleManifest *browse_set(DmEditorSamples *s, const char *root, 
     return &s->browse;
 }
 
-const char *ed_sample_channel_filename(Editor *e, int channel) {
+/* The name given to the channel's sample in its set, for the playlist label. */
+const char *ed_sample_channel_name(Editor *e, int channel) {
     if (channel < 0 || channel >= 16 || !e->project.patch_replacement_count) {
         return NULL;
     }
@@ -588,7 +590,9 @@ const char *ed_sample_channel_filename(Editor *e, int channel) {
             if (!strcmp(p->id, r->preset_id) && p->zone_count) {
                 const DmSampleAsset *a = &set->assets[set->zones[p->first_zone].asset];
                 snprintf(s->label_names[channel], sizeof(s->label_names[channel]), "%s",
-                         *a->source_name ? a->source_name : a->file);
+                         *p->name          ? p->name
+                         : *a->source_name ? a->source_name
+                                           : a->file);
                 break;
             }
         }
@@ -1573,7 +1577,11 @@ static bool waveform(Editor *e, DmEditorSamples *s, const DmNativeTool *tool,
     UiRect rect = {at.x, at.y, ui_available().x, 106};
     ui_canvas("##sample-waveform", rect.w, rect.h);
     bool hovered = ui_hover();
-    ui_tip(DM_TEXT_SAMPLE_PLAYBACK_HELP);
+
+    /* The tip would cover the waveform while a boundary is being dragged. */
+    if (!ui_mouse().left) {
+        ui_tip(DM_TEXT_SAMPLE_PLAYBACK_HELP);
+    }
     ui_rect(rect, BG, 3);
     double frames = (double)draft->frames;
     bool loop = z->loop_mode != DME_SAMPLE_NO_LOOP;
@@ -1622,11 +1630,6 @@ static bool waveform(Editor *e, DmEditorSamples *s, const DmNativeTool *tool,
     if (loop) {
         ui_line((UiPoint){lo, rect.y}, (UiPoint){lo, rect.y + rect.h}, GOLD, 2);
         ui_line((UiPoint){hi, rect.y}, (UiPoint){hi, rect.y + rect.h}, GOLD, 2);
-
-        char range[96];
-        snprintf(range, sizeof(range), DM_TEXT_SAMPLE_LOOP_RANGE, (unsigned long long)z->loop_start,
-                 (unsigned long long)z->loop_end);
-        ui_dim(range);
 
         if (s->loop_warning) {
             ui_dim(DM_TEXT_SAMPLE_LOOP_WARNING);
@@ -1816,6 +1819,35 @@ static bool envelope(Editor *e, DmEditorSamples *s, DmeSampleZoneParams *z) {
     return changed;
 }
 
+/* Undo and Redo beside Reset to import values; the request runs after the panel is drawn,
+   since the panel works on a copy of the current edit. */
+static void history_buttons(DmEditorSamples *s, const DmNativeTool *tool,
+                            const DmeSamplesApi *api) {
+    static const char *const labels[] = {DM_TEXT_SAMPLE_RESET_IMPORT, DM_TEXT_SAMPLE_UNDO,
+                                         DM_TEXT_SAMPLE_REDO};
+
+    /* A narrow panel puts them on the next line instead of past its edge. */
+    if (ui_button_row_width(labels, 3) <= ui_available().x) {
+        ui_same();
+    }
+
+    ui_disabled(!api->can_undo(tool->instance, false));
+
+    if (ui_button(DM_TEXT_SAMPLE_UNDO, 0, 0)) {
+        s->history_request = 1;
+    }
+
+    ui_disabled_end();
+    ui_same();
+    ui_disabled(!api->can_undo(tool->instance, true));
+
+    if (ui_button(DM_TEXT_SAMPLE_REDO, 0, 0)) {
+        s->history_request = 2;
+    }
+
+    ui_disabled_end();
+}
+
 static void sample_details(Editor *e, DmEditorSamples *s, const DmNativeTool *tool,
                            const DmeSamplesApi *api) {
     DmeSampleDraft draft;
@@ -1852,6 +1884,7 @@ static void sample_details(Editor *e, DmEditorSamples *s, const DmNativeTool *to
         changed = true;
     }
 
+    history_buttons(s, tool, api);
     ui_text(DM_TEXT_SAMPLE_LOOP_TITLE);
     ui_separator();
     bool loop_changed = waveform(e, s, tool, api, &draft, z);
@@ -1963,12 +1996,7 @@ static void sample_details(Editor *e, DmEditorSamples *s, const DmNativeTool *to
 static void sample_rows(Editor *e, DmEditorSamples *s, const DmNativeTool *tool,
                         const DmeSamplesApi *api, uint32_t count) {
     float available = ui_available().x;
-    float footer = ui_text_height(DM_TEXT_SAMPLE_AUDITION_HELP, available) + ui_frame_height() +
-                   2 * ui_item_spacing_y();
-
-    if (api->can_undo(tool->instance, false) || api->can_undo(tool->instance, true)) {
-        footer += ui_frame_height() + ui_item_spacing_y();
-    }
+    float footer = ui_frame_height() + ui_item_spacing_y();
 
     if (s->work.thread) {
         footer += 2 * (ui_frame_height() + ui_item_spacing_y());
@@ -2176,7 +2204,6 @@ void ed_samples_draw(Editor *e) {
             }
         } else {
             sample_rows(e, s, tool, api, count);
-            ui_wrap(DM_TEXT_SAMPLE_AUDITION_HELP);
             ui_disabled(!*s->set_name);
 
             if (ui_button(DM_TEXT_SAVE, ui_available().x, 0)) {
@@ -2186,11 +2213,13 @@ void ed_samples_draw(Editor *e) {
             ui_disabled_end();
         }
 
-        if (api->can_undo(tool->instance, false) || api->can_undo(tool->instance, true)) {
+        /* With no sample shown, Undo and Redo stay reachable here (after deleting the last one). */
+        if (!count &&
+            (api->can_undo(tool->instance, false) || api->can_undo(tool->instance, true))) {
             ui_disabled(!api->can_undo(tool->instance, false));
 
             if (ui_button(DM_TEXT_SAMPLE_UNDO, 0, 0)) {
-                ed_samples_history(e, false, true);
+                s->history_request = 1;
             }
 
             ui_disabled_end();
@@ -2198,10 +2227,15 @@ void ed_samples_draw(Editor *e) {
             ui_disabled(!api->can_undo(tool->instance, true));
 
             if (ui_button(DM_TEXT_SAMPLE_REDO, 0, 0)) {
-                ed_samples_history(e, true, true);
+                s->history_request = 2;
             }
 
             ui_disabled_end();
+        }
+
+        if (s->history_request) {
+            ed_samples_history(e, s->history_request == 2, true);
+            s->history_request = 0;
         }
 
         ui_disabled_end();

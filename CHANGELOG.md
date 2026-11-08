@@ -1,5 +1,12 @@
 # duckmidi changelog
 
+# 0.12.1
+
+1. Added a repository history **Enable/Disable** checkbox, saved with your preferences; when it is off, it won't use the repository history plugin.
+    - **Keep original files** still applies with history off; with both off, exports simply overwrite files.
+2. Channels that play a custom sample show the sample's name instead of its filename.
+3. In Samples, the waveform's tip stays hidden while you drag.
+
 # 0.12.0
 
 ## **Custom Samples**

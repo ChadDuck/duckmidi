@@ -398,28 +398,76 @@ static void expect_in(const char *checkout, const char *path, const char *value)
     es_repository_close(probe);
 }
 
-static int32_t overlay_action(const char *plugins, const char *checkout, uint32_t action,
-                              const char *key, const char *recipe, const DmeHost *host, char *error,
-                              size_t cap) {
+static int32_t runtime_action(const char *plugins, const char *checkout, uint32_t action,
+                              const char *key, const char *recipe, bool untracked, bool keep,
+                              const DmeHost *host, char *error, size_t cap) {
     const DmeHistoryRuntime *runtime = duckmidi_history_runtime(DME_REPOSITORY_API);
     DmeRepositoryRequest request = {.size = sizeof(request),
                                     .action = action,
+                                    .keep_originals = keep,
                                     .plugins_directory = {plugins, strlen(plugins)},
                                     .checkout = {checkout, strlen(checkout)},
-                                    .logical_key = {key ? key : "", key ? strlen(key) : 0}};
+                                    .logical_key = {key ? key : "", key ? strlen(key) : 0},
+                                    .untracked = untracked};
     void *job = runtime->create_job(&overlay, "org.example.overlay", NULL, (void *)recipe, &request,
                                     error, cap);
     int32_t status = job ? runtime->prepare(job, NULL, host, error, cap) : DME_FAILED;
     status = status == DME_OK ? runtime->run(job, NULL, host, error, cap) : status;
     DmeRepositoryView view = {0};
 
-    if (status == DME_OK && action != DME_REPOSITORY_INSTALL) {
+    if (status == DME_OK && action != DME_REPOSITORY_INSTALL && !untracked) {
         runtime->describe(job, &view);
         assert(view.scope_count && !strcmp(view.scopes[0].target_name.data, "Overlay"));
     }
 
     runtime->destroy_job(job);
     return status;
+}
+
+static int32_t overlay_action(const char *plugins, const char *checkout, uint32_t action,
+                              const char *key, const char *recipe, const DmeHost *host, char *error,
+                              size_t cap) {
+    return runtime_action(plugins, checkout, action, key, recipe, false, false, host, error, cap);
+}
+
+/* History off: files are written directly. With Keep original files on, the first original is
+   kept as .bkp and an existing .bkp is never replaced; with it off, files are simply
+   overwritten. No history database is created. */
+static void untracked_install(const char *root, unsigned long long now, DmeHost *host) {
+    char checkout[4096], plugins[4096], path[4096], error[2048] = {0};
+    snprintf(checkout, sizeof(checkout), "%s/untracked-%llu", root, now);
+    snprintf(plugins, sizeof(plugins), "%s/untracked-plugins-%llu", root, now);
+    snprintf(path, sizeof(path), "%s/config", checkout);
+    assert(SDL_CreateDirectory(path) && SDL_CreateDirectory(plugins));
+    put(checkout, "overlay.marker", "");
+    put(checkout, "config/settings.txt", "original");
+    assert(runtime_action(plugins, checkout, DME_REPOSITORY_INSPECT, NULL, NULL, true, true, host,
+                          error, sizeof(error)) == DME_OK);
+    assert(runtime_action(plugins, checkout, DME_REPOSITORY_INSTALL, NULL,
+                          "config/settings.txt\nA\nfirst", true, true, host, error,
+                          sizeof(error)) == DME_OK);
+    expect_in(checkout, "config/settings.txt", "first");
+    expect_in(checkout, "config/settings.txt.bkp", "original");
+    assert(runtime_action(plugins, checkout, DME_REPOSITORY_INSTALL, NULL,
+                          "config/settings.txt\nA\nsecond", true, true, host, error,
+                          sizeof(error)) == DME_OK);
+    expect_in(checkout, "config/settings.txt", "second");
+    expect_in(checkout, "config/settings.txt.bkp", "original");
+    assert(runtime_action(plugins, checkout, DME_REPOSITORY_INSTALL, NULL, "extra/new.txt\nB\nnew",
+                          true, true, host, error, sizeof(error)) == DME_OK);
+    expect_in(checkout, "extra/new.txt", "new");
+    expect_in(checkout, "extra/new.txt.bkp", NULL);
+    put(checkout, "config/plain.txt", "original");
+    assert(runtime_action(plugins, checkout, DME_REPOSITORY_INSTALL, NULL,
+                          "config/plain.txt\nC\nreplaced", true, false, host, error,
+                          sizeof(error)) == DME_OK);
+    expect_in(checkout, "config/plain.txt", "replaced");
+    expect_in(checkout, "config/plain.txt.bkp", NULL);
+    assert(runtime_action(plugins, checkout, DME_REPOSITORY_REVERT_ALL, NULL, NULL, true, true,
+                          host, error, sizeof(error)) != DME_OK);
+    snprintf(path, sizeof(path), "%s/history/repositories.sqlite3", plugins);
+    assert(!SDL_GetPathInfo(path, NULL));
+    puts("PASS history off writes directly and keeps .bkp originals only when asked");
 }
 
 static void overlay_plugin(const char *root, unsigned long long now, DmeHost *host) {
@@ -785,6 +833,7 @@ int main(int argc, char **argv) {
     es_repository_close(r);
     puts("PASS concurrent preflight generation rejection preserves the newer committed graph");
     overlay_plugin(argv[1], (unsigned long long)now, &host);
+    untracked_install(argv[1], (unsigned long long)now, &host);
     uint8_t hash[32];
     es_sha256("abc", 3, hash);
     static const uint8_t expected[] = {0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,

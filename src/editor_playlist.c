@@ -363,7 +363,7 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
     char text[128];
     ed_playlist_label_text(e, r, label, row, list, i, y, text, sizeof(text));
     int encoded = i ? list[i - 1] : 0, channel = encoded % 16, lane = encoded / 16;
-    const char *sample = i && !lane ? ed_sample_channel_filename(e, channel) : NULL;
+    const char *sample = i && !lane ? ed_sample_channel_name(e, channel) : NULL;
 
     if (sample) {
         ui_rect((UiRect){r.x, y, label - 18, row}, (e->accent & 0xffffffu) | 0x30000000u, 0);

@@ -722,6 +722,16 @@ bool ui_select(const char *s, bool selected, float w, float h) {
     return pressed;
 }
 
+bool ui_select_wrapped(const char *id, const char *text, bool selected, float w, float h) {
+    ImVec2 at = ImGui::GetCursorScreenPos();
+    bool pressed = ImGui::Selectable(id, selected, 0, {w, h});
+    float text_h = ImGui::CalcTextSize(text, nullptr, false, w).y;
+    ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
+                                        {at.x, at.y + ImMax(0.f, (h - text_h) / 2)},
+                                        ImGui::GetColorU32(ImGuiCol_Text), text, nullptr, w);
+    return pressed;
+}
+
 bool ui_check(const char *s, bool *v) {
     return ImGui::Checkbox(s, v);
 }

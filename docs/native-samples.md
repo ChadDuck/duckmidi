@@ -1,46 +1,105 @@
-# Native game samples
+# Custom samples in SM64 and OoT
 
-The M64 SM64/HackerSM64 and OoT exporters lower saved presets from frozen PCM. SM64 repository installation uses the US audio configuration. OoT resolves `VERSION` from `.make_options.mk` and the Makefile and uses that version's extracted sources, with authored `assets/audio/` inputs taking precedence. Ambiguous authored/extracted definitions or duplicate indices are errors.
+When you export a song that uses your own samples, the M64 (SM64 and HackerSM64) and OoT exporters convert each sample preset into the game's own format. The game can't do everything duckmidi's sampler does, so some settings are converted, baked into the audio or left out. This page lists what happens to each one.
 
-| Setting | Native result |
+To set up custom samples for an export, see [Custom game samples](user-guide.md#custom-game-samples) in the user guide.
+
+## Which game sources are used
+
+- **SM64 and HackerSM64:** Export to Repository uses the US audio setup.
+- **OoT:** the game version comes from `.make_options.mk` and the Makefile, and duckmidi uses that version's extracted sources. Your own files in `assets/audio/` take priority. If a definition is ambiguous or an index is used twice, the export stops with an error.
+
+## What happens to each setting
+
+Saved packages and Export to Repository, Add and Replace, and every game all handle settings the same way.
+
+| Setting | In the game |
 | --- | --- |
-| Playback range | Exported PCM is trimmed to the half-open frame range; the library is unchanged. |
-| Channels and gain | Channels are averaged into mono, gain is baked once, and PCM rounds to 16-bit; peaks above full scale lower the whole region's gain. |
-| Rate, root, cents, coarse/fine | C4 tuning combines the saved values with source rate; rates above 192 kHz and notes above the engine limit near 4x lower the exported sample rate while preserving pitch. A row that cannot fit uses its ordinary game mapping. |
-| Replace rate | An adaptive Blackman-windowed low-pass avoids raising initialized consumers' playback rates; An incompatible Replace becomes Add; rates below 1,000 Hz or collapsed loops fall back to the ordinary mapping. |
-| Continuous loop | Loop positions move relative to the trim. SM64 AIFF markers and OoT's converter-specific half-open WAV endpoint are emitted separately. Resampling rounds endpoints within one output frame. |
-| Envelope | Delay/attack/hold/decay clamp to 0–100 seconds and round on the exporter's 240-step scale; sustain clamps to 0–1. Both engines square the envelope value, so levels are written as square roots. Decay follows duckmidi's SoundFont curve, a steady 96 dB fall per decay time down to sustain, as up to seven straight segments of at most 12 dB. Release is one native straight-line fade. The exporter picks the table entry closest to 0.458 (SM64) or 0.382 (OoT) times the release time, the fade that best follows duckmidi's level down to −60 dB; the start of the tail stays slightly louder and the very end slightly shorter. Engine update rates vary with the audio configuration. |
-| Keys and velocities | Every matching region layers deterministically; unmatched notes are silent. Invalid or unavailable presets and selections beyond the 256-region preparation limit or native bank capacity use their ordinary game mapping; SM64 has 127 melodic/128 drum slots and OoT has 126 melodic/64 playable drum slots, shared with stock mappings. |
-| Sustain-only loop | Exported as a continuous loop, including during release. |
-| Cut / Cut by | Shortens earlier matching notes on the same source channel and saved preset, including pedal-held notes; the native release tail still plays. |
-| Pan | Melodic zones use layer pan; drums use bank entries in Add and Replace. Authored MIDI CC10 anywhere on a channel, or non-default mixer pan, overrides preset pan. Generated centre defaults do not override it. |
-| Reverb, vibrato | Channel commands at note starts: reverb send 0–1 becomes byte 0–127; vibrato rate and depth convert with each engine's update rate and pitch law (SM64/HackerSM64 240 updates/s, OoT 180 at 32 kHz NTSC). Ordinary notes return reverb and depth to zero. Authored CC91 owns a channel's reverb and CC1 its vibrato depth; a set preset vibrato rate still applies with CC1. When overlapping notes on one channel want different values, the latest note's value applies and the export warns. |
-| Static filter, chorus | Baked into the exported PCM as duckmidi plays them at the root key: FluidSynth's low-pass with SoundFont resonance, and a mono fold of its default three-voice chorus. Loop bodies are the settled effect output running around the loop, and the chorus sweep rounds to whole cycles per loop or holds still in loops shorter than one cycle. Chorus is left out of loops shorter than its 10 ms delay. Baked effects move with playback pitch. The filter envelope is omitted. |
-| Key tracking | Drum entries follow the zone's tracking exactly: 0% for percussion presets unless customized, as in playback. Melodic instruments always track 100%; other values are reported. |
+| Playback start and end | The exported audio is trimmed to them. Your saved sample isn't changed. |
+| Channels and gain | Stereo is mixed to mono, gain is applied and the audio is rounded to 16-bit. If that would clip, the whole sample is turned down. |
+| Pitch (rate, root, cents, coarse, fine) | Combined into the game's tuning. Rates above 192 kHz, or notes beyond the engine's limit of about 4x speed, lower the exported sample rate without changing pitch. If a sample still can't fit, that row uses its ordinary game instrument. |
+| Continuous loop | Kept, adjusted for the trim. Resampling can shift the loop points by up to one frame. |
+| Sustain-only loop | Becomes a continuous loop, including during release. |
+| Envelope | Converted to the game's envelope; see [Envelopes](#envelopes). |
+| Keys and velocities | Every matching region plays, layered. Notes no region covers are silent. |
+| Cut / Cut by | Earlier matching notes on the same channel and preset are shortened, including ones held by the pedal. The game's release tail still plays. |
+| Pan | Melodic samples use the note layer's pan; drums use their drum entry. MIDI pan (CC10) anywhere on the channel, or a non-default mixer pan, overrides the preset's pan. duckmidi's automatic centre pan doesn't. |
+| Reverb, vibrato | Become the channel's reverb and vibrato at each note start; see [Reverb and vibrato](#reverb-and-vibrato). |
+| Filter, chorus | Baked into the exported audio; see [Baked effects](#baked-effects). |
+| Filter envelope | Left out. |
+| Key tracking | Drums keep theirs exactly (0% unless you changed it). Melodic samples always track 100%; any other value is left out. |
 
-The support matrix applies equally to saved packages and repository installation. “Omitted” means export succeeds and names the setting in its warning.
+Anything left out is still exported; the warning window names it.
 
-| Preset setting | SM64 Add | SM64 Replace | HackerSM64 Add | HackerSM64 Replace | OoT Add | OoT Replace |
-| --- | --- | --- | --- | --- | --- | --- |
-| Range, pitch, gain, envelope | Converted | Converted | Converted | Converted | Converted | Converted |
-| Continuous loop | Native | Native | Native | Native | Native | Native |
-| Sustain-only loop | Continuous | Continuous | Continuous | Continuous | Continuous | Continuous |
-| Cut / Cut by | Shortened | Shortened | Shortened | Shortened | Shortened | Shortened |
-| Melodic pan | Layer | Layer | Layer | Layer | Layer | Layer |
-| Drum pan | Drum entry | Drum entry | Drum entry | Drum entry | Drum entry | Drum entry |
-| Reverb, vibrato | Channel | Channel | Channel | Channel | Channel | Channel |
-| Static filter, chorus | Baked | Baked | Baked | Baked | Baked | Baked |
-| Filter envelope, melodic tracking other than 100% | Omitted | Omitted | Omitted | Omitted | Omitted | Omitted |
-| Drum key tracking | Drum entry | Drum entry | Drum entry | Drum entry | Drum entry | Drum entry |
+### Envelopes
 
-The warning window lists each changed setting under **Custom samples**, one line per preset, such as `epiano: chorus baked into the sample`. Ordinary rounding is not reported. Missing host services, failed frozen PCM reads, allocation failures, cancellation and repository safety/write errors still stop export.
+- Delay, attack, hold and decay are limited to 0–100 seconds and rounded to the exporter's 240-step scale. Sustain is limited to 0–1.
+- Both games square the envelope level, so duckmidi writes square roots to match.
+- Decay follows duckmidi's own curve, a steady 96 dB drop per decay time down to the sustain level, as up to seven straight segments of at most 12 dB each.
+- Release is a single straight fade. duckmidi picks the game's fade closest to 0.458 (SM64) or 0.382 (OoT) times the release time, which best matches duckmidi's fade down to −60 dB. The start of the tail ends up slightly louder and the very end slightly shorter.
 
-Layer pan never consumes another channel. Overflow voices copy the source channel's pan weight, and shared layer subroutines establish their own pan state. Channels containing only stock mappings keep their existing encoded output. A panned Replace sets the pan of every native drum entry sharing that physical sample; a centred zone leaves each stock drum pan unchanged. Baked filter and chorus reach every consumer of a replaced sample, including sound effects, at whatever pitch they play it. Sequence-level melodic pan, reverb, vibrato and choke groups apply only to the exported song. Revert restores shared bank pan, sample and sequence changes together.
+How fast envelopes update depends on the game's audio settings.
 
-Add appends managed inputs beside native samples and preserves initialized ordering. Added samples are named after their preset, using letters, digits and underscores, with the region number for layered presets and a six-character identity suffix that keeps same-named presets from different sets apart. M64 allocates its managed banks after initialized banks. Identical shared Add assets remain while any active song needs them; conflicting definitions require distinct resources or explicit global Replace.
+### Reverb and vibrato
 
-Replace resolves a physical AIFF/WAV and updates every current native bank/soundfont consumer, including default and explicit tuning, low/mid/high regions, drums and sound effects. Independent envelopes and transposition remain, while shared drum pan follows the replacement preset when its zone is panned. It keeps the exact filename and its first original backup. A generated song can use another existing samplebank when every custom region is assigned to compatible Replace targets in that bank and every used row is custom. Otherwise those other-bank replacements become Adds in the default bank. Missing physical targets or no matching inspected checkout also use Add; failure to open a configured checkout remains an error. Without a region choice, layered Replace uses the region covering the most played notes, with the lowest region index breaking ties.
+- The reverb send (0–1) becomes a channel reverb of 0–127.
+- Vibrato rate and depth are converted for each engine's update rate and pitch scale: 240 updates per second for SM64 and HackerSM64, 180 for OoT (32 kHz NTSC).
+- Ordinary notes set reverb and vibrato depth back to zero.
+- MIDI reverb (CC91) on a channel overrides the preset's reverb, and MIDI modulation (CC1) overrides its vibrato depth. A preset's vibrato rate still applies alongside CC1.
+- If overlapping notes on one channel want different values, the latest note wins and the export warns.
 
-Ordinary Add packages contain native audio and instructions. Replace packages describe the selected checkout's complete source changes, expected SHA-256 values, required backups and removals; they do not commit history. The game toolchain creates compressed samples, codebooks, loop state, objects and tables during its normal incremental build.
+### Baked effects
 
-Native encoders may repeat a short loop to fill their minimum encoded loop length. The loop start and period remain equivalent; the encoded loop end can therefore exceed the source endpoint by whole loop periods. OoT font-cache estimates reserve a complete order-2 codebook with all 16 native predictors and loop state for every emitted sample, without assuming deduplication.
+Filter and chorus are rendered into the exported audio the way duckmidi plays them at the root key: FluidSynth's low-pass filter with SoundFont resonance, and a mono mix of its three-voice chorus.
+
+- Because they're baked in, they shift with the pitch each note plays at.
+- Loops contain the settled effect. The chorus sweep is rounded to whole cycles per loop, or holds still in loops shorter than one cycle.
+- Chorus is left out of loops shorter than its 10 ms delay.
+
+## Add and Replace
+
+**Add** puts your sample into the game next to its existing samples, without changing their order.
+
+- Added samples are named after their preset, using letters, digits and `_`. Layered presets add the region number, and a six-character suffix keeps same-named presets from different sets apart.
+- M64 places its banks after the checkout's existing ones.
+- Identical samples shared by several songs stay as long as any song uses them. Different samples with the same definition need separate names, or a Replace.
+
+**Replace** swaps an existing game sample (AIFF or WAV) for yours, everywhere the game uses it: every bank and soundfont, all tunings and note ranges, drums and sound effects.
+
+- Each instrument keeps its own envelope and transposition.
+- If your sample would make existing instruments play at a higher rate, it's low-pass filtered and resampled to fit instead.
+- The file keeps its exact name, and its first original is kept as a `.bkp`.
+- If your preset is panned, every drum sharing the sample takes that pan. A centred preset leaves stock drum pan alone.
+- Baked filter and chorus reach everything that uses the sample, including sound effects, at whatever pitch they play it.
+- A song can use another existing sample bank only if every custom region is a compatible Replace in that bank and every row it uses is custom. Otherwise those replacements become Adds in the default bank.
+- A Replace also becomes an Add when its target file is missing, when no inspected checkout matches, or when it isn't compatible. Failing to open a configured checkout is still an error.
+- For a layered preset with no region chosen, Replace uses the region that plays the most notes, picking the lowest-numbered one on a tie.
+
+Reverting a song in **Repository history** restores shared drum pan, samples and sequence changes together.
+
+## Limits
+
+- Up to 256 regions per export, within the game's bank space. SM64 has 127 melodic and 128 drum slots; OoT has 126 melodic and 64 playable drum slots. Stock instruments share these slots.
+- Replace targets below 1,000 Hz, or loops that would collapse, fall back to the ordinary instrument.
+- Presets that are missing, invalid or over these limits use the row's ordinary game instrument.
+
+## Packages
+
+- **Add** packages contain the converted audio and install steps.
+- **Replace** packages describe every source change for the chosen checkout: expected SHA-256 values, the backups to make and the files to remove. They don't record history.
+
+The game's own build turns the audio into compressed samples, codebooks and tables as usual.
+
+## Warnings
+
+The warning window lists each changed setting under **Custom samples**, one line per preset, such as `epiano: chorus baked into the sample`. Normal rounding isn't reported.
+
+These still stop the export: missing host services, failing to read sample audio, running out of memory, cancelling, and repository safety or write errors.
+
+## Fine print
+
+- Layer pan never uses up another channel. Extra voices copy their channel's pan, and shared layer routines set their own.
+- Channels that only use stock instruments export exactly as before.
+- Sequence-level melodic pan, reverb, vibrato and choke groups only affect the exported song.
+- To meet the minimum loop length, the game's encoder may repeat a short loop. The loop sounds the same, but its encoded end can sit whole loop lengths past yours.
+- OoT's memory estimate reserves a full codebook (all 16 predictors) and loop state for every sample, without assuming any are shared.
