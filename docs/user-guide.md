@@ -75,6 +75,8 @@ Click **+ New** beside **Arrangement** to add a channel, then pick **Melody** or
 
 The usual shortcuts work: **Ctrl + C / X / V**, **Ctrl + D** to duplicate, **Delete**, and **Ctrl + Z / Y**. **Ctrl + Q** snaps selected notes to quarter beats.
 
+With the notes section focused, **Ctrl + Shift + C / X** copies or cuts selected notes with their pitch-bend points; **Ctrl + V** pastes them relative to the playhead. Change these shortcuts in **Edit > Keyboard shortcuts**. **Escape** clears selections in both the notes and events sections before closing the editor.
+
 ## 5. Play and record with your keyboard
 
 ![Keyboard piano keys](images/keyboard-piano.svg)
@@ -105,6 +107,8 @@ Events shape how notes sound over time: velocity, pitch bend, modulation, volume
 3. Click to add points, or drag to draw a line. Drag a line's hollow handle to curve it, and right-click to erase.
 
 For velocity, drag the note stems up or down. **Shift + right-click** a point to change its value or make it **Hold** until the next one.
+
+Event types with data are marked in the application color; **Velocity** is marked once a note's velocity differs from the default of 100. **Copy** captures the displayed event type for the current note color; hold **Shift** for **Copy all** event types. **Paste** restores their original positions, regardless of the playhead. These buttons have their own clipboard. Copied velocities apply to notes with matching positions and pitches.
 
 ### Repeating effects (LFOs)
 

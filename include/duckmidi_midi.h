@@ -25,6 +25,8 @@
 #define MIDI_SYSTEM 0xf0 /* First status that is not a channel message */
 #define MIDI_SYSEX 0xf0
 #define MIDI_SYSEX_END 0xf7
+#define MIDI_CLOCK 0xf8
+#define MIDI_ACTIVE_SENSING 0xfe
 #define MIDI_META 0xff
 
 /* Meta event types, the byte after MIDI_META */

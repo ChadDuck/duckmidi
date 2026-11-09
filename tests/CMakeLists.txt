@@ -3,7 +3,7 @@ if(NOT WIN32)
 endif()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(TEST_BIN "${CMAKE_CURRENT_BINARY_DIR}/bin")
-set(TEST_LIBRARIES duckversion duckcore duckgui duckmidi_io fluidsynth duckmedia ducksamplesynth winhttp)
+set(TEST_LIBRARIES duckversion duckcore duckgui duckmidi_io duckmidi_input fluidsynth duckmedia ducksamplesynth winhttp)
 
 function(test_dependencies TARGET)
   target_include_directories(${TARGET} PRIVATE "${PROJECT_SOURCE_DIR}/src"
@@ -64,9 +64,12 @@ function(desktop_test NAME AUDIO)
     add_custom_command(TARGET ${NAME} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
       "${COMPILER_BIN}/libwinpthread-1.dll" "${TEST_BIN}" VERBATIM)
   endif()
-  add_test(NAME ${NAME} COMMAND ${NAME})
-  set_tests_properties(${NAME} PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
-    LABELS desktop RUN_SERIAL TRUE FIXTURES_REQUIRED soundfont_fixtures)
+  # MANUAL builds the target without registering it with CTest.
+  if(NOT "MANUAL" IN_LIST ARGN)
+    add_test(NAME ${NAME} COMMAND ${NAME})
+    set_tests_properties(${NAME} PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+      LABELS desktop RUN_SERIAL TRUE FIXTURES_REQUIRED soundfont_fixtures)
+  endif()
 endfunction()
 
 foreach(NAME editor recording window transport_shortcuts dialog edit_gestures ports_editor
@@ -80,6 +83,10 @@ foreach(NAME recording_feedback pattern_workflow channel_routing toolbar_followu
   desktop_test(${NAME}_test recording_feedback_audio)
 endforeach()
 desktop_test(event_controls_test event_controls_audio)
+desktop_test(midi_recording_test recording_feedback_audio)
+add_library(midi_input_performance_audio_test_objects OBJECT midi_input_performance_audio.c)
+test_dependencies(midi_input_performance_audio_test_objects)
+desktop_test(midi_input_performance_test midi_input_performance_audio MANUAL)
 desktop_test(visualizers_test visualizers_audio)
 desktop_test(samples_editor_test audio)
 target_sources(samples_editor_test PRIVATE samples_editor_ui.cpp)
@@ -92,7 +99,7 @@ target_sources(export_plugins_test PRIVATE export_plugins_ui.cpp native_reposito
 target_sources(todo_b_test PRIVATE todo_b_ui.cpp)
 target_sources(todo_c_test PRIVATE todo_c_ui.cpp)
 
-foreach(NAME audio_test audio_loop_test live_edit_audio_test)
+foreach(NAME audio_test audio_loop_test live_edit_audio_test midi_input_audio_test)
   add_executable(${NAME} ${NAME}.c)
   if(NAME STREQUAL "audio_test")
     target_sources(${NAME} PRIVATE $<TARGET_OBJECTS:audio_test_objects>)

@@ -63,11 +63,10 @@ static void monitor_window(Editor *editor, SDL_Window *window) {
     editor->display = display;
 }
 
-static bool window_frame(Editor *editor, SDL_Window *window, bool smoke, bool events) {
+static bool window_frame(Editor *editor, SDL_Window *window, bool smoke) {
     monitor_window(editor, window);
     SDL_WindowFlags flags = SDL_GetWindowFlags(window);
     editor->minimized = (flags & SDL_WINDOW_MINIMIZED) != 0;
-    editor->focused = (flags & SDL_WINDOW_INPUT_FOCUS) != 0;
     // Native dialogs can send synchronous messages to their owner while opening and closing, so
     // the owner's message queue is pumped every millisecond. The editor keeps drawing at about
     // 30 frames per second meanwhile, so playback, meters and progress stay live behind it.
@@ -96,31 +95,21 @@ static bool window_frame(Editor *editor, SDL_Window *window, bool smoke, bool ev
         return false;
     }
 
-    if (!smoke && !editor->focused) {
-        editor_background(editor);
-        SDL_Delay(100);
-
-        if (!events && !editor->drop_active && !dm_audio_playing(editor->audio) &&
-            !dm_audio_busy(editor->audio)) {
-            return false;
-        }
-    }
-
+    // An unfocused window keeps its full frame rate, so dragging files in from another window
+    // stays responsive. Only a minimized window is throttled.
     return true;
 }
 
 static void editor_loop(Editor *editor, SDL_Window *window, SDL_Renderer *renderer, bool smoke) {
     while (editor->running) {
         SDL_Event event;
-        bool events = false;
 
         while (SDL_PollEvent(&event)) {
-            events = true;
             ui_event(&event);
             editor_event(editor, &event);
         }
 
-        if (!window_frame(editor, window, smoke, events)) {
+        if (!window_frame(editor, window, smoke)) {
             continue;
         }
 

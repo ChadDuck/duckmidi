@@ -375,6 +375,78 @@ static void placements(Editor *e) {
     linked_slices(e);
 }
 
+/* A pattern not on the playlist takes the selected channel's instrument until one is chosen in
+   the pattern editor; a placed pattern shows the dropdown only in pattern playback. */
+static void unplaced_preview(Editor *e) {
+    fixture(e);
+    e->pattern_mode = false;
+    e->project.channels[0].program = 0;
+    e->project.channels[2] = (DmChannel){true, false, false, 33, 100, 64};
+    e->project.channels[9] = (DmChannel){true, false, false, 0, 100, 64};
+    e->project.channels[9].drums = true;
+    ed_open_pattern(e, 0, false);
+    check(!ed_pattern_placed(e) && ed_preview_instrument_shown(e),
+          "unplaced pattern shows its instrument dropdown");
+    e->selected_channel = 2;
+    e->channel_selected = true;
+    ed_follow_preview_frame(e);
+    check(e->pattern_channel == 2 && e->preview_program == 33 && !e->preview_override,
+          "selecting a playlist channel switches the unplaced pattern's instrument");
+    ed_open_instrument(e, 2, false);
+    e->instrument_program = 40;
+    ed_apply_instrument(e);
+    check(e->preview_program == 40, "changing the selected channel's instrument follows at once");
+    e->pattern_mode = true;
+    e->selected_channel = 9;
+    ed_follow_preview_frame(e);
+    check(e->pattern_channel == 9 && e->preview_program == 128,
+          "selecting a drum channel switches to percussion in pattern playback");
+    e->pattern_mode = false;
+    e->selected_channel = 2;
+    ed_follow_preview_frame(e);
+    ed_select_preview_instrument(e, 5);
+    check(e->preview_override && e->preview_program == 5, "dropdown choice is explicit");
+    e->selected_channel = 0;
+    ed_follow_preview_frame(e);
+    check(e->preview_program == 5 && e->pattern_channel == 2,
+          "explicit choice persists when another channel is selected");
+    ed_open_instrument(e, 2, false);
+    e->instrument_program = 41;
+    ed_apply_instrument(e);
+    ed_follow_preview_frame(e);
+    check(e->preview_program == 5, "explicit choice persists when a channel's instrument changes");
+    ed_reset_preview_instrument(e);
+    check(!e->preview_override && e->preview_program == 0,
+          "reset returns to the selected channel's instrument");
+    e->selected_channel = 2;
+    ed_follow_preview_frame(e);
+    check(e->pattern_channel == 2 && e->preview_program == 41,
+          "after reset, channel selection switches the instrument again");
+    e->channel_selected = false;
+    e->selected_channel = 0;
+    ed_follow_preview_frame(e);
+    check(e->pattern_channel == 2 && e->preview_program == 41,
+          "clearing the channel selection keeps the last instrument");
+
+    int index = ed_place_pattern(e, 0, 2, 0);
+    check(index >= 0 && ed_pattern_placed(e), "pattern is placed");
+    ed_select_placement_route(e, index);
+    check(!ed_preview_instrument_shown(e), "placed pattern hides its dropdown in song playback");
+    e->pattern_mode = true;
+    check(ed_preview_instrument_shown(e), "pattern playback shows the dropdown again");
+    e->pattern_mode = false;
+    e->selected_channel = 0;
+    e->channel_selected = true;
+    ed_follow_preview_frame(e);
+    check(e->pattern_channel == 2 && e->preview_program == 41,
+          "placed pattern keeps its placement's instrument when another channel is selected");
+    ed_remove_placement(e, index);
+    ed_follow_preview_frame(e);
+    check(!ed_pattern_placed(e) && e->preview_source_channel < 0 && e->pattern_channel == 0 &&
+              e->preview_program == 0,
+          "removing the last placement follows the selected channel again");
+}
+
 static void imports(void) {
     DmProject source, loaded;
     dm_project_init(&source);
@@ -472,6 +544,7 @@ int main(void) {
     late_initial_program(e);
     delete_port(e);
     placements(e);
+    unplaced_preview(e);
     imports();
     ui_end();
     ui_render(r);

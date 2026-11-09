@@ -1772,6 +1772,34 @@ extern "C" void test_channel_routing_ui(Editor *e, void (*check)(bool, const cha
               e->project.clips[0].channel == 2,
           "dropping notes onto automation subrow creates no placement or phantom selection");
     capture_workspace_navigation(e, "agents/reports/channel-routing-rejected-drop.bmp");
+
+    /* The instrument dropdown's Reset button ends at the piano roll header's right edge. */
+    auto click_reset = [&]() {
+        auto *roll = roll_window();
+
+        if (!roll) {
+            return false;
+        }
+
+        float rx = roll->WorkRect.Max.x - 30, ry = roll->WorkRect.Min.y + 16;
+        mouse_frame(e, rx, ry, false);
+        mouse_frame(e, rx, ry, true);
+        mouse_frame(e, rx, ry, false);
+        return true;
+    };
+    e->roll = true;
+    e->roll_auto_hidden = false;
+    e->pattern_mode = false;
+    e->preview_override = true;
+    mouse_frame(e, 0, 0, false);
+    check(click_reset() && e->preview_override,
+          "placed pattern hides the instrument dropdown and Reset in song playback");
+    e->pattern_mode = true;
+    check(click_reset() && !e->preview_override, "pattern playback shows Reset again");
+    e->pattern_mode = false;
+    e->project.clip_count = 0;
+    e->preview_override = true;
+    check(click_reset() && !e->preview_override, "unplaced pattern shows Reset in song playback");
 }
 
 extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, const char *)) {
@@ -2277,6 +2305,114 @@ extern "C" void test_lfo_shapes_ui(Editor *e, void (*check)(bool, const char *))
 }
 
 extern "C" void test_event_clipboard_ui(Editor *e, void (*check)(bool, const char *)) {
+    e->project.clip_count = 1;
+    e->project.clips[0].beat = 1.13;
+    e->tool = 0;
+    e->playlist_view = {1, 0, 0, 0};
+    mouse_frame(e, 0, 0, false);
+    auto *playlist = find_window("/Playlist_");
+    float px = playlist->WorkRect.Min.x + e->label_width + 1.13f * 40 + 20;
+    float py = playlist->WorkRect.Min.y + ImGui::GetFrameHeight() +
+               ImGui::GetStyle().ItemSpacing.y + 28 + 64 + 20;
+    int history = e->undo_count;
+    mouse_frame(e, px, py, false);
+    mouse_frame(e, px, py, true);
+    mouse_frame(e, px, py, true);
+    mouse_frame(e, px, py, false);
+    check(e->project.clips[0].beat == 1.13 && e->undo_count == history,
+          "stationary click leaves freely placed pattern and undo history unchanged");
+    e->playlist_view.zoom = 2;
+    mouse_frame(e, 0, 0, false);
+    px = playlist->WorkRect.Min.x + e->label_width + 1.13f * 80 + 20;
+    mouse_frame(e, px, py, false);
+    mouse_frame(e, px, py, true);
+    mouse_frame(e, px + 24, py, true);
+    mouse_frame(e, px + 24, py, false);
+    check(e->project.clips[0].beat == 1.5,
+          "playlist movement snaps to visible quarter beats at sufficient zoom");
+    e->playlist_view.zoom = 1;
+    mouse_frame(e, 0, 0, false);
+    px = playlist->WorkRect.Min.x + e->label_width + 1.5f * 40 + 20;
+    mouse_frame(e, px, py, false);
+    mouse_frame(e, px, py, true);
+    mouse_frame(e, px + 16, py, true);
+    mouse_frame(e, px + 16, py, false);
+    check(e->project.clips[0].beat == 2,
+          "playlist retains beat snapping when quarter beat lines are hidden");
+
+    for (int program = 0; program < 128; ++program) {
+        check(e->label_width >=
+                  ui_text_width(dm_program_name(program)) + ui_text_width("16  ") + 34,
+              "default channel label fits every GM instrument name");
+    }
+
+    e->automation_open = true;
+    e->roll = true;
+    e->roll_auto_hidden = false;
+    e->automation_cc = 11;
+    mouse_frame(e, 0, 0, false);
+    auto *notes = roll_window();
+    dm_bytes_free(&e->event_clipboard);
+    ImGui::ActivateItemByID(notes->GetID("Paste"));
+    size_t original = e->project.automation_count;
+    mouse_frame(e, 0, 0, false);
+    check(e->project.automation_count == original,
+          "event Paste button is disabled without an event-button copy");
+    e->project.automation_count = 0;
+    dm_automation_add(&e->project, {2, MIDI_CONTROL, 0, MIDI_CC_EXPRESSION, 70, 0});
+    dm_automation_add(&e->project, {3, MIDI_CONTROL, 0, MIDI_CC_MODULATION, 90, 0});
+    ImGui::ActivateItemByID(notes->GetID("Copy"));
+    mouse_frame(e, 0, 0, false);
+    check(e->event_clipboard.size && !e->event_clipboard_all,
+          "pattern section Copy button stores the displayed event type");
+    e->project.automation_count = 0;
+    e->cursor_beat[1] = 16;
+    ImGui::ActivateItemByID(notes->GetID("Paste"));
+    mouse_frame(e, 0, 0, false);
+    check(e->project.automation_count == 1 && e->project.automation[0].beat == 2,
+          "pattern section Paste button ignores the playhead");
+    dm_automation_add(&e->project, {3, MIDI_CONTROL, 0, MIDI_CC_MODULATION, 90, 0});
+    mouse_frame(e, 0, 0, false, false, true);
+    ImGui::ActivateItemByID(notes->GetID("Copy all"));
+    mouse_frame(e, 0, 0, false, false, true);
+    check(e->event_clipboard_all, "holding Shift changes Copy to Copy all");
+    mouse_frame(e, 0, 0, false);
+    ImGui::ClearActiveID();
+    e->project.patterns[0].notes[0].selected = 1;
+    e->automation_node = 0;
+    ed_focus_edit(e, FOCUS_NOTES);
+    direct_key(e, SDL_SCANCODE_ESCAPE);
+    check(e->roll && !e->project.patterns[0].notes[0].selected && e->automation_node < 0,
+          "one Escape clears both pattern sections and leaves the editor open");
+    e->project.patterns[0].notes[0].selected = 1;
+    ed_focus_edit(e, FOCUS_EVENTS);
+    direct_key(e, SDL_SCANCODE_ESCAPE);
+    check(e->roll && !e->project.patterns[0].notes[0].selected,
+          "Escape in events checks remaining note highlights before closing");
+    e->automation_node = 0;
+    ed_focus_edit(e, FOCUS_NOTES);
+    direct_key(e, SDL_SCANCODE_ESCAPE);
+    check(e->roll && e->automation_node < 0,
+          "Escape in notes checks remaining event highlights before closing");
+    capture_workspace_navigation(e, "agents/reports/2026-11-08-todo/event-buttons.bmp");
+    ImGui::ActivateItemByID(notes->GetID("##Event type"));
+    mouse_frame(e, 0, 0, false);
+    capture_workspace_navigation(e, "agents/reports/2026-11-08-todo/event-types.bmp");
+    bool tinted = false;
+
+    for (auto *window : ImGui::GetCurrentContext()->Windows) {
+        if (!window->Active || !(window->Flags & ImGuiWindowFlags_Popup)) {
+            continue;
+        }
+
+        for (const auto &v : window->DrawList->VtxBuffer) {
+            tinted |= v.col == ((e->accent & 0xffffffu) | 0x40000000u);
+        }
+    }
+
+    check(tinted, "populated event choices use the application color");
+    ui_cancel_popup();
+    e->project.automation_count = 0;
     auto &p = e->project.patterns[0];
     p.kind = 1;
     p.mode = 0;
@@ -2381,8 +2517,10 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     e->selected_channel = 1;
     int old_program = e->project.channels[1].program;
     int history = e->undo_count;
+    e->pattern_mode = true; /* A placed pattern shows its instrument buttons in pattern playback. */
     ImGui::ActivateItemByID(ed_roll->GetID("Use selected channel"));
     mouse_frame(e, 0, 0, false);
+    e->pattern_mode = false;
     check(e->preview_program == old_program && e->project.channels[1].program == old_program &&
               e->undo_count == history,
           "Use selected channel copies only the editing preview instrument");
@@ -2764,6 +2902,7 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     source_workflow_capture(e, "agents/reports/source_workflow-large.bmp");
     check(std::fabs(ui_display().x - 1120) < 1, "Large scales the entire logical interface");
     auto *ed_roll = roll_window();
+    e->pattern_mode = true; /* A placed pattern shows its instrument buttons in pattern playback. */
     x = ed_roll->WorkRect.Max.x - 90;
     y = ed_roll->WorkRect.Min.y + 16;
     SDL_Event motion = {};
@@ -2779,6 +2918,7 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     source_workflow_scale_frame(e);
     check(e->preview_program == e->project.channels[1].program && e->preview_override,
           "scaled mouse hit target activates Use selected channel");
+    e->pattern_mode = false;
     ui_set_scale(.85f);
     source_workflow_capture(e, "agents/reports/source_workflow-small.bmp");
     check(std::fabs(ui_display().x - 1400 / .85f) < 1, "Small scales the entire interface");

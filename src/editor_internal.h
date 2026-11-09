@@ -13,6 +13,22 @@
 #define COLOR(r, g, b) ((uint32_t)(r) | ((uint32_t)(g) << 8) | ((uint32_t)(b) << 16) | 0xff000000u)
 #define BG ui_background_shade(12)
 #define GRID ui_background_shade(38)
+bool ed_record_start(Editor *e);
+double ed_record_origin(Editor *e, double beat);
+bool ed_record_insert(Editor *e, DmPattern *pattern, int key, int velocity, unsigned port,
+                      double start, double end, double origin);
+void ed_midi_input_init(Editor *e);
+void ed_midi_input_attach(Editor *e, DmMidiInput *input);
+void ed_midi_input_restore(Editor *e);
+void ed_midi_input_names(Editor *e);
+void ed_midi_input_free(Editor *e);
+void ed_midi_input_frame(Editor *e);
+/* Ends held recorded MIDI notes; publish rebuilds playback when the transport keeps running. */
+void ed_midi_input_finish(Editor *e, bool publish);
+void ed_midi_input_take(Editor *e);
+/* Writes pending MIDI recording to the project; see editor_midi_input.c for when it plays. */
+void ed_midi_input_flush(Editor *e);
+size_t ed_automation_visible_first(Editor *e, double beat, bool overlay);
 uint32_t ed_port_color(Editor *e, unsigned port);
 uint32_t ed_palette_color(Editor *e, unsigned color);
 void ed_pattern_color_request(Editor *e, int pattern);
@@ -27,6 +43,7 @@ void ed_note_color_dialog(Editor *e);
 #define DIM ui_theme_text(true)
 #define GREEN (e->accent)
 #define GOLD COLOR(245, 196, 111)
+#define ED_DEFAULT_VELOCITY 100 /* Velocity of notes drawn or recorded in the editor. */
 
 enum {
     DIALOG_OPEN = 1,
@@ -133,6 +150,16 @@ float ed_events_section_height(Editor *e);
 int ed_channel_program(Editor *e, int channel);
 int ed_placed_program(Editor *e);
 void ed_preview_channel(Editor *e, int channel, bool placed);
+bool ed_pattern_placed(Editor *e); /* The open pattern has a placement on the playlist. */
+/* The pattern editor's instrument dropdown and its buttons are shown for a pattern not on the
+   playlist, and for a placed one only in pattern playback. */
+bool ed_preview_instrument_shown(Editor *e);
+/* Updates the preview instrument from its source unless one was chosen in the dropdown: a placed
+   pattern follows its placement's channel, and a pattern not on the playlist follows the selected
+   playlist channel. Reports whether the pattern channel or instrument changed. */
+bool ed_follow_preview(Editor *e);
+/* Applies ed_follow_preview once per frame, updating the keyboard and pattern playback. */
+void ed_follow_preview_frame(Editor *e);
 void ed_select_placement_route(Editor *e, int index);
 void ed_open_pattern(Editor *e, int id, bool created);
 SDL_Keymod ed_normalized(SDL_Keymod m);
@@ -219,6 +246,7 @@ void ed_action_zoom(Editor *e, int a);
 void ed_action(Editor *e, int a);
 void ed_paste(Editor *e);
 void ed_clipboard(Editor *e, int mode);
+void ed_clipboard_note_bends(Editor *e, bool cut);
 int ed_keyboard_channel(Editor *e);
 void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat);
 void ed_shortcut(Editor *e, SDL_Scancode key, SDL_Keymod raw, bool repeat);
@@ -352,9 +380,16 @@ void ed_erase_node(Editor *e, int index);
 void ed_deselect_events(Editor *e);
 void ed_automation_clear(Editor *e);
 bool ed_copy_events(Editor *e, DmProject *to);
+bool ed_copy_note_bends(Editor *e, DmProject *to, double origin, bool *selected);
+void ed_copy_event_lane(Editor *e, bool all);
+void ed_paste_event_lane(Editor *e);
+void ed_event_types_used(Editor *e, const int *types, int count, bool *used);
+bool ed_event_type_used(Editor *e, int cc);
 void ed_paste_events(Editor *e, const DmProject *from, double at);
+bool ed_paste_note_bends(Editor *e, const DmProject *from, double at);
 void ed_duplicate_events(Editor *e);
 void ed_delete_events(Editor *e);
+void ed_remove_events(Editor *e, bool *remove, int type);
 void ed_automation_pan_y(Editor *e, UiRect lane, float pixels);
 void ed_automation_preview(Editor *e, int id, UiRect box, uint32_t color, double offset,
                            double length);

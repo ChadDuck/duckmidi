@@ -23,16 +23,88 @@ static bool event_group_drag(Editor *e, UiRect lane, float scale, UiMouse mouse)
 static bool connected_click(UiMouse mouse);
 static void event_placement_tip(Editor *e, UiRect lane, UiMouse mouse, bool hovered);
 static bool curve_displayed(Editor *e, DmAutomation a);
-static size_t selected_curve(Editor *e, int curve, double *first, double *last);
-static bool copy_event_dependencies(Editor *e, DmProject *to, DmAutomation node, double origin);
-static DmAutomation copied_connection(Editor *e, size_t index);
+static size_t selected_curve(Editor *e, const bool *selected, int curve, double *first,
+                             double *last);
+static bool copy_event_dependencies(Editor *e, DmProject *to, const bool *selected,
+                                    DmAutomation node, double origin);
+static DmAutomation copied_connection(Editor *e, const bool *selected, size_t index);
+static bool copy_event_points(Editor *e, DmProject *to, const bool *selected, double origin);
 static void paste_discrete_pitch(Editor *e, const DmProject *from, DmAutomation *a,
-                                 double source_beat);
+                                 double source_beat, int source_port);
 static double pasted_section_start(const DmProject *from, int curve);
 static bool later_selector(const DmProject *from, size_t index);
 static DmAutomation *prepare_pasted_events(Editor *e, const DmProject *from, double at);
-static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, double at,
-                            int offset);
+static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, double at, int offset,
+                            bool all);
+static bool paste_events(Editor *e, const DmProject *from, double at, bool all);
+
+/* The event-type value (as in automation_cc) that an authored point belongs to, or INT32_MIN
+   for types the event selector does not offer. */
+static int event_type_of(DmAutomation a) {
+    switch (a.type) {
+    case MIDI_PITCH_BEND:
+        return -2;
+    case MIDI_PROGRAM:
+        return -1;
+    case MIDI_CHANNEL_PRESSURE:
+        return -4;
+    case MIDI_KEY_PRESSURE:
+        return -5;
+    case MIDI_CONTROL:
+        return a.a;
+    default:
+        return INT32_MIN;
+    }
+}
+
+/* Marks which of `types` hold data on the current pattern and note-color route, in one pass. */
+void ed_event_types_used(Editor *e, const int *types, int count, bool *used) {
+    DmPattern *p = ed_pattern(e);
+    int port = ed_note_port(e);
+    bool edited = false;
+    bool populated[133] = {false}; /* Event selector values -5 through 127. */
+
+    for (int t = 0; t < count; ++t) {
+        used[t] = p && p->kind && p->mode && p->event == types[t]; /* An LFO pattern's type. */
+    }
+
+    if (!p) {
+        return;
+    }
+
+    /* Every note has a velocity, so only edited velocities count as data. */
+    for (size_t i = 0; i < p->count && !edited; ++i) {
+        edited = p->notes[i].port == port && p->notes[i].velocity != ED_DEFAULT_VELOCITY;
+    }
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+
+        if (a.pattern != e->selected_pattern || a.port != port || a.curve < 0) {
+            continue;
+        }
+
+        int type = event_type_of(a);
+
+        if (type >= -5 && type <= 127) {
+            populated[type + 5] = true;
+        }
+    }
+
+    for (int t = 0; t < count; ++t) {
+        used[t] |= types[t] == -3 && edited;
+
+        if (types[t] >= -5 && types[t] <= 127) {
+            used[t] |= populated[types[t] + 5];
+        }
+    }
+}
+
+bool ed_event_type_used(Editor *e, int cc) {
+    bool used;
+    ed_event_types_used(e, &cc, 1, &used);
+    return used;
+}
 
 bool ed_automation_matches(Editor *e, DmAutomation au) {
     if (au.pattern != e->selected_pattern || au.port != ed_note_port(e)) {
@@ -262,14 +334,38 @@ void ed_automation_selector(Editor *e) {
                  ? 130
                  : 220);
 
+    bool populated = ed_event_type_used(e, e->automation_cc);
+    UiPoint at = ui_cursor();
+
     if (ui_combo("##Event type", preview)) {
+        int shown[TYPES];
+        bool used[TYPES];
+
         for (int i = 0; i < count; ++i) {
+            shown[i] = all_values[values[i]];
+        }
+
+        ed_event_types_used(e, shown, count, used);
+
+        for (int i = 0; i < count; ++i) {
+            UiPoint row = ui_cursor();
+
+            if (used[i]) {
+                ui_rect((UiRect){row.x, row.y, ui_available().x,
+                                 ui_text_height(all_labels[values[i]], 0)},
+                        (e->accent & 0xffffffu) | 0x40000000u, 0);
+            }
+
             if (ui_select(all_labels[values[i]], i == current, 0, 0)) {
                 choose_event_type(e, all_values[values[i]]);
             }
         }
 
         ui_combo_end();
+    }
+
+    if (populated) {
+        ui_rect((UiRect){at.x, at.y, 3, ui_frame_height()}, e->accent, 0);
     }
 
     ui_tip(DM_TEXT_CHOOSE_EVENT_TYPE);
@@ -437,14 +533,105 @@ void ed_automation_connection(UiPoint previous, UiPoint point, DmAutomation befo
     }
 }
 
+typedef struct {
+    UiPoint first, last;
+    float low, high, column;
+    unsigned count;
+    bool hint;
+} DenseLaneColumn;
+
+/* Keep one matching predecessor for a segment crossing the viewport's left edge. */
+size_t ed_automation_visible_first(Editor *e, double beat, bool overlay) {
+    size_t low = 0, high = e->project.automation_count;
+
+    while (low < high) {
+        size_t middle = low + (high - low) / 2;
+
+        if (e->project.automation[middle].beat < beat) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+
+    size_t first = low;
+
+    while (first) {
+        DmAutomation a = e->project.automation[--first];
+        bool visible = overlay ? a.pattern == e->selected_pattern && a.port == ed_note_port(e) &&
+                                     a.type == MIDI_PITCH_BEND
+                               : ed_automation_matches(e, a);
+
+        if (visible && a.curve >= 0) {
+            return first;
+        }
+    }
+
+    return low;
+}
+
+/* Discrete samples within one display pixel share an envelope. Keep hit testing on every
+   original point; only the overlapping drawing is batched. Authored curves and selections
+   keep their individual markers. */
+static void dense_lane_flush(DenseLaneColumn *column, bool outline) {
+    if (!column->count) {
+        return;
+    }
+
+    if (outline && column->count > 2 && !column->hint) {
+        /* At this density step handles overlap the point markers. Draw their hints near the
+           pointer, retaining every original handle for hit testing below. */
+        column->count = 0;
+        column->hint = false;
+        return;
+    }
+
+    if (outline) {
+        if (column->count <= 2) {
+            ui_circle_outline(column->first, 5, GOLD);
+
+            if (column->count == 2) {
+                ui_circle_outline(column->last, 5, GOLD);
+            }
+        } else {
+            ui_circle_outline((UiPoint){column->first.x, column->low}, 5, GOLD);
+
+            if (column->high != column->low) {
+                ui_circle_outline((UiPoint){column->first.x, column->high}, 5, GOLD);
+            }
+        }
+    } else if (column->count <= 2) {
+        ui_circle(column->first, 5, GOLD);
+
+        if (column->count == 2) {
+            ui_line(column->first, (UiPoint){column->last.x, column->first.y}, GOLD, 1.5f);
+            ui_line((UiPoint){column->last.x, column->first.y}, column->last, GOLD, 1.5f);
+            ui_circle(column->last, 5, GOLD);
+        }
+    } else {
+        UiPoint low = {column->first.x, column->low}, high = {column->first.x, column->high};
+        ui_line(low, high, GOLD, 1.5f);
+        ui_circle(low, 5, GOLD);
+
+        if (column->high != column->low) {
+            ui_circle(high, 5, GOLD);
+        }
+    }
+
+    column->count = 0;
+    column->hint = false;
+}
+
 int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse) {
     UiPoint previous = {0};
     bool has = false;
     int hit = -1;
     DmAutomation before = {0};
+    DenseLaneColumn dense = {0};
     ed_pitch_cache_begin(e);
+    size_t first = ed_automation_visible_first(e, (v->scroll_x - 8) / scale, false);
 
-    for (size_t i = 0; i < e->project.automation_count; ++i) {
+    for (size_t i = first; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
 
         if (!ed_automation_matches(e, a) || a.curve < 0) {
@@ -469,7 +656,16 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
             continue;
         }
 
-        if (has) {
+        bool selected = ed_event_selected(e, i);
+        bool raw = !pedal && !a.curve && !a.ramp && !selected;
+        float column = floorf(point.x * ui_scale());
+        bool joined = raw && dense.count && column == dense.column;
+
+        if (!joined) {
+            dense_lane_flush(&dense, false);
+        }
+
+        if (has && !joined) {
             if (pedal) {
                 if (a.curve > 0 && a.curve == before.curve) {
                     ui_line(previous, point, GOLD, 4);
@@ -481,12 +677,23 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
         }
 
         bool end = pedal && has && a.curve > 0 && a.curve == before.curve;
-        uint32_t color = ed_event_selected(e, i) ? TEXT : GOLD;
+        uint32_t color = selected ? TEXT : GOLD;
 
-        if (end) {
-            ui_circle_outline(point, ed_event_selected(e, i) ? 7 : 5, color);
+        if (raw) {
+            if (!dense.count) {
+                dense.first = point;
+                dense.low = dense.high = point.y;
+                dense.column = column;
+            }
+
+            dense.last = point;
+            dense.low = fminf(dense.low, point.y);
+            dense.high = fmaxf(dense.high, point.y);
+            ++dense.count;
+        } else if (end) {
+            ui_circle_outline(point, selected ? 7 : 5, color);
         } else {
-            ui_circle(point, ed_event_selected(e, i) ? 7 : 5, color);
+            ui_circle(point, selected ? 7 : 5, color);
         }
 
         if (fabsf(mouse.pos.x - point.x) < 9 && fabsf(mouse.pos.y - point.y) < 9) {
@@ -498,6 +705,7 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
         before = a;
     }
 
+    dense_lane_flush(&dense, false);
     ed_pitch_cache_end(e);
     return hit;
 }
@@ -781,9 +989,15 @@ bool ed_curve_handles(Editor *e, UiRect lane, View *v, float scale, UiMouse mous
     }
 
     ed_pitch_cache_begin(e);
+    DenseLaneColumn dense = {0};
+    size_t first_visible = ed_automation_visible_first(e, (v->scroll_x - 8) / scale, overlay);
 
-    for (size_t i = 0; i < e->project.automation_count; ++i) {
+    for (size_t i = first_visible; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
+
+        if (lane.x + (float)a.beat * scale - v->scroll_x > lane.x + lane.w + 8) {
+            break;
+        }
         bool visible = overlay ? a.pattern == e->selected_pattern && a.type == MIDI_PITCH_BEND
                                : ed_automation_matches(e, a);
 
@@ -812,14 +1026,37 @@ bool ed_curve_handles(Editor *e, UiRect lane, View *v, float scale, UiMouse mous
             continue;
         }
 
-        ui_circle_outline(mid, 5, GOLD);
+        bool raw = !a.curve && !a.ramp && !ed_event_selected(e, i);
+        float column = floorf(mid.x * ui_scale());
+
+        if (!raw || (dense.count && column != dense.column)) {
+            dense_lane_flush(&dense, true);
+        }
+
+        if (raw) {
+            if (!dense.count) {
+                dense.first = mid;
+                dense.low = dense.high = mid.y;
+                dense.column = column;
+            }
+
+            dense.low = fminf(dense.low, mid.y);
+            dense.high = fmaxf(dense.high, mid.y);
+            dense.last = mid;
+            dense.hint |= hovered && fabsf(mouse.pos.x - mid.x) < 8;
+            ++dense.count;
+        } else {
+            ui_circle_outline(mid, 5, GOLD);
+        }
 
         if (curve_handle_action(e, i, lane, mid, mouse, overlay,
                                 step ? ed_event_value(a) - linear : a.bend, hovered)) {
+            dense_lane_flush(&dense, true);
             return true; /* The action ended the pitch cache before editing. */
         }
     }
 
+    dense_lane_flush(&dense, true);
     ed_pitch_cache_end(e);
     return false;
 }
@@ -1768,7 +2005,8 @@ void ed_automation_clear(Editor *e) {
     ed_commit(e);
 }
 
-static size_t selected_curve(Editor *e, int curve, double *first, double *last) {
+static size_t selected_curve(Editor *e, const bool *selected, int curve, double *first,
+                             double *last) {
     size_t count = 0;
     *first = HUGE_VAL;
     *last = 0;
@@ -1776,7 +2014,7 @@ static size_t selected_curve(Editor *e, int curve, double *first, double *last) 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
 
-        if (a.curve == curve && ed_event_selected(e, i)) {
+        if (a.curve == curve && selected[i]) {
             *first = fmin(*first, a.beat);
             *last = fmax(*last, a.beat);
             ++count;
@@ -1786,15 +2024,16 @@ static size_t selected_curve(Editor *e, int curve, double *first, double *last) 
     return count;
 }
 
-static bool copy_event_dependencies(Editor *e, DmProject *to, DmAutomation node, double origin) {
+static bool copy_event_dependencies(Editor *e, DmProject *to, const bool *selected,
+                                    DmAutomation node, double origin) {
     double first, last;
-    size_t count = selected_curve(e, node.curve, &first, &last);
+    size_t count = selected_curve(e, selected, node.curve, &first, &last);
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
 
-        if (a.pattern != node.pattern || abs(a.curve) != node.curve ||
-            (a.curve >= 0 && (a.type != MIDI_CONTROL || ed_automation_matches(e, a)))) {
+        if (a.pattern != node.pattern || a.port != node.port || abs(a.curve) != node.curve ||
+            (a.curve >= 0 && (a.type != MIDI_CONTROL || (a.type == node.type && a.a == node.a)))) {
             continue;
         }
 
@@ -1817,11 +2056,23 @@ static bool copy_event_dependencies(Editor *e, DmProject *to, DmAutomation node,
     return true;
 }
 
-static DmAutomation copied_connection(Editor *e, size_t index) {
+static DmAutomation copied_connection(Editor *e, const bool *selected, size_t index) {
     DmAutomation a = e->project.automation[index];
-    int right = next_connection(e, (int)index, false);
+    bool connected = false;
 
-    if (right < 0 || !ed_event_selected(e, (size_t)right)) {
+    for (size_t i = index + 1; i < e->project.automation_count; ++i) {
+        DmAutomation b = e->project.automation[i];
+
+        if (b.pattern != a.pattern || b.port != a.port || b.type != a.type || b.curve < 0 ||
+            (a.type == MIDI_CONTROL && a.a != b.a)) {
+            continue;
+        }
+
+        connected = selected[i] && a.curve == b.curve && b.beat > a.beat;
+        break;
+    }
+
+    if (!connected) {
         a.bend = 0;
         a.ramp = false;
     }
@@ -1831,32 +2082,72 @@ static DmAutomation copied_connection(Editor *e, size_t index) {
 
 bool ed_copy_events(Editor *e, DmProject *to) {
     double first = HUGE_VAL;
+    bool *selected = calloc(e->project.automation_count + 1, sizeof(*selected));
+
+    if (!selected) {
+        return false;
+    }
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
-        if (ed_event_selected(e, i)) {
+        selected[i] = ed_event_selected(e, i);
+
+        if (selected[i]) {
             first = fmin(first, e->project.automation[i].beat);
         }
     }
 
     if (!isfinite(first) || dm_pattern_add(to, DM_TEXT_EVENTS) < 0) {
+        free(selected);
         return false;
     }
 
     snprintf(to->name, sizeof(to->name), DM_TEXT_EVENTS);
     to->patterns[0].event = e->automation_cc;
+    bool ok = copy_event_points(e, to, selected, first);
+    free(selected);
+    return ok;
+}
+
+/* Each selected note contributes its own time interval; gaps in an arbitrary selection do not
+   collect bends. Section endpoints at the note's end are included. */
+bool ed_copy_note_bends(Editor *e, DmProject *to, double origin, bool *selected) {
+    DmPattern *p = ed_pattern(e);
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
-        if (!ed_event_selected(e, i)) {
+        DmAutomation a = e->project.automation[i];
+
+        if (a.pattern != e->selected_pattern || a.type != MIDI_PITCH_BEND || a.curve < 0) {
             continue;
         }
 
-        DmAutomation a = copied_connection(e, i);
+        for (size_t n = 0; n < p->count; ++n) {
+            DmNote note = p->notes[n];
+
+            if (note.selected && note.port == a.port && a.beat >= note.beat &&
+                a.beat <= note.beat + note.length) {
+                selected[i] = true;
+                break;
+            }
+        }
+    }
+
+    to->patterns[0].event = -2;
+    return copy_event_points(e, to, selected, origin);
+}
+
+static bool copy_event_points(Editor *e, DmProject *to, const bool *selected, double first) {
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        if (!selected[i]) {
+            continue;
+        }
+
+        DmAutomation a = copied_connection(e, selected, i);
 
         if (a.curve > 0) {
             double begin, end;
-            size_t count = selected_curve(e, a.curve, &begin, &end);
+            size_t count = selected_curve(e, selected, a.curve, &begin, &end);
 
-            if (a.beat == begin && !copy_event_dependencies(e, to, a, first)) {
+            if (a.beat == begin && !copy_event_dependencies(e, to, selected, a, first)) {
                 return false;
             }
 
@@ -1864,8 +2155,9 @@ bool ed_copy_events(Editor *e, DmProject *to) {
                 a.curve = 0;
             }
         } else if (a.type == MIDI_PITCH_BEND) {
-            PitchState state = ed_pitch_state(e, a.beat);
-            const int cc[] = {101, 100, 6, 38, 101, 100};
+            PitchState state = ed_pattern_pitch_state(&e->project, a.pattern, a.beat, a.port);
+            const int cc[] = {MIDI_CC_RPN_MSB,  MIDI_CC_RPN_LSB, MIDI_CC_DATA,
+                              MIDI_CC_DATA_LSB, MIDI_CC_RPN_MSB, MIDI_CC_RPN_LSB};
             const int value[] = {0, 0, state.range, state.cents, state.msb, state.lsb};
 
             for (int j = 0; j < 6; ++j) {
@@ -1891,8 +2183,8 @@ bool ed_copy_events(Editor *e, DmProject *to) {
 }
 
 static void paste_discrete_pitch(Editor *e, const DmProject *from, DmAutomation *a,
-                                 double source_beat) {
-    PitchState source = ed_pattern_pitch_state(from, 0, source_beat, a->port);
+                                 double source_beat, int source_port) {
+    PitchState source = ed_pattern_pitch_state(from, 0, source_beat, source_port);
     double bend = (ed_event_value(*a) - MIDI_BEND_CENTER) * (source.range + source.cents * .01) /
                   MIDI_BEND_CENTER;
     float pitch = ed_nearest_note(e, 0) + (float)bend;
@@ -1977,9 +2269,9 @@ static DmAutomation *prepare_pasted_events(Editor *e, const DmProject *from, dou
     return items;
 }
 
-static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, double at,
-                            int offset) {
-    if (e->automation_cc == -2 && a.type == MIDI_CONTROL && !a.curve) {
+static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, double at, int offset,
+                            bool all) {
+    if (!all && e->automation_cc == -2 && a.type == MIDI_CONTROL && !a.curve) {
         return true;
     }
 
@@ -1997,12 +2289,12 @@ static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, do
     a.beat += at;
     a.pattern = e->selected_pattern;
     a.channel = e->pattern_channel;
+    int source_port = a.port;
+    a.port = (uint8_t)ed_note_port(e);
 
     if (a.type == MIDI_PITCH_BEND && !a.curve) {
-        paste_discrete_pitch(e, from, &a, source_beat);
+        paste_discrete_pitch(e, from, &a, source_beat, source_port);
     }
-
-    a.port = (uint8_t)ed_note_port(e);
 
     if (!dm_automation_add(&e->project, a)) {
         return false;
@@ -2017,20 +2309,61 @@ static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, do
 }
 
 void ed_paste_events(Editor *e, const DmProject *from, double at) {
+    paste_events(e, from, at, false);
+}
+
+/* Bends keep their notes' original note-color routes. The paste helpers read pitch ranges and
+   restoration values from the focused route, so each route's bends are pasted while that route is
+   focused, and the user's route, event type and selection are restored afterwards. */
+bool ed_paste_note_bends(Editor *e, const DmProject *from, double at) {
+    DmProject route;
+    dm_project_init(&route);
+    bool ok = dm_pattern_add(&route, DM_TEXT_EVENTS) >= 0;
+    int port = ed_note_port(e), cc = e->automation_cc;
+
+    if (ok) {
+        route.patterns[0].event = -2;
+
+        for (int p = 0; p < DM_NOTE_PORTS && ok; ++p) {
+            route.automation_count = 0;
+
+            for (size_t i = 0; i < from->automation_count && ok; ++i) {
+                if (from->automation[i].port == p) {
+                    ok = dm_automation_add(&route, from->automation[i]);
+                }
+            }
+
+            if (ok && route.automation_count) {
+                e->note_ports[e->pattern_channel] = p;
+                ok = paste_events(e, &route, at, false);
+            }
+        }
+    }
+
+    e->note_ports[e->pattern_channel] = port;
+    e->automation_cc = cc;
+    ed_deselect_events(e); /* The pasted notes carry the selection. */
+    dm_project_free(&route);
+    return ok;
+}
+
+static bool paste_events(Editor *e, const DmProject *from, double at, bool all) {
     size_t bytes = from->automation_count * sizeof(DmAutomation);
 
     if (!ed_pattern(e) ||
         !dm_reserve((void **)&e->event_selection.data, &e->event_selection.capacity, bytes, 1)) {
-        return;
+        return false;
     }
 
     DmAutomation *items = prepare_pasted_events(e, from, at);
 
     if (!items) {
-        return;
+        return false;
     }
 
-    e->automation_cc = from->patterns[0].event;
+    if (!all) {
+        e->automation_cc = from->patterns[0].event;
+    }
 
     if (ed_pattern(e)->kind) {
         ed_pattern(e)->event = e->automation_cc;
@@ -2040,9 +2373,11 @@ void ed_paste_events(Editor *e, const DmProject *from, double at) {
     e->automation_all = false;
     e->event_selection.size = 0;
     int offset = ed_curve_id(e) - 1;
+    bool ok = true;
 
     for (size_t i = 0; i < from->automation_count; ++i) {
-        if (!paste_one_event(e, from, items[i], at, offset)) {
+        if (!paste_one_event(e, from, items[i], at, offset, all)) {
+            ok = false;
             break;
         }
     }
@@ -2051,6 +2386,123 @@ void ed_paste_events(Editor *e, const DmProject *from, double at) {
     qsort(e->event_selection.data, e->event_selection.size / sizeof(DmAutomation),
           sizeof(DmAutomation), event_identity);
     dm_pattern_fit(&e->project, ed_pattern(e));
+    return ok;
+}
+
+void ed_copy_event_lane(Editor *e, bool all) {
+    DmPattern *p = ed_pattern(e);
+
+    if (!e->active || !p || (p->kind && p->mode)) {
+        return;
+    }
+
+    DmProject copy;
+    dm_project_init(&copy);
+    bool *selected = calloc(e->project.automation_count + 1, sizeof(*selected));
+    bool ok = selected && dm_pattern_add(&copy, DM_TEXT_EVENTS) >= 0;
+
+    if (ok) {
+        /* Velocity is not a storable event type; the copied notes carry it. */
+        copy.patterns[0].event = e->automation_cc == -3 ? -2 : e->automation_cc;
+
+        for (size_t i = 0; i < e->project.automation_count && ok; ++i) {
+            DmAutomation a = e->project.automation[i];
+
+            if (a.pattern != e->selected_pattern || a.port != ed_note_port(e)) {
+                continue;
+            }
+
+            if (all) {
+                a.pattern = 0;
+                ok = dm_automation_add(&copy, a);
+            } else {
+                selected[i] = a.curve >= 0 && ed_automation_matches(e, a);
+            }
+        }
+
+        if (!all && ok) {
+            ok = copy_event_points(e, &copy, selected, 0);
+        }
+
+        if (all || e->automation_cc == -3) {
+            for (size_t i = 0; i < p->count && ok; ++i) {
+                if (p->notes[i].port == ed_note_port(e)) {
+                    ok = dm_note_add(&copy.patterns[0], p->notes[i]);
+                }
+            }
+        }
+    }
+
+    DmBytes bytes = {0};
+
+    if (ok) {
+        if (!copy.automation_count && !copy.patterns[0].count) {
+            dm_bytes_free(&e->event_clipboard);
+        } else if (dm_pack(&copy, &bytes)) {
+            dm_bytes_free(&e->event_clipboard);
+            e->event_clipboard = bytes;
+            e->event_clipboard_all = all;
+        }
+    }
+
+    free(selected);
+    dm_project_free(&copy);
+}
+
+void ed_paste_event_lane(Editor *e) {
+    DmPattern *p = ed_pattern(e);
+
+    if (!e->active || !p || (p->kind && p->mode) || !e->event_clipboard.size) {
+        return;
+    }
+
+    DmProject from;
+    dm_project_init(&from);
+
+    if (!dm_unpack(&from, e->event_clipboard.data, e->event_clipboard.size, e->status,
+                   sizeof(e->status))) {
+        dm_project_free(&from);
+        return;
+    }
+
+    bool pushed = ed_checkpoint(e);
+
+    if (!pushed) {
+        dm_project_free(&from);
+        return;
+    }
+
+    bool ok = true;
+
+    if (from.automation_count) {
+        ok = paste_events(e, &from, 0, e->event_clipboard_all);
+    }
+
+    /* Velocity is a note property: apply it to matching notes without creating notes. */
+    if (!p->kind) {
+        for (size_t i = 0; i < p->count; ++i) {
+            if (p->notes[i].port != ed_note_port(e)) {
+                continue;
+            }
+
+            for (size_t j = 0; j < from.patterns[0].count; ++j) {
+                DmNote n = from.patterns[0].notes[j];
+
+                if (n.beat == p->notes[i].beat && n.key == p->notes[i].key) {
+                    p->notes[i].velocity = n.velocity;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (ok) {
+        ed_commit(e);
+    } else {
+        ed_checkpoint_abandon(e, pushed);
+    }
+
+    dm_project_free(&from);
 }
 
 void ed_duplicate_events(Editor *e) {
@@ -2099,41 +2551,50 @@ void ed_delete_events(Editor *e) {
         remove[i] = ed_event_selected(e, i);
     }
 
-    for (size_t i = 0; i < count; ++i) {
-        DmAutomation a = e->project.automation[i];
-
-        if (a.pattern != e->selected_pattern || a.port != ed_note_port(e) || !a.curve ||
-            remove[i]) {
-            continue;
-        }
-
-        bool remains = false, selected = false;
-
-        for (size_t j = 0; j < count; ++j) {
-            DmAutomation b = e->project.automation[j];
-
-            if (b.pattern == a.pattern && b.curve == abs(a.curve) && ed_automation_matches(e, b)) {
-                remains |= !remove[j];
-                selected |= remove[j];
-            }
-        }
-
-        remove[i] = selected && !remains;
-    }
-
     ed_checkpoint(e);
-
-    for (size_t i = count; i > 0; --i) {
-        if (remove[i - 1]) {
-            memmove(e->project.automation + i - 1, e->project.automation + i,
-                    (e->project.automation_count - i) * sizeof(DmAutomation));
-            --e->project.automation_count;
-        }
-    }
-
+    ed_remove_events(e, remove, e->automation_cc);
     free(remove);
     e->event_selection.size = 0;
     e->automation_node = -1;
-    e->last_automation_valid = false;
     ed_commit(e);
+}
+
+/* Removes the flagged points of event type `type` (as in automation_cc), plus each section's
+   setup and restoration nodes once none of that section's points of that type remain.
+   `remove` has one entry per automation point. */
+void ed_remove_events(Editor *e, bool *remove, int type) {
+    size_t count = e->project.automation_count;
+
+    for (size_t i = 0; i < count; ++i) {
+        DmAutomation a = e->project.automation[i];
+
+        if (!a.curve || remove[i]) {
+            continue;
+        }
+
+        bool remains = false, removed = false;
+
+        for (size_t j = 0; j < count && !remains; ++j) {
+            DmAutomation b = e->project.automation[j];
+
+            if (b.pattern == a.pattern && b.port == a.port && b.curve == abs(a.curve) &&
+                event_type_of(b) == type) {
+                remains |= !remove[j];
+                removed |= remove[j];
+            }
+        }
+
+        remove[i] = removed && !remains;
+    }
+
+    size_t kept = 0;
+
+    for (size_t i = 0; i < count; ++i) {
+        if (!remove[i]) {
+            e->project.automation[kept++] = e->project.automation[i];
+        }
+    }
+
+    e->project.automation_count = kept;
+    e->last_automation_valid = false;
 }

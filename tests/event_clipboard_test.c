@@ -25,6 +25,18 @@ static int pitch_node(Editor *e, double beat) {
     return -1;
 }
 
+/* Counts section setup and restoration nodes, which are not drawn as pitch-bend points. */
+static size_t section_nodes(Editor *e) {
+    size_t count = 0;
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+        count += a.curve < 0 || (a.curve > 0 && a.type != MIDI_PITCH_BEND);
+    }
+
+    return count;
+}
+
 static void fixture(Editor *e) {
     editor_smoke(e);
     e->selected_pattern = 0;
@@ -222,6 +234,172 @@ static void transfer_points(Editor *e) {
     check(e->project.automation_count == before, "blank creation adds no default endpoints");
 }
 
+static void note_bend_clipboard(Editor *e) {
+    fixture(e);
+    ed_focus_edit(e, FOCUS_NOTES);
+    DmPattern *p = ed_pattern(e);
+    p->count = 0;
+    dm_note_add(p, (DmNote){1, 1, 60, 100, 1});
+    dm_note_add(p, (DmNote){3, 1, 62, 100, 0});
+    dm_note_add(p, (DmNote){5, 1, 64, 100, 1});
+    dm_automation_add(&e->project, (DmAutomation){1.25, MIDI_PITCH_BEND, 0, 0, 80, 0});
+    dm_automation_add(&e->project, (DmAutomation){3.25, MIDI_PITCH_BEND, 0, 0, 88, 0});
+    dm_automation_add(&e->project, (DmAutomation){5.25, MIDI_PITCH_BEND, 0, 0, 96, 0});
+    dm_automation_add(&e->project, (DmAutomation){1.5, MIDI_CONTROL, 0, MIDI_CC_EXPRESSION, 70, 0});
+    ed_shortcut(e, SDL_SCANCODE_C, SDL_KMOD_CTRL | SDL_KMOD_SHIFT, false);
+    check(e->clipboard.size && !e->event_clipboard.size,
+          "note/bend shortcut does not enable the event button clipboard");
+    e->cursor_beat[1] = 8;
+    ed_shortcut(e, SDL_SCANCODE_V, SDL_KMOD_CTRL, false);
+    check(p->count == 5 && p->notes[3].beat == 8 && p->notes[4].beat == 12,
+          "arbitrary note selection pastes with its original spacing");
+    check(pitch_node(e, 8.25) >= 0 && pitch_node(e, 12.25) >= 0 && pitch_node(e, 10.25) < 0 &&
+              e->automation_cc == -2,
+          "only bends in selected note intervals follow the notes' paste offset");
+    ed_shortcut(e, SDL_SCANCODE_X, SDL_KMOD_CTRL | SDL_KMOD_SHIFT, false);
+    check(p->count == 3 && pitch_node(e, 8.25) < 0 && pitch_node(e, 1.25) >= 0,
+          "cut removes the selected notes and their bends");
+    ed_undo(e, false);
+    check(ed_pattern(e)->count == 5 && pitch_node(e, 8.25) >= 0,
+          "one undo restores both notes and bends");
+
+    fixture(e);
+    ed_focus_edit(e, FOCUS_NOTES);
+    ed_pattern(e)->notes[0].selected = 1;
+    e->drag_key = 60;
+    e->bend_range = 12;
+    ed_automation_line(e, 1, 3, MIDI_BEND_CENTER, 12288, -2);
+    ed_clipboard_note_bends(e, false);
+    e->cursor_beat[1] = 10;
+    ed_clipboard(e, 2);
+    int point = pitch_node(e, 13);
+    check(point >= 0 && fabs(ed_automation_pitch(e, e->project.automation[point]) - 66) < .02,
+          "note/bend copy carries complete section sensitivity and anchor");
+    check(ed_pitch_state(e, 13).range == 2,
+          "pasted note/bend section restores destination bend sensitivity");
+
+    fixture(e);
+    ed_focus_edit(e, FOCUS_NOTES);
+    ed_pattern(e)->notes[0].length = 2;
+    ed_pattern(e)->notes[0].selected = 1;
+    e->drag_key = 60;
+    e->bend_range = 12;
+    ed_automation_line(e, 1, 3, MIDI_BEND_CENTER, 12288, -2);
+    size_t setup = section_nodes(e);
+    ed_clipboard_note_bends(e, true);
+    check(setup && section_nodes(e) == setup && pitch_node(e, 1) < 0 && pitch_node(e, 3) >= 0,
+          "partial note/bend cut keeps the setup of a section that still has points");
+    ed_undo(e, false);
+    ed_pattern(e)->notes[0].length = 8;
+    ed_pattern(e)->notes[0].selected = 1;
+    ed_clipboard_note_bends(e, true);
+    check(!e->project.automation_count && pitch_node(e, 3) < 0 && !ed_pattern(e)->count,
+          "cutting a whole section removes its setup nodes");
+
+    fixture(e);
+    ed_focus_edit(e, FOCUS_NOTES);
+    ed_pattern(e)->notes[0].selected = 1;
+    DmNote routed = {1, 2, 65, 100, 1};
+    routed.port = 1;
+    dm_note_add(ed_pattern(e), routed);
+    DmAutomation bend = {1.5, MIDI_PITCH_BEND, 0, 0, 96, 0};
+    bend.port = 1;
+    dm_automation_add(&e->project, bend);
+    ed_clipboard_note_bends(e, false);
+    e->cursor_beat[1] = 10;
+    ed_clipboard(e, 2);
+    point = pitch_node(e, 11.5);
+    check(point >= 0 && e->project.automation[point].port == 1 && ed_note_port(e) == 0 &&
+              ed_pattern(e)->notes[3].port == 1,
+          "note/bend paste preserves source note routes and restores the focused route");
+
+    e->bindings[ACT_COPY_NOTE_BENDS] = (Binding){SDL_SCANCODE_F10, SDL_KMOD_ALT};
+    dm_bytes_free(&e->clipboard);
+    ed_focus_edit(e, FOCUS_EVENTS);
+    ed_shortcut(e, SDL_SCANCODE_F10, SDL_KMOD_ALT, false);
+    check(!e->clipboard.size, "rebound note shortcut is inactive in event focus");
+    ed_focus_edit(e, FOCUS_NOTES);
+    ed_pattern(e)->notes[0].selected = 1;
+    ed_shortcut(e, SDL_SCANCODE_C, SDL_KMOD_CTRL | SDL_KMOD_SHIFT, false);
+    check(!e->clipboard.size, "old default stops copying after rebinding");
+    ed_shortcut(e, SDL_SCANCODE_F10, SDL_KMOD_ALT, false);
+    check(e->clipboard.size, "rebound shortcut copies in note focus");
+    char settings_path[DM_PATH];
+    snprintf(settings_path, sizeof(settings_path), "%s", e->settings_path);
+    snprintf(e->settings_path, sizeof(e->settings_path),
+             "agents/reports/2026-11-08-todo/shortcuts.ini");
+    e->bindings[ACT_CUT_NOTE_BENDS] = (Binding){SDL_SCANCODE_F11, SDL_KMOD_ALT};
+    check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names),
+          "new note/bend bindings save to isolated preferences");
+    ed_defaults(e);
+    check(dm_preferences_load(e, ed_shortcut_schema()) &&
+              e->bindings[ACT_COPY_NOTE_BENDS].key == SDL_SCANCODE_F10 &&
+              e->bindings[ACT_CUT_NOTE_BENDS].key == SDL_SCANCODE_F11 &&
+              e->bindings[ACT_COPY_NOTE_BENDS].mods == SDL_KMOD_ALT,
+          "new note/bend bindings survive preference save/load");
+    snprintf(e->settings_path, sizeof(e->settings_path), "%s", settings_path);
+    ed_defaults(e);
+}
+
+static void lane_clipboard(Editor *e) {
+    fixture(e);
+    e->automation_cc = MIDI_CC_EXPRESSION;
+    dm_automation_add(&e->project,
+                      (DmAutomation){2.25, MIDI_CONTROL, 0, MIDI_CC_EXPRESSION, 20, 0});
+    dm_automation_add(&e->project,
+                      (DmAutomation){3.75, MIDI_CONTROL, 0, MIDI_CC_EXPRESSION, 80, 0});
+    dm_automation_add(&e->project, (DmAutomation){4, MIDI_CONTROL, 0, MIDI_CC_MODULATION, 90, 0});
+    dm_automation_add(&e->project, (DmAutomation){5, MIDI_PITCH_BEND, 0, 0, 96, 0});
+    check(ed_event_type_used(e, MIDI_CC_EXPRESSION) && ed_event_type_used(e, -2) &&
+              !ed_event_type_used(e, MIDI_CC_REVERB),
+          "event presence follows authored data, independently of the displayed type");
+    ed_pattern(e)->notes[0].velocity = ED_DEFAULT_VELOCITY;
+    check(!ed_event_type_used(e, -3), "default note velocities are not marked as data");
+    ed_pattern(e)->notes[0].velocity = ED_DEFAULT_VELOCITY - 1;
+    check(ed_event_type_used(e, -3), "an edited note velocity marks Velocity as data");
+    ed_copy_event_lane(e, false);
+    check(e->event_clipboard.size, "Copy captures a whole event type with no point selection");
+    e->automation_node = 0;
+    ed_clipboard(e, 0);
+    e->project.automation_count = 0;
+    e->cursor_beat[1] = 20;
+    int history = e->undo_count;
+    ed_paste_event_lane(e);
+    check(e->project.automation_count == 2 && e->project.automation[0].beat == 2.25 &&
+              e->project.automation[1].beat == 3.75 && e->undo_count == history + 1,
+          "button paste retains original times and survives unrelated keyboard copy");
+    ed_undo(e, false);
+    check(!e->project.automation_count, "event button paste is one undo step");
+
+    fixture(e);
+    e->automation_cc = MIDI_CC_MODULATION;
+    dm_automation_add(&e->project, (DmAutomation){1, MIDI_CONTROL, 0, MIDI_CC_MODULATION, 90, 0});
+    dm_automation_add(&e->project, (DmAutomation){2, MIDI_CONTROL, 0, MIDI_CC_EXPRESSION, 70, 0});
+    dm_automation_add(&e->project, (DmAutomation){3, MIDI_PITCH_BEND, 0, 0, 96, 0});
+    DmAutomation other = {4, MIDI_CONTROL, 0, MIDI_CC_REVERB, 50, 0};
+    other.port = 1;
+    dm_automation_add(&e->project, other);
+    ed_pattern(e)->notes[0].velocity = 77;
+    ed_copy_event_lane(e, true);
+    e->project.automation_count = 0;
+    ed_pattern(e)->notes[0].velocity = 30;
+    e->cursor_beat[1] = 40;
+    ed_paste_event_lane(e);
+    check(ed_event_type_used(e, MIDI_CC_MODULATION) && ed_event_type_used(e, MIDI_CC_EXPRESSION) &&
+              pitch_node(e, 3) >= 0 && !ed_event_type_used(e, MIDI_CC_REVERB) &&
+              ed_pattern(e)->notes[0].velocity == 77 && ed_pattern(e)->count == 1,
+          "Copy all restores every type and matching velocities on the current route");
+
+    e->automation_cc = -3;
+    ed_copy_event_lane(e, false);
+    ed_pattern(e)->notes[0].velocity = 11;
+    ed_paste_event_lane(e);
+    check(ed_pattern(e)->notes[0].velocity == 77, "velocity-only Copy/Paste restores note values");
+    e->automation_cc = MIDI_CC_REVERB;
+    ed_copy_event_lane(e, false);
+    check(!e->event_clipboard.size, "copying an empty lane disables dedicated Paste again");
+}
+
 int main(void) {
     musical_sync();
     scheduled_sync();
@@ -234,6 +412,8 @@ int main(void) {
     ui_frame();
     pitch_ranges(e);
     event_clipboard(e);
+    note_bend_clipboard(e);
+    lane_clipboard(e);
     transfer_points(e);
     ui_render(r);
     fixture(e);

@@ -48,24 +48,59 @@ const char *ed_action_names[ACT_COUNT] = {DM_TEXT_COMPUTER_KEYBOARD_PIANO,
                                           DM_TEXT_NEXT_CREATE_AUTOMATION,
                                           DM_TEXT_PREVIOUS_AUTOMATION,
                                           DM_TEXT_CHOOSE_CHANNEL_INSTRUMENT,
-                                          DM_TEXT_PREFERENCES};
-static const SDL_Scancode default_keys[ACT_COUNT] = {
-    SDL_SCANCODE_F1,        SDL_SCANCODE_Q,           SDL_SCANCODE_SPACE,
-    SDL_SCANCODE_RIGHT,     SDL_SCANCODE_LEFT,        SDL_SCANCODE_RIGHT,
-    SDL_SCANCODE_LEFT,      SDL_SCANCODE_HOME,        SDL_SCANCODE_END,
-    SDL_SCANCODE_PAGEUP,    SDL_SCANCODE_PAGEDOWN,    SDL_SCANCODE_KP_PLUS,
-    SDL_SCANCODE_KP_MINUS,  SDL_SCANCODE_UP,          SDL_SCANCODE_DOWN,
-    SDL_SCANCODE_UP,        SDL_SCANCODE_DOWN,        SDL_SCANCODE_UP,
-    SDL_SCANCODE_DOWN,      SDL_SCANCODE_LEFTBRACKET, SDL_SCANCODE_RIGHTBRACKET,
-    SDL_SCANCODE_BACKSLASH, SDL_SCANCODE_K,           SDL_SCANCODE_SLASH,
-    SDL_SCANCODE_E,         SDL_SCANCODE_1,           SDL_SCANCODE_2,
-    SDL_SCANCODE_3,         SDL_SCANCODE_4,           SDL_SCANCODE_5,
-    SDL_SCANCODE_KP_1,      SDL_SCANCODE_KP_2,        SDL_SCANCODE_SPACE,
-    SDL_SCANCODE_E,         SDL_SCANCODE_M,           SDL_SCANCODE_S,
-    SDL_SCANCODE_R,         SDL_SCANCODE_F2,          SDL_SCANCODE_F3,
-    SDL_SCANCODE_F4,        SDL_SCANCODE_F5,          SDL_SCANCODE_D,
-    SDL_SCANCODE_GRAVE,     SDL_SCANCODE_C,           SDL_SCANCODE_KP_PLUS,
-    SDL_SCANCODE_KP_MINUS,  SDL_SCANCODE_I,           SDL_SCANCODE_P};
+                                          DM_TEXT_PREFERENCES,
+                                          DM_TEXT_COPY_NOTE_BENDS,
+                                          DM_TEXT_CUT_NOTE_BENDS};
+static const SDL_Scancode default_keys[ACT_COUNT] = {SDL_SCANCODE_F1,
+                                                     SDL_SCANCODE_Q,
+                                                     SDL_SCANCODE_SPACE,
+                                                     SDL_SCANCODE_RIGHT,
+                                                     SDL_SCANCODE_LEFT,
+                                                     SDL_SCANCODE_RIGHT,
+                                                     SDL_SCANCODE_LEFT,
+                                                     SDL_SCANCODE_HOME,
+                                                     SDL_SCANCODE_END,
+                                                     SDL_SCANCODE_PAGEUP,
+                                                     SDL_SCANCODE_PAGEDOWN,
+                                                     SDL_SCANCODE_KP_PLUS,
+                                                     SDL_SCANCODE_KP_MINUS,
+                                                     SDL_SCANCODE_UP,
+                                                     SDL_SCANCODE_DOWN,
+                                                     SDL_SCANCODE_UP,
+                                                     SDL_SCANCODE_DOWN,
+                                                     SDL_SCANCODE_UP,
+                                                     SDL_SCANCODE_DOWN,
+                                                     SDL_SCANCODE_LEFTBRACKET,
+                                                     SDL_SCANCODE_RIGHTBRACKET,
+                                                     SDL_SCANCODE_BACKSLASH,
+                                                     SDL_SCANCODE_K,
+                                                     SDL_SCANCODE_SLASH,
+                                                     SDL_SCANCODE_E,
+                                                     SDL_SCANCODE_1,
+                                                     SDL_SCANCODE_2,
+                                                     SDL_SCANCODE_3,
+                                                     SDL_SCANCODE_4,
+                                                     SDL_SCANCODE_5,
+                                                     SDL_SCANCODE_KP_1,
+                                                     SDL_SCANCODE_KP_2,
+                                                     SDL_SCANCODE_SPACE,
+                                                     SDL_SCANCODE_E,
+                                                     SDL_SCANCODE_M,
+                                                     SDL_SCANCODE_S,
+                                                     SDL_SCANCODE_R,
+                                                     SDL_SCANCODE_F2,
+                                                     SDL_SCANCODE_F3,
+                                                     SDL_SCANCODE_F4,
+                                                     SDL_SCANCODE_F5,
+                                                     SDL_SCANCODE_D,
+                                                     SDL_SCANCODE_GRAVE,
+                                                     SDL_SCANCODE_C,
+                                                     SDL_SCANCODE_KP_PLUS,
+                                                     SDL_SCANCODE_KP_MINUS,
+                                                     SDL_SCANCODE_I,
+                                                     SDL_SCANCODE_P,
+                                                     SDL_SCANCODE_C,
+                                                     SDL_SCANCODE_X};
 static void preview_open_pattern(Editor *e, int id);
 static bool push(DmBytes *stack, int *count, const DmProject *p);
 static void publish_loop(Editor *e);
@@ -96,7 +131,7 @@ EditFocus ed_selection_focus(Editor *e) {
 void ed_reset_layout(Editor *e) {
     e->sidebar = 465;
     e->mixer_height = 420;
-    e->label_width = 154;
+    e->label_width = 250; /* Fits the longest GM name, channel number and expander. */
     e->automation_height = 360;
     e->roll_height = 420; /* Matches mixer_height, so both dividers meet in a cross. */
 }
@@ -208,6 +243,59 @@ void ed_preview_channel(Editor *e, int channel, bool placed) {
     e->preview_source_channel = placed ? channel : -1;
     e->preview_override = false;
     e->preview_program = ed_channel_program(e, channel);
+}
+
+bool ed_pattern_placed(Editor *e) {
+    for (size_t i = 0; ed_pattern(e) && i < e->project.clip_count; ++i) {
+        if (e->project.clips[i].pattern == e->selected_pattern) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool ed_preview_instrument_shown(Editor *e) {
+    return e->pattern_mode || !ed_pattern_placed(e);
+}
+
+bool ed_follow_preview(Editor *e) {
+    if (e->preview_override) {
+        return false;
+    }
+
+    int channel = e->pattern_channel, program = e->preview_program;
+
+    if (ed_pattern(e) && !ed_pattern_placed(e)) {
+        e->preview_source_channel = -1;
+
+        if (e->channel_selected) {
+            e->pattern_channel = e->selected_channel;
+            e->preview_program = ed_channel_program(e, e->selected_channel);
+        }
+    } else if (e->preview_source_channel >= 0) {
+        e->preview_program = ed_channel_program(e, e->preview_source_channel);
+    }
+
+    return channel != e->pattern_channel || program != e->preview_program;
+}
+
+void ed_follow_preview_frame(Editor *e) {
+    int channel = e->pattern_channel;
+
+    if (!ed_follow_preview(e)) {
+        return;
+    }
+
+    if (channel != e->pattern_channel) {
+        ed_release_piano(e);
+    }
+
+    ed_keyboard_channel(e);
+
+    if (e->pattern_mode) {
+        ed_publish(e);
+    }
 }
 
 void ed_select_placement_route(Editor *e, int index) {
@@ -395,6 +483,8 @@ void ed_defaults(Editor *e) {
 
     e->bindings[ACT_QUANTIZE].mods = SDL_KMOD_CTRL;
     e->bindings[ACT_DUPLICATE].mods = SDL_KMOD_CTRL;
+    e->bindings[ACT_COPY_NOTE_BENDS].mods = e->bindings[ACT_CUT_NOTE_BENDS].mods =
+        SDL_KMOD_CTRL | SDL_KMOD_SHIFT;
     e->bindings[ACT_PLAY_START].mods = SDL_KMOD_SHIFT;
     e->bindings[ACT_NOTE_COLOR].mods = SDL_KMOD_ALT;
     e->bindings[ACT_NEXT_AUTOMATION].mods = e->bindings[ACT_PREVIOUS_AUTOMATION].mods =
@@ -556,11 +646,8 @@ static void publish_loop(Editor *e) {
 
 /* A placed pattern follows its region's program changes unless a preview instrument is chosen. */
 static DmPatternPreview pattern_preview(Editor *e) {
+    ed_follow_preview(e);
     bool placed = !e->preview_override && e->preview_source_channel >= 0;
-
-    if (placed) {
-        e->preview_program = ed_channel_program(e, e->preview_source_channel);
-    }
 
     return (DmPatternPreview){e->selected_pattern,         e->pattern_channel,
                               e->preview_program,          placed,
@@ -599,8 +686,8 @@ void ed_publish(Editor *e) {
 
         if (pattern) {
             preview = pattern_preview(e);
-        } else if (!e->preview_override && e->preview_source_channel >= 0) {
-            e->preview_program = ed_channel_program(e, e->preview_source_channel);
+        } else {
+            ed_follow_preview(e);
         }
 
         if (dm_audio_update(e->audio, &e->project, pattern ? &preview : NULL, e->status,

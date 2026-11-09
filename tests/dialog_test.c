@@ -61,10 +61,8 @@ int main(void) {
 
         while (e->dialog_busy && SDL_GetTicks() - start < 15000) {
             SDL_Event event;
-            bool events = false;
 
             while (SDL_PollEvent(&event)) {
-                events = true;
                 editor_event(e, &event);
             }
 
@@ -79,7 +77,7 @@ int main(void) {
                 PostMessageW(found, WM_COMMAND, IDCANCEL, 0);
             }
 
-            window_frame(e, window, false, events);
+            window_frame(e, window, false);
         }
 
         printf("picker=%s API_return_ms=%llu first_visible_ms=%llu cancel_callback_ms=%llu "

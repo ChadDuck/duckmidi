@@ -9,6 +9,7 @@ static bool event_setup(DmAutomation a);
 static int transfer_event(Editor *e, int source);
 static bool transfer_prepare(Editor *e, int source, bool *used);
 static void transfer_button(Editor *e, float right);
+static void event_clipboard_buttons(Editor *e, float right);
 static double lfo_center_change(DmPattern *p, double value, bool free);
 static double lfo_bar(Editor *e);
 static void lfo_controls(Editor *e, DmPattern *p);
@@ -359,6 +360,32 @@ static void transfer_button(Editor *e, float right) {
     ui_position(next.x, fmaxf(next.y, after.y));
 }
 
+static void event_clipboard_buttons(Editor *e, float right) {
+    ui_same();
+
+    if (ui_cursor().x + 164 > right) {
+        ui_newline();
+    }
+
+    bool all = ui_mouse().shift;
+    bool points = !ed_pattern(e)->kind || !ed_pattern(e)->mode;
+    ui_disabled(!points);
+
+    if (ui_button(all ? DM_TEXT_COPY_ALL : DM_TEXT_COPY, 78, 0)) {
+        ed_copy_event_lane(e, all);
+    }
+
+    ui_disabled_end();
+    ui_same();
+    ui_disabled(!points || !e->event_clipboard.size);
+
+    if (ui_button(DM_TEXT_PASTE, 78, 0)) {
+        ed_paste_event_lane(e);
+    }
+
+    ui_disabled_end();
+}
+
 static double lfo_center_change(DmPattern *p, double value, bool free) {
     double snapped = dm_lfo_center_snap(value, p->event == -2, free);
 
@@ -574,6 +601,7 @@ static void event_editor_header(Editor *e, DmPattern *p) {
 
     if (!p->mode) {
         automation_value_input(e);
+        event_clipboard_buttons(e, header.x + width);
     }
 
     ui_group_end();
@@ -909,6 +937,11 @@ void ed_automation_panel(Editor *e, UiRect r, View *v, float scale, float label,
 
     if (e->automation_cc != -3) {
         automation_value_input(e);
+    }
+
+    event_clipboard_buttons(e, r.x + r.w - 6);
+
+    if (e->automation_cc != -3) {
         transfer_button(e, r.x + r.w - 6);
     }
 

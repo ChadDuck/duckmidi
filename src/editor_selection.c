@@ -9,6 +9,8 @@ static bool copy_notes(Editor *e, DmProject *to);
 static bool copy_clips(Editor *e, DmProject *to);
 static void paste_notes(Editor *e, const DmProject *from, double at);
 static void paste_clips(Editor *e, const DmProject *from, double at);
+static void delete_selected_notes(DmPattern *p);
+static void store_clipboard(Editor *e, DmBytes bytes);
 
 bool ed_point_editing(Editor *e) {
     if (ed_velocity_editing(e)) {
@@ -110,12 +112,7 @@ void ed_delete_selection(Editor *e) {
             return;
         }
 
-        for (size_t i = p->count; i > 0; --i) {
-            if (p->notes[i - 1].selected) {
-                memmove(&p->notes[i - 1], &p->notes[i], (p->count - i) * sizeof(DmNote));
-                --p->count;
-            }
-        }
+        delete_selected_notes(p);
     } else {
         for (size_t i = e->project.clip_count; i > 0; --i) {
             if (e->project.clips[i - 1].selected) {
@@ -298,26 +295,17 @@ void ed_clear_pattern_selection(Editor *e) {
 bool ed_deselect_focused(Editor *e) {
     EditFocus focus = ed_selection_focus(e);
 
-    if (focus == FOCUS_EVENTS && ed_velocity_editing(e)) {
-        focus = FOCUS_NOTES;
-    }
-
-    if (focus == FOCUS_EVENTS) {
+    if (focus == FOCUS_EVENTS || focus == FOCUS_NOTES) {
         bool selected = e->automation_all || e->automation_node >= 0 || e->event_selection.size;
-        e->event_selection.size = 0;
-        e->automation_all = false;
-        e->automation_node = -1;
-        return selected;
-    }
+        ed_deselect_events(e);
 
-    if (focus == FOCUS_NOTES && ed_pattern(e)) {
-        bool selected = false;
-
-        for (size_t i = 0; i < ed_pattern(e)->count; ++i) {
-            selected |= ed_pattern(e)->notes[i].selected;
+        if (ed_pattern(e)) {
+            for (size_t i = 0; i < ed_pattern(e)->count; ++i) {
+                selected |= ed_pattern(e)->notes[i].selected;
+                ed_pattern(e)->notes[i].selected = 0;
+            }
         }
 
-        ed_deselect(e);
         return selected;
     }
 
@@ -690,7 +678,7 @@ void ed_paste(Editor *e) {
             }
         }
 
-        ed_checkpoint(e);
+        bool pushed = ed_checkpoint(e);
         ed_deselect(e);
         double at = e->cursor_beat[e->context == 2];
 
@@ -703,6 +691,12 @@ void ed_paste(Editor *e) {
             ed_paste_events(e, &from, at);
         } else if (e->context == 2 && !strcmp(from.name, DM_TEXT_NOTES)) {
             paste_notes(e, &from, at);
+
+            if (from.automation_count && !ed_paste_note_bends(e, &from, at)) {
+                ed_checkpoint_abandon(e, pushed);
+                dm_project_free(&from);
+                return;
+            }
         } else if (e->context == 1 && !strcmp(from.name, DM_TEXT_CLIPS)) {
             paste_clips(e, &from, at);
         }
@@ -740,11 +734,7 @@ void ed_clipboard(Editor *e, int mode) {
         DmBytes bytes = {0};
 
         if (dm_pack(&copy, &bytes)) {
-            dm_bytes_free(&e->clipboard);
-            e->clipboard = bytes;
-            e->clipboard_session = e->project_session;
-            e->clipboard_port = e->project.port;
-            e->clipboard_sequence = e->project.sequence;
+            store_clipboard(e, bytes);
 
             if (mode == 1) {
                 ed_delete_selection(e);
@@ -752,5 +742,66 @@ void ed_clipboard(Editor *e, int mode) {
         }
     }
 
+    dm_project_free(&copy);
+}
+
+static void delete_selected_notes(DmPattern *p) {
+    size_t kept = 0;
+
+    for (size_t i = 0; i < p->count; ++i) {
+        if (!p->notes[i].selected) {
+            p->notes[kept++] = p->notes[i];
+        }
+    }
+
+    p->count = kept;
+}
+
+static void store_clipboard(Editor *e, DmBytes bytes) {
+    dm_bytes_free(&e->clipboard);
+    e->clipboard = bytes;
+    e->clipboard_session = e->project_session;
+    e->clipboard_port = e->project.port;
+    e->clipboard_sequence = e->project.sequence;
+}
+
+void ed_clipboard_note_bends(Editor *e, bool cut) {
+    if (!e->active || ed_selection_focus(e) != FOCUS_NOTES || !ed_pattern(e) ||
+        ed_pattern(e)->kind) {
+        return;
+    }
+
+    DmProject copy;
+    dm_project_init(&copy);
+    bool *selected = calloc(e->project.automation_count + 1, sizeof(*selected));
+    double first = HUGE_VAL;
+    DmPattern *p = ed_pattern(e);
+
+    for (size_t i = 0; i < p->count; ++i) {
+        if (p->notes[i].selected) {
+            first = fmin(first, p->notes[i].beat);
+        }
+    }
+
+    DmBytes bytes = {0};
+
+    if (!selected || !copy_notes(e, &copy) || !ed_copy_note_bends(e, &copy, first, selected) ||
+        !dm_pack(&copy, &bytes)) {
+        free(selected);
+        dm_bytes_free(&bytes);
+        dm_project_free(&copy);
+        return;
+    }
+
+    store_clipboard(e, bytes);
+
+    if (cut && ed_checkpoint(e)) {
+        ed_remove_events(e, selected, -2);
+        delete_selected_notes(p);
+        ed_deselect_events(e);
+        ed_commit(e);
+    }
+
+    free(selected);
     dm_project_free(&copy);
 }

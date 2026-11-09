@@ -1,5 +1,20 @@
 # duckmidi changelog
 
+# 0.12.3
+
+1. duckmidi now only lowers its frame rate while minimized, so dragging files in from another window stays responsive.
+2. A pattern that isn't on the playlist now follows the selected channel's instrument or sample, even when you change it, until you pick one in the pattern editor; **Reset** turns following back on, and patterns on the playlist hide the instrument picker unless **Pattern** playback is on.
+3. In the pattern editor, **Escape** clears both the note and event selections before it closes the editor.
+4. Playlist patterns snap to quarter beats when those grid lines are visible.
+5. Clicking a freely placed playlist pattern no longer moves it.
+6. **Ctrl + Shift + C / X** copies or cuts the selected notes with their pitch bends, and **Ctrl + V** pastes them at the playhead; both shortcuts can be changed.
+7. The events section has **Copy** and **Paste** buttons with their own clipboard that paste events at their original positions; hold **Shift** for **Copy all** event types.
+8. The playlist's channel labels are wider by default, so every General MIDI instrument name fits.
+9. Event types that contain data are marked in the application color in the event type menu.
+10. Added a MIDI input backend for monitoring and recording notes, velocity, controllers, pitch bend and pressure into the open pattern, with saved devices and automatic reconnection; device controls in the interface will follow later.
+11. Transport resets and MIDI panic now reset the keyboard synth's controllers and pitch bend.
+12. Dense event lanes draw overlapping values at display-pixel resolution and skip off-screen pitch bends, keeping every recorded point available for editing.
+
 # 0.12.2
 
 1. The brush tool shortcut was always active, regardless of the keyboard piano state. This has now been fixed.

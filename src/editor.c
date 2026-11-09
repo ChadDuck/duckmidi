@@ -13,6 +13,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->window = window;
     e->renderer = renderer;
     e->audio = audio;
+    ed_midi_input_init(e);
     e->audio_options = dm_audio_options_default();
     e->running = true;
     ed_reset_layout(e);
@@ -22,7 +23,6 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->pattern_drag = e->rename_pattern = e->pattern_color_target = -1;
     e->automation_node = -1;
     e->percussion_note = 36;
-    e->focused = true;
     e->display = SDL_GetDisplayForWindow(window);
     e->selected_pattern = -1;
     e->instrument_channel = -1;
@@ -88,6 +88,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
         SDL_PathInfo initial_info;
         bool first_launch = !SDL_GetPathInfo(e->settings_path, &initial_info);
         ed_preference_load(e);
+        ed_midi_input_restore(e);
 
         if (first_launch) {
             char font[DM_PATH], sample[DM_PATH];
@@ -148,11 +149,15 @@ void editor_free(Editor *e) {
     e->update = NULL;
     dm_audio_analyzer_enable(e->audio, false);
     free(e->drag_notes);
+    ed_midi_input_names(e);
     ed_preference_save(e);
+    ed_midi_input_finish(e, false);
     ed_release_piano(e);
+    ed_midi_input_free(e);
     ed_clear_history(e->undo, &e->undo_count);
     ed_clear_history(e->redo, &e->redo_count);
     dm_bytes_free(&e->clipboard);
+    dm_bytes_free(&e->event_clipboard);
     dm_bytes_free(&e->event_selection);
     dm_bytes_free(&e->record_original);
     dm_bytes_free(&e->midi_rows);
@@ -179,6 +184,7 @@ static void footer(Editor *e, UiPoint origin, float body) {
 }
 
 void editor_background(Editor *e) {
+    ed_midi_input_frame(e);
     ed_generate_poll(e);
     ed_save_poll(e);
     ed_export_poll(e);
@@ -338,6 +344,7 @@ void editor_frame(Editor *e, float width, float height) {
     if (!e->active) {
         ed_welcome(e, width, body);
     } else {
+        ed_follow_preview_frame(e);
         UiPoint start = origin;
         UiPoint left = {e->sidebar, body};
         float mix = ed_clampf(e->mixer_height, 110, fmaxf(110, body - 120));

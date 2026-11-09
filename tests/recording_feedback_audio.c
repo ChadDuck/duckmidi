@@ -118,3 +118,16 @@ bool recording_feedback_audio_port_voice(DmAudio *a, unsigned port, int channel,
 
     return false;
 }
+
+bool recording_feedback_audio_event(DmAudio *a, int type, int key, int value) {
+    bool found = false;
+    SDL_LockAudioStream(a->stream);
+
+    for (size_t i = 0; i < a->schedule.count; ++i) {
+        DmScheduled event = a->schedule.items[i];
+        found |= (event.status & MIDI_STATUS_MASK) == type && event.a == key && event.b == value;
+    }
+
+    SDL_UnlockAudioStream(a->stream);
+    return found;
+}

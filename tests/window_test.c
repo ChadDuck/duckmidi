@@ -34,21 +34,18 @@ int main(void) {
                abs(y - (bounds.y + (bounds.h - height) / 2)) <= 1,
            "centered default position");
     uint64_t start = SDL_GetTicks();
-    verify(!window_frame(editor, window, false, false), "unfocused idle loop skips rendering");
-    verify(SDL_GetTicks() - start >= 90, "idle loop is throttled");
-    verify(window_frame(editor, window, false, true),
-           "incoming events can refresh an unfocused window");
-    verify(window_frame(editor, window, true, false),
-           "isolated desktop capture mode remains runnable");
+    verify(window_frame(editor, window, false), "unfocused window keeps rendering");
+    verify(SDL_GetTicks() - start < 75, "unfocused window is not throttled");
+    verify(window_frame(editor, window, true), "isolated desktop capture mode remains runnable");
     editor->dialog_busy = true;
     start = SDL_GetTicks();
     /* During a native picker the editor keeps drawing at about 30 fps, and checks messages every
        millisecond in between. */
-    verify(window_frame(editor, window, false, false), "native picker keeps the editor drawing");
-    verify(!window_frame(editor, window, false, false), "native picker limits redraws to ~30 fps");
-    verify(SDL_GetTicks() - start < 75, "native picker bypasses the 100ms idle throttle");
+    verify(window_frame(editor, window, false), "native picker keeps the editor drawing");
+    verify(!window_frame(editor, window, false), "native picker limits redraws to ~30 fps");
+    verify(SDL_GetTicks() - start < 75, "native picker bypasses the 100ms minimized throttle");
     editor->dialog_busy = false;
-    printf("PASS window: detected display %u; centered %dx%d; idle rendering skipped\n", display,
+    printf("PASS window: detected display %u; centered %dx%d; unfocused rendering kept\n", display,
            width, height);
     editor_free(editor);
     free(editor);

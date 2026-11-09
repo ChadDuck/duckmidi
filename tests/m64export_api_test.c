@@ -65,9 +65,89 @@ static void dense_curves(const M64Api *api) {
     puts("PASS dense curves fit without note reduction");
 }
 
+/* Requests list events in tick order; ties keep their source order. */
+static int by_tick(const void *left, const void *right) {
+    const M64Event *a = left, *b = right;
+    return a->tick != b->tick ? (a->tick < b->tick ? -1 : 1)
+                              : (a->source_id > b->source_id) - (a->source_id < b->source_id);
+}
+
+static bool reported(const M64Api *api, M64Result *r, uint32_t code) {
+    for (uint64_t i = 0; i < api->diagnostic_count(r); i++) {
+        M64DiagnosticView d;
+        api->diagnostic_at(r, i, &d);
+
+        if (d.code == code) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* Notes are shortened (warning 23) only when a source channel's layers and every spare SM64
+   channel are busy. Eight voices, an eight-note chord on one channel and back-to-back legato
+   notes fit without cutting; sixteen busy channels with five-note chords do not. */
+static void voice_capacity(const M64Api *api) {
+    M64Event events[96];
+    size_t n = 0;
+
+    for (unsigned k = 0; k < 8; k++) {
+        events[n] = (M64Event){k * 6, n + 1, 0x90, 48 + k, 100};
+        n++;
+        events[n] = (M64Event){192, n + 1, 0x80, 48 + k, 0};
+        n++;
+    }
+
+    for (unsigned k = 0; k < 8; k++) {
+        events[n] = (M64Event){192 + k * 24, n + 1, 0x91, 60 + k, 90};
+        n++;
+        events[n] = (M64Event){216 + k * 24, n + 1, 0x81, 60 + k, 0};
+        n++;
+    }
+
+    qsort(events, n, sizeof(*events), by_tick);
+    M64Request q = {0};
+    q.events = events;
+    q.event_count = n;
+    q.duration = 384;
+    q.ppq = 48;
+    q.target = M64_TARGET_SM64_US;
+    q.voice_limit = 16;
+    q.sequence_name = "03_custom_test";
+    q.bank_name = "26_custom_test";
+    M64Result *r = NULL;
+    assert(api->compile(&q, NULL, &r) == M64_OK);
+    assert(reported(api, r, 39) && !reported(api, r, 23) && !reported(api, r, 54));
+    api->result_free(r);
+
+    M64Event *full = calloc(16 * 10, sizeof(*full));
+    n = 0;
+    assert(full);
+
+    for (unsigned ch = 0; ch < 16; ch++) {
+        for (unsigned k = 0; k < 5; k++) {
+            full[n] = (M64Event){0, n + 1, 0x90 | ch, 40 + k * 3, 100};
+            n++;
+            full[n] = (M64Event){96, n + 1, 0x80 | ch, 40 + k * 3, 0};
+            n++;
+        }
+    }
+
+    qsort(full, n, sizeof(*full), by_tick);
+    q.events = full;
+    q.event_count = n;
+    q.duration = 96;
+    assert(api->compile(&q, NULL, &r) == M64_OK && reported(api, r, 23));
+    api->result_free(r);
+    free(full);
+    puts("PASS notes are shortened only when no layer or channel is free");
+}
+
 int main(void) {
     const M64Api *api = m64_get_api_3();
     dense_curves(api);
+    voice_capacity(api);
     assert(api && !api->default_program(128) && !api->default_drum(128));
 
     for (unsigned i = 0; i < 128; i++) {

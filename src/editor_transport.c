@@ -1,7 +1,13 @@
 #include "editor_internal.h"
 #include "text/en.h"
 
-static void replace_recorded_overlap(Editor *e, double start, double end);
+static void replace_recorded_overlap(Editor *e, DmPattern *p, unsigned port, double start,
+                                     double end);
+
+/* A take keeps one undo step: true once it exists, false only when it cannot be saved. */
+static bool take_checkpoint(Editor *e) {
+    return (e->recording_take && e->take_snapshot) || ed_checkpoint(e);
+}
 
 void ed_cancel_wait(Editor *e) {
     if (e->wait_armed) {
@@ -32,6 +38,7 @@ void ed_play(Editor *e) {
 
     if (playing) {
         bool take = e->record;
+        ed_midi_input_finish(e, false); /* Stopping republishes. */
         ed_release_piano(e);
         e->recording_take = e->take_snapshot = false;
 
@@ -72,6 +79,7 @@ void ed_seek(Editor *e, double beat) {
         return;
     }
 
+    ed_midi_input_finish(e, false); /* The seek republishes. */
     ed_release_piano(e);
     beat = fmax(0, fmin(ed_transport_length(e), beat));
     e->cursor_beat[e->pattern_mode] = e->start_beat[e->pattern_mode] = beat;
@@ -102,7 +110,12 @@ bool ed_begin_record_take(Editor *e) {
     }
 
     e->record_original.size = bytes;
-    ed_checkpoint(e);
+
+    if (!take_checkpoint(e)) {
+        return false;
+    }
+
+    ed_midi_input_take(e);
 
     if (!e->overwrite) {
         size_t kept = 0;
@@ -121,18 +134,18 @@ bool ed_begin_record_take(Editor *e) {
     return true;
 }
 
-static void replace_recorded_overlap(Editor *e, double start, double end) {
+static void replace_recorded_overlap(Editor *e, DmPattern *p, unsigned port, double start,
+                                     double end) {
     if (!e->overwrite) {
         return;
     }
 
-    DmPattern *p = ed_pattern(e);
     DmNote *original = (DmNote *)e->record_original.data;
 
     for (size_t i = 0; i < e->record_original.size / sizeof(DmNote); ++i) {
         DmNote *old = &original[i];
 
-        if (old->port != ed_note_port(e) || !old->velocity || old->beat >= end ||
+        if (old->port != port || !old->velocity || old->beat >= end ||
             old->beat + old->length <= start) {
             continue;
         }
@@ -173,6 +186,35 @@ double ed_recording_origin(Editor *e, double beat) {
     return meter.origin + floor((beat - meter.origin) / meter.bar + 1e-9) * meter.bar;
 }
 
+double ed_record_origin(Editor *e, double beat) {
+    if (!e->take_origin_set || beat < e->take_origin) {
+        e->take_origin = ed_recording_origin(e, beat);
+        e->take_origin_set = true;
+    }
+
+    return e->take_origin;
+}
+
+bool ed_record_insert(Editor *e, DmPattern *pattern, int key, int velocity, unsigned port,
+                      double start, double end, double origin) {
+    start = fmax(0, start - origin);
+    end = fmax(start, end - origin);
+
+    if (!dm_reserve((void **)&pattern->notes, &pattern->capacity, pattern->count + 1,
+                    sizeof(DmNote))) {
+        return false;
+    }
+
+    if (!take_checkpoint(e)) {
+        return false;
+    }
+
+    replace_recorded_overlap(e, pattern, port, start, end);
+    return ed_add_note(e, pattern,
+                       (DmNote){start, fmax(1.0 / DM_PPQ, end - start), (uint8_t)key,
+                                (uint8_t)velocity, 0, (uint8_t)port});
+}
+
 void ed_record_note(Editor *e, int note) {
     if (!e->record || e->record_start[note] < 0 || !ed_pattern(e) || ed_pattern(e)->kind) {
         return;
@@ -183,14 +225,9 @@ void ed_record_note(Editor *e, int note) {
         e->take_snapshot = false;
     }
 
-    double start = fmax(0, e->record_start[note] - e->record_origin[note]),
-           end = fmax(start, dm_seconds_beat(&e->project, dm_audio_position(e->audio)) -
-                                 e->record_origin[note]);
-    ed_checkpoint(e);
-    replace_recorded_overlap(e, start, end);
-    ed_add_note(
-        e, ed_pattern(e),
-        (DmNote){start, fmax(1.0 / DM_PPQ, end - start), note, 100, 0, (uint8_t)ed_note_port(e)});
+    ed_record_insert(
+        e, ed_pattern(e), note, ED_DEFAULT_VELOCITY, ed_note_port(e), e->record_start[note],
+        dm_seconds_beat(&e->project, dm_audio_position(e->audio)), e->record_origin[note]);
     e->record_start[note] = -1;
     e->recording_commit = true;
     ed_commit(e);
@@ -214,9 +251,7 @@ void ed_finish_edit_feedback(Editor *e) {
 }
 
 void ed_edit_feedback(Editor *e, float pitch) {
-    if (!e->preview_override && e->preview_source_channel >= 0) {
-        e->preview_program = ed_channel_program(e, e->preview_source_channel);
-    }
+    ed_follow_preview(e);
 
     int part = ed_note_port(e) * 16 + e->pattern_channel;
     dm_audio_edit_preview_part(e->audio, part, e->preview_program, fminf(127, fmaxf(0, pitch)),
@@ -224,6 +259,8 @@ void ed_edit_feedback(Editor *e, float pitch) {
     e->edit_feedback = true;
 }
 
+/* Computer keys only: UI actions call this when the keyboard loses its target. MIDI input
+   keeps playing; its takes end in ed_play, ed_seek and ed_toggle_record. */
 void ed_release_piano(Editor *e) {
     ed_stop_edit_feedback(e);
 
@@ -246,6 +283,7 @@ void ed_toggle_record(Editor *e) {
     bool take = e->record && dm_audio_playing(e->audio);
 
     if (e->record) {
+        ed_midi_input_finish(e, true);
         ed_release_piano(e);
     }
 

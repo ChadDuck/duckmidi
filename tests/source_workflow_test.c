@@ -125,7 +125,8 @@ static void preview_check(Editor *e) {
     ed_playlist_label_action(e, 1, 0, (UiMouse){.clicked = true});
     e->context = 2;
     ed_keyboard_channel(e);
-    check(e->preview_program == 40, "unplaced preview remains stable after row selection");
+    check(e->pattern_channel == 1 && e->preview_program == ed_channel_program(e, 1),
+          "unplaced preview follows the selected row's instrument");
     e->preview_program = 12;
     e->preview_override = true;
     ed_keyboard_channel(e);

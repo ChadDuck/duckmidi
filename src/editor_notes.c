@@ -472,7 +472,8 @@ static void brush_cell(Editor *e, DmPattern *p, int quarter, int key) {
 
     remove_overlapping_notes(e, p, key, beat);
 
-    if (ed_add_note(e, p, (DmNote){beat, .25, key, 100, 1, (uint8_t)ed_note_port(e)})) {
+    if (ed_add_note(e, p,
+                    (DmNote){beat, .25, key, ED_DEFAULT_VELOCITY, 1, (uint8_t)ed_note_port(e)})) {
         ed_changed(e);
     }
 }
@@ -577,7 +578,8 @@ void ed_piano_click(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, flo
             remove_overlapping_notes(e, p, key, beat);
 
             if (ed_add_note(e, p,
-                            (DmNote){beat, .25, (uint8_t)key, 100, 1, (uint8_t)ed_note_port(e)})) {
+                            (DmNote){beat, .25, (uint8_t)key, ED_DEFAULT_VELOCITY, 1,
+                                     (uint8_t)ed_note_port(e)})) {
                 ed_changed(e);
 
                 if (start_note_drag(e, p, (int)p->count - 1, mouse, 0)) {
@@ -607,10 +609,36 @@ void ed_select_preview_instrument(Editor *e, int program) {
 
 enum { PREVIEW_RESET_WIDTH = 72 };
 
-static void preview_instrument(Editor *e, float right) {
-    if (!e->preview_override && e->preview_source_channel >= 0) {
-        e->preview_program = ed_channel_program(e, e->preview_source_channel);
+/* Note port buttons alone, for a placed pattern whose instrument dropdown is hidden. */
+static void port_buttons_only(Editor *e, float right) {
+    float ports = ed_port_buttons_width(e);
+    /* Keeps the header as tall as the instrument buttons so the roll stays in place. */
+    ui_dummy(0, 32);
+
+    if (!ports) {
+        return;
     }
+
+    ui_same();
+    UiPoint at = ui_cursor();
+
+    if (ui_available().x < ports) {
+        ui_newline();
+        at = ui_cursor();
+    }
+
+    ui_position(fmaxf(at.x, right - ports), at.y);
+    ed_port_buttons(e);
+    ui_dummy(0, 0); /* Each port button keeps the line open; the roll starts below. */
+}
+
+static void preview_instrument(Editor *e, float right) {
+    if (!ed_preview_instrument_shown(e)) {
+        port_buttons_only(e, right);
+        return;
+    }
+
+    ed_follow_preview(e);
 
     /* Shows the instrument playing at the current position; choosing one still sets the
        preview instrument, which overrides program changes in pattern playback. */
@@ -715,8 +743,9 @@ static void pitch_underlay(Editor *e, UiRect grid, View *v, float scale) {
     bool has = false;
     DmAutomation before = {0};
     ed_pitch_cache_begin(e);
+    size_t first = ed_automation_visible_first(e, (v->scroll_x - 8) / scale, true);
 
-    for (size_t i = 0; i < e->project.automation_count; ++i) {
+    for (size_t i = first; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
 
         if (a.pattern != e->selected_pattern || a.port != ed_note_port(e) ||
@@ -727,6 +756,17 @@ static void pitch_underlay(Editor *e, UiRect grid, View *v, float scale) {
         float pitch = ed_automation_pitch(e, a);
         UiPoint point = {grid.x + (float)a.beat * scale - v->scroll_x,
                          grid.y + (127 - pitch) * 20 - v->scroll_y + 10};
+
+        if (has && previous.x > grid.x + grid.w + 8) {
+            break;
+        }
+
+        if (point.x < grid.x - 8 && (!has || previous.x < grid.x - 8)) {
+            previous = point;
+            before = a;
+            has = true;
+            continue;
+        }
 
         if (has) {
             ed_automation_connection(previous, point, before, a,

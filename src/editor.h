@@ -1,6 +1,7 @@
 #ifndef DM_EDITOR_H
 #define DM_EDITOR_H
 #include "audio.h"
+#include "midi_input.h"
 #include "duck.h"
 #include "ui.h"
 
@@ -53,6 +54,8 @@ typedef enum {
     ACT_PREVIOUS_AUTOMATION,
     ACT_INSTRUMENT,
     ACT_PREFERENCES,
+    ACT_COPY_NOTE_BENDS,
+    ACT_CUT_NOTE_BENDS,
     ACT_COUNT
 } Action;
 
@@ -98,6 +101,9 @@ typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
     DmAudio *audio;
+    DmMidiInput *midi_input;
+    struct DmEditorMidiInput *midi_input_state;
+    char input_names[DM_MIDI_INPUTS][DM_MIDI_NAME]; /* Saved MIDI input devices. */
     DmProject project;
     uint64_t mixer_peak_tick;
     float mixer_peaks[DM_PARTS];
@@ -216,7 +222,7 @@ typedef struct {
     int node_value;
     float node_y, automation_center;
     SDL_DisplayID display;
-    bool focused, minimized;
+    bool minimized;
 
     char new_name[128];
     float new_bpm;
@@ -278,6 +284,8 @@ typedef struct {
     int copy_button;
     bool copy_pending, copy_was_selected;
     DmBytes undo[32], redo[32], clipboard, event_selection;
+    DmBytes event_clipboard; /* Event buttons keep their own fixed-position clipboard. */
+    bool event_clipboard_all;
     int undo_count, redo_count;
     int held[SDL_SCANCODE_COUNT];
     SDL_Keymod keymods;

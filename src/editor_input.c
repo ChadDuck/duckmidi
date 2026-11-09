@@ -14,7 +14,6 @@ static void action_scroll(Editor *e, int a, View *v);
 static void action_navigation(Editor *e, int a);
 static void capture_binding(Editor *e, Binding binding);
 static bool fixed_binding(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat);
-static bool piano_record_start(Editor *e);
 static bool floating_open(Editor *e);
 static bool context_action(int a);
 static bool piano_blocks(Editor *e, int action, SDL_Scancode key, SDL_Keymod mods);
@@ -353,6 +352,12 @@ static bool action_global(Editor *e, int a) {
 
 static bool action_pattern(Editor *e, int a) {
     switch (a) {
+    case ACT_COPY_NOTE_BENDS:
+    case ACT_CUT_NOTE_BENDS:
+        if (ed_selection_focus(e) == FOCUS_NOTES) {
+            ed_clipboard_note_bends(e, a == ACT_CUT_NOTE_BENDS);
+        }
+        break;
     case ACT_NOTE_COLOR:
         if (ui_popup_open()) {
             break;
@@ -574,9 +579,17 @@ static bool fixed_binding(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool rep
         ed_undo(e, true);
         break;
     case SDL_SCANCODE_C:
+        if (shift) {
+            return false;
+        }
+
         ed_clipboard(e, 0);
         break;
     case SDL_SCANCODE_X:
+        if (shift) {
+            return false;
+        }
+
         ed_clipboard(e, 1);
         break;
     case SDL_SCANCODE_V:
@@ -609,9 +622,7 @@ static void keyboard_mix(Editor *e, int route, int channel) {
 
 int ed_keyboard_channel(Editor *e) {
     if (e->context == 2) {
-        if (!e->preview_override && e->preview_source_channel >= 0) {
-            e->preview_program = ed_channel_program(e, e->preview_source_channel);
-        }
+        ed_follow_preview(e);
 
         int channel = e->preview_program == 128 ? MIDI_DRUM_CHANNEL : 0;
 
@@ -636,7 +647,7 @@ int ed_keyboard_channel(Editor *e) {
     return e->selected_channel;
 }
 
-static bool piano_record_start(Editor *e) {
+bool ed_record_start(Editor *e) {
     if (e->wait_armed && e->record && !dm_audio_playing(e->audio)) {
         /* Prepare/clear the take while stopped. Publishing it after starting
            playback could briefly schedule the old take and then cut it off. */
@@ -671,7 +682,7 @@ void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
             return;
         }
 
-        if (!piano_record_start(e)) {
+        if (!ed_record_start(e)) {
             return;
         }
 
@@ -687,10 +698,8 @@ void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
                                     ? dm_seconds_beat(&e->project, dm_audio_position(e->audio))
                                     : -1;
         /* The take's first note fixes where the pattern starts; a loop back restarts it. */
-        if (e->record_start[note] >= 0 &&
-            (!e->take_origin_set || e->record_start[note] < e->take_origin)) {
-            e->take_origin = ed_recording_origin(e, e->record_start[note]);
-            e->take_origin_set = true;
+        if (e->record_start[note] >= 0) {
+            ed_record_origin(e, e->record_start[note]);
         }
 
         e->record_origin[note] = e->take_origin_set ? e->take_origin : 0;
@@ -707,6 +716,7 @@ static bool floating_open(Editor *e) {
 
 static bool context_action(int a) {
     return a == ACT_NOTE_COLOR || a == ACT_DUPLICATE || a == ACT_QUANTIZE ||
+           a == ACT_COPY_NOTE_BENDS || a == ACT_CUT_NOTE_BENDS ||
            (a >= ACT_FORWARD && a <= ACT_BOTTOM) || (a >= ACT_UP && a <= ACT_ZOOM_RESET);
 }
 

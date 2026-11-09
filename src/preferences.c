@@ -209,6 +209,74 @@ static bool valid_bindings(Binding *b) {
     return true;
 }
 
+/* Comma-separated quoted names; doubled quotes use the same escaping as other INI strings. */
+static bool input_names(Editor *e, const char *s) {
+    memset(e->input_names, 0, sizeof(e->input_names));
+    unsigned count = 0;
+
+    while (*s) {
+        while (isspace((unsigned char)*s)) {
+            ++s;
+        }
+
+        if (!*s) {
+            return count == 0;
+        }
+
+        if (*s != '"' || count == DM_MIDI_INPUTS) {
+            return false;
+        }
+
+        const char *start = s++;
+
+        while (*s) {
+            if (*s++ == '"') {
+                if (*s != '"') {
+                    break;
+                }
+
+                ++s;
+            }
+        }
+
+        size_t length = (size_t)(s - start);
+        char quoted[DM_MIDI_NAME * 2 + 2];
+
+        if (length >= sizeof(quoted)) {
+            return false;
+        }
+
+        memcpy(quoted, start, length);
+        quoted[length] = 0;
+
+        if (!value(e->input_names[count], DM_MIDI_NAME, quoted) || !*e->input_names[count]) {
+            return false;
+        }
+
+        for (unsigned i = 0; i < count; ++i) {
+            if (!strcmp(e->input_names[i], e->input_names[count])) {
+                return false;
+            }
+        }
+
+        ++count;
+
+        while (isspace((unsigned char)*s)) {
+            ++s;
+        }
+
+        if (!*s) {
+            return true;
+        }
+
+        if (*s++ != ',' || !*s) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool application(Ini *ini, const char *key, const char *s) {
     Editor *e = &ini->next;
 
@@ -319,6 +387,10 @@ static bool application(Ini *ini, const char *key, const char *s) {
 
     if (!strcmp(key, "midi_output")) {
         return value(e->output_name, sizeof(e->output_name), s);
+    }
+
+    if (!strcmp(key, "midi_inputs")) {
+        return input_names(e, s);
     }
 
     return true;
@@ -652,9 +724,40 @@ static bool text_field(DmBytes *b, const char *key, const char *s) {
     return text(b, "\"\n");
 }
 
+static bool input_field(DmBytes *b, Editor *e) {
+    if (!text(b, "midi_inputs=")) {
+        return false;
+    }
+
+    bool first = true;
+
+    for (unsigned i = 0; i < DM_MIDI_INPUTS; ++i) {
+        if (!*e->input_names[i]) {
+            continue;
+        }
+
+        DmBytes name = {0};
+        bool ok = text_field(&name, "", e->input_names[i]);
+
+        if (ok) {
+            ok = (first || text(b, ",")) && dm_bytes(b, name.data + 1, name.size - 2);
+        }
+
+        dm_bytes_free(&name);
+
+        if (!ok) {
+            return false;
+        }
+
+        first = false;
+    }
+
+    return text(b, "\n");
+}
+
 static bool fields(DmBytes *b, Editor *e) {
     return text_field(b, "soundfont", e->preferred_font) &&
-           text_field(b, "midi_output", e->output_name) &&
+           text_field(b, "midi_output", e->output_name) && input_field(b, e) &&
            text_field(b, "midi_folder", e->midi_folder) &&
            text_field(b, "soundfont_folder", e->font_folder) &&
            text_field(b, "export_folder", e->export_folder);

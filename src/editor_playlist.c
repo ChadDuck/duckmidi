@@ -1,6 +1,11 @@
 #include "editor_internal.h"
 #include "text/en.h"
 
+/* Keep placement snapping aligned with the visible playlist grid. */
+static double playlist_step(float scale) {
+    return scale * .25f >= 16 ? .25 : 1;
+}
+
 static bool placement_valid(Editor *e, int pattern_id, int encoded);
 static int placement_lane(Editor *e, int pattern_id, int encoded);
 static void pattern_drop(Editor *e, UiRect r, UiRect grid, View *v, float scale, float row,
@@ -111,7 +116,8 @@ static void pattern_drop(Editor *e, UiRect r, UiRect grid, View *v, float scale,
         return;
     }
 
-    double beat = ed_snap((mouse.pos.x - grid.x + v->scroll_x) / scale, 1, mouse.alt);
+    double beat =
+        ed_snap((mouse.pos.x - grid.x + v->scroll_x) / scale, playlist_step(scale), mouse.alt);
     UiRect ghost = {grid.x + (float)beat * scale - v->scroll_x, r.y + 28 + line * row - v->scroll_y,
                     (float)e->project.patterns[pattern_id].length * scale, row - 4};
     ui_rect(ghost, (e->accent & 0xffffffu) | 0x44000000u, 3);
@@ -692,7 +698,7 @@ void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, cons
 
     DmClip *c = &e->project.clips[e->drag_index];
 
-    if (held && !e->copy_pending) {
+    if (held && !e->copy_pending && ed_gesture_moved(e, mouse)) {
         double delta = (mouse.pos.x - e->marquee_start.x) / scale;
 
         if (e->drag == 9) {
@@ -707,7 +713,8 @@ void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, cons
             }
 
             const DmClip *original = (const DmClip *)e->clip_drag.data;
-            double offset = ed_snap(e->drag_beat + delta, 1, mouse.alt) - e->drag_beat;
+            double offset =
+                ed_snap(e->drag_beat + delta, playlist_step(scale), mouse.alt) - e->drag_beat;
             int anchor = clip_row(original[e->drag_index], list, count),
                 shift = anchor > 0 && line > 0 && line <= count ? line - anchor : 0;
 
@@ -889,7 +896,7 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
     }
 
     double position = (mouse.pos.x - grid.x + v->scroll_x) / scale;
-    double beat = ed_snap(position, 1, mouse.alt);
+    double beat = ed_snap(position, playlist_step(scale), mouse.alt);
 
     if (line == 0) {
         double start, end;
@@ -1145,7 +1152,7 @@ void ed_playlist(Editor *e, float width, float height) {
     UiRect grid = {r.x + label, r.y + 28, r.w - label, r.h - 28};
     ui_clip(grid);
     /* Quarter beats appear once they are at least 16 pixels apart. */
-    double step = scale * .25f >= 16 ? .25 : 1;
+    double step = playlist_step(scale);
     int start = (int)floor(v->scroll_x / (scale * step));
 
     for (int i = start; i < start + (int)(grid.w / (scale * step)) + 3; ++i) {

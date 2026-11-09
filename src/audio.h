@@ -5,6 +5,20 @@
 #include "../shared/audio_export.h"
 #include "../include/duckmidi_export_plugin.h"
 typedef struct DmAudio DmAudio;
+typedef struct DmMidiInput DmMidiInput;
+
+typedef enum { DM_INPUT_CONTROLLERS_KEYBOARD, DM_INPUT_CONTROLLERS_SONG } DmInputControllerPolicy;
+
+typedef struct {
+    uint64_t played, dropped;
+} DmAudioInputStats;
+
+void dm_audio_attach_midi_input(DmAudio *audio, DmMidiInput *input);
+void dm_audio_input_route(DmAudio *audio, int channel, bool enabled);
+void dm_audio_input_controllers(DmAudio *audio, DmInputControllerPolicy policy);
+/* Offset replaces the default device-buffer compensation, in seconds. */
+void dm_audio_input_offset(DmAudio *audio, double seconds);
+void dm_audio_input_stats(DmAudio *audio, DmAudioInputStats *stats);
 DmAudio *dm_audio_create(char *error, size_t cap);
 void dm_audio_destroy(DmAudio *audio);
 bool dm_audio_publish(DmAudio *audio, const DmProject *project, double seconds, bool playing,
