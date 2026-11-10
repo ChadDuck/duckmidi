@@ -22,23 +22,23 @@
 7. The Events Editor now has **Copy** and **Paste** buttons; hold **Shift** to **Copy all** event types.
 8. The playlist's channel labels are now wider by default.
 9. Event types now follow the application color. Note labels are also aware of the background color, so they don't go invisible.
-14. The percussion mapping window has an additional button now, **Listen for MIDI**; remap keys to your liking when playing drums.
-16. New event editor style: **Graph** mode.
+10. The percussion mapping window has an additional button now, **Listen for MIDI**; remap keys to your liking when playing drums.
+11. New event editor style: **Graph** mode.
     - Shows events as vertical bars on a grid
     - Drag to paint bars, right-drag to erase them, Shift + drag to change selected bars
     - Use **Snap bars** or Quantize to set bar heights to the nearest grid line.
     - Convert between point and graph (This is a bit buggy right now, beware).
-20. Pressing **E** to open the pattern editor now focuses it automatically.
-21. Undo and redo now keep 64 steps instead of 32.
+12. Pressing **E** to open the pattern editor now focuses it automatically.
+13. Undo and redo now keep 64 steps instead of 32.
     - I'll be making this customizable in the future.
-23. Dragging a pattern onto the playlist no longer shows a small empty box near the mouse.
-24. Modified playhead play/pause/stop logic.
-25. Note-edge resizing has a smaller clickable area; notes are easier to drag when zoomed out.
-38. Right-clicking now allows you to deselect items, as well as delete notes/patterns.
-39. Clicking a single pattern/note with multiple selected now unselects all items. This is expected behavior, use 'Shift' to maintain or add to your selection.
-41. The playhead now has a drop shadow, so it stays visible.
-42. Previews of events in patterns should now align with its actual visual appearance, more or less.
-43. The Event Editor's LFO view has been shortened to a single bar. Previously, this would stretch according to the size of the pattern - making it hard to align.
+14. Dragging a pattern onto the playlist no longer shows a small empty box near the mouse.
+15. Modified playhead play/pause/stop logic.
+16. Note-edge resizing has a smaller clickable area; notes are easier to drag when zoomed out.
+17. Right-clicking now allows you to deselect items, as well as delete notes/patterns.
+18. Clicking a single pattern/note with multiple selected now unselects all items. This is expected behavior, use 'Shift' to maintain or add to your selection.
+19. The playhead now has a drop shadow, so it stays visible.
+20. Previews of events in patterns should now align with its actual visual appearance, more or less.
+21. The Event Editor's LFO view has been shortened to a single bar. Previously, this would stretch according to the size of the pattern - making it hard to align.
 
 # 0.12.2
 
