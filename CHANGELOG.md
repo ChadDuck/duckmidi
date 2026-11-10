@@ -1,5 +1,9 @@
 # duckmidi changelog
 
+# 0.12.4
+
+1. MIDI playback scheduler was dropping program changes at the beginning of songs. Fixed.
+
 # 0.12.3
 
 ## **Midi Input Support**

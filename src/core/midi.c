@@ -1939,6 +1939,7 @@ typedef struct {
     bool active;
     double start;
     size_t order;
+    size_t source_index;
     int rpn_msb, rpn_lsb;
     bool generated_default;
 } ModEvent;
@@ -1947,6 +1948,8 @@ typedef struct {
     ModEvent *items;
     size_t count, capacity, baseline_count;
 } ModList;
+
+enum { MOD_PROGRAM = 258 };
 
 static int mod_key(const uint8_t *b) {
     int type = b[0] & MIDI_STATUS_MASK, control = -1;
@@ -1973,7 +1976,7 @@ static int mod_key(const uint8_t *b) {
     }
 
     if (type == MIDI_PROGRAM) {
-        control = 258;
+        control = MOD_PROGRAM;
     }
 
     return control < 0 ? -1 : (b[0] & MIDI_CHANNEL_MASK) * 260 + control;
@@ -1984,6 +1987,11 @@ static int mod_value(const uint8_t *b) {
     return type == MIDI_PITCH_BEND                                   ? b[1] + (b[2] << 7)
            : (type == MIDI_PROGRAM || type == MIDI_CHANNEL_PRESSURE) ? b[1]
                                                                      : b[2];
+}
+
+static bool mod_patch_key(int key) {
+    int cc = key % 260;
+    return cc == MIDI_CC_BANK || cc == MIDI_CC_BANK_LSB || cc == MOD_PROGRAM;
 }
 
 static bool mod_add(ModList *list, ModEvent e) {
@@ -2046,7 +2054,7 @@ static int mod_default(const DmProject *p, int key) {
         return 127;
     }
 
-    if (cc == 258) {
+    if (cc == MOD_PROGRAM) {
         return p->channels[c].program < 0 ? 0 : p->channels[c].program;
     }
 
@@ -2091,12 +2099,12 @@ static bool mod_emit(Midi *m, ModEvent e, int value) {
         b = 0;
     }
 
-    if (cc >= 130 && cc < 258) {
+    if (cc >= 130 && cc < MOD_PROGRAM) {
         type = MIDI_KEY_PRESSURE;
         a = cc - 130;
     }
 
-    if (cc == 258) {
+    if (cc == MOD_PROGRAM) {
         type = MIDI_PROGRAM;
         a = value;
         b = 0;
@@ -2147,9 +2155,9 @@ static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events,
     }
 
     size_t used = 0;
-    int last = -1;
+    ModEvent last = {.value = -1, .owner = -1};
     bool ok = true;
-
+    bool patch = mod_patch_key(events[0].key);
     bool authored = false;
 
     for (size_t i = 0; i < count; i++) {
@@ -2157,6 +2165,7 @@ static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events,
     }
 
     for (size_t i = 0; i < count && ok;) {
+        size_t first = i;
         uint64_t tick = events[i].tick;
 
         do {
@@ -2174,18 +2183,38 @@ static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events,
             states[k] = e;
         } while (i < count && events[i].tick == tick);
         ModEvent fallback = events[0];
+        fallback.owner = -1;
+        fallback.active = false;
         fallback.value = mod_default(p, events[0].key);
         fallback.rpn_msb = fallback.rpn_lsb = 127;
         ModEvent chosen = mod_winner(states, used, fallback);
         chosen.generated_default &= !authored;
+        bool patch_selection =
+            patch && ((chosen.active && chosen.tick == tick) || chosen.owner != last.owner);
         chosen.tick = tick;
         /* Reassert the winning transaction when source parameters change underneath it. */
         bool range_changed = chosen.key % 260 == 259;
+        bool forwarded = false;
 
-        if (chosen.value != last || range_changed) {
-            ok = mod_emit(m, chosen, chosen.value);
-            last = chosen.value;
+        if (patch) {
+            /* Keep authored patch messages in place so banks and SysEx can change the
+               meaning of a repeated Program Change. An active clip still owns its lane. */
+            for (size_t j = first; j < i; ++j) {
+                if (events[j].owner < 0) {
+                    if (chosen.owner < 0) {
+                        forwarded = true;
+                    } else {
+                        dm_bytes_free(&m->items[events[j].source_index].bytes);
+                    }
+                }
+            }
         }
+
+        if (!forwarded && (chosen.value != last.value || range_changed || patch_selection)) {
+            ok = mod_emit(m, chosen, chosen.value);
+        }
+
+        last = chosen;
     }
 
     free(states);
@@ -2352,6 +2381,7 @@ static bool mod_capture(ModList *list, Midi *source, int owner, int priority, do
                       .priority = priority,
                       .active = active,
                       .start = start,
+                      .source_index = j,
                       .generated_default = r->generated_default};
 
         if (!mod_capture_event(list, e, boundary)) {
@@ -2469,19 +2499,14 @@ static bool collect_clips(const DmProject *p, Midi *m, bool mixer) {
 
     bool ok = mod_capture(&list, m, -1, 0, 0, 1e12);
     list.baseline_count = list.count;
-    size_t write = 0;
 
     for (size_t i = 0; i < m->count; ++i) {
-        Raw r = m->items[i];
+        int key = mod_key(m->items[i].bytes.data);
 
-        if (mod_key(r.bytes.data) >= 0) {
-            dm_bytes_free(&r.bytes);
-        } else {
-            m->items[write++] = r;
+        if (key >= 0 && !mod_patch_key(key)) {
+            dm_bytes_free(&m->items[i].bytes);
         }
     }
-
-    m->count = write;
 
     for (size_t i = 0; i < p->clip_count && ok; ++i) {
         if (p->patterns[p->clips[i].pattern].control_scope == 2) {
@@ -2507,6 +2532,15 @@ static bool collect_clips(const DmProject *p, Midi *m, bool mixer) {
     }
 
     free(list.items);
+    size_t write = 0;
+
+    for (size_t i = 0; i < m->count; ++i) {
+        if (m->items[i].bytes.size) {
+            m->items[write++] = m->items[i];
+        }
+    }
+
+    m->count = write;
     return ok;
 }
 
@@ -2853,6 +2887,36 @@ static int export_compare(const void *a, const void *b) {
     return x->order < y->order ? -1 : x->order > y->order;
 }
 
+/* SMF track order puts SysEx on track zero before the channel tracks. Share its track
+   when a patch message must precede a same-tick SysEx. */
+static void sort_midi_for_export(Midi *m) {
+    qsort(m->items, m->count, sizeof(Raw), export_compare);
+
+    for (size_t first = 0; first < m->count;) {
+        size_t end = first;
+        bool patch = false, share_track = false;
+
+        do {
+            const Raw *r = &m->items[end++];
+            uint8_t status = r->bytes.data[0];
+            share_track |= patch && (status == MIDI_SYSEX || status == MIDI_SYSEX_END);
+            patch |= r->port == 0 && mod_patch_key(mod_key(r->bytes.data));
+        } while (end < m->count && m->items[end].tick == m->items[first].tick);
+
+        if (share_track) {
+            for (size_t i = first; i < end; ++i) {
+                Raw *r = &m->items[i];
+
+                if (r->port == 0 && mod_patch_key(mod_key(r->bytes.data))) {
+                    r->track = 0;
+                }
+            }
+        }
+
+        first = end;
+    }
+}
+
 /* Opening MIDI pan can have become a mixer setting during import. Its source identity survives
    in the retained MIDI, so an explicit centre pan remains different from an unset mixer. This
    reads the retained MIDI again, so only exports call it, not the timeline itself. */
@@ -2996,7 +3060,7 @@ static bool midi_single(const DmProject *p, DmBytes *out, bool mixer, char *erro
     bool ok = collect(p, &m, mixer);
 
     if (ok) {
-        qsort(m.items, m.count, sizeof(Raw), export_compare);
+        sort_midi_for_export(&m);
     }
 
     ok = ok && dm_bytes(out, "MThd", 4) && be(out, 6, 4) && be(out, 1, 2) && be(out, 17, 2) &&
@@ -3179,6 +3243,10 @@ static bool merge_group(Merge *m, const DmProject *p, int group, bool mixer) {
 
     if (end > UINT32_MAX) {
         ok = false;
+    }
+
+    if (ok && m->format != 2) {
+        sort_midi_for_export(&content);
     }
 
     for (size_t i = 0; i < content.count && ok; ++i) {

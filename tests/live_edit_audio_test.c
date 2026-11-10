@@ -473,6 +473,42 @@ static void live_instrument_preview(DmAudio *a) {
     dm_project_free(&p);
 }
 
+static void live_patch_reset(DmAudio *a) {
+    char error[512];
+    check(dm_audio_soundfont(a, "agents/reports/generated-programs.sf2", error, sizeof(error)),
+          "load distinct program presets");
+    await_font(a);
+    DmProject p;
+    dm_project_init(&p);
+    p.channels[0].program = 40;
+    check(dm_pattern_add(&p, "Patch after reset") == 0, "create patch fixture");
+    check(dm_note_add(&p.patterns[0], (DmNote){1, 1, 60, 100, 0}), "note after reset");
+    check(dm_clip_add(&p, (DmClip){.length = 4}), "place notes through the automation resolver");
+    uint8_t reset[] = {MIDI_SYSEX, 10, 0x41, 0x10, 0x42, 0x12,
+                       0x40,       0,  0x7f, 0,    0x41, MIDI_SYSEX_END};
+    uint8_t program[] = {MIDI_PROGRAM, 40};
+    DmBytes message = {reset, sizeof(reset), 0};
+    check(dm_event_add(&p, .25, 0, 0, &message), "add delayed GS reset");
+    message = (DmBytes){program, sizeof(program), 0};
+    check(dm_event_add(&p, .5, 0, 0, &message), "repeat the opening program after the reset");
+
+    const double positions[] = {0, 1.25};
+
+    for (size_t i = 0; i < SDL_arraysize(positions); ++i) {
+        check(dm_audio_publish(a, &p, dm_beat_seconds(&p, positions[i]), true, error, sizeof(error)),
+              error);
+        process(a, i == 0 ? (int)(dm_beat_seconds(&p, 1.25) * RATE) : BLOCK);
+        fluid_preset_t *preset = fluid_synth_get_channel_preset(a->live.synth, 0);
+        check(preset && fluid_preset_get_num(preset) == 40 &&
+                  voice_id(&a->live, 0, 60, true) != UINT32_MAX,
+              i == 0 ? "post-reset patch plays from the start" : "seek restores the post-reset patch");
+    }
+
+    dm_audio_transport(a, false);
+    process(a, BLOCK);
+    dm_project_free(&p);
+}
+
 int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "wasapi");
     check(SDL_Init(SDL_INIT_AUDIO), "SDL audio");
@@ -502,6 +538,7 @@ int main(void) {
     printf("MIX one_second_ms=%.3f three_voice_domains=1\n", mix_ms);
     dm_audio_edit_preview(a, 0, 0, false);
     preparation_benchmark(a);
+    live_patch_reset(a);
     printf("PASS live edit: %d checks\n", checks);
     dm_project_free(&p);
     dm_audio_destroy(a);

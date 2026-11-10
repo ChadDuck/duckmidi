@@ -972,6 +972,82 @@ static void program_repeats(void) {
     dm_project_free(&p);
 }
 
+static void check_patch_order(const DmProject *p, int opening_program) {
+    const int expected[][3] = {
+        {MIDI_SYSEX, 5, 0x7e},
+        {MIDI_PROGRAM, opening_program, 0},
+        {MIDI_NOTE_ON, 60, 100},
+        {MIDI_PROGRAM, 40, 0},
+        {MIDI_SYSEX, 10, 0x41},
+        {MIDI_CONTROL, MIDI_CC_BANK, 1},
+        {MIDI_CONTROL, MIDI_CC_BANK_LSB, 2},
+        {MIDI_PROGRAM, 40, 0},
+        {MIDI_CONTROL, MIDI_CC_BANK, 2},
+        {MIDI_PROGRAM, 40, 0},
+        {MIDI_NOTE_ON, 62, 100},
+    };
+    DmSchedule schedule = {0};
+    CHECK(dm_schedule(p, &schedule));
+    size_t seen = 0;
+
+    for (size_t i = 0; i < schedule.count; ++i) {
+        const DmScheduled *e = &schedule.items[i];
+        bool bank =
+            e->status == MIDI_CONTROL && (e->a == MIDI_CC_BANK || e->a == MIDI_CC_BANK_LSB);
+
+        if (e->seconds > 0 &&
+            (bank || e->status == MIDI_SYSEX || e->status == MIDI_PROGRAM ||
+             (e->status == MIDI_NOTE_ON && e->b))) {
+            CHECK(seen < sizeof(expected) / sizeof(*expected));
+            CHECK(e->status == expected[seen][0] && e->a == expected[seen][1] &&
+                  e->b == expected[seen][2]);
+            ++seen;
+        }
+    }
+
+    CHECK(seen == sizeof(expected) / sizeof(*expected));
+    dm_schedule_free(&schedule);
+}
+
+static void patch_order(void) {
+    /* clang-format off */
+    const uint8_t track[] = {
+        12, MIDI_SYSEX, 5, 0x7e, 0x7f, 0x09, 0x01, MIDI_SYSEX_END,
+        12, MIDI_PROGRAM, 40,
+        12, MIDI_NOTE_ON, 60, 100,
+        12, MIDI_NOTE_OFF, 60, 0,
+        0, MIDI_PROGRAM, 40,
+        0, MIDI_SYSEX, 10, 0x41, 0x10, 0x42, 0x12, 0x40, 0, 0x7f, 0, 0x41, MIDI_SYSEX_END,
+        0, MIDI_CONTROL, MIDI_CC_BANK, 1,
+        0, MIDI_CONTROL, MIDI_CC_BANK_LSB, 2,
+        0, MIDI_PROGRAM, 40,
+        0, MIDI_CONTROL, MIDI_CC_BANK, 2,
+        0, MIDI_PROGRAM, 40,
+        0, MIDI_NOTE_ON, 62, 100,
+        24, MIDI_NOTE_OFF, 62, 0,
+        0x84, 0, MIDI_META, MIDI_META_END, 0,
+    };
+    /* clang-format on */
+    DmBytes file = one_track(track, sizeof(track)), exported = {0};
+    DmProject p, imported;
+    dm_project_init(&p);
+    dm_project_init(&imported);
+    char error[256] = {0};
+    CHECK(dm_import(&p, file.data, file.size, 0, 0, error, sizeof(error)));
+    CHECK(p.clip_count == 1 && p.clips[0].length > 0);
+    check_patch_order(&p, 40);
+    CHECK(dm_set_initial_program(&p, 0, 41, true));
+    check_patch_order(&p, 41);
+
+    CHECK(dm_midi(&p, &exported, error, sizeof(error)));
+    CHECK(dm_import(&imported, exported.data, exported.size, 0, 0, error, sizeof(error)));
+    check_patch_order(&imported, 41);
+    dm_project_free(&imported);
+    dm_project_free(&p);
+    dm_bytes_free(&exported);
+    dm_bytes_free(&file);
+}
+
 static size_t count_bytes(const DmBytes *b, const unsigned char *pattern, size_t size) {
     size_t found = 0;
 
@@ -1112,6 +1188,7 @@ int main(void) {
     opening_controls();
     pan_provenance();
     program_repeats();
+    patch_order();
     opening_tempo();
     malformed();
     advanced();
