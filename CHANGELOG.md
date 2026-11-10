@@ -2,14 +2,16 @@
 
 # 0.12.3
 
-## Midi Input Support
-    - Piano Input.
-    - Remappable MIDI percussion.
-    - Volume rockers and mute for mixer channels.
-    - Mappable Misc MIDI inputs in 'Preferences'.
-    - Still working out how to implement knobs and manufacturer-specific settings.
-    - Expect bugs (also a weird UI), I haven't had the chance to implement this to my liking.
-        - In addition, I only have a single MIDI input device to test this feature with, so there may be missing options, currently.
+## **Midi Input Support**
+- Piano Input.
+- Remappable MIDI percussion.
+- Volume rockers and mute for mixer channels.
+- Mappable Misc MIDI inputs in 'Preferences'.
+- Still working out how to implement knobs and manufacturer-specific settings.
+- Expect bugs (also a weird UI), I haven't had the chance to implement this to my liking.
+    - In addition, I only have a single MIDI input device to test this feature with, so there may be missing options, currently.
+
+## Changes
 
 1. Frame rate only lowers while minimized now, so dragging files in stays responsive.
 2. Pattern Instrument auto-selection logic modified.
