@@ -1,6 +1,6 @@
-#include "sample_import.h"
-#include "../src/duck.h"
-#include "../src/text/en.h"
+#include "import.h"
+#include "../../src/core/duck.h"
+#include "../../src/text/en.h"
 #include <SDL3/SDL.h>
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>

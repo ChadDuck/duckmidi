@@ -1,5 +1,5 @@
 // Exercise the production editor's internal boundaries, without adding a second app entry point.
-#include "editor_internal.h"
+#include "editor/internal.h"
 static int checks;
 
 static void check(bool ok, const char *label) {

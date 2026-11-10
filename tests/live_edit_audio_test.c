@@ -1,5 +1,5 @@
-#include "../src/audio.c"
-#include "../shared/sample_library.h"
+#include "../src/audio/audio.c"
+#include "../shared/sample/library.h"
 static int checks;
 
 static void check(bool value, const char *what) {

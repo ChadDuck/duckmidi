@@ -1,4 +1,4 @@
-#include "duck.h"
+#include "core/duck.h"
 #include "text/en.h"
 #include <math.h>
 #include <stdio.h>
@@ -26,6 +26,21 @@ static bool schema_11(const Input *in) {
 /* The channel percussion flag was added in schema 12. */
 static bool schema_12(const Input *in) {
     return in->schema >= 12;
+}
+
+/* The pattern graph resolution and the percussion MIDI mapping were added in schema 15. */
+static bool schema_15(const Input *in) {
+    return in->schema >= 15;
+}
+
+/* Events that only take discrete points: no LFO and no graph. */
+static bool point_only_event(int event) {
+    return event == -1 || event == -4 || event == -5 || event == MIDI_CC_PORTAMENTO_TIME ||
+           event == MIDI_CC_SUSTAIN || event == MIDI_CC_SOSTENUTO;
+}
+
+static bool graph_resolution_valid(int graph) {
+    return graph == 0 || (graph >= 8 && graph <= 256 && !(graph & (graph - 1)));
 }
 
 /* Schema 10 stores numbers compactly. Integers are variable-length (7 bits per byte). A real
@@ -290,7 +305,8 @@ static bool pack_pattern_mode(const DmPattern *p, DmBytes *b) {
     return u32(b, p->kind) && u32(b, p->mode) && u32(b, (uint32_t)p->event) && real(b, p->speed) &&
            real(b, p->tension) && real(b, p->skew) && real(b, p->pulse) && real(b, p->amount) &&
            real(b, p->center) && real(b, p->pitch_center) && u32(b, p->reference) &&
-           u32(b, p->inverted) && u32(b, p->control_scope) && u32(b, p->port) && u32(b, p->color);
+           u32(b, p->inverted) && u32(b, p->control_scope) && u32(b, p->port) && u32(b, p->color) &&
+           u32(b, (uint32_t)p->graph);
 }
 
 static bool pack_patterns(const DmProject *p, DmBytes *b) {
@@ -335,6 +351,10 @@ static bool pack_metadata(const DmProject *p, DmBytes *target) {
 
     for (unsigned i = 0; i < 128 && ok; i++) {
         ok = u32(&b, p->percussion_keys[i]);
+    }
+
+    for (unsigned i = 0; i < 128 && ok; i++) {
+        ok = u32(&b, p->percussion_midi[i]);
     }
 
     *target = b;
@@ -556,13 +576,14 @@ static bool unpack_pattern_mode(DmPattern *p, Input *in) {
     }
 
     p->color = (uint8_t)color;
-    return in->ok && p->port >= 0 && p->port < DM_NOTE_PORTS && p->control_scope >= 0 &&
-           p->control_scope <= 2 && p->kind >= 0 && p->kind <= 1 && p->mode >= 0 && p->mode <= 1 &&
-           !(p->mode && (p->event == -1 || p->event == -4 || p->event == -5)) &&
-           !(p->mode && (p->event == 5 || p->event == 64 || p->event == 66)) &&
-           automation_event_valid(p->event) && p->speed >= .03125 && p->speed <= 16 &&
-           fabs(p->tension) <= 1 && fabs(p->skew) <= 1 && p->pulse >= .05 && p->pulse <= .95 &&
-           p->amount >= 0 && p->amount <= 1;
+    p->graph = schema_15(in) ? (int)get32(in) : 0;
+    return in->ok && graph_resolution_valid(p->graph) && !(p->graph && p->mode) &&
+           !(p->graph && p->kind && point_only_event(p->event)) && p->port >= 0 &&
+           p->port < DM_NOTE_PORTS && p->control_scope >= 0 && p->control_scope <= 2 &&
+           p->kind >= 0 && p->kind <= 1 && p->mode >= 0 && p->mode <= 1 &&
+           !(p->mode && point_only_event(p->event)) && automation_event_valid(p->event) &&
+           p->speed >= .03125 && p->speed <= 16 && fabs(p->tension) <= 1 && fabs(p->skew) <= 1 &&
+           p->pulse >= .05 && p->pulse <= .95 && p->amount >= 0 && p->amount <= 1;
 }
 
 static bool unpack_pattern_notes(DmPattern *pat, Input *in, uint32_t notes) {
@@ -1121,6 +1142,19 @@ static bool unpack_body(DmProject *p, Input *in, bool allow_views) {
         assigned[key] = key != 0;
     }
 
+    bool heard[MIDI_KEYS + 1] = {0};
+
+    for (unsigned i = 0; i < 128 && schema_15(in); i++) {
+        uint32_t note = get32(in);
+
+        if (note > MIDI_KEYS || (!override && note) || (note && heard[note])) {
+            return false;
+        }
+
+        p->percussion_midi[i] = (uint8_t)note;
+        heard[note] = note != 0;
+    }
+
     if (!unpack_channels(p, in)) {
         return false;
     }
@@ -1338,6 +1372,7 @@ static void activate_view(DmProject *p, DmProject *next) {
     snprintf(next->soundfont, sizeof(next->soundfont), "%s", p->soundfont);
     next->percussion_override = p->percussion_override;
     memcpy(next->percussion_keys, p->percussion_keys, sizeof(next->percussion_keys));
+    memcpy(next->percussion_midi, p->percussion_midi, sizeof(next->percussion_midi));
     p->original = (DmBytes){0};
     p->views = NULL;
     p->view_count = p->view_capacity = 0;

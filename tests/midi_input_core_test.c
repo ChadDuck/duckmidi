@@ -1,4 +1,4 @@
-#include "midi_input_core.h"
+#include "midi_input/core.h"
 #include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
@@ -19,7 +19,41 @@ static int writer(void *unused) {
     return 0;
 }
 
+static void shape(void) {
+    static const uint8_t velocities[] = {1, 64, 127};
+    static const uint8_t expected[][3] = {
+        [DM_MIDI_VELOCITY_LIGHT] = {7, 84, 127},
+        [DM_MIDI_VELOCITY_MEDIUM] = {1, 64, 127},
+        [DM_MIDI_VELOCITY_HEAVY] = {1, 42, 127},
+    };
+    DmMidiInputOptions options = {0};
+
+    for (unsigned curve = 0; curve < SDL_arraysize(expected); ++curve) {
+        options.velocity = curve;
+
+        for (unsigned i = 0; i < SDL_arraysize(velocities); ++i) {
+            DmMidiInputEvent event = {.status = MIDI_NOTE_ON, .a = 60, .b = velocities[i]};
+            assert(dm_midi_shape(&event, &options) && event.b == expected[curve][i]);
+        }
+    }
+
+    options.fixed_velocity = 99;
+    options.sustain_invert = true;
+    options.channel = 16;
+    DmMidiInputEvent event = {.status = MIDI_NOTE_ON | 15, .a = 60, .b = 1};
+    assert(dm_midi_shape(&event, &options) && event.b == 99);
+    event = (DmMidiInputEvent){.status = MIDI_NOTE_OFF | 15, .a = 60, .b = 44};
+    assert(dm_midi_shape(&event, &options) && event.b == 44);
+    event = (DmMidiInputEvent){.status = MIDI_CONTROL | 15, .a = MIDI_CC_SUSTAIN, .b = 110};
+    assert(dm_midi_shape(&event, &options) && event.b == 17);
+    event = (DmMidiInputEvent){.status = MIDI_CONTROL | 14, .a = MIDI_CC_SUSTAIN, .b = 110};
+    assert(!dm_midi_shape(&event, &options) && event.b == 17);
+    event = (DmMidiInputEvent){.status = MIDI_CONTROL | 15, .a = MIDI_CC_SOSTENUTO, .b = 17};
+    assert(dm_midi_shape(&event, &options) && event.b == 17);
+}
+
 int main(void) {
+    shape();
     DmMidiInputEvent event = {0};
 
     for (int status = MIDI_NOTE_OFF; status < MIDI_SYSTEM; ++status) {

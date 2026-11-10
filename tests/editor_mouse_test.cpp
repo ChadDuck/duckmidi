@@ -1,5 +1,5 @@
 extern "C" {
-#include "editor_internal.h"
+#include "editor/internal.h"
 }
 #include "imgui.h"
 #include "imgui_impl_sdlrenderer3.h"
@@ -330,7 +330,7 @@ static void quantized_alignment(Editor *e, void (*check)(bool, const char *)) {
 static float underlay_min_y(Editor *e) {
     float minimum = FLT_MAX;
     auto *w = roll_window();
-    ImU32 color = (e->accent & 0xffffffu) | 0x88000000u;
+    ImU32 color = (ed_point_color(e) & 0xffffffu) | 0x88000000u;
 
     for (auto &vertex : w->DrawList->VtxBuffer) {
         if (vertex.col == color) {
@@ -544,19 +544,27 @@ static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
     float target_x = w->Pos.x + w->WindowPadding.x + e->label_width + 40 * 5;
     float target_y = w->Pos.y + w->WindowPadding.y + ImGui::GetFrameHeight() +
                      ImGui::GetStyle().ItemSpacing.y + 28 + 64 + 32;
-    mouse_frame(e, target_x, target_y, true);
-    mouse_frame(e, target_x, target_y, true);
-    mouse_frame(e, target_x, target_y, true);
+    /* ImGui closes a drag's tooltip by the flags of the drag's first frame. Skipping the tooltip
+       partway through closed another window instead, which flickered the layout and the drop
+       state every other frame; the card must stay over the playlist on every frame. */
+    bool steady = true;
+
+    for (int frame = 0; frame < 4; ++frame) {
+        mouse_frame(e, target_x, target_y, true);
+        steady &= e->pattern_drag_on_playlist;
+    }
+
     float floating = 0; /* Height of the floating card. */
 
     for (auto *t : ImGui::GetCurrentContext()->Windows) {
-        if (t->Active && std::strstr(t->Name, "##Tooltip")) {
+        if (t->Active && !t->Hidden && std::strstr(t->Name, "##Tooltip")) {
             floating = ImMax(floating, t->Size.y);
         }
     }
 
     check(e->pattern_drag_on_playlist && floating < 10,
           "the dragged card hides over the playlist so the drop outline shows");
+    check(steady, "a card dragged from the browser stays over the playlist on every frame");
     mouse_frame(e, target_x, target_y, false);
     check(e->project.clip_count == count + 1,
           "dragging a pattern card onto the playlist places a clip");

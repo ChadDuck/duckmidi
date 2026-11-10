@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 /* Pattern colors are chosen per pattern. Index 0 follows the application color. */

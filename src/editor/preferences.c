@@ -1,6 +1,6 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
-#include "../shared/sample_export_snapshot.h"
+#include "../../shared/sample/export_snapshot.h"
 
 static bool source_port_controls(Editor *e, const char *text, int *port);
 static void source_settings(Editor *e);
@@ -688,10 +688,8 @@ static void instrument_fields(Editor *e) {
         }
     }
 
-    if (ui_int(DM_TEXT_SAMPLE_MIDI_BANK, &e->instrument_bank, 0, 16383)) {
-        select_instrument(e, e->instrument_program, e->instrument_drums);
-    }
-
+    /* The bank is not editable here; it comes from the song's opening Bank Select
+       (ed_initial_bank) so sources stay keyed to the bank the channel actually plays. */
     DmPatchKey key = {(uint16_t)e->instrument_bank, (uint8_t)e->instrument_port, (uint8_t)c,
                       (uint8_t)e->instrument_program, e->instrument_drums};
     const DmPatchReplacement *current =
@@ -830,12 +828,413 @@ static void midi_preferences(Editor *e) {
     if (ui_button(DM_TEXT_RETRY_AUDIO_DEVICE, retry_width, 0)) {
         if (!e->audio) {
             e->audio = dm_audio_create(e->status, sizeof(e->status));
+            dm_audio_attach_midi_input(e->audio, e->midi_input);
+            ed_midi_input_apply(e);
         } else {
             dm_audio_retry(e->audio, e->status, sizeof(e->status));
         }
 
         ed_publish(e);
     }
+}
+
+static void midi_input_device(Editor *e, const char *name, const DmMidiInputStatus *status) {
+    static const char *const states[] = {
+        [DM_MIDI_CLOSED] = DM_TEXT_MIDI_INPUT_CLOSED,
+        [DM_MIDI_OPENING] = DM_TEXT_MIDI_INPUT_OPENING,
+        [DM_MIDI_OPEN] = DM_TEXT_MIDI_INPUT_OPEN,
+        [DM_MIDI_MISSING] = DM_TEXT_MIDI_INPUT_ABSENT,
+        [DM_MIDI_FAILED] = DM_TEXT_MIDI_INPUT_STATE_FAILED,
+    };
+    bool requested = status && status->requested;
+    ui_id((int)SDL_crc32(0, name, strlen(name)));
+
+    if (ui_check("##midi-input-device", &requested)) {
+        bool ok = true;
+
+        if (requested) {
+            ok = dm_midi_input_open(e->midi_input, name);
+        } else {
+            dm_midi_input_close(e->midi_input, name);
+        }
+
+        if (ok) {
+            ed_midi_input_names(e);
+            ed_preference_save(e);
+        } else {
+            ed_message(e, DM_TEXT_MIDI_INPUT_DEVICE_LIMIT);
+        }
+    }
+
+    ui_same();
+    ui_align_frame();
+    ui_text(name);
+    ui_same();
+    ui_dim(states[status ? status->state : DM_MIDI_CLOSED]);
+
+    if (status && *status->message && status->state == DM_MIDI_FAILED) {
+        ui_wrap(status->message);
+    }
+
+    ui_pop_id();
+}
+
+static void midi_input_devices(Editor *e, bool refresh) {
+    ui_align_frame();
+    ui_text(DM_TEXT_MIDI_INPUT_DEVICES);
+    ui_same();
+    ui_disabled(!e->midi_input);
+    refresh |= ui_button(DM_TEXT_MIDI_INPUT_REFRESH, 0, 0);
+    ui_disabled_end();
+
+    if (!e->midi_input) {
+        ui_dim(DM_TEXT_MIDI_INPUT_FAILED);
+        return;
+    }
+
+    if (refresh) {
+        dm_midi_input_refresh(e->midi_input);
+    }
+
+    char names[DM_MIDI_PORTS][DM_MIDI_NAME];
+    int count = dm_midi_input_ports(e->midi_input, names, DM_MIDI_PORTS);
+    DmMidiInputStatus status[DM_MIDI_INPUTS];
+    dm_midi_input_status(e->midi_input, status);
+    bool listed[DM_MIDI_INPUTS] = {0};
+    bool any = count > 0;
+
+    for (int i = 0; i < count; ++i) {
+        const DmMidiInputStatus *port = NULL;
+
+        for (unsigned j = 0; j < DM_MIDI_INPUTS; ++j) {
+            if (!strcmp(names[i], status[j].name)) {
+                port = &status[j];
+                listed[j] = true;
+                break;
+            }
+        }
+
+        midi_input_device(e, names[i], port);
+    }
+
+    for (unsigned i = 0; i < DM_MIDI_INPUTS; ++i) {
+        if (status[i].requested && !listed[i]) {
+            any = true;
+            midi_input_device(e, status[i].name, &status[i]);
+        }
+    }
+
+    if (!any) {
+        ui_dim(DM_TEXT_MIDI_INPUT_NO_DEVICES);
+    }
+}
+
+static bool midi_input_velocity(DmMidiInputOptions *options) {
+    static const char *const curves[] = {
+        [DM_MIDI_VELOCITY_LIGHT] = DM_TEXT_MIDI_INPUT_LIGHT,
+        [DM_MIDI_VELOCITY_MEDIUM] = DM_TEXT_MIDI_INPUT_MEDIUM,
+        [DM_MIDI_VELOCITY_HEAVY] = DM_TEXT_MIDI_INPUT_HEAVY,
+    };
+    static const DmMidiVelocityCurve order[] = {DM_MIDI_VELOCITY_LIGHT, DM_MIDI_VELOCITY_MEDIUM,
+                                                DM_MIDI_VELOCITY_HEAVY};
+    bool changed = false;
+    ui_width(165);
+
+    if (ui_combo(DM_TEXT_MIDI_INPUT_VELOCITY, curves[options->velocity])) {
+        for (unsigned i = 0; i < SDL_arraysize(order); ++i) {
+            DmMidiVelocityCurve curve = order[i];
+
+            if (ui_select(curves[curve], options->velocity == curve, 0, 0)) {
+                options->velocity = curve;
+                changed = true;
+            }
+        }
+
+        ui_combo_end();
+    }
+
+    bool fixed = options->fixed_velocity != 0;
+    int velocity = fixed ? options->fixed_velocity : 100;
+    changed |= ui_check(DM_TEXT_MIDI_INPUT_FIXED, &fixed);
+    ui_same();
+    ui_disabled(!fixed);
+    changed |= ui_int("##midi-input-velocity", &velocity, 1, MIDI_DATA_MAX);
+    ui_disabled_end();
+    options->fixed_velocity = fixed ? (uint8_t)velocity : 0;
+    return changed;
+}
+
+static bool midi_input_routing(Editor *e) {
+    bool changed = ui_check(DM_TEXT_MIDI_INPUT_THRU, &e->input_thru);
+    static const char *const policies[] = {DM_TEXT_MIDI_INPUT_KEYBOARD, DM_TEXT_SONG};
+    ui_width(165);
+
+    if (ui_combo(DM_TEXT_MIDI_INPUT_CONTROLLERS, policies[e->input_controllers])) {
+        for (unsigned i = 0; i < SDL_arraysize(policies); ++i) {
+            if (ui_select(policies[i], e->input_controllers == i, 0, 0)) {
+                e->input_controllers = i;
+                changed = true;
+            }
+        }
+
+        ui_combo_end();
+    }
+
+    bool automatic = isnan(e->input_latency_ms);
+    ui_width(165);
+
+    if (ui_combo(DM_TEXT_MIDI_INPUT_LATENCY,
+                 automatic ? DM_TEXT_MIDI_INPUT_AUTO : DM_TEXT_MIDI_INPUT_MS)) {
+        if (ui_select(DM_TEXT_MIDI_INPUT_AUTO, automatic, 0, 0) && !automatic) {
+            e->input_latency_ms = NAN;
+            changed = true;
+        }
+
+        if (ui_select(DM_TEXT_MIDI_INPUT_MS, !automatic, 0, 0) && automatic) {
+            e->input_latency_ms =
+                (float)fmin(dm_audio_buffer_ms(e->audio), DM_MIDI_LATENCY_LIMIT_MS);
+            changed = true;
+        }
+
+        ui_combo_end();
+    }
+
+    if (!isnan(e->input_latency_ms)) {
+        ui_same();
+        changed |= ui_float("##midi-input-ms", &e->input_latency_ms, -DM_MIDI_LATENCY_LIMIT_MS,
+                            DM_MIDI_LATENCY_LIMIT_MS);
+    }
+
+    changed |= ui_check(DM_TEXT_MIDI_INPUT_INVERT, &e->input_options.sustain_invert);
+    char channel[16];
+    snprintf(channel, sizeof(channel), "%u", (unsigned)e->input_options.channel);
+    ui_width(165);
+
+    if (ui_combo(DM_TEXT_MIDI_INPUT_CHANNEL,
+                 e->input_options.channel ? channel : DM_TEXT_MIDI_INPUT_ALL)) {
+        if (ui_select(DM_TEXT_MIDI_INPUT_ALL, !e->input_options.channel, 0, 0)) {
+            e->input_options.channel = 0;
+            changed = true;
+        }
+
+        for (unsigned i = 1; i <= MIDI_CHANNELS; ++i) {
+            snprintf(channel, sizeof(channel), "%u", i);
+
+            if (ui_select(channel, e->input_options.channel == i, 0, 0)) {
+                e->input_options.channel = (uint8_t)i;
+                changed = true;
+            }
+        }
+
+        ui_combo_end();
+    }
+
+    if (ui_check(DM_TEXT_MIDI_INPUT_PICKUP, &e->input_pickup)) {
+        ed_midi_bindings_reset_pickup(e);
+        changed = true;
+    }
+
+    return changed;
+}
+
+static void midi_input_activity(Editor *e) {
+    char name[DM_MIDI_NAME], detail[64], line[DM_MIDI_NAME + 96];
+    DmMidiInputEvent event;
+
+    if (!ed_midi_input_activity(e, &event, name)) {
+        ui_dim(DM_TEXT_MIDI_INPUT_NO_ACTIVITY);
+        return;
+    }
+
+    switch (event.status & MIDI_STATUS_MASK) {
+    case MIDI_NOTE_ON:
+    case MIDI_NOTE_OFF:
+        snprintf(detail, sizeof(detail), DM_TEXT_MIDI_INPUT_NUMBER_VALUE,
+                 (event.status & MIDI_STATUS_MASK) == MIDI_NOTE_ON ? DM_TEXT_NOTE_ATTACK
+                                                                   : DM_TEXT_NOTE_RELEASE,
+                 event.a, event.b);
+        break;
+    case MIDI_CONTROL:
+        snprintf(detail, sizeof(detail), DM_TEXT_MIDI_INPUT_CC_VALUE, event.a, event.b);
+        break;
+    case MIDI_PITCH_BEND:
+        snprintf(detail, sizeof(detail), DM_TEXT_MIDI_INPUT_VALUE, DM_TEXT_PITCH_BEND,
+                 (event.a | (event.b << 7)) - MIDI_BEND_CENTER);
+        break;
+    case MIDI_KEY_PRESSURE:
+        snprintf(detail, sizeof(detail), DM_TEXT_MIDI_INPUT_NUMBER_VALUE, DM_TEXT_KEY_PRESSURE,
+                 event.a, event.b);
+        break;
+    default:
+        snprintf(detail, sizeof(detail), DM_TEXT_MIDI_INPUT_VALUE, DM_TEXT_CHANNEL_PRESSURE,
+                 event.a);
+        break;
+    }
+
+    snprintf(line, sizeof(line), DM_TEXT_MIDI_INPUT_ACTIVITY_VALUE, name,
+             (event.status & MIDI_CHANNEL_MASK) + 1, detail);
+
+    if (SDL_GetTicksNS() >= event.ticks_ns + 2000000000ULL) {
+        ui_dim(line);
+    } else {
+        ui_text(line);
+    }
+}
+
+static void midi_binding_mode(Editor *e, EdMidiBinding *binding) {
+    bool momentary = !binding || !binding->toggle;
+    ui_width(110);
+    ui_disabled(!binding);
+
+    if (ui_combo("##midi-binding-mode",
+                 momentary ? DM_TEXT_MIDI_BIND_MOMENTARY : DM_TEXT_MIDI_BIND_TOGGLE)) {
+        if (ui_select(DM_TEXT_MIDI_BIND_MOMENTARY, momentary, 0, 0) && !momentary) {
+            binding->toggle = false;
+            ed_preference_save(e);
+        }
+
+        if (ui_select(DM_TEXT_MIDI_BIND_TOGGLE, !momentary, 0, 0) && momentary) {
+            binding->toggle = true;
+            ed_preference_save(e);
+        }
+
+        ui_combo_end();
+    }
+
+    ui_disabled_end();
+}
+
+static bool midi_binding_row(Editor *e, EdMidiTarget target, EdMidiBinding *binding, bool action) {
+    char id[48], label[64], source[DM_MIDI_NAME + 50];
+    ed_midi_target_id(target, id, sizeof(id));
+    ed_midi_target_label(target, label, sizeof(label));
+    ui_id((int)SDL_crc32(0, id, strlen(id)));
+    UiPoint at = ui_cursor();
+    float controls = 260 + 3 * ui_item_spacing_x();
+    ui_align_frame();
+    ui_text(label);
+
+    if (binding) {
+        ed_midi_source_label(&binding->source, source, sizeof(source));
+        ui_tip(source);
+    }
+
+    ui_same();
+    ui_position(at.x + fmaxf(130, ui_available().x + ui_cursor().x - at.x - controls), at.y);
+
+    if (action) {
+        ui_disabled(!e->midi_input);
+        bool learning = ed_midi_binding_learning(e, target);
+
+        if (ui_button(learning ? DM_TEXT_MIDI_BIND_LISTENING : DM_TEXT_MIDI_BIND_LEARN_SHORT, 90,
+                      0)) {
+            if (learning) {
+                ed_midi_bindings_cancel(e);
+            } else {
+                ed_midi_binding_learn(e, target, e->midi_learn_any);
+            }
+        }
+
+        ui_disabled_end();
+        ui_same();
+    }
+
+    if (!ed_midi_target_continuous(target)) {
+        midi_binding_mode(e, binding);
+        ui_same();
+    }
+
+    ui_disabled(!binding);
+    bool clear = ui_button(DM_TEXT_CLEAR, 60, 0);
+    ui_disabled_end();
+    ui_pop_id();
+
+    if (clear) {
+        ed_midi_binding_clear(e, target);
+    }
+
+    return clear;
+}
+
+static void midi_controls(Editor *e) {
+    if (!ui_section(DM_TEXT_MIDI_BIND_CONTROLS)) {
+        return;
+    }
+
+    ui_check(DM_TEXT_MIDI_BIND_ANY_CHECK, &e->midi_learn_any);
+
+    if (e->midi_learn.started) {
+        ui_dim(DM_TEXT_MIDI_BIND_WAIT);
+    }
+
+    for (unsigned kind = ED_MIDI_PLAY; kind < ED_MIDI_TARGETS; ++kind) {
+        EdMidiTarget target = {.kind = kind};
+        midi_binding_row(e, target, ed_midi_binding_find(e, target), true);
+    }
+
+    for (size_t i = 0; i < ed_midi_binding_count(e); ++i) {
+        EdMidiBinding *binding = ed_midi_binding_at(e, i);
+
+        if (binding->target.kind < ED_MIDI_PLAY &&
+            midi_binding_row(e, binding->target, binding, false)) {
+            break;
+        }
+    }
+
+    ui_disabled(!ed_midi_binding_count(e));
+
+    if (ui_button(DM_TEXT_MIDI_BIND_CLEAR_ALL, 0, 0)) {
+        e->midi_clear_bindings = true;
+    }
+
+    ui_disabled_end();
+}
+
+static void midi_clear_confirmation(Editor *e) {
+    if (!ui_modal(DM_TEXT_MIDI_BIND_CLEAR_TITLE, &e->midi_clear_bindings, 390, 135)) {
+        return;
+    }
+
+    ui_wrap(DM_TEXT_MIDI_BIND_CLEAR_QUESTION);
+
+    if (ui_button(DM_TEXT_CANCEL, 110, 0)) {
+        e->midi_clear_bindings = false;
+        ui_close_popup();
+    }
+
+    ui_same();
+
+    if (ui_button(DM_TEXT_MIDI_BIND_CLEAR_ALL, 110, 0)) {
+        ed_midi_binding_clear(e, (EdMidiTarget){.kind = ED_MIDI_TARGETS});
+        e->midi_clear_bindings = false;
+        ui_close_popup();
+    }
+
+    ui_popup_end();
+}
+
+static void midi_input_preferences(Editor *e) {
+    bool was_open = e->input_preferences_open;
+    e->input_preferences_open = ui_section(DM_TEXT_MIDI_INPUT);
+
+    if (!e->input_preferences_open) {
+        return;
+    }
+
+    midi_input_devices(e, !was_open);
+    ui_separator();
+    bool changed = midi_input_velocity(&e->input_options);
+    changed |= midi_input_routing(e);
+
+    if (changed) {
+        ed_midi_input_apply(e);
+        ed_preference_save(e);
+    }
+
+    ui_separator();
+    ui_text(DM_TEXT_MIDI_INPUT_ACTIVITY);
+    midi_input_activity(e);
+    midi_controls(e);
 }
 
 /* Every exporter with Export to Repository gets a folder row; the picker sets it too. */
@@ -889,6 +1288,7 @@ static void export_plugin_preferences(Editor *e) {
 
 void ed_preferences(Editor *e) {
     if (!e->preferences) {
+        e->input_preferences_open = false;
         return;
     }
 
@@ -949,12 +1349,18 @@ void ed_preferences(Editor *e) {
             }
         }
 
+        midi_input_preferences(e);
+        midi_clear_confirmation(e);
         export_plugin_preferences(e);
         ui_separator();
 
         if (ui_button(DM_TEXT_CLOSE, ui_available().x, 0)) {
             e->preferences = false;
         }
+    }
+
+    if (!show || !e->preferences) {
+        e->input_preferences_open = false;
     }
 
     ui_end();

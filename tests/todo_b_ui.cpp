@@ -1,5 +1,5 @@
 extern "C" {
-#include "editor_internal.h"
+#include "editor/internal.h"
 }
 #include "imgui.h"
 #include "imgui_internal.h"

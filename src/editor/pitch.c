@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static void curve_cc(Editor *e, double beat, int cc, int value, int id);

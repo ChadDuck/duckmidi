@@ -1,8 +1,8 @@
-#include "editor_export_internal.h"
-#include "../include/duckmidi_samples_tool.h"
-#include "../shared/sample_batch.h"
-#include "../shared/sample_library.h"
-#include "../shared/sample_export_catalog.h"
+#include "editor/export_internal.h"
+#include "../../include/duckmidi_samples_tool.h"
+#include "../../shared/sample/batch.h"
+#include "../../shared/sample/library.h"
+#include "../../shared/sample/export_catalog.h"
 #include "text/en.h"
 
 typedef struct {

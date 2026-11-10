@@ -35,9 +35,9 @@ void ui_resize_cursor(bool vertical);
 void ui_triangle(UiPoint a, UiPoint b, UiPoint c, uint32_t color);
 void ui_circle(UiPoint point, float radius, uint32_t color);
 void ui_circle_outline(UiPoint point, float radius, uint32_t color);
-/* While a pattern card is dragged, returns true with its floating preview open for drawing;
-   close it with ui_drag_pattern_end. */
-bool ui_drag_pattern(int pattern);
+/* While a pattern card is dragged, returns true with its floating preview open for drawing when
+   preview is set; close it with ui_drag_pattern_end either way. */
+bool ui_drag_pattern(int pattern, bool preview);
 void ui_drag_pattern_end(void);
 void ui_dummy(float w, float h);
 bool ui_invisible_button(const char *id, float w, float h);
@@ -51,6 +51,7 @@ void ui_set_scale(float scale);
 float ui_scale(void);
 UiPoint ui_display(void);
 UiRect ui_window_rect(void);
+UiRect ui_item_rect(void);
 void ui_drop_overlay(UiRect rect, const char *text);
 void ui_render(SDL_Renderer *renderer);
 void ui_root(float y, float height);

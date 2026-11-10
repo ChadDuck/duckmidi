@@ -1,9 +1,9 @@
 #ifndef DM_MIDI_INPUT_CORE_H
 #define DM_MIDI_INPUT_CORE_H
 /* Pure MIDI input logic: normalization, lock-free rings, held notes, the song clock and the
-   echo guard. C only; C++ code reaches MIDI input through midi_input.h. */
-#include "../include/duckmidi_midi.h"
-#include "midi_input_types.h"
+   echo guard. C only; C++ code reaches MIDI input through midi_input/midi_input.h. */
+#include "../../include/duckmidi_midi.h"
+#include "midi_input/types.h"
 #include <stdatomic.h>
 
 typedef enum {
@@ -54,6 +54,9 @@ typedef enum {
 } DmMidiNameStyle;
 
 DmMidiVerdict dm_midi_normalize(const uint8_t *bytes, size_t size, DmMidiInputEvent *event);
+/* Applies velocity and pedal settings to a normalized message and returns whether its channel
+   passes the filter. Filtered messages are shaped too, so a late release keeps its polarity. */
+bool dm_midi_shape(DmMidiInputEvent *event, const DmMidiInputOptions *options);
 /* Removes the backend's position suffix, then numbers repeated names " #2", " #3" in order. */
 void dm_midi_port_names(char names[][DM_MIDI_NAME], int count, DmMidiNameStyle style);
 void dm_midi_ring_init(DmMidiRing *ring, DmMidiInputEvent *storage, unsigned capacity);
@@ -62,6 +65,7 @@ bool dm_midi_ring_peek(DmMidiRing *ring, DmMidiInputEvent *event);
 bool dm_midi_ring_get(DmMidiRing *ring, DmMidiInputEvent *event);
 void dm_midi_held_init(DmMidiHeld *held);
 void dm_midi_held_event(DmMidiHeld *held, DmMidiInputEvent event);
+bool dm_midi_held_note(const DmMidiHeld *held, DmMidiInputEvent event);
 uint32_t dm_midi_held_release(DmMidiHeld *held, unsigned channel, unsigned word);
 void dm_midi_clock_init(DmMidiClock *clock);
 void dm_midi_clock_write(DmMidiClock *clock, DmMidiClockValue value);

@@ -1,7 +1,7 @@
-#include "audio.h"
-#include "audio_samples.h"
-#include "midi_input.h"
-#include "midi_input_core.h"
+#include "audio/audio.h"
+#include "audio/samples.h"
+#include "midi_input/midi_input.h"
+#include "midi_input/core.h"
 #include "rtmidi_c.h"
 #include "text/en.h"
 #include <SDL3/SDL.h>
@@ -66,6 +66,13 @@ typedef struct {
     uint64_t token;
 } NoteRelease;
 
+/* A sounding MIDI input key, kept so its Note Off reaches the same voice after a route or
+   percussion map change. */
+typedef struct {
+    uint8_t route; /* Destination channel + 1; 0 when the incoming key is not sounding. */
+    uint8_t key;   /* Sounding key chosen at Note On. */
+} InputHeld;
+
 typedef struct RetiredSchedule {
     DmSchedule schedule;
     struct RetiredSchedule *next;
@@ -77,12 +84,15 @@ struct DmAudio {
     atomic_ullong input_played, input_dropped;
     double input_latency;
     uint32_t input_transport, input_loop;
-    bool input_reset;
+    bool input_reset, input_latency_auto;
     uint64_t input_discard_ns;
-    uint8_t input_held[DM_MIDI_INPUTS][MIDI_CHANNELS][MIDI_KEYS];
+    InputHeld input_held[DM_MIDI_INPUTS][MIDI_CHANNELS][MIDI_KEYS];
+    uint8_t input_map[MIDI_KEYS]; /* Incoming key to sounding key; see dm_audio_input_note_map. */
     uint16_t input_notes[MIDI_CHANNELS][MIDI_KEYS];
     bool piano_held[MIDI_CHANNELS][MIDI_KEYS];
     uint16_t input_routes[DM_MIDI_INPUTS];
+    bool input_thru_held[MIDI_CHANNELS][MIDI_KEYS];
+    uint16_t input_thru_sustain, input_thru_sostenuto;
     SDL_AudioStream *stream;
     Synth live, keyboard, feedback;
     SampleAudition sample_audition;
@@ -1095,16 +1105,88 @@ static int input_controller_targets(DmAudio *a, unsigned route) {
                : -1;
 }
 
+static bool input_thru_command(DmAudio *a, Command cmd) {
+    unsigned channel = cmd.status & MIDI_CHANNEL_MASK;
+    unsigned type = cmd.status & MIDI_STATUS_MASK;
+
+    if (type == MIDI_NOTE_ON || type == MIDI_NOTE_OFF) {
+        bool *held = &a->input_thru_held[channel][cmd.a];
+
+        if (type == MIDI_NOTE_OFF && !*held) {
+            return true;
+        }
+
+        *held = type == MIDI_NOTE_ON;
+    } else if (type == MIDI_CONTROL) {
+        uint16_t bit = (uint16_t)(1u << channel);
+
+        if (cmd.a == MIDI_CC_SUSTAIN || cmd.a == MIDI_CC_RESET) {
+            a->input_thru_sustain &= ~bit;
+            a->input_thru_sustain |= cmd.a == MIDI_CC_SUSTAIN && cmd.b >= 64 ? bit : 0;
+        }
+
+        if (cmd.a == MIDI_CC_SOSTENUTO || cmd.a == MIDI_CC_RESET) {
+            a->input_thru_sostenuto &= ~bit;
+            a->input_thru_sostenuto |= cmd.a == MIDI_CC_SOSTENUTO && cmd.b >= 64 ? bit : 0;
+        }
+    }
+
+    return queue_put(&a->midi, cmd);
+}
+
+/* End external MIDI input voices when thru is disabled or the input is detached. */
+static void input_thru_stop(DmAudio *a) {
+    for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
+        if (a->input_thru_sustain & (1u << c)) {
+            queue_put(&a->midi, (Command){MIDI_CONTROL | c, MIDI_CC_SUSTAIN, 0});
+        }
+
+        if (a->input_thru_sostenuto & (1u << c)) {
+            queue_put(&a->midi, (Command){MIDI_CONTROL | c, MIDI_CC_SOSTENUTO, 0});
+        }
+
+        for (unsigned key = 0; key < MIDI_KEYS; ++key) {
+            if (a->input_thru_held[c][key] && !a->piano_held[c][key]) {
+                queue_put(&a->midi, (Command){MIDI_NOTE_OFF | c, key, 64});
+            }
+        }
+    }
+
+    memset(a->input_thru_held, 0, sizeof(a->input_thru_held));
+    a->input_thru_sustain = a->input_thru_sostenuto = 0;
+}
+
+static void input_note_off(DmAudio *a, unsigned route, unsigned key, bool thru) {
+    if (a->piano_held[route][key]) {
+        a->input_thru_held[route][key] = false;
+        return;
+    }
+
+    Command cmd = {MIDI_NOTE_OFF | route, key, 64};
+    keyboard_command(a, cmd, -1, false);
+
+    if (thru) {
+        input_thru_command(a, cmd);
+    }
+}
+
+/* Ends one held input key; the voice stops when no other input or piano key holds it. */
+static void input_release(DmAudio *a, InputHeld *held, bool thru) {
+    unsigned route = held->route - 1, key = held->key;
+    held->route = 0;
+
+    if (!--a->input_notes[route][key]) {
+        input_note_off(a, route, key, thru);
+    }
+}
+
 static void input_silence(DmAudio *a, DmMidiInput *input) {
+    bool thru = input && dm_midi_input_thru(input);
+
     for (unsigned route = 0; route < MIDI_CHANNELS; ++route) {
         for (unsigned key = 0; key < MIDI_KEYS; ++key) {
-            if (a->input_notes[route][key] && !a->piano_held[route][key]) {
-                Command cmd = {MIDI_NOTE_OFF | route, key, 64};
-                keyboard_command(a, cmd, -1, false);
-
-                if (input && dm_midi_input_thru(input)) {
-                    queue_put(&a->midi, cmd);
-                }
+            if (a->input_notes[route][key]) {
+                input_note_off(a, route, key, thru);
             }
         }
     }
@@ -1124,6 +1206,7 @@ static void input_commands(DmAudio *a) {
     unsigned routing = atomic_load_explicit(&a->input_route, memory_order_relaxed);
     unsigned route = routing & MIDI_CHANNEL_MASK;
     DmMidiInputEvent event;
+    bool thru = dm_midi_input_thru(input);
 
     if (dm_midi_input_overflow(input, 0)) {
         input_silence(a, input);
@@ -1141,28 +1224,14 @@ static void input_commands(DmAudio *a) {
         }
 
         int type = event.status & MIDI_STATUS_MASK;
-        uint8_t *held = &a->input_held[event.device][event.status & MIDI_CHANNEL_MASK][event.a];
-        unsigned target = route;
+        InputHeld *held = &a->input_held[event.device][event.status & MIDI_CHANNEL_MASK][event.a];
+        unsigned target = route, key = event.a;
 
         if (event.flags & DM_MIDI_EVENT_DEVICE_RELEASE) {
             for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
-                for (unsigned key = 0; key < MIDI_KEYS; ++key) {
-                    uint8_t *old = &a->input_held[event.device][c][key];
-
-                    if (!*old) {
-                        continue;
-                    }
-
-                    unsigned destination = *old - 1;
-                    *old = 0;
-
-                    if (!--a->input_notes[destination][key] && !a->piano_held[destination][key]) {
-                        Command off = {MIDI_NOTE_OFF | destination, key, 64};
-                        keyboard_command(a, off, -1, false);
-
-                        if (dm_midi_input_thru(input)) {
-                            queue_put(&a->midi, off);
-                        }
+                for (unsigned k = 0; k < MIDI_KEYS; ++k) {
+                    if (a->input_held[event.device][c][k].route) {
+                        input_release(a, &a->input_held[event.device][c][k], thru);
                     }
                 }
             }
@@ -1177,8 +1246,8 @@ static void input_commands(DmAudio *a) {
                     Command reset = {type | c, event.a, event.b};
                     keyboard_command(a, reset, input_controller_targets(a, c), false);
 
-                    if (dm_midi_input_thru(input)) {
-                        queue_put(&a->midi, reset);
+                    if (thru) {
+                        input_thru_command(a, reset);
                     }
                 }
             }
@@ -1191,14 +1260,20 @@ static void input_commands(DmAudio *a) {
         }
 
         if (type == MIDI_NOTE_OFF) {
-            if (!*held) {
+            if (!held->route) {
                 continue;
             }
 
-            target = *held - 1;
-            *held = 0;
+            target = held->route - 1;
+            key = held->key;
+            held->route = 0;
 
-            if (--a->input_notes[target][event.a] || a->piano_held[target][event.a]) {
+            if (--a->input_notes[target][key]) {
+                continue;
+            }
+
+            if (a->piano_held[target][key]) {
+                a->input_thru_held[target][key] = false;
                 continue;
             }
         } else {
@@ -1206,38 +1281,38 @@ static void input_commands(DmAudio *a) {
                 continue;
             }
 
+            if (type == MIDI_KEY_PRESSURE) {
+                key = held->route ? held->key : a->input_map[event.a];
+            }
+
             if (type == MIDI_NOTE_ON) {
                 if (!(a->preview_mask & (1u << route)) && a->keyboard_override[route] < 0) {
                     continue;
                 }
 
-                if (*held) {
-                    unsigned old = *held - 1;
-
-                    if (!--a->input_notes[old][event.a] && !a->piano_held[old][event.a]) {
-                        Command off = {MIDI_NOTE_OFF | old, event.a, 64};
-                        keyboard_command(a, off, -1, false);
-
-                        if (dm_midi_input_thru(input)) {
-                            queue_put(&a->midi, off);
-                        }
-                    }
+                if (held->route) {
+                    input_release(a, held, thru);
                 }
 
-                *held = route + 1;
-                ++a->input_notes[route][event.a];
+                key = a->input_map[event.a];
+                *held = (InputHeld){(uint8_t)(route + 1), (uint8_t)key};
+                ++a->input_notes[route][key];
 
-                if (a->input_notes[route][event.a] > 1 || a->piano_held[route][event.a]) {
+                if (a->input_notes[route][key] > 1 || a->piano_held[route][key]) {
+                    if (thru && a->piano_held[route][key]) {
+                        a->input_thru_held[route][key] = true;
+                    }
+
                     continue;
                 }
             }
         }
 
-        Command cmd = {(event.status & MIDI_STATUS_MASK) | target, event.a, event.b};
+        Command cmd = {(event.status & MIDI_STATUS_MASK) | target, key, event.b};
         a->input_routes[event.device] |= (uint16_t)(1u << target);
         keyboard_command(a, cmd, input_controller_targets(a, target), false);
 
-        if (dm_midi_input_thru(input) && !queue_put(&a->midi, cmd)) {
+        if (thru && !input_thru_command(a, cmd)) {
             atomic_fetch_add_explicit(&a->input_dropped, 1, memory_order_relaxed);
         }
 
@@ -1285,6 +1360,10 @@ static void preview_commands(DmAudio *a) {
             a->piano_held[channel][cmd.a] = type == MIDI_NOTE_ON && cmd.b;
 
             if (a->input_notes[channel][cmd.a]) {
+                if (!a->input_thru_held[channel][cmd.a]) {
+                    queue_put(&a->midi, cmd);
+                }
+
                 continue;
             }
         }
@@ -1354,6 +1433,7 @@ static void keyboard_silence(DmAudio *a) {
     }
 
     a->keyboard_tail = 0;
+    input_thru_stop(a);
     memset(&a->keyboard.sample_pedals, 0, sizeof(a->keyboard.sample_pedals));
     memset(a->keyboard_sample_id, 0, sizeof(a->keyboard_sample_id));
     memset(a->piano_held, 0, sizeof(a->piano_held));
@@ -1709,9 +1789,14 @@ void dm_audio_attach_midi_input(DmAudio *a, DmMidiInput *input) {
         SDL_LockAudioStream(a->stream);
     }
 
-    input_silence(a, atomic_load(&a->input));
+    input_thru_stop(a);
+    input_silence(a, NULL);
     atomic_store_explicit(&a->input, input, memory_order_release);
-    a->input_latency = latency;
+
+    if (a->input_latency_auto) {
+        a->input_latency = latency;
+    }
+
     a->input_discard_ns = 0;
     input_clock(a, true);
 
@@ -1735,8 +1820,28 @@ void dm_audio_input_controllers(DmAudio *a, DmInputControllerPolicy policy) {
     }
 }
 
-void dm_audio_input_offset(DmAudio *a, double seconds) {
-    if (!a || !isfinite(seconds)) {
+void dm_audio_input_thru(DmAudio *a, DmMidiInput *input, bool enabled) {
+    if (dm_midi_input_thru(input) == enabled) {
+        return;
+    }
+
+    if (a && a->stream) {
+        SDL_LockAudioStream(a->stream);
+    }
+
+    if (a && !enabled) {
+        input_thru_stop(a);
+    }
+
+    dm_midi_input_set_thru(input, enabled);
+
+    if (a && a->stream) {
+        SDL_UnlockAudioStream(a->stream);
+    }
+}
+
+void dm_audio_input_note_map(DmAudio *a, const uint8_t map[MIDI_KEYS]) {
+    if (!a) {
         return;
     }
 
@@ -1744,7 +1849,29 @@ void dm_audio_input_offset(DmAudio *a, double seconds) {
         SDL_LockAudioStream(a->stream);
     }
 
-    a->input_latency = seconds;
+    for (unsigned key = 0; key < MIDI_KEYS; ++key) {
+        a->input_map[key] = map ? map[key] & MIDI_DATA_MASK : (uint8_t)key;
+    }
+
+    if (a->stream) {
+        SDL_UnlockAudioStream(a->stream);
+    }
+}
+
+void dm_audio_input_offset(DmAudio *a, double seconds) {
+    if (!a || isinf(seconds)) {
+        return;
+    }
+
+    bool automatic = isnan(seconds);
+    double latency = automatic ? dm_audio_buffer_ms(a) / 1000 : seconds;
+
+    if (a->stream) {
+        SDL_LockAudioStream(a->stream);
+    }
+
+    a->input_latency_auto = automatic;
+    a->input_latency = latency;
     input_clock(a, false);
 
     if (a->stream) {
@@ -1785,6 +1912,11 @@ DmAudio *dm_audio_create(char *error, size_t cap) {
     atomic_init(&a->input_policy, DM_INPUT_CONTROLLERS_KEYBOARD);
     atomic_init(&a->input_played, 0);
     atomic_init(&a->input_dropped, 0);
+    a->input_latency_auto = true;
+
+    for (unsigned key = 0; key < MIDI_KEYS; ++key) {
+        a->input_map[key] = (uint8_t)key;
+    }
 
     memset(a->mix_volume, 255, sizeof(a->mix_volume));
     memset(a->mix_pan, 255, sizeof(a->mix_pan));
@@ -2909,6 +3041,7 @@ void dm_audio_panic(DmAudio *a) {
 
     a->playing = a->recording = a->reset = a->chase = false;
     input_clock(a, true);
+    input_thru_stop(a);
     input_silence(a, NULL);
     SDL_SetAtomicInt(&a->playing_flag, 0);
     a->release_count = 0;
@@ -3450,6 +3583,11 @@ bool dm_audio_retry(DmAudio *a, char *error, size_t cap) {
     }
 
     a->stream = next;
+
+    if (a->input_latency_auto) {
+        dm_audio_input_offset(a, NAN);
+    }
+
     SDL_ResumeAudioStreamDevice(next);
     return true;
 }

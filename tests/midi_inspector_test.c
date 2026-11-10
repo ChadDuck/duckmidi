@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 
 static void check(bool ok, const char *label) {
     if (!ok) {

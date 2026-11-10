@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 /* Keep placement snapping aligned with the visible playlist grid. */
@@ -755,7 +755,14 @@ void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, cons
     if (copying ? !held : mouse.released) {
         if (copying) {
             finish_copy_click(e);
+        } else if (e->lone_click && !e->clip_moved) {
+            /* A plain click on a selected placement selects only that placement. */
+            for (size_t i = 0; i < e->project.clip_count; ++i) {
+                e->project.clips[i].selected = (int)i == e->drag_index;
+            }
         }
+
+        e->lone_click = false;
 
         e->drag = 0;
         e->clip_drag.size = 0;
@@ -807,6 +814,8 @@ void ed_playlist_hit_click(Editor *e, UiMouse mouse, int hit, double beat) {
 
             return;
         }
+
+        e->lone_click = !mouse.shift && c->selected;
 
         if (!mouse.shift && !c->selected) {
             ed_deselect(e);
@@ -954,8 +963,8 @@ static void draw_playlist_clip(Editor *e, DmClip *clip, UiRect box, UiRect grid,
 
     if (p->kind) {
         ed_automation_preview(e, clip->pattern,
-                              (UiRect){box.x + 6, box.y + 26, box.w - 12, box.h - 30},
-                              ui_text_on(color), clip->offset, dm_clip_length(&e->project, *clip));
+                              (UiRect){left, box.y + 26, fmaxf(0, right - left), box.h - 30},
+                              ui_text_on(color), box.x, scale, clip->offset);
     }
 
     ui_unclip();
@@ -1174,6 +1183,14 @@ void ed_playlist(Editor *e, float width, float height) {
 
     if (hovered) {
         ed_playlist_click(e, r, grid, v, row, scale, list, count, mouse, hit);
+    }
+
+    /* A right click clears the placement selection; holding it erases placements. */
+    if (hovered && mouse.right_clicked && !mouse.shift && !e->drag && !e->loop_drag &&
+        e->copy_button < 0 && ed_inside(mouse.pos, grid)) {
+        bool hidden = e->roll_auto_hidden;
+        ed_clear_pattern_selection(e);
+        e->roll_auto_hidden = hidden;
     }
 
     if (hovered && mouse.right && !mouse.shift && hit >= 0 && !e->loop_drag && e->copy_button < 0 &&

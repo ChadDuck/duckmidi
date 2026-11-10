@@ -1,6 +1,6 @@
 #include "../include/duckmidi_samples_tool.h"
 #include "export_plugins.h"
-#include "../shared/sample_library.h"
+#include "../shared/sample/library.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

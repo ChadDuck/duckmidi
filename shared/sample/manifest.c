@@ -1,5 +1,5 @@
-#include "sample_manifest.h"
-#include "../src/text/en.h"
+#include "manifest.h"
+#include "../../src/text/en.h"
 #include "yyjson.h"
 #include <math.h>
 #include <ctype.h>

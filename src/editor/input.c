@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static bool escape_active(Editor *e);
@@ -97,7 +97,7 @@ static bool close_floating(Editor *e) {
         break;
     case 14:
         e->percussion_window = false;
-        e->percussion_listening = false;
+        e->percussion_listening = e->percussion_midi_listening = false;
         break;
     case 13:
         e->generate_window = false;
@@ -388,7 +388,9 @@ static bool action_pattern(Editor *e, int a) {
         }
         break;
     case ACT_QUANTIZE:
-        if (e->context == 2 && ed_pattern(e)) {
+        if (ed_selection_focus(e) == FOCUS_EVENTS && ed_graph_resolution(e)) {
+            ed_graph_snap(e); /* Snap bars. */
+        } else if (e->context == 2 && ed_pattern(e)) {
             ed_checkpoint(e);
             dm_quantize(ed_pattern(e), .25);
             dm_pattern_fit(&e->project, ed_pattern(e));
@@ -676,7 +678,7 @@ void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
 
     if (e->piano && e->active && note >= 0 && !mods && !repeat) {
         e->piano_channel = ed_keyboard_channel(e);
-        note = ed_keyboard_note(e, key, e->piano_channel);
+        note = ed_keyboard_note(e, key, ed_route_drums(e, e->piano_channel));
 
         if (note < 0 || note > 127) {
             return;
@@ -975,6 +977,10 @@ static bool instrument_topmost(Editor *e) {
     return e->instrument_raise || floating_topmost() == 8;
 }
 
+bool ed_instrument_topmost(Editor *e) {
+    return instrument_topmost(e);
+}
+
 static bool file_extension(const char *path, const char *extension) {
     const char *dot = strrchr(path, '.');
     return dot && SDL_strcasecmp(dot, extension) == 0;
@@ -1047,7 +1053,7 @@ static bool file_drop(Editor *e, const SDL_Event *event) {
 
 bool ed_instrument_note(Editor *e, const SDL_KeyboardEvent *key) {
     int c = e->instrument_channel;
-    int note = ed_keyboard_note(e, key->scancode, e->instrument_drums ? MIDI_DRUM_CHANNEL : 0);
+    int note = ed_keyboard_note(e, key->scancode, e->instrument_drums);
 
     if (c < 0 || key->repeat || note < 0 || note > 127) {
         return false;
@@ -1099,6 +1105,11 @@ static bool instrument_key(Editor *e, const SDL_KeyboardEvent *key) {
 }
 
 void editor_event(Editor *e, const SDL_Event *event) {
+    if (event->type == SDL_EVENT_KEY_DOWN && event->key.scancode == SDL_SCANCODE_ESCAPE &&
+        ed_midi_bindings_cancel(e)) {
+        return;
+    }
+
     if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN && ed_side_button(event->button.button)) {
         Binding binding = {.mods = ed_normalized(SDL_GetModState()), .mouse = event->button.button};
 

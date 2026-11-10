@@ -1,4 +1,4 @@
-#include "duck.h"
+#include "core/duck.h"
 #include "text/en.h"
 
 const char *dm_program_name(int program) {

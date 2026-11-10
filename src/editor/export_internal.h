@@ -1,9 +1,9 @@
 #ifndef DM_EDITOR_EXPORT_INTERNAL_H
 #define DM_EDITOR_EXPORT_INTERNAL_H
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "export_plugins.h"
-#include "../shared/sample_export_snapshot.h"
-#include "../shared/sample_export_catalog.h"
+#include "../../shared/sample/export_snapshot.h"
+#include "../../shared/sample/export_catalog.h"
 
 typedef struct {
     char *name;

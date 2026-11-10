@@ -1,4 +1,4 @@
-#include "../src/audio.c"
+#include "../src/audio/audio.c"
 
 uint64_t recording_feedback_worker_thread(DmAudio *a) {
     return a->worker ? SDL_GetThreadID(a->worker) : 0;

@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static void replace_recorded_overlap(Editor *e, DmPattern *p, unsigned port, double start,
@@ -25,6 +25,10 @@ void ed_recording_finished(Editor *e) {
 }
 
 void ed_play(Editor *e) {
+    ed_play_hold(e, false);
+}
+
+void ed_play_hold(Editor *e, bool hold) {
     if (!e->active) {
         return;
     }
@@ -46,9 +50,8 @@ void ed_play(Editor *e) {
             ed_recording_finished(e);
         }
 
-        double beat = e->record || e->context == 2
-                          ? e->start_beat[e->pattern_mode]
-                          : dm_seconds_beat(&e->project, dm_audio_position(e->audio));
+        double beat = hold ? dm_seconds_beat(&e->project, dm_audio_position(e->audio))
+                           : e->start_beat[e->pattern_mode];
         e->cursor_beat[e->pattern_mode] = beat;
         ed_transport_publish(e, dm_beat_seconds(&e->project, beat), false);
         return;

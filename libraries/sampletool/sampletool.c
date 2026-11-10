@@ -1,8 +1,8 @@
 #include "../../include/duckmidi_samples_tool.h"
-#include "../../shared/sample_batch.h"
-#include "../../shared/sample_manifest.h"
-#include "../../shared/sample_library.h"
-#include "../../src/duck.h"
+#include "../../shared/sample/batch.h"
+#include "../../shared/sample/manifest.h"
+#include "../../shared/sample/library.h"
+#include "../../src/core/duck.h"
 #include "../../src/text/en.h"
 #include <SDL3/SDL.h>
 #include <math.h>

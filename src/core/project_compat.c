@@ -4,7 +4,8 @@
    file converts the remaining differences in meaning, one revision at a time, so a schema-9
    project passes through the schema-10 conversion before the schema-11 one. Schemas older than
    DM_PROJECT_SCHEMA_OLDEST are rejected when loading. */
-#include "duck.h"
+#include "core/duck.h"
+#include <string.h>
 
 /* Schema 9 stored the source port number on song events, and only the default note port played
    them. Schema 10 events name the note port they play on, so every schema-9 event moves to the
@@ -44,6 +45,16 @@ static void upgrade_13_to_14(DmProject *p) {
     }
 }
 
+/* Schema 15 adds the pattern graph resolution and the percussion MIDI mapping. Earlier patterns
+   edit points, and earlier projects play incoming MIDI notes as themselves. */
+static void upgrade_14_to_15(DmProject *p) {
+    for (size_t i = 0; i < p->pattern_count; ++i) {
+        p->patterns[i].graph = 0;
+    }
+
+    memset(p->percussion_midi, 0, sizeof(p->percussion_midi));
+}
+
 void dm_project_upgrade(DmProject *p, uint32_t schema) {
     if (schema <= 9) {
         upgrade_9_to_10(p);
@@ -63,5 +74,9 @@ void dm_project_upgrade(DmProject *p, uint32_t schema) {
 
     if (schema <= 13) {
         upgrade_13_to_14(p);
+    }
+
+    if (schema <= 14) {
+        upgrade_14_to_15(p);
     }
 }

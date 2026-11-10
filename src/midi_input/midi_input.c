@@ -1,5 +1,5 @@
-#include "midi_input.h"
-#include "midi_input_core.h"
+#include "midi_input/midi_input.h"
+#include "midi_input/core.h"
 #include "rtmidi_c.h"
 #include "text/en.h"
 #include <SDL3/SDL.h>
@@ -18,6 +18,7 @@ typedef struct {
     DmMidiInputEvent events[2][DM_MIDI_RING], release_events[2][DM_MIDI_RELEASE_RING];
     atomic_ullong last_ns;
     atomic_bool sensing;
+    atomic_uint pedals[2]; /* Sustain and sostenuto source channels admitted to monitoring. */
     atomic_ullong received, filtered, echoes, invalid, timing_fallbacks;
 } InputSlot;
 
@@ -30,7 +31,10 @@ struct DmMidiInput {
     SDL_Mutex *lock;
     SDL_Semaphore *wake;
     atomic_bool quit, refresh, thru;
-    atomic_uint open, ready[2];
+    atomic_uint open, ready[2], options, learning;
+    DmMidiBindingSource *sources; /* Protected by lock. */
+    size_t source_count;
+    atomic_uint bound[DM_MIDI_INPUTS][MIDI_CHANNELS][8]; /* Four words each for CC and notes. */
     atomic_bool overflow[2];
     char ports[DM_MIDI_PORTS][DM_MIDI_NAME];
     int port_count;
@@ -194,8 +198,11 @@ fail:
     return NULL;
 }
 
+/* Consumer 0 is audio monitoring and 1 the editor. Bound controls reach only the editor. */
 static void enqueue(InputSlot *slot, DmMidiInputEvent event, bool record, bool worker) {
-    for (unsigned consumer = 0; consumer < 2; ++consumer) {
+    unsigned first = event.flags & (DM_MIDI_EVENT_BOUND | DM_MIDI_EVENT_LEARN) ? 1 : 0;
+
+    for (unsigned consumer = first; consumer < 2; ++consumer) {
         if (consumer == 1 && !record) {
             continue;
         }
@@ -231,6 +238,116 @@ static void release_notes(InputSlot *slot, int channel, DmMidiInputEvent event, 
     }
 }
 
+static void clear_slot_bound(DmMidiInput *input, unsigned device) {
+    for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
+        for (unsigned w = 0; w < 8; ++w) {
+            atomic_store_explicit(&input->bound[device][c][w], 0, memory_order_relaxed);
+        }
+    }
+}
+
+static void bind_slot(DmMidiInput *input, unsigned slot, const char *name) {
+    unsigned words[MIDI_CHANNELS][8] = {0};
+
+    for (size_t i = 0; i < input->source_count; ++i) {
+        const DmMidiBindingSource *source = &input->sources[i];
+
+        if (!*source->device || !strcmp(source->device, name)) {
+            unsigned word = source->number / 32 + (source->kind == DM_MIDI_SOURCE_NOTE ? 4 : 0);
+            words[source->channel][word] |= 1u << (source->number % 32);
+        }
+    }
+
+    for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
+        for (unsigned w = 0; w < 8; ++w) {
+            atomic_store_explicit(&input->bound[slot][c][w], words[c][w], memory_order_relaxed);
+        }
+    }
+}
+
+static bool source_learn(const DmMidiInput *input, DmMidiInputEvent event) {
+    unsigned mode = atomic_load_explicit(&input->learning, memory_order_relaxed);
+    unsigned type = event.status & MIDI_STATUS_MASK;
+    return mode != DM_MIDI_LEARN_OFF &&
+           ((type == MIDI_CONTROL && dm_midi_source_bindable(DM_MIDI_SOURCE_CC, event.a)) ||
+            (mode == DM_MIDI_LEARN_BUTTON && type == MIDI_NOTE_ON));
+}
+
+static bool source_bound(const DmMidiInput *input, DmMidiInputEvent event) {
+    unsigned type = event.status & MIDI_STATUS_MASK;
+
+    if (type != MIDI_CONTROL && type != MIDI_NOTE_ON && type != MIDI_NOTE_OFF) {
+        return false;
+    }
+
+    unsigned word = event.a / 32 + (type == MIDI_CONTROL ? 0 : 4);
+    unsigned channel = event.status & MIDI_CHANNEL_MASK;
+    unsigned bits =
+        atomic_load_explicit(&input->bound[event.device][channel][word], memory_order_relaxed);
+    return (bits & (1u << (event.a % 32))) != 0;
+}
+
+static int pedal_index(DmMidiInputEvent event) {
+    if ((event.status & MIDI_STATUS_MASK) == MIDI_CONTROL) {
+        if (event.a == MIDI_CC_SUSTAIN) {
+            return 0;
+        }
+
+        if (event.a == MIDI_CC_SOSTENUTO) {
+            return 1;
+        }
+    }
+
+    return -1;
+}
+
+/* Whether a message ends a key or pedal that monitoring and recording already received. */
+static bool ends_admitted(InputSlot *slot, DmMidiInputEvent event, int pedal) {
+    if (pedal >= 0) {
+        unsigned bits = atomic_load_explicit(&slot->pedals[pedal], memory_order_relaxed);
+        return event.b < 64 && (bits & (1u << (event.status & MIDI_CHANNEL_MASK)));
+    }
+
+    return (event.status & MIDI_STATUS_MASK) == MIDI_NOTE_OFF &&
+           dm_midi_held_note(&slot->held, event);
+}
+
+/* Delivers an unbound message and tracks the keys and pedals it leaves held. */
+static void admit(InputSlot *slot, DmMidiInputEvent event, DmMidiVerdict verdict, int pedal) {
+    unsigned bit = 1u << (event.status & MIDI_CHANNEL_MASK);
+
+    if (pedal >= 0) {
+        if (event.b >= 64) {
+            atomic_fetch_or_explicit(&slot->pedals[pedal], bit, memory_order_relaxed);
+        } else {
+            atomic_fetch_and_explicit(&slot->pedals[pedal], ~bit, memory_order_relaxed);
+        }
+    } else if (verdict == DM_MIDI_MONITOR) {
+        atomic_fetch_and_explicit(&slot->pedals[0], ~bit, memory_order_relaxed);
+        atomic_fetch_and_explicit(&slot->pedals[1], ~bit, memory_order_relaxed);
+    }
+
+    dm_midi_held_event(&slot->held, event);
+    enqueue(slot, event, verdict == DM_MIDI_RECORD, false);
+}
+
+enum { OPTION_FIXED_SHIFT = 2, OPTION_INVERT_SHIFT = 9, OPTION_CHANNEL_SHIFT = 10 };
+
+static unsigned pack_options(const DmMidiInputOptions *options) {
+    return (unsigned)options->velocity | (unsigned)options->fixed_velocity << OPTION_FIXED_SHIFT |
+           (unsigned)options->sustain_invert << OPTION_INVERT_SHIFT |
+           (unsigned)options->channel << OPTION_CHANNEL_SHIFT;
+}
+
+static DmMidiInputOptions unpack_options(unsigned packed) {
+    return (DmMidiInputOptions){
+        .velocity = packed & 3u,
+        .fixed_velocity = (packed >> OPTION_FIXED_SHIFT) & MIDI_DATA_MASK,
+        .sustain_invert = (packed >> OPTION_INVERT_SHIFT) & 1u,
+        .channel = packed >> OPTION_CHANNEL_SHIFT,
+    };
+}
+
 static void receive(void *context, const uint8_t *bytes, size_t size, uint64_t ns) {
     InputSlot *slot = context;
     DmMidiInput *input = slot->owner;
@@ -257,6 +374,23 @@ static void receive(void *context, const uint8_t *bytes, size_t size, uint64_t n
         return;
     }
 
+    DmMidiInputOptions options =
+        unpack_options(atomic_load_explicit(&input->options, memory_order_relaxed));
+    bool passes = dm_midi_shape(&event, &options);
+    int pedal = pedal_index(event);
+    bool ends = ends_admitted(slot, event, pedal);
+
+    if (!passes) {
+        atomic_fetch_add_explicit(&slot->filtered, 1, memory_order_relaxed);
+
+        /* After a filter change, releases still end what the previous filter admitted. */
+        if (!ends && verdict != DM_MIDI_RELEASE) {
+            return;
+        }
+
+        event.flags |= DM_MIDI_EVENT_RELEASE;
+    }
+
     DmMidiClockValue clock;
 
     if (dm_midi_clock_read(&input->clock, &clock)) {
@@ -267,11 +401,22 @@ static void receive(void *context, const uint8_t *bytes, size_t size, uint64_t n
 
     dm_midi_clock_stamp(slot->clock_cache, &event);
 
+    bool learn = passes && verdict == DM_MIDI_RECORD && source_learn(input, event);
+
     if (verdict == DM_MIDI_RELEASE) {
         release_notes(slot, event.status & MIDI_CHANNEL_MASK, event, false);
+    } else if (learn || (passes && verdict == DM_MIDI_RECORD && source_bound(input, event))) {
+        /* A key or pedal held before it was bound still ends on its original route. */
+        if (ends) {
+            DmMidiInputEvent release = event;
+            release.flags |= DM_MIDI_EVENT_RELEASE;
+            admit(slot, release, verdict, pedal);
+        }
+
+        event.flags |= learn ? DM_MIDI_EVENT_LEARN : DM_MIDI_EVENT_BOUND;
+        enqueue(slot, event, true, false);
     } else {
-        dm_midi_held_event(&slot->held, event);
-        enqueue(slot, event, verdict == DM_MIDI_RECORD, false);
+        admit(slot, event, verdict, pedal);
     }
 }
 
@@ -319,6 +464,8 @@ static void worker_release(InputSlot *slot, uint64_t ns) {
         event.b = MIDI_BEND_CENTER >> 7;
         enqueue(slot, event, false, true);
     }
+    atomic_store_explicit(&slot->pedals[0], 0, memory_order_relaxed);
+    atomic_store_explicit(&slot->pedals[1], 0, memory_order_relaxed);
     atomic_store(&slot->sensing, false);
 }
 
@@ -442,6 +589,8 @@ DmMidiInput *dm_midi_input_create(const DmMidiInputBackend *backend) {
     atomic_init(&input->quit, false);
     atomic_init(&input->refresh, false);
     atomic_init(&input->open, 0);
+    atomic_init(&input->options, 0);
+    atomic_init(&input->learning, DM_MIDI_LEARN_OFF);
     dm_midi_clock_init(&input->clock);
     dm_midi_echo_init(&input->echo);
 
@@ -456,12 +605,20 @@ DmMidiInput *dm_midi_input_create(const DmMidiInputBackend *backend) {
         slot->index = i;
         atomic_init(&slot->last_ns, 0);
         atomic_init(&slot->sensing, false);
+        atomic_init(&slot->pedals[0], 0);
+        atomic_init(&slot->pedals[1], 0);
         atomic_init(&slot->received, 0);
         atomic_init(&slot->filtered, 0);
         atomic_init(&slot->echoes, 0);
         atomic_init(&slot->invalid, 0);
         atomic_init(&slot->timing_fallbacks, 0);
         dm_midi_held_init(&slot->held);
+
+        for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
+            for (unsigned w = 0; w < 8; ++w) {
+                atomic_init(&input->bound[i][c][w], 0);
+            }
+        }
 
         for (unsigned c = 0; c < 2; ++c) {
             dm_midi_ring_init(&slot->rings[c], slot->events[c], DM_MIDI_RING);
@@ -492,6 +649,7 @@ void dm_midi_input_destroy(DmMidiInput *input) {
     atomic_store(&input->quit, true);
     SDL_SignalSemaphore(input->wake);
     SDL_WaitThread(input->worker, NULL);
+    free(input->sources);
     SDL_DestroySemaphore(input->wake);
     SDL_DestroyMutex(input->lock);
     free(input);
@@ -546,6 +704,10 @@ bool dm_midi_input_open(DmMidiInput *input, const char *name) {
     }
 
     if (slot) {
+        if (strcmp(slot->status.name, name)) {
+            bind_slot(input, slot->index, name);
+        }
+
         snprintf(slot->status.name, sizeof(slot->status.name), "%s", name);
         slot->status.requested = true;
         if (slot->status.state != DM_MIDI_OPEN) {
@@ -604,6 +766,91 @@ void dm_midi_input_stats(DmMidiInput *input, DmMidiInputStats *stats) {
             stats->dropped +=
                 atomic_load(&slot->rings[c].dropped) + atomic_load(&slot->releases[c].dropped);
         }
+    }
+}
+
+void dm_midi_input_set_options(DmMidiInput *input, const DmMidiInputOptions *options) {
+    if (!input || !options || (unsigned)options->velocity > DM_MIDI_VELOCITY_HEAVY ||
+        options->fixed_velocity > MIDI_DATA_MAX || options->channel > MIDI_CHANNELS) {
+        return;
+    }
+
+    /* One atomic snapshot keeps callbacks from observing a partially changed configuration. */
+    atomic_store_explicit(&input->options, pack_options(options), memory_order_relaxed);
+}
+
+bool dm_midi_source_bindable(DmMidiInputSource kind, unsigned number) {
+    if (number > MIDI_DATA_MAX) {
+        return false;
+    }
+
+    return kind == DM_MIDI_SOURCE_NOTE ||
+           (kind == DM_MIDI_SOURCE_CC && number < MIDI_CC_SOUND_OFF && number != MIDI_CC_BANK &&
+            number != MIDI_CC_BANK_LSB && number != MIDI_CC_DATA && number != MIDI_CC_DATA_LSB &&
+            (number < MIDI_CC_INCREMENT || number > MIDI_CC_RPN_MSB));
+}
+
+bool dm_midi_input_bind_sources(DmMidiInput *input, const DmMidiBindingSource *sources,
+                                size_t count) {
+    if (!input || (count && !sources) || count > SIZE_MAX / sizeof(*sources)) {
+        return false;
+    }
+
+    DmMidiBindingSource *copy = count ? malloc(count * sizeof(*copy)) : NULL;
+
+    if (count && !copy) {
+        return false;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        if (!memchr(sources[i].device, 0, sizeof(sources[i].device)) ||
+            sources[i].channel >= MIDI_CHANNELS ||
+            !dm_midi_source_bindable(sources[i].kind, sources[i].number)) {
+            free(copy);
+            return false;
+        }
+
+        copy[i] = sources[i];
+    }
+
+    SDL_LockMutex(input->lock);
+    free(input->sources);
+    input->sources = copy;
+    input->source_count = count;
+
+    for (unsigned i = 0; i < DM_MIDI_INPUTS; ++i) {
+        bind_slot(input, i, input->slots[i].status.name);
+    }
+
+    SDL_UnlockMutex(input->lock);
+    return true;
+}
+
+void dm_midi_input_learn(DmMidiInput *input, DmMidiLearnMode mode) {
+    atomic_store_explicit(&input->learning, mode, memory_order_relaxed);
+}
+
+void dm_midi_input_set_bound(DmMidiInput *input, unsigned device, unsigned channel,
+                             DmMidiInputSource kind, unsigned number, bool bound) {
+    if (device >= DM_MIDI_INPUTS || channel >= MIDI_CHANNELS ||
+        !dm_midi_source_bindable(kind, number)) {
+        return;
+    }
+
+    unsigned word = number / 32 + (kind == DM_MIDI_SOURCE_CC ? 0 : 4);
+    atomic_uint *bits = &input->bound[device][channel][word];
+    unsigned mask = 1u << (number % 32);
+
+    if (bound) {
+        atomic_fetch_or_explicit(bits, mask, memory_order_relaxed);
+    } else {
+        atomic_fetch_and_explicit(bits, ~mask, memory_order_relaxed);
+    }
+}
+
+void dm_midi_input_clear_bound(DmMidiInput *input) {
+    for (unsigned i = 0; i < DM_MIDI_INPUTS; ++i) {
+        clear_slot_bound(input, i);
     }
 }
 

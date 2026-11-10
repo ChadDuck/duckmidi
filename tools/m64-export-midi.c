@@ -1,7 +1,7 @@
 /* Exports a MIDI file through an installed M64 or OoT plugin, the way the editor does, and writes
    every artifact into an output folder. Diagnostics go to stdout. Usage: m64_export_midi <plugins
    dir> <file.mid> <output dir> [oot] [hackersm64] [loop] [stock] */
-#include "duck.h"
+#include "core/duck.h"
 #include "export_plugins.h"
 #include <math.h>
 #include <stdio.h>

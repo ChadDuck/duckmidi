@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 #define STATUS_DURATION_MS 5000 /* How long a status message stays in the status bar. */
@@ -47,7 +47,10 @@ void ed_info_box(Editor *e) {
     }
 
     bool recent = *e->status && now - e->status_time < STATUS_DURATION_MS;
-    const char *text = *e->hover ? e->hover : recent ? e->status : "";
+    const char *text = e->midi_learn.started ? DM_TEXT_MIDI_BIND_WAIT
+                       : *e->hover           ? e->hover
+                       : recent              ? e->status
+                                             : "";
 
     if (*text) {
         ui_label_fit((UiPoint){r.x + 12, r.y + (r.h - ui_font_size()) * .5f}, r.w - 24,

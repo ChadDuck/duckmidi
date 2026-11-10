@@ -1,5 +1,5 @@
-#include "audio.h"
-#include "../shared/sample_library.h"
+#include "audio/audio.h"
+#include "../shared/sample/library.h"
 #include <SDL3/SDL.h>
 #include <math.h>
 #include <stdio.h>

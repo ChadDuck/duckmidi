@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "midi_input_fixture.h"
 
 void recording_feedback_audio_pause(DmAudio *audio);
@@ -47,6 +47,112 @@ static void point(Editor *e, double beat, int cc, int value) {
                                                          .a = cc,
                                                          .b = value,
                                                          .pattern = e->selected_pattern}));
+}
+
+static void recorded_graph(Editor *e) {
+    reset(e, true);
+    send_at(e, .173, MIDI_CONTROL, MIDI_CC_MODULATION, 48);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(ed_pattern(e)->graph == 16 && e->project.automation_count == 1);
+    assert(fabs(e->project.automation[0].beat - .346) < 1e-7);
+    ed_toggle_record(e);
+    ed_undo(e, false);
+    assert(!ed_pattern(e)->graph && !e->project.automation_count);
+
+    reset(e, true);
+    point(e, .5, MIDI_CC_MODULATION, 10);
+    point(e, 1, MIDI_CC_MODULATION, 70);
+    e->project.automation[0].curve = e->project.automation[1].curve = 1;
+    send_at(e, .173, MIDI_PITCH_BEND, 30, 70);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(!ed_pattern(e)->graph && e->project.automation_count == 3);
+    assert(e->project.automation[1].curve == 1 && e->project.automation[2].curve == 1);
+    assert(strstr(e->status, "Choose Graph"));
+
+    reset(e, true);
+    send_at(e, .173, MIDI_CONTROL, MIDI_CC_SUSTAIN, 127);
+    send_at(e, .225, MIDI_CONTROL, MIDI_CC_SUSTAIN, 0);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(!ed_pattern(e)->graph && e->project.automation_count == 2);
+    send_at(e, .273, MIDI_CONTROL, MIDI_CC_RPN_MSB, 0);
+    send_at(e, .375, MIDI_CHANNEL_PRESSURE, 30, 0);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(!ed_pattern(e)->graph && e->project.automation_count == 4);
+}
+
+static DmNote record_pad(Editor *e, int program, uint8_t key, bool unmap_before_release) {
+    reset(e, false);
+    e->preview_override = true;
+    e->preview_program = program;
+    send_at(e, .125, MIDI_NOTE_ON | 9, key, 100);
+    ed_midi_input_frame(e);
+
+    if (unmap_before_release) {
+        memset(e->percussion_midi_global, 0, sizeof(e->percussion_midi_global));
+    }
+
+    send_at(e, .375, MIDI_NOTE_OFF | 9, key, 64);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(ed_pattern(e)->count == 1);
+    return ed_pattern(e)->notes[0];
+}
+
+/* Incoming notes on the drum route play their assigned drum; melodic routes ignore the map. */
+static void percussion_mapping(Editor *e) {
+    e->percussion_midi_global[38] = 49 + 1;
+    assert(record_pad(e, 128, 49, false).key == 38);
+    assert(record_pad(e, 0, 49, false).key == 49);
+    assert(record_pad(e, 128, 50, false).key == 50);
+    assert(record_pad(e, 128, 49, true).key == 38);
+
+    /* Listen for MIDI: controllers keep listening; the next Note On assigns and is not recorded. */
+    reset(e, false);
+    ed_percussion_open(e);
+    e->percussion_note = 42;
+    e->percussion_midi_listening = true;
+    send_at(e, .125, MIDI_CONTROL | 9, MIDI_CC_MODULATION, 20);
+    ed_midi_input_frame(e);
+    assert(e->percussion_midi_listening && *e->percussion_feedback);
+    send_at(e, .25, MIDI_NOTE_ON | 9, 51, 100);
+    ed_midi_input_frame(e);
+    send_at(e, .5, MIDI_NOTE_OFF | 9, 51, 64);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(!e->percussion_midi_listening && e->percussion_midi_draft[42] == 52 &&
+           ed_pattern(e)->count == 0);
+    ed_percussion_save(e, true);
+    assert(e->project.percussion_override && e->project.percussion_midi[42] == 52 &&
+           !e->project.percussion_midi[38]);
+    ed_percussion_close(e);
+
+    /* The global MIDI mapping is saved beside the keyboard mapping. */
+    snprintf(e->settings_path, sizeof(e->settings_path),
+             "build/development/midi_recording_percussion.ini");
+    e->percussion_midi_global[38] = 49 + 1;
+    assert(dm_preferences_save(e, 0, ed_action_names));
+    memset(e->percussion_midi_global, 0, sizeof(e->percussion_midi_global));
+    assert(dm_preferences_load(e, 0) && e->percussion_midi_global[38] == 50);
+    static const char duplicate[] = "[application]\nschema=3\n[percussion_midi]\n"
+                                    "acoustic_snare=49\nbass_drum_1=49\n";
+    assert(SDL_SaveFile(e->settings_path, duplicate, sizeof(duplicate) - 1) &&
+           !dm_preferences_load(e, 0) && e->percussion_midi_global[38] == 50);
+    SDL_RemovePath(e->settings_path);
+    memset(e->percussion_midi_global, 0, sizeof(e->percussion_midi_global));
+    e->preview_override = false;
+
+    /* Outside the pattern editor, any channel marked as percussion plays the mapping. */
+    reset(e, false);
+    e->context = 0;
+    e->project.channels[3].drums = true;
+    e->project.channels[MIDI_DRUM_CHANNEL].drums = false;
+    assert(ed_route_drums(e, 3) && !ed_route_drums(e, 4) && !ed_route_drums(e, MIDI_DRUM_CHANNEL));
+    e->context = 2;
+    assert(ed_route_drums(e, MIDI_DRUM_CHANNEL) && !ed_route_drums(e, 3));
 }
 
 int main(void) {
@@ -344,6 +450,8 @@ int main(void) {
     SDL_RenderClear(renderer);
     ui_render(renderer);
     assert(e->project.automation_count == 1000);
+    percussion_mapping(e);
+    recorded_graph(e);
     e->settings_path[0] = 0;
     editor_free(e);
     free(e);

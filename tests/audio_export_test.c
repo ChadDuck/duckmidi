@@ -1,10 +1,10 @@
 #include "../shared/audio_export.h"
-#include "../shared/sample_analysis.h"
-#include "../shared/sample_batch.h"
-#include "../shared/sample_export_snapshot.h"
-#include "../shared/sample_import.h"
-#include "../shared/sample_library.h"
-#include "../shared/sample_manifest.h"
+#include "../shared/sample/analysis.h"
+#include "../shared/sample/batch.h"
+#include "../shared/sample/export_snapshot.h"
+#include "../shared/sample/import.h"
+#include "../shared/sample/library.h"
+#include "../shared/sample/manifest.h"
 #include <SDL3/SDL.h>
 #include <libavutil/intreadwrite.h>
 #include <assert.h>

@@ -1,4 +1,4 @@
-#include "../src/audio.c"
+#include "../src/audio/audio.c"
 #include "wave_fixture.h"
 
 static void controls_process(DmAudio *a, int frames) {

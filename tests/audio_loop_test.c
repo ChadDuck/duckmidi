@@ -1,4 +1,4 @@
-#include "../src/audio.c"
+#include "../src/audio/audio.c"
 static int checks;
 
 static void check(bool value, const char *what) {

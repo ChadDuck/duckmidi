@@ -1,6 +1,6 @@
 /* Developer input inspector. Driver callbacks only copy into fixed SPSC rings. */
-#include "midi_input.h"
-#include "midi_input_core.h"
+#include "midi_input/midi_input.h"
+#include "midi_input/core.h"
 #include "rtmidi_c.h"
 #include <SDL3/SDL.h>
 #include <signal.h>

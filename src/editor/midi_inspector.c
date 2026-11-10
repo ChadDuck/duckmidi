@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static const char *controller_names[128] = {[0] = DM_TEXT_BANK_SELECT_MSB,
@@ -869,8 +869,12 @@ static void midi_event_inspector(Editor *e) {
     }
 }
 
-void ed_midi_event_panels(Editor *e, size_t count, float *split) {
+void ed_midi_event_panels(Editor *e, size_t count, float *split, float height) {
     UiPoint size = ui_available();
+
+    if (height > 0) {
+        size.y = height;
+    }
     float spacing = ui_item_spacing_x();
 
     if (*split <= 0) {
@@ -907,7 +911,7 @@ void ed_midi_event_window(Editor *e) {
     float h = ui_display().y * .6f;
 
     if (ui_dialog(DM_TEXT_MIDI_EVENTS, &e->midi_events, fminf(1000, ui_display().x - 40), h)) {
-        ed_midi_event_panels(e, count, &e->midi_split);
+        ed_midi_event_panels(e, count, &e->midi_split, 0);
     }
 
     ui_end();

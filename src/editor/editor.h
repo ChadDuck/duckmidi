@@ -1,8 +1,8 @@
 #ifndef DM_EDITOR_H
 #define DM_EDITOR_H
-#include "audio.h"
-#include "midi_input.h"
-#include "duck.h"
+#include "audio/audio.h"
+#include "editor/midi_bindings.h"
+#include "core/duck.h"
 #include "ui.h"
 
 typedef enum {
@@ -97,6 +97,9 @@ typedef enum {
     FOCUS_OTHER
 } EditFocus;
 
+#define DM_MIDI_LATENCY_LIMIT_MS 1000
+#define ED_UNDO_LIMIT 64 /* Undo and redo steps kept, each. */
+
 typedef struct {
     SDL_Window *window;
     SDL_Renderer *renderer;
@@ -104,6 +107,18 @@ typedef struct {
     DmMidiInput *midi_input;
     struct DmEditorMidiInput *midi_input_state;
     char input_names[DM_MIDI_INPUTS][DM_MIDI_NAME]; /* Saved MIDI input devices. */
+    DmMidiInputOptions input_options;
+    DmInputControllerPolicy input_controllers;
+    float input_latency_ms; /* NAN = one audio buffer. */
+    bool input_thru, input_pickup, input_preferences_open;
+    DmBytes midi_bindings;
+    EdMidiLearn midi_learn;
+    uint64_t midi_binding_session, midi_mix_last;
+    bool midi_mix_pending, midi_mix_dirty, midi_clear_bindings, midi_learn_any;
+    /* A Point / Graph switch waiting for confirmation: its pattern (-1 none), mode and graph. */
+    int graph_switch_pattern, graph_switch_mode, graph_switch_graph;
+    float event_lane_height; /* Last drawn event lane height, for its value rows (0 none yet). */
+    bool graph_switch;
     DmProject project;
     uint64_t mixer_peak_tick;
     float mixer_peaks[DM_PARTS];
@@ -121,11 +136,12 @@ typedef struct {
     bool font_request, font_queued;
     bool pending_save, pending_save_as;
     bool monitor;
-    bool percussion_window, percussion_listening, percussion_reveal;
+    bool percussion_window, percussion_listening, percussion_midi_listening, percussion_reveal;
     int combine_request; /* 0 none, 1 original source ports, 2 all ports; awaiting a warning. */
     char combine_channels[64];
     int percussion_note;
     uint8_t percussion_global[128], percussion_draft[128];
+    uint8_t percussion_midi_global[128], percussion_midi_draft[128]; /* Incoming note + 1. */
     char percussion_feedback[160];
 
     DmMetadataMode export_metadata;
@@ -176,6 +192,7 @@ typedef struct {
     UiPoint drop_position;
     UiRect preferences_rect, info_rect;
     UiPoint event_marquee_start;
+    UiPoint graph_last; /* Pointer on the previous frame of a graph paint or erase drag. */
     DmBytes record_original, midi_rows;
     /* Playlist Events row: one group per occupied bar in the visible range, rebuilt only when
        the project or the range changes. */
@@ -269,7 +286,7 @@ typedef struct {
     char status_shown[512];         /* Status text when it was last posted; see ed_info_box. */
     uint64_t status_time;           /* When the status was posted, in SDL ticks. */
     char base_path[DM_PATH];        /* Folder holding the executable, ending with a separator. */
-    struct DmUpdate *update;        /* Update checker, created on first use; see editor_update.c. */
+    struct DmUpdate *update;        /* Update checker, created on first use; see editor/update.c. */
     int update_mode, update_choice; /* Saved check setting (1 On Launch) and the window choice. */
     bool update_window, update_prompted, update_announced, update_install, update_restart;
     bool update_prompt_pending; /* First-launch question shown once a file is open. */
@@ -283,7 +300,10 @@ typedef struct {
        the first movement. */
     int copy_button;
     bool copy_pending, copy_was_selected;
-    DmBytes undo[32], redo[32], clipboard, event_selection;
+    /* A plain press on an item already in a selection: released without moving, it selects only
+       that item. */
+    bool lone_click;
+    DmBytes undo[ED_UNDO_LIMIT], redo[ED_UNDO_LIMIT], clipboard, event_selection;
     DmBytes event_clipboard; /* Event buttons keep their own fixed-position clipboard. */
     bool event_clipboard_all;
     int undo_count, redo_count;

@@ -1,4 +1,4 @@
-#include "sample_analysis.h"
+#include "analysis.h"
 #include <ctype.h>
 #include <math.h>
 #include <string.h>

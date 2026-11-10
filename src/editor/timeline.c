@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 
 static void grid_pan(Editor *e, View *v, UiRect canvas, UiMouse mouse, int context);
 static void ruler_ticks(Editor *e, UiRect r, View *v, float scale, float label);
@@ -147,6 +147,17 @@ double ed_view_playhead(Editor *e, int context, bool playing, double beat, bool 
     return playhead;
 }
 
+/* Screen x of the view's playhead; false when it is hidden or outside area, the timeline part of
+   the view. */
+static bool playhead_x(Editor *e, UiRect area, View *v, float scale, float *x) {
+    bool visible;
+    double playhead =
+        ed_view_playhead(e, v == &e->roll_view, dm_audio_playing(e->audio),
+                         dm_seconds_beat(&e->project, dm_audio_position(e->audio)), &visible);
+    *x = area.x + (float)playhead * scale - v->scroll_x;
+    return visible && *x >= area.x && *x < area.x + area.w;
+}
+
 void ed_ruler(Editor *e, UiRect r, View *v, float scale, float label) {
     ui_rect((UiRect){r.x, r.y, r.w, 28}, ui_background_shade(26), 0);
     int region = v == &e->roll_view;
@@ -162,14 +173,15 @@ void ed_ruler(Editor *e, UiRect r, View *v, float scale, float label) {
 
     ruler_ticks(e, r, v, scale, label);
     ruler_bars(e, r, v, scale, label);
-    int context = v == &e->roll_view;
-    bool visible;
-    double playhead =
-        ed_view_playhead(e, context, dm_audio_playing(e->audio),
-                         dm_seconds_beat(&e->project, dm_audio_position(e->audio)), &visible);
-    float x = r.x + label + (float)playhead * scale - v->scroll_x;
+    float x;
 
-    if (visible && x >= r.x + label && x < r.x + r.w) {
+    if (playhead_x(e, (UiRect){r.x + label, r.y, r.w - label, r.h}, v, scale, &x)) {
+        /* A drop shadow keeps the playhead readable over contents in its own color, such as
+           Graph bars. */
+        uint32_t shadow = 0x70000000u;
+        ui_line((UiPoint){x + 2, r.y + 16}, (UiPoint){x + 2, r.y + r.h}, shadow, 2);
+        ui_triangle((UiPoint){x - 4, r.y + 5}, (UiPoint){x + 8, r.y + 5},
+                    (UiPoint){x + 2, r.y + 16}, shadow);
         ui_line((UiPoint){x, r.y + 14}, (UiPoint){x, r.y + r.h}, GREEN, 2);
         ui_triangle((UiPoint){x - 6, r.y + 3}, (UiPoint){x + 6, r.y + 3}, (UiPoint){x, r.y + 14},
                     GREEN);

@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 extern void test_event_lanes_ui(Editor *, void (*)(bool, const char *));
 static int checks;
 

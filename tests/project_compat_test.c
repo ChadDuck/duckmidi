@@ -1,7 +1,7 @@
-/* Loads generated schema-9 through schema-13 projects and checks their conversion to the current
+/* Loads generated schema-9 through schema-14 projects and checks their conversion to the current
    schema. The writers below follow those layouts field by field; they exist only to produce these
    fixtures. */
-#include "duck.h"
+#include "core/duck.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -199,7 +199,7 @@ static void point10(DmBytes *b, uint32_t schema, double beat, double previous, i
 
 /* One pattern with one note, one placement, a modulation line (two nodes of curve 1 and its
    restoration node) and a discrete point curving toward the next discrete point, saved as schema
-   10, 11 or 12. */
+   10 through 14. */
 static DmBytes line_project(uint32_t schema) {
     DmBytes body = {0}, stored = {0}, file = {0};
     t10(&body, "Line song");
@@ -292,7 +292,8 @@ static DmBytes line_project(uint32_t schema) {
             v10(&body, 130);        /* Bank. */
             v10(&body, 6);          /* Program. */
             v10(&body, 0);          /* Drums. */
-            v10(&body, i ? 0 : 73); /* Old revision / explicit SoundFont. */
+            /* Schema 13 stored a sample revision; schema 14 marks a current reference. */
+            v10(&body, i ? 0 : schema >= 14 ? 1 : 73);
             t10(&body, i ? "" : "generated/library");
             t10(&body, i ? "" : "generated-set");
             t10(&body, i ? "" : "generated-preset");
@@ -439,8 +440,74 @@ static void check_patch_replacements(void) {
     dm_project_free(&q);
 }
 
+static bool reloads(const DmProject *p) {
+    DmProject q;
+    DmBytes saved = {0};
+    char error[256];
+    dm_project_init(&q);
+    bool ok = dm_pack(p, &saved) && dm_unpack(&q, saved.data, saved.size, error, sizeof(error));
+    dm_bytes_free(&saved);
+    dm_project_free(&q);
+    return ok;
+}
+
+/* Schema 14 to 15: patterns gain the graph resolution and projects the percussion MIDI mapping. */
+static void check_graph_and_percussion_midi(void) {
+    DmProject p, q;
+    dm_project_init(&p);
+    dm_project_init(&q);
+    char error[256] = {0};
+    uint8_t none[128] = {0};
+    DmBytes previous = line_project(14), saved = {0};
+    check(dm_unpack(&p, previous.data, previous.size, error, sizeof(error)), error);
+    check(p.pattern_count == 1 && !p.patterns[0].graph && !memcmp(p.percussion_midi, none, 128),
+          "schema-14 patterns edit points and play incoming notes as themselves");
+    p.patterns[0].graph = 32;
+    p.percussion_override = true;
+    p.percussion_midi[36] = 61;
+    check(dm_pack(&p, &saved) && saved.data[8] == DM_PROJECT_SCHEMA,
+          "converted schema-14 projects save as the current schema");
+    check(dm_unpack(&q, saved.data, saved.size, error, sizeof(error)) &&
+              q.patterns[0].graph == 32 && q.percussion_midi[36] == 61,
+          "the graph resolution and percussion MIDI mapping are saved and reloaded");
+
+    static const int bad_graph[] = {4, 12, 24, 512};
+
+    for (unsigned i = 0; i < sizeof(bad_graph) / sizeof(*bad_graph); ++i) {
+        p.patterns[0].graph = bad_graph[i];
+        check(!reloads(&p), "graph resolutions other than 1/8 to 1/256 are rejected");
+    }
+
+    p.patterns[0].graph = 16;
+    p.patterns[0].mode = 1;
+    check(!reloads(&p), "LFO patterns cannot be graphs");
+    p.patterns[0].mode = 0;
+    p.percussion_midi[38] = 61;
+    check(!reloads(&p), "one incoming note plays one drum");
+    p.percussion_midi[38] = 0;
+    p.percussion_override = false;
+    check(!reloads(&p), "the project MIDI mapping requires the project override");
+    p.percussion_override = true;
+    check(reloads(&p), "valid schema-15 fields reload");
+
+    /* Point-only events keep discrete points. */
+    p.patterns[0].count = 0;
+    p.automation_count = p.clip_count = 0;
+    p.patterns[0].kind = 1;
+    p.patterns[0].event = MIDI_CC_SUSTAIN;
+    check(!reloads(&p), "point-only automation cannot be a graph");
+    p.patterns[0].graph = 0;
+    check(reloads(&p), "point-only automation reloads without a graph");
+
+    dm_bytes_free(&previous);
+    dm_bytes_free(&saved);
+    dm_project_free(&p);
+    dm_project_free(&q);
+}
+
 int main(void) {
     check_patch_replacements();
+    check_graph_and_percussion_midi();
     DmProject p, again;
     dm_project_init(&p);
     dm_project_init(&again);

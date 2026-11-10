@@ -1,4 +1,4 @@
-#include "../src/audio_samples.h"
+#include "../src/audio/samples.h"
 #include <SDL3/SDL.h>
 #include <assert.h>
 #include <math.h>

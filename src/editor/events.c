@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static int event_identity(const void *left, const void *right);
@@ -289,6 +289,7 @@ static void choose_event_type(Editor *e, int value) {
 
         if (ed_point_only_event(value)) {
             ed_pattern(e)->mode = 0;
+            ed_pattern(e)->graph = 0;
         }
 
         ed_commit(e);
@@ -376,6 +377,38 @@ void ed_automation_selector(Editor *e) {
 float ed_lane_step(UiRect lane) {
     (void)lane;
     return 20;
+}
+
+static int lane_maximum(Editor *e) {
+    return e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+}
+
+int ed_value_step(Editor *e, float height) {
+    int cc = e->automation_cc;
+
+    if (cc == -3 || ed_pedal_event(cc) || discrete_event(cc) ||
+        (cc == -2 && !ed_automation_raw(e))) {
+        return 0;
+    }
+
+    /* Rows land between 1/sqrt(2) and sqrt(2) times the pitch row height. */
+    int maximum = lane_maximum(e), step = 1;
+    float per_value = fmaxf(1, height - 8) / maximum;
+
+    while (step < maximum && step * per_value < ed_lane_step((UiRect){0}) * .7071f) {
+        step *= 2;
+    }
+
+    return step;
+}
+
+int ed_value_snap(Editor *e, int value, int step) {
+    if (step <= 0) {
+        return value;
+    }
+
+    long snapped = lround((double)value / step) * step;
+    return (int)(snapped > lane_maximum(e) ? lane_maximum(e) : snapped < 0 ? 0 : snapped);
 }
 
 /* Drawing pitch bends asks for each point's bend range and anchor note, and each lookup scans the
@@ -490,7 +523,7 @@ UiPoint ed_automation_point(Editor *e, DmAutomation a, UiRect lane, View *v, flo
           maximum = a.type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX;
     float y = lane.y + lane.h - 8 - value / maximum * (lane.h - 8);
 
-    if (a.type == MIDI_PITCH_BEND && !e->automation_raw) {
+    if (a.type == MIDI_PITCH_BEND && !ed_automation_raw(e)) {
         y = lane.y + lane.h * .5f -
             (ed_automation_pitch(e, a) - e->automation_center) * ed_lane_step(lane);
     }
@@ -503,7 +536,7 @@ UiPoint ed_automation_point(Editor *e, DmAutomation a, UiRect lane, View *v, flo
 }
 
 float ed_curve_units(Editor *e, DmAutomation a, UiRect lane, bool overlay) {
-    if (a.type == MIDI_PITCH_BEND && (overlay || !e->automation_raw)) {
+    if (a.type == MIDI_PITCH_BEND && (overlay || !ed_automation_raw(e))) {
         return 20 * ed_automation_range(e, a) / MIDI_BEND_CENTER;
     }
 
@@ -538,6 +571,7 @@ typedef struct {
     float low, high, column;
     unsigned count;
     bool hint;
+    uint32_t color;
 } DenseLaneColumn;
 
 /* Keep one matching predecessor for a segment crossing the viewport's left edge. */
@@ -588,33 +622,33 @@ static void dense_lane_flush(DenseLaneColumn *column, bool outline) {
 
     if (outline) {
         if (column->count <= 2) {
-            ui_circle_outline(column->first, 5, GOLD);
+            ui_circle_outline(column->first, 5, column->color);
 
             if (column->count == 2) {
-                ui_circle_outline(column->last, 5, GOLD);
+                ui_circle_outline(column->last, 5, column->color);
             }
         } else {
-            ui_circle_outline((UiPoint){column->first.x, column->low}, 5, GOLD);
+            ui_circle_outline((UiPoint){column->first.x, column->low}, 5, column->color);
 
             if (column->high != column->low) {
-                ui_circle_outline((UiPoint){column->first.x, column->high}, 5, GOLD);
+                ui_circle_outline((UiPoint){column->first.x, column->high}, 5, column->color);
             }
         }
     } else if (column->count <= 2) {
-        ui_circle(column->first, 5, GOLD);
+        ui_circle(column->first, 5, column->color);
 
         if (column->count == 2) {
-            ui_line(column->first, (UiPoint){column->last.x, column->first.y}, GOLD, 1.5f);
-            ui_line((UiPoint){column->last.x, column->first.y}, column->last, GOLD, 1.5f);
-            ui_circle(column->last, 5, GOLD);
+            ui_line(column->first, (UiPoint){column->last.x, column->first.y}, column->color, 1.5f);
+            ui_line((UiPoint){column->last.x, column->first.y}, column->last, column->color, 1.5f);
+            ui_circle(column->last, 5, column->color);
         }
     } else {
         UiPoint low = {column->first.x, column->low}, high = {column->first.x, column->high};
-        ui_line(low, high, GOLD, 1.5f);
-        ui_circle(low, 5, GOLD);
+        ui_line(low, high, column->color, 1.5f);
+        ui_circle(low, 5, column->color);
 
         if (column->high != column->low) {
-            ui_circle(high, 5, GOLD);
+            ui_circle(high, 5, column->color);
         }
     }
 
@@ -623,11 +657,15 @@ static void dense_lane_flush(DenseLaneColumn *column, bool outline) {
 }
 
 int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse) {
+    if (ed_graph_resolution(e)) {
+        return ed_graph_plot(e, lane, v, scale, mouse);
+    }
+
     UiPoint previous = {0};
     bool has = false;
     int hit = -1;
     DmAutomation before = {0};
-    DenseLaneColumn dense = {0};
+    DenseLaneColumn dense = {.color = ed_point_color(e)};
     ed_pitch_cache_begin(e);
     size_t first = ed_automation_visible_first(e, (v->scroll_x - 8) / scale, false);
 
@@ -668,16 +706,16 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
         if (has && !joined) {
             if (pedal) {
                 if (a.curve > 0 && a.curve == before.curve) {
-                    ui_line(previous, point, GOLD, 4);
+                    ui_line(previous, point, ed_point_color(e), 4);
                 }
             } else {
                 ed_automation_connection(previous, point, before, a,
-                                         ed_curve_units(e, before, lane, false), GOLD);
+                                         ed_curve_units(e, before, lane, false), ed_point_color(e));
             }
         }
 
         bool end = pedal && has && a.curve > 0 && a.curve == before.curve;
-        uint32_t color = selected ? TEXT : GOLD;
+        uint32_t color = selected ? TEXT : ed_point_color(e);
 
         if (raw) {
             if (!dense.count) {
@@ -727,7 +765,7 @@ void ed_sort_automation(Editor *e) {
 int ed_lane_value(Editor *e, UiRect lane, float y, DmAutomation a, bool free) {
     int max = a.type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX;
 
-    if (a.type == MIDI_PITCH_BEND && !e->automation_raw) {
+    if (a.type == MIDI_PITCH_BEND && !ed_automation_raw(e)) {
         float pitch = ed_clampf(
             e->automation_center + (lane.y + lane.h * .5f - y) / ed_lane_step(lane), 0, 127);
 
@@ -743,7 +781,8 @@ int ed_lane_value(Editor *e, UiRect lane, float y, DmAutomation a, bool free) {
     }
 
     float value = (lane.y + lane.h - 8 - y) / (lane.h - 8) * max;
-    return (int)ed_clampf(value, 0, (float)max);
+    int result = (int)ed_clampf(value, 0, (float)max), step = free ? 0 : ed_value_step(e, lane.h);
+    return step ? ed_value_snap(e, (int)lroundf(value), step) : result;
 }
 
 static double next_pitch_range(Editor *e, double beat) {
@@ -824,7 +863,7 @@ DmAutomation ed_expand_pitch_range(Editor *e, DmAutomation node, float pitch) {
 }
 
 static DmAutomation lane_edited(Editor *e, DmAutomation a, UiRect lane, float y, bool free) {
-    if (a.type == MIDI_PITCH_BEND && !e->automation_raw) {
+    if (a.type == MIDI_PITCH_BEND && !ed_automation_raw(e)) {
         float pitch = ed_clampf(
             e->automation_center + (lane.y + lane.h * .5f - y) / ed_lane_step(lane), 0, 127);
         a = ed_expand_pitch_range(e, a, free ? pitch : roundf(pitch));
@@ -891,7 +930,7 @@ static void curve_drag_update(Editor *e, UiRect lane, UiMouse mouse) {
         DmAutomation a = e->project.automation[left], b = e->project.automation[right];
         double bend;
 
-        if (a.type == MIDI_PITCH_BEND && (e->curve_overlay || !e->automation_raw)) {
+        if (a.type == MIDI_PITCH_BEND && (e->curve_overlay || !ed_automation_raw(e))) {
             double semitones = e->curve_origin * e->curve_sensitivity / MIDI_BEND_CENTER +
                                (e->curve_y - mouse.pos.y) / 20;
             float pitch =
@@ -941,7 +980,7 @@ static bool curve_handle_action(Editor *e, size_t index, UiRect lane, UiPoint mi
     bool hit = hovered && ed_inside(mouse.pos, lane) && fabsf(mouse.pos.x - mid.x) < 8 &&
                fabsf(mouse.pos.y - mid.y) < 8;
 
-    if (hit) {
+    if (hit && !e->drag && !e->event_marquee) {
         ui_gesture_cursor(true);
     }
 
@@ -989,7 +1028,7 @@ bool ed_curve_handles(Editor *e, UiRect lane, View *v, float scale, UiMouse mous
     }
 
     ed_pitch_cache_begin(e);
-    DenseLaneColumn dense = {0};
+    DenseLaneColumn dense = {.color = ed_point_color(e)};
     size_t first_visible = ed_automation_visible_first(e, (v->scroll_x - 8) / scale, overlay);
 
     for (size_t i = first_visible; i < e->project.automation_count; ++i) {
@@ -1046,7 +1085,7 @@ bool ed_curve_handles(Editor *e, UiRect lane, View *v, float scale, UiMouse mous
             dense.hint |= hovered && fabsf(mouse.pos.x - mid.x) < 8;
             ++dense.count;
         } else {
-            ui_circle_outline(mid, 5, GOLD);
+            ui_circle_outline(mid, 5, ed_point_color(e));
         }
 
         if (curve_handle_action(e, i, lane, mid, mouse, overlay,
@@ -1111,6 +1150,7 @@ void ed_select_edited_node(Editor *e, DmAutomation edited) {
 
 static void event_drag_begin(Editor *e, int hit) {
     bool group = ed_event_selected(e, (size_t)hit);
+    e->lone_click = false;
 
     if (!group) {
         e->event_selection.size = 0;
@@ -1167,7 +1207,9 @@ static double event_group_delta(Editor *e, UiRect lane, UiMouse mouse, EventDrag
         delta = (e->node_y - mouse.pos.y) *
                 (pitch ? 1 / ed_lane_step(lane)
                        : (e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX) / (lane.h - 8));
-        delta = mouse.alt && pitch ? delta : round(delta);
+        int step = pitch || mouse.alt ? 0 : ed_value_step(e, lane.h);
+        /* Raw values move by whole rows, keeping the points' offsets from them. */
+        delta = mouse.alt && pitch ? delta : step ? round(delta / step) * step : round(delta);
         delta = fmax(lo, fmin(hi, delta));
     }
 
@@ -1181,7 +1223,7 @@ static void event_group_values(Editor *e, UiRect lane, UiMouse mouse) {
 
     EventDragItem *items = (EventDragItem *)e->event_drag.data;
     size_t count = e->event_drag.size / sizeof(*items);
-    bool pitch = e->automation_cc == -2 && !e->automation_raw;
+    bool pitch = e->automation_cc == -2 && !ed_automation_raw(e);
     double delta = event_group_delta(e, lane, mouse, items, count, pitch);
 
     if (pitch) {
@@ -1216,8 +1258,8 @@ static bool event_group_drag(Editor *e, UiRect lane, float scale, UiMouse mouse)
         ed_begin_edit_move(e);
         double delta = mouse.ctrl
                            ? 0
-                           : ed_snap(e->node_beat + (mouse.pos.x - e->marquee_start.x) / scale, .25,
-                                     mouse.alt) -
+                           : ed_snap(e->node_beat + (mouse.pos.x - e->marquee_start.x) / scale,
+                                     ed_event_snap(e), mouse.alt) -
                                  e->node_beat;
 
         for (size_t i = 0; i < count; ++i) {
@@ -1240,6 +1282,8 @@ static bool event_group_drag(Editor *e, UiRect lane, float scale, UiMouse mouse)
     }
 
     if (mouse.released) {
+        bool lone = e->lone_click && !e->edit_moved;
+
         if (e->edit_moved) {
             for (size_t i = 0; i < count; ++i) {
                 ed_curve_restore_position(e, items[i].original.curve);
@@ -1251,8 +1295,16 @@ static bool event_group_drag(Editor *e, UiRect lane, float scale, UiMouse mouse)
             ed_commit(e);
         }
 
+        /* A plain click on a selected point selects only that point. */
+        if (lone) {
+            e->automation_all = false;
+            e->event_selection.size = 0;
+        } else {
+            e->automation_node = -1;
+        }
+
+        e->lone_click = false;
         e->drag = 0;
-        e->automation_node = -1;
         e->event_drag.size = 0;
     }
 
@@ -1279,8 +1331,8 @@ void ed_automation_node_drag(Editor *e, UiRect lane, View *v, float scale, UiMou
         a = &e->project.automation[e->automation_node];
 
         if (!mouse.ctrl) {
-            a->beat =
-                ed_snap(e->node_beat + (mouse.pos.x - e->marquee_start.x) / scale, .25, mouse.alt);
+            a->beat = ed_snap(e->node_beat + (mouse.pos.x - e->marquee_start.x) / scale,
+                              ed_event_snap(e), mouse.alt);
         }
 
         if (!mouse.shift && !ed_pedal_event(e->automation_cc)) {
@@ -1498,12 +1550,12 @@ static bool connected_line(Editor *e, UiRect lane, UiMouse mouse, double start, 
 /* Screen-only: it never builds a point, since range expansion for pitch bends edits the project.
    Pitch bends snap to semitone rows and other controllers to whole values, as on release. */
 static UiPoint placed_point(Editor *e, UiRect lane, View *v, float scale, UiPoint at, bool free) {
-    double beat = fmax(0, ed_snap((at.x - lane.x + v->scroll_x) / scale, .25, free));
+    double beat = fmax(0, ed_snap((at.x - lane.x + v->scroll_x) / scale, ed_event_snap(e), free));
     float y, middle = lane.y + lane.h * .5f;
 
     if (ed_pedal_event(e->automation_cc)) {
         y = middle;
-    } else if (e->automation_cc == -2 && !e->automation_raw) {
+    } else if (e->automation_cc == -2 && !ed_automation_raw(e)) {
         float step = ed_lane_step(lane);
         float pitch = ed_clampf(e->automation_center + (middle - at.y) / step, 0, 127);
         pitch = free ? pitch : roundf(pitch);
@@ -1511,7 +1563,9 @@ static UiPoint placed_point(Editor *e, UiRect lane, View *v, float scale, UiPoin
     } else {
         float maximum = e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
         float value = ed_clampf((lane.y + lane.h - 8 - at.y) / (lane.h - 8) * maximum, 0, maximum);
-        y = lane.y + lane.h - 8 - floorf(value) / maximum * (lane.h - 8);
+        int step = free ? 0 : ed_value_step(e, lane.h);
+        value = step ? (float)ed_value_snap(e, (int)lroundf(value), step) : floorf(value);
+        y = lane.y + lane.h - 8 - value / maximum * (lane.h - 8);
     }
 
     return (UiPoint){lane.x + (float)beat * scale - v->scroll_x, y};
@@ -1588,6 +1642,7 @@ void ed_automation_lane_click(Editor *e, UiRect lane, View *v, float scale, UiMo
 
     if (hit >= 0) {
         event_drag_begin(e, hit);
+        e->lone_click = !mouse.shift;
         e->automation_all = false;
         e->edit_moved = false;
         e->drag = 5;
@@ -1653,7 +1708,8 @@ void ed_automation_press(Editor *e, UiRect lane, View *v, float scale, UiMouse m
     UiMouse at = mouse;
     at.pos = e->marquee_start;
     at.alt = e->event_free || mouse.alt;
-    double beat = ed_snap((e->marquee_start.x - lane.x + v->scroll_x) / scale, .25, at.alt);
+    double beat =
+        ed_snap((e->marquee_start.x - lane.x + v->scroll_x) / scale, ed_event_snap(e), at.alt);
     if (e->event_connect) {
         add_connected_point(e, lane, at, beat);
     } else {
@@ -1677,32 +1733,33 @@ void ed_automation_drag(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
 
     if (ed_pedal_event(e->automation_cc)) {
         float y = lane.y + lane.h * .5f;
-        ui_line((UiPoint){e->marquee_start.x, y}, (UiPoint){mouse.pos.x, y}, GOLD, 4);
+        ui_line((UiPoint){e->marquee_start.x, y}, (UiPoint){mouse.pos.x, y}, ed_point_color(e), 4);
     } else {
         /* The preview shows the points where they will land: snapped unless Alt is held. With
            Shift, a dimmer line shows the start joining its nearest point. */
         UiPoint from = placed_point(e, lane, v, scale, e->marquee_start, mouse.alt);
         UiPoint to = placed_point(e, lane, v, scale, mouse.pos, mouse.alt);
-        double start_beat =
-            ed_snap((e->marquee_start.x - lane.x + v->scroll_x) / scale, .25, mouse.alt);
+        double start_beat = ed_snap((e->marquee_start.x - lane.x + v->scroll_x) / scale,
+                                    ed_event_snap(e), mouse.alt);
         int nearest = e->event_connect ? ed_closest_node(e, start_beat) : -1;
 
         if (nearest >= 0) {
             UiPoint joined = ed_automation_point(e, e->project.automation[nearest], lane, v, scale);
-            ui_line(joined, from, (GOLD & 0xffffffu) | 0x88000000u, 2);
+            ui_line(joined, from, (ed_point_color(e) & 0xffffffu) | 0x88000000u, 2);
         }
 
-        ui_line(from, to, GOLD, 2);
-        ui_circle(from, 4, GOLD);
-        ui_circle(to, 4, GOLD);
+        ui_line(from, to, ed_point_color(e), 2);
+        ui_circle(from, 4, ed_point_color(e));
+        ui_circle(to, 4, ed_point_color(e));
     }
 
     if (!mouse.released) {
         return;
     }
 
-    double start = ed_snap((e->marquee_start.x - lane.x + v->scroll_x) / scale, .25, mouse.alt);
-    double end = ed_snap((mouse.pos.x - lane.x + v->scroll_x) / scale, .25, mouse.alt);
+    double start =
+        ed_snap((e->marquee_start.x - lane.x + v->scroll_x) / scale, ed_event_snap(e), mouse.alt);
+    double end = ed_snap((mouse.pos.x - lane.x + v->scroll_x) / scale, ed_event_snap(e), mouse.alt);
     e->drag_key = ed_curve_anchor(e, start);
     DmAutomation a = ed_curve_node(e, start, 0, e->automation_cc, 1, e->drag_key);
 
@@ -1754,6 +1811,7 @@ void ed_event_box_select(Editor *e, UiRect lane, View *v, float scale, UiMouse m
                   fabsf(start.x - mouse.pos.x), fabsf(start.y - mouse.pos.y)};
     e->event_selection.size = 0;
     size_t bytes = e->project.automation_count * sizeof(DmAutomation);
+    bool graph = ed_graph_resolution(e) != 0; /* Graph lanes select the bars the box touches. */
 
     if (dm_reserve((void **)&e->event_selection.data, &e->event_selection.capacity, bytes, 1)) {
         for (size_t i = 0; i < e->project.automation_count; ++i) {
@@ -1763,9 +1821,14 @@ void ed_event_box_select(Editor *e, UiRect lane, View *v, float scale, UiMouse m
                 continue;
             }
 
-            UiPoint at = ed_automation_point(e, a, lane, v, scale);
+            if (graph) {
+                UiRect bar = ed_graph_bar(e, a, lane, v, scale, INFINITY);
 
-            if (!ed_inside(at, box)) {
+                if (bar.x > box.x + box.w || bar.x + bar.w < box.x || bar.y > box.y + box.h ||
+                    bar.y + bar.h < box.y) {
+                    continue;
+                }
+            } else if (!ed_inside(ed_automation_point(e, a, lane, v, scale), box)) {
                 continue;
             }
 
@@ -1802,7 +1865,7 @@ static void event_placement_tip(Editor *e, UiRect lane, UiMouse mouse, bool hove
 
     char text[64];
 
-    if (e->automation_cc == -2 && !e->automation_raw) {
+    if (e->automation_cc == -2 && !ed_automation_raw(e)) {
         float pitch =
             e->automation_center + (lane.y + lane.h * .5f - mouse.pos.y) / ed_lane_step(lane);
 
@@ -1830,9 +1893,91 @@ static void event_placement_tip(Editor *e, UiRect lane, UiMouse mouse, bool hove
     ui_placement_tip(text);
 }
 
+/* Graph lanes: a left drag paints bars, Shift + drag on a selected bar moves the selected values,
+   and a right drag erases the bars it crosses. A click while bars are selected only clears the
+   selection, as in point lanes. */
+static void graph_input(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse, bool hovered,
+                        int hit) {
+    bool inside = hovered && ed_inside(mouse.pos, lane);
+
+    if (inside && mouse.clicked && !e->drag) {
+        ed_focus_edit(e, FOCUS_EVENTS);
+
+        if (mouse.shift && hit >= 0 && ed_event_selected(e, (size_t)hit)) {
+            event_drag_begin(e, hit);
+            e->marquee_start = mouse.pos;
+            e->node_y = mouse.pos.y;
+            e->edit_moved = false;
+            e->drag = 14;
+        } else if (events_selected(e)) {
+            ed_deselect_events(e);
+        } else {
+            ed_checkpoint(e);
+            e->graph_last = mouse.pos;
+            e->event_free = mouse.alt;
+            e->drag = 13;
+        }
+    }
+
+    if (e->drag == 13) {
+        if (mouse.left) {
+            ed_graph_paint(e, lane, v, scale, e->graph_last, mouse.pos, mouse.alt || e->event_free);
+            e->graph_last = mouse.pos;
+            ed_changed(e);
+        } else {
+            e->drag = 0;
+            ed_commit(e);
+        }
+    }
+
+    if (e->drag == 14) {
+        if (mouse.left && ed_gesture_moved(e, mouse)) {
+            ed_begin_edit_move(e);
+            UiMouse values = mouse;
+            values.shift = false; /* Shift chose this gesture; it does not hold the values. */
+            event_group_values(e, lane, values);
+            event_group_selection(e);
+            ed_changed(e);
+        } else if (!mouse.left) {
+            if (e->edit_moved) {
+                ed_commit(e);
+            }
+
+            e->drag = 0;
+            e->event_drag.size = 0;
+        }
+    }
+
+    if (inside && mouse.right && !mouse.shift && !e->drag) {
+        ed_focus_edit(e, FOCUS_EVENTS);
+
+        /* A right click clears the bar selection; holding it erases bars. */
+        if (mouse.right_clicked) {
+            ed_deselect_events(e);
+        }
+
+        e->graph_last = mouse.pos;
+        e->drag = 15;
+    }
+
+    if (e->drag == 15) {
+        if (mouse.right && ed_graph_erase(e, lane, v, scale, e->graph_last, mouse.pos)) {
+            ed_deselect_events(e);
+            ed_commit(e);
+        }
+
+        e->graph_last = mouse.pos;
+        e->drag = mouse.right ? 15 : 0;
+    }
+
+    event_placement_tip(e, lane, mouse, hovered);
+}
+
 void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse, bool hovered,
                          int hit) {
-    if ((hovered && hit >= 0) || e->drag == 5 || e->curve_drag) {
+    /* Over a point only while nothing else holds the mouse. */
+    if ((hovered && hit >= 0 && !e->drag && !e->event_marquee && !e->curve_drag) || e->drag == 5 ||
+        e->curve_drag) {
         ui_gesture_cursor(true);
     }
 
@@ -1855,6 +2000,11 @@ void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse m
         return;
     }
 
+    if (ed_graph_resolution(e)) {
+        graph_input(e, lane, v, scale, mouse, hovered, hit);
+        return;
+    }
+
     bool pedal = ed_pedal_event(e->automation_cc);
     bool handle = !pedal && ed_curve_handles(e, lane, v, scale, mouse, false, hovered);
 
@@ -1862,6 +2012,13 @@ void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse m
         (!pedal || hit >= 0 || fabsf(mouse.pos.y - (lane.y + lane.h * .5f)) < 12) &&
         mouse.clicked) {
         ed_automation_lane_click(e, lane, v, scale, mouse, hit);
+    }
+
+    /* A right click clears the point selection. */
+    if (hovered && ed_inside(mouse.pos, lane) && mouse.right_clicked && !mouse.shift && !e->drag &&
+        !e->curve_drag) {
+        ed_focus_edit(e, FOCUS_EVENTS);
+        ed_deselect_events(e);
     }
 
     /* Right-dragging erases points, like notes in the piano roll and playlist placements. */
@@ -2385,6 +2542,12 @@ static bool paste_events(Editor *e, const DmProject *from, double at, bool all) 
     free(items);
     qsort(e->event_selection.data, e->event_selection.size / sizeof(DmAutomation),
           sizeof(DmAutomation), event_identity);
+
+    /* A Graph pattern keeps its lanes discrete, so pasted lines become bars. */
+    if (ok && ed_pattern(e)->graph && !ed_pattern(e)->mode) {
+        ok = ed_graph_convert(e, e->selected_pattern, ed_pattern(e)->graph);
+    }
+
     dm_pattern_fit(&e->project, ed_pattern(e));
     return ok;
 }
@@ -2597,4 +2760,21 @@ void ed_remove_events(Editor *e, bool *remove, int type) {
 
     e->project.automation_count = kept;
     e->last_automation_valid = false;
+}
+
+/* Point lines are a lighter tint of the application color, so they stay apart from notes drawn
+   in that color; a color already near white is darkened instead. */
+uint32_t ed_point_color(Editor *e) {
+    uint32_t color = e->accent;
+    float r = (float)(color & 0xffu), g = (float)((color >> 8) & 0xffu),
+          b = (float)((color >> 16) & 0xffu);
+    float target = (.299f * r + .587f * g + .114f * b) / 255.0f > .9f ? 0 : 255;
+    r += (target - r) * .5f;
+    g += (target - g) * .5f;
+    b += (target - b) * .5f;
+    return COLOR((uint32_t)r, (uint32_t)g, (uint32_t)b);
+}
+
+uint32_t ed_graph_color(Editor *e) {
+    return e->accent | 0xff000000u;
 }

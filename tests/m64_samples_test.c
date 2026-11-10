@@ -1,4 +1,4 @@
-#include "../src/duck.h"
+#include "../src/core/duck.h"
 #include "m64export/m64export.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,6 +1,6 @@
 /* The Updates window: when to check, manual checks, download and install. Nothing reaches the
    network until the user applies "On Launch" or clicks Check for Update. */
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 #include "update.h"
 

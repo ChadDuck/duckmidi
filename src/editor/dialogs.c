@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static void rename_dialog(Editor *e);
@@ -359,6 +359,7 @@ void ed_dialogs(Editor *e) {
     ed_pattern_color_dialog(e);
     ed_combine_dialog(e);
     ed_song_event_dialog(e);
+    ed_graph_mode_dialog(e);
     ed_midi_event_window(e);
     ed_settings(e);
     ed_instrument(e);

@@ -1,9 +1,9 @@
 #ifndef DM_AUDIO_H
 #define DM_AUDIO_H
-#include "duck.h"
-#include "../shared/spectrum.h"
-#include "../shared/audio_export.h"
-#include "../include/duckmidi_export_plugin.h"
+#include "core/duck.h"
+#include "../../shared/spectrum.h"
+#include "../../shared/audio_export.h"
+#include "../../include/duckmidi_export_plugin.h"
 typedef struct DmAudio DmAudio;
 typedef struct DmMidiInput DmMidiInput;
 
@@ -16,7 +16,11 @@ typedef struct {
 void dm_audio_attach_midi_input(DmAudio *audio, DmMidiInput *input);
 void dm_audio_input_route(DmAudio *audio, int channel, bool enabled);
 void dm_audio_input_controllers(DmAudio *audio, DmInputControllerPolicy policy);
-/* Offset replaces the default device-buffer compensation, in seconds. */
+void dm_audio_input_thru(DmAudio *audio, DmMidiInput *input, bool enabled);
+/* Incoming key to sounding key for monitored Note On and key pressure; NULL plays keys as they
+   arrive. A held key's Note Off releases the key chosen at its Note On. */
+void dm_audio_input_note_map(DmAudio *audio, const uint8_t map[128]);
+/* Offset in seconds, or NAN for one device buffer. */
 void dm_audio_input_offset(DmAudio *audio, double seconds);
 void dm_audio_input_stats(DmAudio *audio, DmAudioInputStats *stats);
 DmAudio *dm_audio_create(char *error, size_t cap);

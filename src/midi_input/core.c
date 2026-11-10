@@ -1,4 +1,5 @@
-#include "midi_input_core.h"
+#include "midi_input/core.h"
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -52,6 +53,24 @@ DmMidiVerdict dm_midi_normalize(const uint8_t *bytes, size_t size, DmMidiInputEv
     }
 
     return DM_MIDI_RECORD;
+}
+
+bool dm_midi_shape(DmMidiInputEvent *event, const DmMidiInputOptions *options) {
+    unsigned type = event->status & MIDI_STATUS_MASK;
+
+    if (type == MIDI_NOTE_ON) {
+        if (options->fixed_velocity) {
+            event->b = options->fixed_velocity;
+        } else if (options->velocity != DM_MIDI_VELOCITY_MEDIUM) {
+            double gamma = options->velocity == DM_MIDI_VELOCITY_LIGHT ? 0.6 : 1.6;
+            long shaped = lround(MIDI_DATA_MAX * pow(event->b / (double)MIDI_DATA_MAX, gamma));
+            event->b = shaped < 1 ? 1 : (uint8_t)shaped;
+        }
+    } else if (type == MIDI_CONTROL && event->a == MIDI_CC_SUSTAIN && options->sustain_invert) {
+        event->b = MIDI_DATA_MAX - event->b;
+    }
+
+    return !options->channel || (event->status & MIDI_CHANNEL_MASK) + 1u == options->channel;
 }
 
 /* Length of name without a trailing " <digits>" (indexed) or " <digits>:<digits>" (ALSA). */
@@ -189,6 +208,11 @@ void dm_midi_held_event(DmMidiHeld *held, DmMidiInputEvent event) {
     } else if (type == MIDI_NOTE_OFF || type == MIDI_NOTE_ON) {
         atomic_fetch_and_explicit(word, ~bit, memory_order_relaxed);
     }
+}
+
+bool dm_midi_held_note(const DmMidiHeld *held, DmMidiInputEvent event) {
+    const atomic_uint *word = &held->bits[event.status & MIDI_CHANNEL_MASK][event.a / 32];
+    return (atomic_load_explicit(word, memory_order_relaxed) & (1u << (event.a % 32))) != 0;
 }
 
 uint32_t dm_midi_held_release(DmMidiHeld *held, unsigned channel, unsigned word) {

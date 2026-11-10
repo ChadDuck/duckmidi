@@ -1,7 +1,7 @@
 #ifndef DM_SAMPLE_ANALYSIS_H
 #define DM_SAMPLE_ANALYSIS_H
 
-#include "sample_import.h"
+#include "import.h"
 
 typedef enum {
     DM_SAMPLE_PITCH_DEFAULT,

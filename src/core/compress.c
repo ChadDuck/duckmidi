@@ -4,7 +4,7 @@
    [match distance] until the size is reached; the last literals have no match. Every number is a
    variable-length integer (7 bits per byte). Project data repeats record layouts and values, so
    this usually shrinks it by several times without an external library. */
-#include "duck.h"
+#include "core/duck.h"
 #include <stdlib.h>
 #include <string.h>
 

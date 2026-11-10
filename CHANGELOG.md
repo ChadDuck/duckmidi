@@ -2,18 +2,43 @@
 
 # 0.12.3
 
-1. duckmidi now only lowers its frame rate while minimized, so dragging files in from another window stays responsive.
-2. A pattern that isn't on the playlist now follows the selected channel's instrument or sample, even when you change it, until you pick one in the pattern editor; **Reset** turns following back on, and patterns on the playlist hide the instrument picker unless **Pattern** playback is on.
+## Midi Input Support
+    - Piano Input.
+    - Remappable MIDI percussion.
+    - Volume rockers and mute for mixer channels.
+    - Mappable Misc MIDI inputs in 'Preferences'.
+    - Still working out how to implement knobs and manufacturer-specific settings.
+    - Expect bugs (also a weird UI), I haven't had the chance to implement this to my liking.
+        - In addition, I only have a single MIDI input device to test this feature with, so there may be missing options, currently.
+
+1. Frame rate only lowers while minimized now, so dragging files in stays responsive.
+2. Pattern Instrument auto-selection logic modified.
 3. In the pattern editor, **Escape** clears both the note and event selections before it closes the editor.
 4. Playlist patterns snap to quarter beats when those grid lines are visible.
+    - Still working out the kinks on this, but better than having *no* quarter beat snapping.
 5. Clicking a freely placed playlist pattern no longer moves it.
-6. **Ctrl + Shift + C / X** copies or cuts the selected notes with their pitch bends, and **Ctrl + V** pastes them at the playhead; both shortcuts can be changed.
-7. The events section has **Copy** and **Paste** buttons with their own clipboard that paste events at their original positions; hold **Shift** for **Copy all** event types.
-8. The playlist's channel labels are wider by default, so every General MIDI instrument name fits.
-9. Event types that contain data are marked in the application color in the event type menu.
-10. Added a MIDI input backend for monitoring and recording notes, velocity, controllers, pitch bend and pressure into the open pattern, with saved devices and automatic reconnection; device controls in the interface will follow later.
-11. Transport resets and MIDI panic now reset the keyboard synth's controllers and pitch bend.
-12. Dense event lanes draw overlapping values at display-pixel resolution and skip off-screen pitch bends, keeping every recorded point available for editing.
+6. **Ctrl + Shift + C / X** copies or cuts the selected notes with their pitch bends, and **Ctrl + V** pastes them as expected.
+    - Both shortcuts can be changed.
+7. The Events Editor now has **Copy** and **Paste** buttons; hold **Shift** to **Copy all** event types.
+8. The playlist's channel labels are now wider by default.
+9. Event types now follow the application color. Note labels are also aware of the background color, so they don't go invisible.
+14. The percussion mapping window has an additional button now, **Listen for MIDI**; remap keys to your liking when playing drums.
+16. New event editor style: **Graph** mode.
+    - Shows events as vertical bars on a grid
+    - Drag to paint bars, right-drag to erase them, Shift + drag to change selected bars
+    - Use **Snap bars** or Quantize to set bar heights to the nearest grid line.
+    - Convert between point and graph (This is a bit buggy right now, beware).
+20. Pressing **E** to open the pattern editor now focuses it automatically.
+21. Undo and redo now keep 64 steps instead of 32.
+    - I'll be making this customizable in the future.
+23. Dragging a pattern onto the playlist no longer shows a small empty box near the mouse.
+24. Modified playhead play/pause/stop logic.
+25. Note-edge resizing has a smaller clickable area; notes are easier to drag when zoomed out.
+38. Right-clicking now allows you to deselect items, as well as delete notes/patterns.
+39. Clicking a single pattern/note with multiple selected now unselects all items. This is expected behavior, use 'Shift' to maintain or add to your selection.
+41. The playhead now has a drop shadow, so it stays visible.
+42. Previews of events in patterns should now align with its actual visual appearance, more or less.
+43. The Event Editor's LFO view has been shortened to a single bar. Previously, this would stretch according to the size of the pattern - making it hard to align.
 
 # 0.12.2
 

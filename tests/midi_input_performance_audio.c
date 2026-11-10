@@ -1,4 +1,4 @@
-#include "../src/audio.c"
+#include "../src/audio/audio.c"
 
 static atomic_ullong callback_ns, callback_max, callback_count, callback_late;
 

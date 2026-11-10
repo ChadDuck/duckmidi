@@ -7,7 +7,7 @@
    exit, removes the old program files, copies the new build in, and leaves settings, layout and
    projects alone. */
 #include "update.h"
-#include "duck.h"
+#include "core/duck.h"
 #include "text/en.h"
 #include <SDL3/SDL.h>
 #include <ctype.h>

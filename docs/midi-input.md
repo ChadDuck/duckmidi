@@ -6,7 +6,7 @@ mapping interface yet. Projects keep schema 14 and their existing note and autom
 
 ## Devices and lifetime
 
-`midi_input.h` provides `dm_midi_input_create`, `destroy`, `refresh`, `ports`, `open`, `close`,
+`src/midi_input/midi_input.h` provides `dm_midi_input_create`, `destroy`, `refresh`, `ports`, `open`, `close`,
 `status`, `stats` and `set_thru`. Pass NULL to `create` for RtMidi, or a
 `DmMidiInputBackend` to isolate the device boundary. On successful creation, the input owns the
 backend and calls its destructor on its worker. A failed creation leaves it with the caller.

@@ -1,8 +1,8 @@
 #ifndef DM_MIDI_INPUT_FIXTURE_H
 #define DM_MIDI_INPUT_FIXTURE_H
 
-#include "midi_input.h"
-#include "midi_input_core.h"
+#include "midi_input/midi_input.h"
+#include "midi_input/core.h"
 #include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>

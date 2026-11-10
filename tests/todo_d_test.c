@@ -1,6 +1,6 @@
 /* Checks for the 2026-10-31 backlog: new-project channels, percussion window lifetime and Enter,
    focus after a recording, and grid line shades. */
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include <assert.h>
 extern void recording_feedback_audio_pause(DmAudio *);
 

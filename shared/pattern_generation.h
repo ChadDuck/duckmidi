@@ -1,6 +1,6 @@
 #ifndef DM_PATTERN_GENERATION_H
 #define DM_PATTERN_GENERATION_H
-#include "../src/duck.h"
+#include "../src/core/duck.h"
 
 typedef struct {
     size_t note_patterns, automation_patterns, placements, linked_placements, notes;

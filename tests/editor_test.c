@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

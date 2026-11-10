@@ -4,7 +4,7 @@
    its channels but uses note port k, so its notes, controls and events play through their own
    output and show in that port's color. Notes on a channel that already has a placement join that
    placement's pattern; anything else is added as new patterns and placements. */
-#include "duck.h"
+#include "core/duck.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +31,7 @@ static int copy_pattern(DmProject *to, const DmPattern *from, uint8_t port) {
     DmPattern *target = &to->patterns[id];
     target->kind = from->kind;
     target->mode = from->mode;
+    target->graph = from->graph;
     target->event = from->event;
     target->speed = from->speed;
     target->tension = from->tension;

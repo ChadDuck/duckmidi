@@ -1,4 +1,4 @@
-#include "duck.h"
+#include "core/duck.h"
 #include "text/en.h"
 #include <math.h>
 #include <stdio.h>
@@ -1799,7 +1799,74 @@ static bool collect_portamento_gate(const DmProject *p, Midi *m, const DmClip *c
     return true;
 }
 
+/* Graph lanes hold bars: pitch bend and continuous controllers, as the editor's Graph mode
+   decides (ed_graph_lane). Index 0..127 for controllers, 128 for pitch bend, -1 otherwise. */
+static int graph_lane(DmAutomation a) {
+    if (a.type == MIDI_PITCH_BEND) {
+        return 128;
+    }
+
+    bool point_only = a.a == MIDI_CC_SUSTAIN || a.a == MIDI_CC_SOSTENUTO ||
+                      a.a == MIDI_CC_PORTAMENTO_TIME || curve_setup(a);
+    return a.type == MIDI_CONTROL && !point_only ? a.a : -1;
+}
+
+/* What a graph lane returns to after its last bar: the values the editor starts a lane from
+   (ed_value_before), with no pitch bend. */
+static int graph_default(const DmProject *p, const DmClip *clip, int lane) {
+    switch (lane) {
+    case 128:
+        return MIDI_BEND_CENTER;
+    case MIDI_CC_VOLUME:
+        return p->channels[clip->channel].volume;
+    case MIDI_CC_PAN:
+        return p->channels[clip->channel].pan;
+    case MIDI_CC_EXPRESSION:
+        return 127;
+    default:
+        return lane >= 70 && lane <= 79 ? 64 : 0;
+    }
+}
+
+/* A graph lane's last played bar lasts one cell; then the lane returns to its default, as a Point
+   section's restoration does, instead of holding for the rest of the song. Earlier bars hold
+   until the next bar. */
+static bool graph_returns(const DmProject *p, Midi *m, const DmClip *clip) {
+    const DmPattern *pat = &p->patterns[clip->pattern];
+
+    if (!pat->graph || pat->mode) {
+        return true;
+    }
+
+    uint8_t seen[DM_NOTE_PORTS][(129 + 7) / 8] = {{0}};
+    double end = clip_end(p, clip), cell = 4.0 / pat->graph;
+
+    for (size_t j = p->automation_count; j-- > 0;) {
+        DmAutomation a = p->automation[j];
+        int lane = graph_lane(a);
+
+        if (a.pattern != clip->pattern || a.beat > end || lane < 0 || a.curve ||
+            a.port >= DM_NOTE_PORTS || seen[a.port][lane / 8] & (1u << lane % 8)) {
+            continue;
+        }
+
+        seen[a.port][lane / 8] |= (uint8_t)(1u << lane % 8);
+
+        if (!curve_sample(m, clip, a, fmin(a.beat + cell, end), graph_default(p, clip, lane))) {
+            return false;
+        }
+
+        m->items[m->count - 1].phase = 2; /* Before a following placement's values. */
+    }
+
+    return true;
+}
+
 static bool collect_pattern_automation(const DmProject *p, Midi *m, const DmClip *clip) {
+    if (!graph_returns(p, m, clip)) {
+        return false;
+    }
+
     for (size_t j = 0; j < p->automation_count; ++j) {
         DmAutomation a = p->automation[j];
 

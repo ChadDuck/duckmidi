@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 #include <ctype.h>
 #include <errno.h>
@@ -8,9 +8,10 @@
 
 typedef struct {
     Editor next;
+    DmBytes midi_bindings;
     Binding keys[ACT_COUNT];
     bool seen[ACT_COUNT];
-    bool percussion_seen[128];
+    bool percussion_seen[128], percussion_midi_seen[128];
     uint32_t version, fingerprint;
     int count;
 } Ini;
@@ -396,6 +397,178 @@ static bool application(Ini *ini, const char *key, const char *s) {
     return true;
 }
 
+static const char *const midi_velocity_names[] = {
+    [DM_MIDI_VELOCITY_LIGHT] = "light",
+    [DM_MIDI_VELOCITY_MEDIUM] = "medium",
+    [DM_MIDI_VELOCITY_HEAVY] = "heavy",
+};
+
+static const char *const midi_controller_names[] = {
+    [DM_INPUT_CONTROLLERS_KEYBOARD] = "keyboard",
+    [DM_INPUT_CONTROLLERS_SONG] = "song",
+};
+
+static bool midi_input_preferences(Editor *e, const char *key, const char *s) {
+    if (!strcmp(key, "velocity")) {
+        for (unsigned i = 0; i < SDL_arraysize(midi_velocity_names); ++i) {
+            if (!strcmp(s, midi_velocity_names[i])) {
+                e->input_options.velocity = i;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    if (!strcmp(key, "controllers")) {
+        for (unsigned i = 0; i < SDL_arraysize(midi_controller_names); ++i) {
+            if (!strcmp(s, midi_controller_names[i])) {
+                e->input_controllers = i;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    if (!strcmp(key, "latency")) {
+        if (!strcmp(s, "auto")) {
+            e->input_latency_ms = NAN;
+            return true;
+        }
+
+        char *end;
+        errno = 0;
+        double ms = strtod(s, &end);
+
+        if (end == s || *end || errno || !isfinite(ms) || fabs(ms) > DM_MIDI_LATENCY_LIMIT_MS) {
+            return false;
+        }
+
+        e->input_latency_ms = (float)ms;
+        return true;
+    }
+
+    uint32_t n;
+
+    if (!strcmp(key, "fixed_velocity")) {
+        if (!number(s, &n) || n > MIDI_DATA_MAX) {
+            return false;
+        }
+
+        e->input_options.fixed_velocity = (uint8_t)n;
+    } else if (!strcmp(key, "channel")) {
+        if (!number(s, &n) || n > MIDI_CHANNELS) {
+            return false;
+        }
+
+        e->input_options.channel = (uint8_t)n;
+    } else {
+        bool *value = NULL;
+
+        if (!strcmp(key, "thru")) {
+            value = &e->input_thru;
+        } else if (!strcmp(key, "sustain_invert")) {
+            value = &e->input_options.sustain_invert;
+        } else if (!strcmp(key, "pickup")) {
+            value = &e->input_pickup;
+        }
+
+        if (value) {
+            if (!number(s, &n) || n > 1) {
+                return false;
+            }
+
+            *value = n != 0;
+        }
+    }
+
+    return true;
+}
+
+static bool midi_binding(Ini *ini, const char *key, const char *s) {
+    EdMidiBinding binding = {0};
+
+    if (!ed_midi_target_parse(key, &binding.target) || *s != '"') {
+        return false;
+    }
+
+    const char *end = s + 1;
+
+    while (*end) {
+        if (*end == '"') {
+            if (end[1] != '"') {
+                break;
+            }
+
+            ++end;
+        }
+
+        ++end;
+    }
+
+    char quoted[2 * DM_MIDI_NAME + 2], tail[96];
+    size_t length = (size_t)(end - s + 1);
+
+    if (*end != '"' || end[1] != ',' || length >= sizeof(quoted) ||
+        strlen(end + 2) >= sizeof(tail)) {
+        return false;
+    }
+
+    memcpy(quoted, s, length);
+    quoted[length] = 0;
+
+    if (!value(binding.source.device, sizeof(binding.source.device), quoted)) {
+        return false;
+    }
+
+    snprintf(tail, sizeof(tail), "%s", end + 2);
+    char *fields[4] = {tail};
+
+    for (unsigned i = 1; i < SDL_arraysize(fields); ++i) {
+        char *comma = strchr(fields[i - 1], ',');
+
+        if (!comma) {
+            return false;
+        }
+
+        *comma = 0;
+        fields[i] = comma + 1;
+    }
+
+    uint32_t channel, number_value;
+
+    if (!number(trim(fields[0]), &channel) || channel < 1 || channel > MIDI_CHANNELS ||
+        !number(trim(fields[2]), &number_value)) {
+        return false;
+    }
+
+    bool continuous = ed_midi_target_continuous(binding.target);
+    const char *kind = trim(fields[1]), *mode = trim(fields[3]);
+
+    if (!strcmp(kind, "cc")) {
+        binding.source.kind = DM_MIDI_SOURCE_CC;
+    } else if (!continuous && !strcmp(kind, "note")) {
+        binding.source.kind = DM_MIDI_SOURCE_NOTE;
+    } else {
+        return false;
+    }
+
+    if (!continuous && !strcmp(mode, "toggle")) {
+        binding.toggle = true;
+    } else if (strcmp(mode, "momentary")) {
+        return false;
+    }
+
+    if (!dm_midi_source_bindable(binding.source.kind, number_value)) {
+        return false;
+    }
+
+    binding.source.channel = (uint8_t)(channel - 1);
+    binding.source.number = (uint8_t)number_value;
+    return ed_midi_binding_append(&ini->midi_bindings, binding);
+}
+
 static bool shortcut(Ini *ini, const char *key, char *s) {
     if (!strcmp(key, "schema")) {
         return number(s, &ini->fingerprint);
@@ -428,24 +601,32 @@ static bool shortcut(Ini *ini, const char *key, char *s) {
     return true;
 }
 
-static bool percussion(Ini *ini, const char *key, const char *s) {
-    unsigned note = 128;
-
+/* The drum note a [percussion] or [percussion_midi] key names, once per section. */
+static unsigned percussion_note(const char *key, bool seen[128]) {
     for (unsigned n = 0; n < 128; n++) {
         char label[160];
         percussion_label(n, label, sizeof(label));
 
         if (!strcmp(key, label)) {
-            note = n;
-            break;
+            if (seen[n]) {
+                return 128;
+            }
+
+            seen[n] = true;
+            return n;
         }
     }
 
-    if (note >= 128 || ini->percussion_seen[note]) {
+    return 128;
+}
+
+static bool percussion(Ini *ini, const char *key, const char *s) {
+    unsigned note = percussion_note(key, ini->percussion_seen);
+
+    if (note >= 128) {
         return false;
     }
 
-    ini->percussion_seen[note] = true;
     char name[80];
 
     if (!value(name, sizeof(name), s)) {
@@ -459,6 +640,27 @@ static bool percussion(Ini *ini, const char *key, const char *s) {
     }
 
     ini->next.percussion_global[note] = (uint8_t)(index + 1);
+    return true;
+}
+
+/* An empty value leaves the drum unassigned; otherwise the incoming MIDI note number. */
+static bool percussion_midi(Ini *ini, const char *key, const char *s) {
+    unsigned note = percussion_note(key, ini->percussion_midi_seen);
+    uint32_t incoming;
+
+    if (note >= 128) {
+        return false;
+    }
+
+    if (!*s) {
+        return true;
+    }
+
+    if (!number(s, &incoming) || incoming > MIDI_DATA_MAX) {
+        return false;
+    }
+
+    ini->next.percussion_midi_global[note] = (uint8_t)(incoming + 1);
     return true;
 }
 
@@ -524,12 +726,24 @@ static bool line(Ini *ini, char *s, char *section, size_t cap) {
         return application(ini, key, entry);
     }
 
+    if (!strcmp(section, "midi_input")) {
+        return midi_input_preferences(&ini->next, key, entry);
+    }
+
+    if (!strcmp(section, "midi_bindings")) {
+        return midi_binding(ini, key, entry);
+    }
+
     if (!strcmp(section, "shortcuts")) {
         return shortcut(ini, key, entry);
     }
 
     if (!strcmp(section, "percussion")) {
         return percussion(ini, key, entry);
+    }
+
+    if (!strcmp(section, "percussion_midi")) {
+        return percussion_midi(ini, key, entry);
     }
 
     if (!strcmp(section, "recent")) {
@@ -625,7 +839,10 @@ bool dm_preferences_load(Editor *e, uint32_t shortcut_schema) {
         return false;
     }
 
-    if (b.size > 262144 || memchr(b.data, 0, b.size) || !dm_bytes(&b, "", 1)) {
+    const size_t bindings_limit =
+        (4 * DM_PARTS + ED_MIDI_TARGETS - ED_MIDI_PLAY) * (2 * DM_MIDI_NAME + 80);
+
+    if (b.size > 262144 + bindings_limit || memchr(b.data, 0, b.size) || !dm_bytes(&b, "", 1)) {
         dm_bytes_free(&b);
         snprintf(e->status, sizeof(e->status), DM_TEXT_INI_CONFIGURATION_TOO_LARGE);
         return false;
@@ -642,18 +859,21 @@ bool dm_preferences_load(Editor *e, uint32_t shortcut_schema) {
     ini->next = *e;
     memset(ini->next.recent, 0, sizeof(ini->next.recent));
     memset(ini->next.percussion_global, 0, 128);
+    memset(ini->next.percussion_midi_global, 0, 128);
     bool ok = parse(ini, (char *)b.data);
     ok = ok && ini->version == 3;
-    bool used[DM_PIANO_KEYS + 1] = {0};
+    bool used[DM_PIANO_KEYS + 1] = {0}, heard[MIDI_KEYS + 1] = {0};
 
     for (unsigned n = 0; n < 128 && ok; n++) {
         unsigned key = ini->next.percussion_global[n];
+        unsigned incoming = ini->next.percussion_midi_global[n];
 
-        if (key && used[key]) {
+        if ((key && used[key]) || (incoming && heard[incoming])) {
             ok = false;
         }
 
         used[key] = key != 0;
+        heard[incoming] = incoming != 0;
     }
 
     if (ok) {
@@ -686,13 +906,19 @@ bool dm_preferences_load(Editor *e, uint32_t shortcut_schema) {
             }
         }
 
-        *e = ini->next;
+        ok = ed_midi_bindings_replace(e, &ini->midi_bindings);
+
+        if (ok) {
+            ini->next.midi_bindings = e->midi_bindings;
+            *e = ini->next;
+        }
     }
 
     if (!ok) {
         snprintf(e->status, sizeof(e->status), DM_TEXT_INVALID_INI_CONFIGURATION_USE);
     }
 
+    dm_bytes_free(&ini->midi_bindings);
     free(ini);
     dm_bytes_free(&b);
     return ok;
@@ -702,8 +928,8 @@ static bool text(DmBytes *b, const char *s) {
     return dm_bytes(b, s, strlen(s));
 }
 
-static bool text_field(DmBytes *b, const char *key, const char *s) {
-    if (!text(b, key) || !text(b, "=\"")) {
+static bool quoted_text(DmBytes *b, const char *s) {
+    if (!text(b, "\"")) {
         return false;
     }
 
@@ -721,7 +947,11 @@ static bool text_field(DmBytes *b, const char *key, const char *s) {
         }
     }
 
-    return text(b, "\"\n");
+    return text(b, "\"");
+}
+
+static bool text_field(DmBytes *b, const char *key, const char *s) {
+    return text(b, key) && text(b, "=") && quoted_text(b, s) && text(b, "\n");
 }
 
 static bool input_field(DmBytes *b, Editor *e) {
@@ -763,6 +993,45 @@ static bool fields(DmBytes *b, Editor *e) {
            text_field(b, "export_folder", e->export_folder);
 }
 
+static bool midi_input_fields(DmBytes *b, const Editor *e) {
+    char latency[32] = "auto";
+
+    if (!isnan(e->input_latency_ms)) {
+        snprintf(latency, sizeof(latency), "%.9g", e->input_latency_ms);
+    }
+
+    char fields[256];
+    snprintf(fields, sizeof(fields),
+             "\n[midi_input]\nvelocity=%s\nfixed_velocity=%u\nthru=%d\ncontrollers=%s\n"
+             "latency=%s\nsustain_invert=%d\nchannel=%u\npickup=%d\n",
+             midi_velocity_names[e->input_options.velocity],
+             (unsigned)e->input_options.fixed_velocity, e->input_thru,
+             midi_controller_names[e->input_controllers], latency, e->input_options.sustain_invert,
+             (unsigned)e->input_options.channel, e->input_pickup);
+    return text(b, fields);
+}
+
+static bool midi_binding_fields(DmBytes *b, const Editor *e) {
+    if (!ed_midi_binding_count(e)) {
+        return true;
+    }
+
+    bool ok = text(b, "\n[midi_bindings]\n");
+    const EdMidiBinding *bindings = (const EdMidiBinding *)e->midi_bindings.data;
+
+    for (size_t i = 0; i < ed_midi_binding_count(e) && ok; ++i) {
+        const EdMidiBinding *binding = &bindings[i];
+        char id[48], tail[48];
+        ed_midi_target_id(binding->target, id, sizeof(id));
+        snprintf(tail, sizeof(tail), ",%u,%s,%u,%s\n", binding->source.channel + 1u,
+                 binding->source.kind == DM_MIDI_SOURCE_CC ? "cc" : "note",
+                 (unsigned)binding->source.number, binding->toggle ? "toggle" : "momentary");
+        ok = text(b, id) && text(b, "=") && quoted_text(b, binding->source.device) && text(b, tail);
+    }
+
+    return ok;
+}
+
 bool dm_preferences_save(Editor *e, uint32_t shortcut_schema, const char *const *names) {
     DmBytes b = {0};
     char head[256];
@@ -770,7 +1039,8 @@ bool dm_preferences_save(Editor *e, uint32_t shortcut_schema, const char *const 
              e->monitor ? 1 : 0, e->ui_size, e->os_cursor ? 1 : 0, e->update_mode,
              e->update_prompted ? 1 : 0, (unsigned long long)e->sample_hash,
              e->repository_history ? 1 : 0);
-    bool ok = text(&b, head) && fields(&b, e);
+    bool ok =
+        text(&b, head) && fields(&b, e) && midi_input_fields(&b, e) && midi_binding_fields(&b, e);
     snprintf(head, sizeof(head), DM_TEXT_SHORTCUTS_NSCHEMA, shortcut_schema);
     ok = ok && text(&b, head);
 
@@ -801,6 +1071,19 @@ bool dm_preferences_save(Editor *e, uint32_t shortcut_schema, const char *const 
         }
 
         ok = text_field(&b, head, key ? SDL_GetScancodeName(ed_piano_scancode((int)key - 1)) : "");
+    }
+
+    ok = ok && text(&b, "\n[percussion_midi]\n");
+
+    for (unsigned n = 0; n < 128 && ok; n++) {
+        unsigned incoming = e->percussion_midi_global[n];
+
+        if (incoming) {
+            char label[160], line[200];
+            percussion_label(n, label, sizeof(label));
+            snprintf(line, sizeof(line), "%s=%u\n", label, incoming - 1);
+            ok = text(&b, line);
+        }
     }
 
     ok = ok && text(&b, DM_TEXT_RECENT_SECTION);

@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #ifdef _WIN32
 // clang-format off: Windows types must precede shell declarations.
 #include <windows.h>

@@ -1,8 +1,8 @@
 #ifndef DM_SAMPLE_EXPORT_SNAPSHOT_H
 #define DM_SAMPLE_EXPORT_SNAPSHOT_H
 
-#include "../include/duckmidi_export_plugin.h"
-#include "../src/duck.h"
+#include "../../include/duckmidi_export_plugin.h"
+#include "../../src/core/duck.h"
 
 typedef struct DmSampleExportSnapshot DmSampleExportSnapshot;
 

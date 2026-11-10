@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static bool content_selected(Editor *e, EditFocus focus);
@@ -404,6 +404,7 @@ static int copy_pattern_between(DmProject *to, const DmProject *from, int source
     target->length = pat->length;
     target->kind = pat->kind;
     target->mode = pat->mode;
+    target->graph = pat->graph;
     target->event = pat->event;
     target->speed = pat->speed;
     target->tension = pat->tension;

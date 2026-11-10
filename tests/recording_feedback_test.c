@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 static int checks;
 
 static void check(bool ok, const char *what) {
@@ -162,14 +162,29 @@ static void recording_and_pause(Editor *e) {
     ed_play(e);
     recording_feedback_audio_render(e->audio, 12000);
     ed_play(e);
-    check(fabs(dm_audio_position(e->audio) - .5) < .01,
-          "playlist-focused pause keeps its current position");
+    check(fabs(dm_audio_position(e->audio) - .25) < .01,
+          "playlist-focused pause returns to the set position");
     e->context = 2;
     ed_play(e);
     recording_feedback_audio_render(e->audio, 12000);
     ed_play(e);
     check(fabs(dm_audio_position(e->audio) - .25) < .01,
-          "pattern-focused ordinary pause returns to the earlier set position");
+          "pattern-focused pause returns to the set position");
+    double set = e->start_beat[e->pattern_mode];
+    ed_play_hold(e, true);
+    recording_feedback_audio_render(e->audio, 12000);
+    ed_play_hold(e, true);
+    check(fabs(dm_audio_position(e->audio) - .5) < .01 && e->start_beat[e->pattern_mode] == set,
+          "a held pause stays where playback stopped and keeps the set position");
+    ed_play_hold(e, true);
+    recording_feedback_audio_render(e->audio, 12000);
+    ed_play_hold(e, true);
+    check(fabs(dm_audio_position(e->audio) - .75) < .01,
+          "play after a held pause continues from there");
+    ed_play(e);
+    ed_play(e);
+    check(fabs(dm_audio_position(e->audio) - .25) < .01,
+          "an ordinary pause still returns to the set position");
 }
 
 static void preview_and_feedback(Editor *e) {

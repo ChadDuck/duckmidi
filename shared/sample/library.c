@@ -2,9 +2,9 @@
 #define _GNU_SOURCE
 #endif
 
-#include "sample_library.h"
-#include "../src/duck.h"
-#include "../src/text/en.h"
+#include "library.h"
+#include "../../src/core/duck.h"
+#include "../../src/text/en.h"
 #include <SDL3/SDL.h>
 #include <errno.h>
 #include <inttypes.h>

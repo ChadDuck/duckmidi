@@ -1,5 +1,5 @@
 /* Production editor boundaries and state transactions, with a real hidden ImGui/SDL renderer. */
-#include "editor_internal.h"
+#include "editor/internal.h"
 static int checks;
 
 static void check(bool ok, const char *label) {

@@ -3,7 +3,7 @@
    bends, similar to a dense orchestral MIDI file. */
 #ifndef DM_FRAME_FIXTURE_H
 #define DM_FRAME_FIXTURE_H
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include <windows.h>
 
 static void check(bool ok, const char *text) {

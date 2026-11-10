@@ -1,4 +1,4 @@
-#include "editor.h"
+#include "editor/editor.h"
 #include "text/en.h"
 #include <SDL3/SDL_main.h>
 #include <stdio.h>

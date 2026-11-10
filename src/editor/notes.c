@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static void piano_glissando(Editor *e, int key);
@@ -27,6 +27,10 @@ static void note_placement_tip(Editor *e, DmPattern *p, UiRect grid, View *v, fl
                                UiMouse mouse, bool hovered);
 
 bool ed_sounding(Editor *e, int key) {
+    if (ed_midi_input_lit(e, key)) {
+        return true;
+    }
+
     for (int i = 0; i < SDL_SCANCODE_COUNT; ++i) {
         if (e->held[i] == key) {
             return true;
@@ -328,6 +332,14 @@ static void note_drag(Editor *e, DmPattern *p, float scale, float row, UiMouse m
         }
 
         if (copying ? !held : mouse.released) {
+            /* A plain click on a selected note selects only that note. */
+            if (!copying && e->lone_click && !e->edit_moved) {
+                for (size_t i = 0; i < p->count; ++i) {
+                    p->notes[i].selected = (int)i == e->drag_index;
+                }
+            }
+
+            e->lone_click = false;
             e->drag = 0;
             e->copy_button = -1;
             e->copy_pending = false;
@@ -393,6 +405,7 @@ static bool start_note_drag(Editor *e, DmPattern *p, int hit, UiMouse mouse, int
     e->note_ports[e->pattern_channel] = n->port;
     e->edit_moved = false;
     e->drag = 2;
+    e->lone_click = false;
     e->drag_index = hit;
     e->drag_beat = n->beat;
     e->drag_length = n->length;
@@ -413,6 +426,19 @@ static bool start_note_drag(Editor *e, DmPattern *p, int hit, UiMouse mouse, int
     return true;
 }
 
+/* Width of a note's resize edge inside the note, in pixels: it follows the zoom (scale is pixels
+   per beat), so zoomed out most of a note moves it, and never takes more than a fifth of it. */
+static float note_edge(float scale, float width) {
+    return fminf(ed_clampf(scale * .06f, 2, 10), width * .2f);
+}
+
+/* -1 on the left resize edge, 1 on the right one, 0 inside. The hit area reaches outside the note
+   by half an edge, so short notes stay easy to resize. */
+static int note_edge_side(UiRect box, float scale, float x) {
+    float edge = note_edge(scale, box.w);
+    return x < box.x + edge ? -1 : x > box.x + box.w - edge ? 1 : 0;
+}
+
 static void piano_hit_click(Editor *e, DmPattern *p, UiRect grid, View *v, float scale, float row,
                             UiMouse mouse, int hit, UiRect hit_box, double beat) {
     DmNote *n = &p->notes[hit];
@@ -427,24 +453,27 @@ static void piano_hit_click(Editor *e, DmPattern *p, UiRect grid, View *v, float
         ed_split_note(p, (size_t)hit, beat);
         ed_commit(e);
     } else {
+        bool lone = !mouse.shift && n->selected;
+
         if (!mouse.shift && !n->selected) {
             ed_deselect(e);
         }
 
         n->selected = 1;
-        int edge = mouse.pos.x < hit_box.x + fminf(9, hit_box.w * .3f)               ? -1
-                   : mouse.pos.x > hit_box.x + hit_box.w - fminf(9, hit_box.w * .3f) ? 1
-                                                                                     : 0;
+        int edge = note_edge_side(hit_box, scale, mouse.pos.x);
 
         if (!start_note_drag(e, p, hit, mouse, edge)) {
             return;
         }
 
+        e->lone_click = lone;
+
         if (!e->drag_edge && !mouse.shift) {
             ed_edit_feedback(e, n->key);
         }
 
-        if (mouse.shift && !e->drag_edge) {
+        /* Bend lines on notes belong to Point mode; Graph mode edits bends in the events. */
+        if (mouse.shift && !e->drag_edge && !p->graph) {
             e->marquee_start.x =
                 grid.x +
                 (float)ed_snap((mouse.pos.x - grid.x + v->scroll_x) / scale, .25, false) * scale -
@@ -771,17 +800,26 @@ static void pitch_underlay(Editor *e, UiRect grid, View *v, float scale) {
         if (has) {
             ed_automation_connection(previous, point, before, a,
                                      ed_curve_units(e, before, grid, true),
-                                     (e->accent & 0xffffffu) | 0x88000000u);
+                                     (ed_point_color(e) & 0xffffffu) | 0x88000000u);
         }
 
         ui_circle(point, e->automation_node == (int)i ? 6 : 3,
-                  e->automation_node == (int)i ? TEXT : (e->accent & 0xffffffu) | 0x99000000u);
+                  e->automation_node == (int)i ? TEXT
+                                               : (ed_point_color(e) & 0xffffffu) | 0x99000000u);
         previous = point;
         has = true;
         before = a;
     }
 
     ed_pitch_cache_end(e);
+}
+
+/* The velocity line contrasts with the note: dark on light colors, light on dark ones. */
+static uint32_t velocity_line_color(uint32_t color) {
+    float r = (float)(color & 0xffu), g = (float)((color >> 8) & 0xffu),
+          b = (float)((color >> 16) & 0xffu);
+    float luminance = (.299f * r + .587f * g + .114f * b) / 255.0f;
+    return luminance > .5f ? 0x8c000000u : 0xb4ffffffu;
 }
 
 static int piano_notes(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, float scale,
@@ -805,14 +843,11 @@ static int piano_notes(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, 
         ui_border(box, n.selected ? TEXT : color, 3, n.selected ? 2 : 1);
         ui_line((UiPoint){box.x + 3, box.y + box.h - 3},
                 (UiPoint){box.x + box.w * fminf(1, n.velocity / 127.0f), box.y + box.h - 3},
-                0x8c000000u, 2);
-        UiRect target = {box.x - 4, box.y, fmaxf(12, box.w + 8), box.h};
+                velocity_line_color(color), 2);
+        float pad = ed_clampf(scale * .03f, 1, 4);
+        UiRect target = {box.x - pad, box.y, fmaxf(8, box.w + 2 * pad), box.h};
 
         if (ed_inside(mouse.pos, target) && ed_inside(mouse.pos, grid)) {
-            if (mouse.pos.x < box.x + 9 || mouse.pos.x > box.x + box.w - 9) {
-                ui_resize_cursor(false);
-            }
-
             hit = (int)i;
             hit_box = box;
         }
@@ -1015,6 +1050,16 @@ bool ed_bend_mouse(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse) 
 
 void ed_piano_mouse(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, float scale, float row,
                     UiMouse mouse, bool hovered, int hit, UiRect hit_box) {
+    /* The resize cursor shows only where a click would resize: nothing else holds the mouse, and
+       the tool and modifiers leave the edge to resizing. */
+    bool idle = hovered && !e->drag && !e->marquee && !e->scrub && !e->pan_context &&
+                e->pattern_drag < 0 && !mouse.left && !mouse.right && !mouse.middle;
+
+    if (idle && hit >= 0 && !mouse.ctrl && e->tool != 2 && e->tool != 3 && e->tool != 4 &&
+        note_edge_side(hit_box, scale, mouse.pos.x)) {
+        ui_resize_cursor(false);
+    }
+
     if (hovered && mouse.pos.x >= grid.x && mouse.pos.y >= grid.y) {
         int key = 127 - (int)((mouse.pos.y - r.y - 28 + v->scroll_y) / row);
         char text[128];
@@ -1027,15 +1072,29 @@ void ed_piano_mouse(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, flo
         ed_timeline_drag(e, r, v, scale, grid.x - r.x, 2, hovered);
     }
 
-    ui_clip(grid);
-    bool handle = ed_curve_handles(e, grid, v, scale, mouse, true, hovered);
-    ui_unclip();
-    bool note_gesture = hit >= 0 && mouse.clicked && (mouse.alt || mouse.shift) && !mouse.ctrl;
-    bool bend = handle || (!note_gesture && (hovered || e->drag == 7) &&
-                           ed_bend_mouse(e, grid, v, scale, mouse));
+    bool handle = false, bend = false;
+
+    /* Pitch bend points are shown and edited on the notes only in Point mode. */
+    if (!p->graph) {
+        ui_clip(grid);
+        handle = ed_curve_handles(e, grid, v, scale, mouse, true, hovered);
+        ui_unclip();
+        bool note_gesture =
+            hit >= 0 && mouse.clicked && (mouse.alt || mouse.shift) && !mouse.ctrl;
+        bend = handle || (!note_gesture && (hovered || e->drag == 7) &&
+                          ed_bend_mouse(e, grid, v, scale, mouse));
+    }
 
     if (hovered && !bend) {
         ed_piano_click(e, p, r, grid, v, scale, row, mouse, hit, hit_box);
+    }
+
+    /* A right click clears the note selection; holding it erases notes. */
+    if (hovered && mouse.right_clicked && !mouse.shift && !e->drag && e->copy_button < 0 &&
+        ed_inside(mouse.pos, grid)) {
+        for (size_t i = 0; i < p->count; ++i) {
+            p->notes[i].selected = 0;
+        }
     }
 
     if (hovered && mouse.right && !mouse.shift && hit >= 0 && e->copy_button < 0 &&
@@ -1167,7 +1226,10 @@ void ed_roll(Editor *e, float width, float height) {
     }
 
     UiRect hit_box = {0};
-    pitch_underlay(e, grid, v, scale);
+    if (!p->graph) {
+        pitch_underlay(e, grid, v, scale);
+    }
+
     int hit = piano_notes(e, p, r, grid, v, scale, row, mouse, &hit_box);
     ui_unclip();
     ed_ruler(e, r, v, scale, label);

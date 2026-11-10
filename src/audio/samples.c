@@ -1,5 +1,5 @@
-#include "audio_samples.h"
-#include "../shared/sample_manifest.h"
+#include "audio/samples.h"
+#include "../../shared/sample/manifest.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>

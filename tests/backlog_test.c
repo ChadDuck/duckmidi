@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "../shared/pattern_generation.h"
 #include <assert.h>
 
@@ -148,8 +148,8 @@ static void percussion(Editor *e) {
     ed_percussion_save(e, true);
     assert(e->project.percussion_override && e->dirty);
     capture(e, "agents/reports/backlog-2026-10-29/percussion-mapping.bmp");
-    assert(ed_keyboard_note(e, SDL_SCANCODE_Z, 9) == 38 &&
-           ed_keyboard_note(e, SDL_SCANCODE_Z, 0) == 72);
+    assert(ed_keyboard_note(e, SDL_SCANCODE_Z, true) == 38 &&
+           ed_keyboard_note(e, SDL_SCANCODE_Z, false) == 72);
     assert(e->percussion_global[36]);
     DmBytes b = {0};
     assert(dm_pack(&e->project, &b));
@@ -161,7 +161,7 @@ static void percussion(Editor *e) {
     dm_project_free(&copy);
     dm_bytes_free(&b);
     ed_undo(e, false);
-    assert(!e->project.percussion_override && ed_keyboard_note(e, SDL_SCANCODE_Z, 9) == 36);
+    assert(!e->project.percussion_override && ed_keyboard_note(e, SDL_SCANCODE_Z, true) == 36);
     e->percussion_window = false;
     puts("PASS percussion learning, override precedence, persistence and undo");
 }

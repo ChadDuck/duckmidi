@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "../shared/pattern_generation.h"
 #include <assert.h>
 extern void recording_feedback_audio_pause(DmAudio *);

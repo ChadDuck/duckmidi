@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 const char *ed_action_names[ACT_COUNT] = {DM_TEXT_COMPUTER_KEYBOARD_PIANO,
@@ -141,6 +141,7 @@ void ed_toggle_roll(Editor *e) {
 
     if (e->roll && !e->roll_auto_hidden && (!selected || !selected->kind)) {
         e->roll = false;
+        ed_focus_edit(e, FOCUS_PLAYLIST);
         return;
     }
 
@@ -176,6 +177,8 @@ void ed_toggle_roll(Editor *e) {
 
     e->roll = true;
     e->roll_auto_hidden = false;
+    /* The opened editor takes focus, so its shortcuts work at once. */
+    ed_focus_edit(e, FOCUS_NOTES);
 }
 
 int ed_channel_program(Editor *e, int channel) {
@@ -555,7 +558,7 @@ static bool push(DmBytes *stack, int *count, const DmProject *p) {
         total += stack[i].size;
     }
 
-    while (*count && (*count == 32 || total > 256u * 1024u * 1024u)) {
+    while (*count && (*count == ED_UNDO_LIMIT || total > 512u * 1024u * 1024u)) {
         total -= stack[0].size;
         dm_bytes_free(&stack[0]);
         memmove(stack, stack + 1, (size_t)(*count - 1) * sizeof(*stack));
@@ -567,6 +570,8 @@ static bool push(DmBytes *stack, int *count, const DmProject *p) {
 }
 
 bool ed_checkpoint(Editor *e) {
+    e->midi_mix_last = 0;
+
     if (e->recording_take && e->take_snapshot) {
         return false;
     }
@@ -678,6 +683,7 @@ double ed_transport_length(Editor *e) {
 }
 
 void ed_publish(Editor *e) {
+    e->midi_mix_pending = false;
     ++e->export_revision;
 
     if (e->active) {
@@ -818,6 +824,8 @@ void ed_undo(Editor *e, bool redo) {
         return;
     }
 
+    e->midi_mix_last = 0;
+    ed_midi_bindings_reset_pickup(e);
     ed_close_instrument(e);
     e->midi_event_index = -1;
     e->song_event = false;

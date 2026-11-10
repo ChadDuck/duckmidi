@@ -1,5 +1,5 @@
-#include "editor_internal.h"
-#include "../shared/pattern_generation.h"
+#include "editor/internal.h"
+#include "../../shared/pattern_generation.h"
 #include "text/en.h"
 
 typedef struct DmPatternJob {

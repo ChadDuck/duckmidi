@@ -1,9 +1,9 @@
 #ifndef DM_SAMPLE_MANIFEST_H
 #define DM_SAMPLE_MANIFEST_H
 
-#include "sample_analysis.h"
-#include "sample_ids.h"
-#include "../include/duckmidi_export_plugin.h"
+#include "analysis.h"
+#include "ids.h"
+#include "../../include/duckmidi_export_plugin.h"
 
 enum {
     DM_SAMPLE_SET_SCHEMA = 3,

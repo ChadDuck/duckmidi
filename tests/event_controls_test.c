@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 
 extern void test_event_controls_ui(Editor *, void (*)(bool, const char *));
 extern void test_event_controls_audio(DmAudio *, void (*)(bool, const char *));

@@ -4,15 +4,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "../include/duckmidi_midi.h"
-#include "../shared/sample_ids.h"
+#include "../../include/duckmidi_midi.h"
+#include "../../shared/sample/ids.h"
 
 #define DM_PORT_COMBINED 256 /* Virtual source view; exported channel messages use port 0. */
 #define DM_LANES 32
 #define DM_PPQ 960
 #define DM_PIANO_KEYS 37
-#define DM_PROJECT_SCHEMA 14
-#define DM_PROJECT_SCHEMA_PREVIOUS 13 /* Still loaded through src/project_compat.c. */
+#define DM_PROJECT_SCHEMA 15
+#define DM_PROJECT_SCHEMA_PREVIOUS 14 /* Still loaded through src/core/project_compat.c. */
 #define DM_PROJECT_SCHEMA_OLDEST 9    /* Schema 9 (0.10.1) also loads, converted through 10. */
 #define DM_NOTE_PORTS 128
 #define DM_PATTERN_COLORS 16
@@ -61,6 +61,7 @@ typedef struct {
     int port;
     bool inverted;
     uint8_t color; /* 0 uses the application color; 1..DM_PATTERN_COLORS select the palette. */
+    int graph;     /* 0 points; otherwise the bar resolution as a note denominator, 8..256. */
 } DmPattern;
 
 typedef struct {
@@ -137,6 +138,7 @@ typedef struct {
     size_t patch_replacement_count, patch_replacement_capacity;
     bool percussion_override;
     uint8_t percussion_keys[128]; /* 0 unassigned; otherwise PC piano-key index + 1. */
+    uint8_t percussion_midi[128]; /* 0 unassigned; otherwise incoming MIDI note + 1. */
     int lane_count[16];
     char lane_names[16][DM_LANES][64];
     DmPattern *patterns;
@@ -268,7 +270,7 @@ bool dm_unpack(DmProject *p, const unsigned char *data, size_t size, char *error
 bool dm_compress(const uint8_t *data, size_t size, DmBytes *out);
 bool dm_decompress(const uint8_t *data, size_t size, size_t limit, DmBytes *out);
 /* Converts a project loaded from an older schema (DM_PROJECT_SCHEMA_OLDEST and later) to the
-   current one; see src/project_compat.c. */
+   current one; see src/core/project_compat.c. */
 void dm_project_upgrade(DmProject *p, uint32_t schema);
 /* An unused channel's settings; only channel 10 starts as a percussion part. */
 DmChannel dm_channel_default(int channel);

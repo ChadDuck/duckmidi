@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 
 extern void test_samples_ui(Editor *, const char *, void (*)(bool, const char *));
 

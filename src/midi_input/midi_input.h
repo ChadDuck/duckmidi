@@ -1,8 +1,8 @@
 #ifndef DM_MIDI_INPUT_H
 #define DM_MIDI_INPUT_H
 /* MIDI input devices: an asynchronous worker owns every driver call. Safe to include from C++;
-   the lock-free internals stay in midi_input_core.h. */
-#include "midi_input_types.h"
+   the lock-free internals stay in midi_input/core.h. */
+#include "midi_input/types.h"
 
 #define DM_MIDI_PORTS 128
 
@@ -55,6 +55,16 @@ bool dm_midi_input_open(DmMidiInput *input, const char *name);
 void dm_midi_input_close(DmMidiInput *input, const char *name);
 void dm_midi_input_status(DmMidiInput *input, DmMidiInputStatus status[DM_MIDI_INPUTS]);
 void dm_midi_input_stats(DmMidiInput *input, DmMidiInputStats *stats);
+void dm_midi_input_set_options(DmMidiInput *input, const DmMidiInputOptions *options);
+/* Device slots and source channels are zero-based. Note bindings match both Note On and Off. */
+void dm_midi_input_set_bound(DmMidiInput *input, unsigned device, unsigned channel,
+                             DmMidiInputSource kind, unsigned number, bool bound);
+void dm_midi_input_clear_bound(DmMidiInput *input);
+bool dm_midi_source_bindable(DmMidiInputSource kind, unsigned number);
+/* Copies the saved source list and applies it to current and subsequently requested slots. */
+bool dm_midi_input_bind_sources(DmMidiInput *input, const DmMidiBindingSource *sources,
+                                size_t count);
+void dm_midi_input_learn(DmMidiInput *input, DmMidiLearnMode mode);
 void dm_midi_input_set_thru(DmMidiInput *input, bool enabled);
 bool dm_midi_input_thru(DmMidiInput *input);
 DmMidiClock *dm_midi_input_clock(DmMidiInput *input);

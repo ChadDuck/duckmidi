@@ -1,7 +1,7 @@
 #ifndef DM_SAMPLE_EXPORT_CATALOG_H
 #define DM_SAMPLE_EXPORT_CATALOG_H
 
-#include "sample_library.h"
+#include "library.h"
 
 typedef struct DmSampleExportCatalog DmSampleExportCatalog;
 

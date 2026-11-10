@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static void automation_grid(Editor *e, UiRect lane, View *v, float scale);
@@ -35,7 +35,7 @@ static void automation_grid(Editor *e, UiRect lane, View *v, float scale) {
         return;
     }
 
-    float step = .25f;
+    float step = (float)ed_event_snap(e); /* Graph lanes draw their cells. */
 
     while (step * scale < 8) {
         step *= 2;
@@ -48,12 +48,20 @@ static void automation_grid(Editor *e, UiRect lane, View *v, float scale) {
         ui_line((UiPoint){x, lane.y}, (UiPoint){x, lane.y + lane.h}, ed_grid_color(e, beat), 1);
     }
 
-    if (e->automation_cc != -2 || e->automation_raw) {
+    if (e->automation_cc != -2 || ed_automation_raw(e)) {
+        /* Value rows where drawn values snap, about as far apart as pitch rows; the top line is
+           the maximum. */
         int maximum = e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+        int step = ed_value_step(e, lane.h);
+        e->event_lane_height = lane.h;
 
-        for (int i = 0; i <= 8; ++i) {
-            int value = i == 8 ? maximum : i * (maximum + 1) / 8;
-            float y = lane.y + lane.h - 8 - (float)value / maximum * (lane.h - 8);
+        if (!step) {
+            step = (maximum + 1) / 8;
+        }
+
+        for (int value = 0; value < maximum + step; value += step) {
+            int row = value < maximum ? value : maximum;
+            float y = lane.y + lane.h - 8 - (float)row / maximum * (lane.h - 8);
             ui_line((UiPoint){lane.x, y}, (UiPoint){lane.x + lane.w, y}, GRID, 1);
         }
 
@@ -86,7 +94,7 @@ static void automation_axis(Editor *e, UiPoint at, UiRect lane) {
                                   DM_TEXT_F_SHARP, DM_TEXT_G,       DM_TEXT_G_SHARP,
                                   DM_TEXT_A,       DM_TEXT_A_SHARP, DM_TEXT_B};
 
-    if (e->automation_cc == -2 && !e->automation_raw) {
+    if (e->automation_cc == -2 && !ed_automation_raw(e)) {
         int center = (int)roundf(e->automation_center);
         int visible = (int)ceilf(lane.h / 40) + 1;
 
@@ -106,6 +114,23 @@ static void automation_axis(Editor *e, UiPoint at, UiRect lane) {
         ui_label((UiPoint){at.x + 4, lane.y + 2}, DIM,
                  e->automation_cc == -2 ? DM_TEXT_BEND_MAXIMUM : DM_TEXT_VALUE_MAXIMUM);
         ui_label((UiPoint){at.x + 4, lane.y + lane.h - 15}, DIM, DM_TEXT_VALUE_MINIMUM);
+        int maximum = e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+        int step = ed_value_step(e, lane.h);
+        float spacing = step * (lane.h - 8) / maximum;
+
+        /* Row values between the ends, every other row when rows are close, as pitch rows are
+           named. */
+        for (int value = step; step && value < maximum; value += spacing < 18 ? 2 * step : step) {
+            float y = lane.y + lane.h - 8 - (float)value / maximum * (lane.h - 8);
+
+            if (y < lane.y + 26 || y > lane.y + lane.h - 26) {
+                continue;
+            }
+
+            char text[16];
+            snprintf(text, sizeof(text), DM_TEXT_VALUE_ROW, value);
+            ui_label((UiPoint){at.x + 4, y - 6}, DIM, text);
+        }
     }
 }
 
@@ -116,7 +141,7 @@ static void automation_value_input(Editor *e) {
 
     int index = e->automation_node;
 
-    if ((e->automation_cc == -2 && !e->automation_raw) || index < 0 ||
+    if ((e->automation_cc == -2 && !ed_automation_raw(e)) || index < 0 ||
         (size_t)index >= e->project.automation_count) {
         return;
     }
@@ -139,7 +164,7 @@ static void automation_value_input(Editor *e) {
 }
 
 void ed_automation_pan_y(Editor *e, UiRect lane, float pixels) {
-    if (e->automation_cc == -2 && !e->automation_raw) {
+    if (e->automation_cc == -2 && !ed_automation_raw(e)) {
         e->automation_center =
             ed_clampf(e->automation_center + pixels / ed_lane_step(lane), 0, 127);
     }
@@ -176,20 +201,29 @@ static bool event_setup(DmAutomation a) {
                                       a.a == MIDI_CC_RPN_LSB || a.a == MIDI_CC_RPN_MSB);
 }
 
-void ed_automation_preview(Editor *e, int id, UiRect box, uint32_t color, double offset,
-                           double length) {
+void ed_automation_preview(Editor *e, int id, UiRect box, uint32_t color, float x, float x_scale,
+                           double offset) {
     DmPattern *p = &e->project.patterns[id];
 
-    if (p->mode) {
-        UiPoint previous = {box.x, box.y + box.h * .5f};
+    if (x_scale <= 0 || box.w <= 0) {
+        return;
+    }
 
-        for (int i = 1; i <= 80; ++i) {
-            UiPoint next = {
-                box.x + box.w * i / 80,
-                box.y + box.h * (.05f + (1 - (float)dm_lfo_value(p, offset + length * i / 80) /
-                                                 (p->event == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX)) *
-                                            .9f)};
-            ui_line(previous, next, color, 1.5f);
+    if (p->mode) {
+        /* One sample per pixel, as the LFO view samples, so fast waves are not aliased. */
+        int samples = (int)fminf(8192, ceilf(box.w));
+        double maximum = p->event == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+        UiPoint previous = {0};
+
+        for (int i = 0; i <= samples; ++i) {
+            float px = box.x + box.w * i / samples;
+            double value = dm_lfo_value(p, offset + (px - x) / x_scale);
+            UiPoint next = {px, box.y + box.h * (.05f + (1 - (float)(value / maximum)) * .9f)};
+
+            if (i) {
+                ui_line(previous, next, color, 1.5f);
+            }
+
             previous = next;
         }
 
@@ -209,8 +243,7 @@ void ed_automation_preview(Editor *e, int id, UiRect box, uint32_t color, double
 
         float value =
             (float)ed_event_value(a) / (a.type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX);
-        UiPoint next = {box.x + (float)((a.beat - offset) / length) * box.w,
-                        box.y + (1 - value) * box.h};
+        UiPoint next = {x + (float)(a.beat - offset) * x_scale, box.y + (1 - value) * box.h};
 
         if (has && before.type == a.type && (a.type != MIDI_CONTROL || before.a == a.a)) {
             ed_automation_connection(
@@ -473,7 +506,7 @@ static UiPoint lfo_point(Editor *e, DmPattern *p, UiRect lane, View *v, float sc
            maximum = p->event == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
     float y = lane.y + lane.h - 8 - (float)(value / maximum) * (lane.h - 8);
 
-    if (p->event == -2 && !e->automation_raw) {
+    if (p->event == -2 && !ed_automation_raw(e)) {
         y = lane.y + lane.h * .5f -
             (float)(fmax(0, fmin(127, p->pitch_center + 2 * wave)) - e->automation_center) *
                 ed_lane_step(lane);
@@ -555,22 +588,7 @@ static void event_editor_header(Editor *e, DmPattern *p) {
     ui_text(DM_TEXT_EVENT_EDITOR);
     ui_same();
     ed_port_buttons(e);
-    ui_width(100);
-
-    if (!ed_point_only_event(e->automation_cc) &&
-        ui_combo("##Automation mode", p->mode ? DM_TEXT_LFO : DM_TEXT_POINT)) {
-        for (int i = 0; i < 2; ++i) {
-            if (ui_select(i ? DM_TEXT_LFO : DM_TEXT_POINT, p->mode == i, 0, 0)) {
-                ed_checkpoint(e);
-                p->mode = i;
-                e->automation_node = -1;
-                e->automation_all = false;
-                ed_commit(e);
-            }
-        }
-
-        ui_combo_end();
-    }
+    ed_graph_controls(e, p, true);
 
     if (ui_available().x < 400) {
         ui_newline();
@@ -594,10 +612,12 @@ static void event_editor_header(Editor *e, DmPattern *p) {
         }
     }
 
-    if (e->automation_cc == -2) {
+    if (e->automation_cc == -2 && !ed_graph_resolution(e)) {
         ui_same();
         ui_frame_toggle(DM_TEXT_MIDI_VALUES, &e->automation_raw);
     }
+
+    ed_graph_resolution_controls(e, p);
 
     if (!p->mode) {
         automation_value_input(e);
@@ -655,7 +675,7 @@ static void focus_event_pattern(Editor *e, UiRect lane, float scale) {
 }
 
 static void event_editor_vertical(Editor *e, UiRect r, UiRect lane) {
-    if (e->automation_cc != -2 || e->automation_raw) {
+    if (e->automation_cc != -2 || ed_automation_raw(e)) {
         return;
     }
 
@@ -696,11 +716,12 @@ void ed_event_editor(Editor *e, float width, float height) {
     UiRect lane = {r.x + label, r.y + 28, r.w - label, r.h - 28};
     focus_event_pattern(e, lane, scale);
 
-    /* An LFO pattern fits its whole length in view. Only note-pitch bends scroll, vertically. */
+    /* An LFO pattern shows one bar from its start, whatever its length: the wave repeats, so
+       more bars add nothing. Only note-pitch bends scroll, vertically. */
     if (p->mode) {
         fit = *v;
         fit.scroll_x = 0;
-        fit.zoom = lane.w / (80 * (float)fmax(1.0 / DM_PPQ, ed_pattern_length(e)));
+        fit.zoom = lane.w / (80 * (float)fmax(1.0 / DM_PPQ, lfo_bar(e)));
         automation_scroll(e, &fit, lane, mouse, hovered && ed_inside(mouse.pos, lane));
         fit.scroll_x = 0;
         v = &fit;
@@ -875,7 +896,7 @@ static void velocity_panel(Editor *e, UiRect lane, View *v, float scale, UiMouse
 
     for (size_t i = 0; i < p->count; ++i) {
         UiPoint at = velocity_point(p->notes[i], lane, v, scale);
-        uint32_t color = p->notes[i].selected ? e->accent : GOLD;
+        uint32_t color = p->notes[i].selected ? e->accent : ed_point_color(e);
         ui_line((UiPoint){at.x, lane.y + lane.h - 8}, at, color, 2);
         ui_circle(at, 5, color);
 
@@ -884,7 +905,8 @@ static void velocity_panel(Editor *e, UiRect lane, View *v, float scale, UiMouse
         }
     }
 
-    if ((hovered && hit >= 0) || e->drag == 11) {
+    /* Over a point only while nothing else holds the mouse. */
+    if ((hovered && hit >= 0 && !e->drag && !e->event_marquee) || e->drag == 11) {
         ui_gesture_cursor(true);
     }
 
@@ -928,11 +950,21 @@ void ed_automation_panel(Editor *e, UiRect r, View *v, float scale, float label,
     }
 
     float header_y = ui_cursor().y;
+    DmPattern *pattern = ed_pattern(e);
+
+    if (pattern && ed_graph_controls(e, pattern, false)) {
+        ui_same();
+    }
+
     ed_automation_selector(e);
 
-    if (e->automation_cc == -2) {
+    if (e->automation_cc == -2 && !ed_graph_resolution(e)) {
         ui_same();
         ui_frame_toggle(DM_TEXT_MIDI_VALUES, &e->automation_raw);
+    }
+
+    if (pattern) {
+        ed_graph_resolution_controls(e, pattern);
     }
 
     if (e->automation_cc != -3) {

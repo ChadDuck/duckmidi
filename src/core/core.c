@@ -1,4 +1,4 @@
-#include "duck.h"
+#include "core/duck.h"
 #include "text/en.h"
 #include <errno.h>
 #include <math.h>
@@ -558,6 +558,7 @@ int dm_pattern_copy(DmProject *p, int source) {
     to->length = from->length;
     to->kind = from->kind;
     to->mode = from->mode;
+    to->graph = from->graph;
     to->event = from->event;
     to->speed = from->speed;
     to->tension = from->tension;

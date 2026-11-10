@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 extern void test_pattern_workflow_ui(Editor *, void (*)(bool, const char *));
 static int checks;
 

@@ -2,7 +2,7 @@
    agents/reports/guide-captures/. tools/update-guide-images.ps1 builds this program, runs it and
    converts the captures into docs/images/. The sample project is only read. */
 extern "C" {
-#include "editor_export_internal.h"
+#include "editor/export_internal.h"
 #include "text/en.h"
 #include "../include/duckmidi_samples_tool.h"
 }

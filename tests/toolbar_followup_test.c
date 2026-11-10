@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 extern void recording_feedback_audio_pause(DmAudio *);
 extern void recording_feedback_audio_render(DmAudio *, int);
 extern void test_toolbar_followup_ui(Editor *, void (*)(bool, const char *));

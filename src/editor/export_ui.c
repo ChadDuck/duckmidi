@@ -1,4 +1,4 @@
-#include "editor_export_internal.h"
+#include "editor/export_internal.h"
 #include "text/en.h"
 
 static const char *choice_label(const DmeField *field, int value) {

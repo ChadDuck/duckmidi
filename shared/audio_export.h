@@ -1,6 +1,6 @@
 #ifndef DM_AUDIO_EXPORT_H
 #define DM_AUDIO_EXPORT_H
-#include "../src/duck.h"
+#include "../src/core/duck.h"
 
 typedef enum {
     DM_AUDIO_WAV,

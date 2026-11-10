@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 
 /* Multi-port import and port combination, checked through the editor with a generated file. */
 void test_editor_combine(Editor *e, const char *label);

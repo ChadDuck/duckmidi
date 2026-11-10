@@ -1,7 +1,7 @@
 #ifndef DM_EDITOR_INTERNAL_H
 #define DM_EDITOR_INTERNAL_H
 /* Shared editor implementation contracts; desktop entry points remain in editor.h. */
-#include "editor.h"
+#include "editor/editor.h"
 #include "preferences.h"
 #include <ctype.h>
 #include <errno.h>
@@ -20,14 +20,38 @@ bool ed_record_insert(Editor *e, DmPattern *pattern, int key, int velocity, unsi
 void ed_midi_input_init(Editor *e);
 void ed_midi_input_attach(Editor *e, DmMidiInput *input);
 void ed_midi_input_restore(Editor *e);
+void ed_midi_input_apply(Editor *e);
+bool ed_midi_input_activity(const Editor *e, DmMidiInputEvent *event, char name[DM_MIDI_NAME]);
 void ed_midi_input_names(Editor *e);
 void ed_midi_input_free(Editor *e);
 void ed_midi_input_frame(Editor *e);
+/* A MIDI key is held that sounds this key (after the percussion mapping), for the piano keys. */
+bool ed_midi_input_lit(const Editor *e, int key);
 /* Ends held recorded MIDI notes; publish rebuilds playback when the transport keeps running. */
 void ed_midi_input_finish(Editor *e, bool publish);
 void ed_midi_input_take(Editor *e);
-/* Writes pending MIDI recording to the project; see editor_midi_input.c for when it plays. */
+/* Writes pending MIDI recording to the project; see editor/midi_input.c for when it plays. */
 void ed_midi_input_flush(Editor *e);
+bool ed_midi_target_continuous(EdMidiTarget target);
+void ed_midi_target_id(EdMidiTarget target, char *id, size_t cap);
+bool ed_midi_target_parse(const char *id, EdMidiTarget *target);
+void ed_midi_target_label(EdMidiTarget target, char *text, size_t cap);
+void ed_midi_source_label(const DmMidiBindingSource *source, char *text, size_t cap);
+size_t ed_midi_binding_count(const Editor *e);
+EdMidiBinding *ed_midi_binding_at(Editor *e, size_t index);
+EdMidiBinding *ed_midi_binding_find(Editor *e, EdMidiTarget target);
+bool ed_midi_binding_append(DmBytes *list, EdMidiBinding binding);
+bool ed_midi_bindings_attach(Editor *e, DmMidiInput *input);
+bool ed_midi_bindings_replace(Editor *e, DmBytes *list);
+bool ed_midi_bindings_cancel(Editor *e);
+void ed_midi_binding_clear(Editor *e, EdMidiTarget target);
+void ed_midi_binding_learn(Editor *e, EdMidiTarget target, bool any_device);
+bool ed_midi_binding_learning(const Editor *e, EdMidiTarget target);
+void ed_midi_bindings_reset_pickup(Editor *e);
+void ed_midi_bindings_flush(Editor *e, uint64_t now);
+void ed_midi_bindings_tick(Editor *e, uint64_t now);
+void ed_midi_binding_event(Editor *e, DmMidiInputEvent event, const char *device);
+bool ed_mixer_apply(Editor *e, DmPortMix before, DmPortMix mix);
 size_t ed_automation_visible_first(Editor *e, double beat, bool overlay);
 uint32_t ed_port_color(Editor *e, unsigned port);
 uint32_t ed_palette_color(Editor *e, unsigned color);
@@ -58,7 +82,7 @@ enum {
     DIALOG_SAMPLE_FOLDER
 };
 
-#include "../include/duckmidi_export_plugin.h"
+#include "../../include/duckmidi_export_plugin.h"
 bool ed_samples_available(Editor *e);
 void ed_samples_open(Editor *e);
 void ed_samples_close(Editor *e);
@@ -211,7 +235,10 @@ void ed_request(Editor *e, int ed_action, const char *path);
 void ed_update_dialog(Editor *e);
 void ed_update_open(Editor *e);
 void ed_cancel_wait(Editor *e);
+/* Play / pause from the playhead. Pausing returns to the set playhead position; with hold
+   (MIDI transport controls) it stays where playback stopped, and the next play continues there. */
 void ed_play(Editor *e);
+void ed_play_hold(Editor *e, bool hold);
 void ed_recording_finished(Editor *e);
 void ed_seek(Editor *e, double beat);
 bool ed_point_editing(Editor *e);
@@ -226,13 +253,21 @@ bool ed_deselect_focused(Editor *e);
 int ed_piano_key(SDL_Scancode key);
 int ed_piano_index(SDL_Scancode key);
 SDL_Scancode ed_piano_scancode(int index);
-int ed_keyboard_note(Editor *e, SDL_Scancode key, int channel);
+bool ed_route_drums(const Editor *e, int route);
+int ed_keyboard_note(Editor *e, SDL_Scancode key, bool drums);
 void ed_percussion_open(Editor *e);
 void ed_percussion_dialog(Editor *e);
 bool ed_percussion_key(Editor *e, const SDL_KeyboardEvent *key);
 void ed_percussion_save(Editor *e, bool project);
 void ed_percussion_accept(Editor *e);
 void ed_percussion_close(Editor *e);
+/* Incoming MIDI note to sounding note for the active percussion mapping. */
+void ed_percussion_midi_map(const Editor *e, uint8_t map[MIDI_KEYS]);
+/* The same map from the Percussion window's unsaved MIDI mapping. */
+void ed_percussion_midi_draft_map(const Editor *e, uint8_t map[MIDI_KEYS]);
+/* The instrument window receives the piano keys: it is open and in front. */
+bool ed_instrument_topmost(Editor *e);
+bool ed_percussion_midi_listen(Editor *e, DmMidiInputEvent event);
 bool ed_begin_record_take(Editor *e);
 double ed_recording_origin(Editor *e, double beat);
 void ed_record_note(Editor *e, int note);
@@ -344,9 +379,38 @@ bool ed_same_event(DmAutomation a, DmAutomation b);
 bool ed_event_selected(Editor *e, size_t index);
 bool ed_pedal_event(int cc);
 bool ed_point_only_event(int cc);
+/* Graph editing (editor/event_graph.c). The resolution is 0 unless the displayed lane is a
+   graph; ed_event_snap is its cell in beats, or the 0.25-beat point grid. */
+bool ed_graph_event(int cc);
+bool ed_graph_lane(DmAutomation point);
+int ed_graph_resolution(Editor *e);
+double ed_event_snap(Editor *e);
+bool ed_automation_raw(Editor *e);
+bool ed_graph_convert(Editor *e, int pattern, int graph);
+void ed_graph_mode(Editor *e, int mode, int graph);
+/* Asks before a switch to or from Graph when the pattern has events it would change. */
+void ed_graph_mode_request(Editor *e, int mode, int graph);
+void ed_graph_mode_dialog(Editor *e);
+void ed_graph_snap(Editor *e);
+void ed_graph_paint(Editor *e, UiRect lane, View *v, float scale, UiPoint from, UiPoint to,
+                    bool free);
+bool ed_graph_erase(Editor *e, UiRect lane, View *v, float scale, UiPoint from, UiPoint to);
+UiRect ed_graph_bar(Editor *e, DmAutomation a, UiRect lane, View *v, float scale, double next_beat);
+int ed_graph_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse);
+/* Event lane colors from the application color: point lines and markers, and graph bars. */
+uint32_t ed_point_color(Editor *e);
+uint32_t ed_graph_color(Editor *e);
+bool ed_graph_controls(Editor *e, DmPattern *p, bool lfo);
+void ed_graph_resolution_controls(Editor *e, DmPattern *p);
 bool ed_automation_option(Editor *e, int cc);
 void ed_automation_selector(Editor *e);
 float ed_lane_step(UiRect lane);
+/* Raw value lanes (controllers, raw pitch bends and graph bars) have rows of a power-of-two value
+   step about ed_lane_step pixels apart in a lane `height` tall; values snap to them unless Alt is
+   held. 0 for the displayed lane when it has no value rows (pedals, program changes, pitch rows,
+   velocity). */
+int ed_value_step(Editor *e, float height);
+int ed_value_snap(Editor *e, int value, int step);
 void ed_pitch_cache_begin(Editor *e);
 void ed_pitch_cache_end(Editor *e);
 float ed_automation_range(Editor *e, DmAutomation a);
@@ -391,8 +455,11 @@ void ed_duplicate_events(Editor *e);
 void ed_delete_events(Editor *e);
 void ed_remove_events(Editor *e, bool *remove, int type);
 void ed_automation_pan_y(Editor *e, UiRect lane, float pixels);
-void ed_automation_preview(Editor *e, int id, UiRect box, uint32_t color, double offset,
-                           double length);
+/* Draws automation pattern id in box: its height holds the value range and its width the part
+   drawn. Beat b sits at x + (b - offset) * x_scale, the same mapping as note thumbnails, so the
+   drawing keeps its shape when the box is resized. */
+void ed_automation_preview(Editor *e, int id, UiRect box, uint32_t color, float x, float x_scale,
+                           double offset);
 bool ed_transfer_automation(Editor *e);
 void ed_lfo_center_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse, bool hovered);
 void ed_event_editor(Editor *e, float width, float height);
@@ -437,7 +504,8 @@ const char *ed_midi_row_name(Editor *e, MidiRow row);
 size_t ed_midi_payload_offset(const DmBytes *m);
 bool ed_midi_replace_payload(Editor *e, const uint8_t *payload, size_t size);
 void ed_midi_event_fields(Editor *e);
-void ed_midi_event_panels(Editor *e, size_t count, float *split);
+/* The list and details panels, height tall; 0 fills the rest of the window. */
+void ed_midi_event_panels(Editor *e, size_t count, float *split, float height);
 void ed_midi_apply_initial(Editor *e, const uint8_t *message);
 bool ed_midi_apply_draft(Editor *e);
 void ed_midi_event_window(Editor *e);

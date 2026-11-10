@@ -1,6 +1,6 @@
-#include "editor_export_internal.h"
+#include "editor/export_internal.h"
 #include "native_repository_fixture.h"
-#include "../shared/sample_library.h"
+#include "../shared/sample/library.h"
 #include <assert.h>
 #ifdef _WIN32
 #include <windows.h>

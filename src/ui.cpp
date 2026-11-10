@@ -1432,7 +1432,8 @@ bool ui_growing_dialog(const char *s, bool *open, float w, float h) {
    need. The window remembers how much extra height ui_flex gave out last frame, so its minimum
    is the contents at their smallest, and the spare height this frame goes back to ui_flex.
    Until the user resizes it, the height follows the contents plus the flexible row's preferred
-   extra; a new layout or reopening the window returns it to that height. */
+   extra; a new layout or reopening the window returns it to that height. A window that opens
+   stays hidden until its contents are measured, then appears centered at its fitted size. */
 static const char *const flex_extra_key = "ui_flex_extra";
 static const char *const flex_slack_key = "ui_flex_slack";
 static const char *const flex_want_key = "ui_flex_want";
@@ -1440,6 +1441,7 @@ static const char *const flex_sized_key = "ui_flex_sized";
 static const char *const flex_set_key = "ui_flex_set";
 static const char *const flex_layout_key = "ui_flex_layout";
 static const char *const flex_rows_key = "ui_flex_rows";
+static const char *const flex_center_key = "ui_flex_center";
 
 bool ui_flexible_dialog(const char *s, bool *open, float w, float h, bool attached, int layout) {
     ImGuiWindow *window = ImGui::FindWindowByName(s);
@@ -1467,11 +1469,17 @@ bool ui_flexible_dialog(const char *s, bool *open, float w, float h, bool attach
         float height = ImClamp(sized ? window->SizeFull.y : needed + want, minimum,
                                view->WorkSize.y);
         requested = height;
+        float width = ImMin(window->SizeFull.x, max_width);
         float top =
             ImClamp(window->Pos.y, view->WorkPos.y, view->WorkPos.y + view->WorkSize.y - height);
-        ImGui::SetNextWindowSize({ImMin(window->SizeFull.x, max_width), height}, ImGuiCond_Always);
+        ImGui::SetNextWindowSize({width, height}, ImGuiCond_Always);
 
-        if (top != window->Pos.y) {
+        if (window->StateStorage.GetBool(ImHashStr(flex_center_key), false)) {
+            ImVec2 center = view->GetCenter();
+            top = ImClamp(center.y - height * .5f, view->WorkPos.y,
+                          view->WorkPos.y + view->WorkSize.y - height);
+            ImGui::SetNextWindowPos({center.x - width * .5f, top}, ImGuiCond_Always);
+        } else if (top != window->Pos.y) {
             ImGui::SetNextWindowPos({window->Pos.x, top}, ImGuiCond_Always);
         }
     } else {
@@ -1501,6 +1509,14 @@ bool ui_flexible_dialog(const char *s, bool *open, float w, float h, bool attach
     state->SetFloat(ImHashStr(flex_extra_key), 0);
     state->SetFloat(ImHashStr(flex_want_key), 0);
     state->SetInt(ImHashStr(flex_layout_key), layout);
+    state->SetBool(ImHashStr(flex_center_key), !measured);
+
+    /* Begin has already laid the contents out, so hiding only skips drawing this frame; the
+       next frame measures them. */
+    if (!measured) {
+        current->Hidden = true;
+    }
+
     return visible;
 }
 
@@ -1520,8 +1536,12 @@ bool ui_context(const char *s) {
     return ImGui::BeginPopupContextItem(s, ImGuiPopupFlags_MouseButtonRight);
 }
 
+/* The window that last kept room for a drawer; its drawer is hidden while it is. */
+static ImGuiWindow *attach_owner;
+
 UiRect ui_attach_space(float width) {
     ImGuiWindow *window = ImGui::GetCurrentWindow();
+    attach_owner = window;
     const ImGuiViewport *view = ImGui::GetMainViewport();
     float minimum_panel = ImMin(180.0f, view->WorkSize.x * .45f);
     float available = ImMax(1.0f, view->WorkSize.x - minimum_panel);
@@ -1546,10 +1566,16 @@ bool ui_attached_drawer(const char *id, UiRect main, float width) {
     float max_width = ImMax(1.0f, view->WorkPos.x + view->WorkSize.x - main.x - main.w);
     ImGui::SetNextWindowPos({main.x + main.w, main.y}, ImGuiCond_Always);
     ImGui::SetNextWindowSize({ImMin(width, max_width), main.h}, ImGuiCond_Always);
-    return ImGui::Begin(id, NULL,
-                        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                            ImGuiWindowFlags_NoSavedSettings);
+    bool visible = ImGui::Begin(id, NULL,
+                                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                                    ImGuiWindowFlags_NoSavedSettings);
+
+    if (attach_owner && attach_owner->Hidden) {
+        ImGui::GetCurrentWindow()->Hidden = true;
+    }
+
+    return visible;
 }
 
 bool ui_modal(const char *title, bool *open, float width, float height) {
@@ -1992,21 +2018,31 @@ void ui_circle_outline(UiPoint p, float radius, uint32_t color) {
 }
 
 /* The floating preview is drawn without the tooltip frame, so only the card shows. */
-bool ui_drag_pattern(int pattern) {
+bool ui_drag_pattern(int pattern, bool preview) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
     ImGui::PushStyleColor(ImGuiCol_PopupBg, 0);
+    auto &g = *ImGui::GetCurrentContext();
+
     /* The dragged card keeps the spot that was clicked under the mouse, rather than hanging
        below and to the right of it. */
-    auto &g = *ImGui::GetCurrentContext();
-    ImGui::SetNextWindowPos(
-        {g.IO.MousePos.x - g.ActiveIdClickOffset.x, g.IO.MousePos.y - g.ActiveIdClickOffset.y});
+    if (preview) {
+        ImGui::SetNextWindowPos({g.IO.MousePos.x - g.ActiveIdClickOffset.x,
+                                 g.IO.MousePos.y - g.ActiveIdClickOffset.y});
+    }
 
     if (!ImGui::BeginDragDropSource()) {
         g.NextWindowData.HasFlags &= ~ImGuiNextWindowDataFlags_HasPos;
         ImGui::PopStyleColor();
         ImGui::PopStyleVar(2);
         return false;
+    }
+
+    /* Without a preview the tooltip stays open but hidden: even an empty one is drawn as a small
+       box. ImGui keeps a drag's flags from its first frame, so the preview cannot be switched off
+       with ImGuiDragDropFlags_SourceNoPreviewTooltip partway through a drag. */
+    if (!preview) {
+        ImGui::SetWindowHiddenAndSkipItemsForCurrentFrame(ImGui::GetCurrentWindow());
     }
 
     ImGui::SetDragDropPayload(DM_TEXT_DM_PATTERN, &pattern, sizeof(pattern));
@@ -2111,6 +2147,11 @@ bool ui_splitter(float *width, float min, float max, float height) {
     }
 
     return active;
+}
+
+UiRect ui_item_rect() {
+    ImVec2 start = ImGui::GetItemRectMin(), size = ImGui::GetItemRectSize();
+    return {start.x, start.y, size.x, size.y};
 }
 
 UiRect ui_window_rect() {

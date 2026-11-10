@@ -1,7 +1,7 @@
 extern "C" {
-#include "editor_export_internal.h"
+#include "editor/export_internal.h"
 #include "../include/duckmidi_samples_tool.h"
-#include "../shared/sample_library.h"
+#include "../shared/sample/library.h"
 }
 #include "imgui.h"
 #include "imgui_internal.h"

@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 static bool pattern_context(Editor *e, size_t i);
@@ -388,8 +388,8 @@ static void pattern_card_face(Editor *e, int i, UiRect r, bool selected, bool ho
                                          .bottom = r.y + 81});
 
     if (p->kind) {
-        ed_automation_preview(e, i, (UiRect){r.x + 9, r.y + 33, r.w - 18, 48}, ui_text_on(color), 0,
-                              p->length);
+        ed_automation_preview(e, i, (UiRect){r.x + 9, r.y + 33, r.w - 18, 48}, ui_text_on(color),
+                              r.x + 9, (float)((r.w - 18) / p->length), 0);
     }
 
     ui_unclip();
@@ -412,7 +412,7 @@ static bool pattern_card_button(Editor *e, int i, float card, float height, bool
         return true;
     }
 
-    if (ui_drag_pattern(i)) {
+    if (ui_drag_pattern(i, !e->pattern_drag_on_playlist)) {
         e->pattern_drag = i;
         ui_gesture_cursor(false);
 
@@ -447,7 +447,7 @@ static void dragged_cell(Editor *e, int dragged, float card, bool open, int *cel
         ui_border((UiRect){at.x, at.y, card, CARD_HEIGHT}, DIM, 5, 1);
     }
 
-    if (ui_drag_pattern(dragged)) {
+    if (ui_drag_pattern(dragged, !e->pattern_drag_on_playlist)) {
         bool selected = e->pattern_highlight && e->selected_pattern == dragged;
         ui_gesture_cursor(false);
 
@@ -591,22 +591,80 @@ void ed_pattern_panel(Editor *e, float width, float height) {
     ui_child_end();
 }
 
-static void mixer_store(Editor *e, DmPortMix mix) {
-    ed_checkpoint(e);
-
+bool ed_mixer_apply(Editor *e, DmPortMix before, DmPortMix mix) {
     if (!dm_port_mix_set(&e->project, mix)) {
-        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PORT_MIXER);
-        return;
+        return false;
     }
 
-    ed_commit(e);
-    dm_audio_part_control(e->audio, mix.port, mix.channel, 7, mix.volume);
-    dm_audio_part_control(e->audio, mix.port, mix.channel, 10, mix.pan);
+    if (mix.volume != before.volume) {
+        dm_audio_part_control(e->audio, mix.port, mix.channel, MIDI_CC_VOLUME, mix.volume);
+    }
+
+    if (mix.pan != before.pan) {
+        dm_audio_part_control(e->audio, mix.port, mix.channel, MIDI_CC_PAN, mix.pan);
+    }
+
     int preview = e->context == 2 ? e->pattern_channel : e->selected_channel;
 
     if (preview == mix.channel && e->note_ports[preview] == mix.port) {
         ed_keyboard_channel(e);
     }
+
+    return true;
+}
+
+static void mixer_store(Editor *e, DmPortMix before, DmPortMix mix) {
+    bool checkpoint = ed_checkpoint(e);
+
+    if (!ed_mixer_apply(e, before, mix)) {
+        ed_checkpoint_abandon(e, checkpoint);
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PORT_MIXER);
+        return;
+    }
+
+    ed_midi_bindings_reset_pickup(e);
+    ed_commit(e);
+}
+
+static void mixer_midi_learn(Editor *e, EdMidiTargetKind kind, int channel, int port) {
+    EdMidiTarget target = {kind, (uint8_t)channel, (uint8_t)port};
+
+    if (ed_midi_binding_learning(e, target)) {
+        ui_border(ui_item_rect(), e->accent, 3, 2);
+    }
+
+    static const char *const ids[] = {
+        [ED_MIDI_VOLUME] = "midi-volume",
+        [ED_MIDI_PAN] = "midi-pan",
+        [ED_MIDI_MUTE] = "midi-mute",
+        [ED_MIDI_SOLO] = "midi-solo",
+    };
+
+    if (!ui_context(ids[kind])) {
+        return;
+    }
+
+    EdMidiBinding *binding = ed_midi_binding_find(e, target);
+
+    if (binding) {
+        char source[DM_MIDI_NAME + 50];
+        ed_midi_source_label(&binding->source, source, sizeof(source));
+        ui_dim(source);
+    }
+
+    if (ui_menu_item(DM_TEXT_MIDI_BIND_LEARN, NULL, e->midi_input != NULL)) {
+        ed_midi_binding_learn(e, target, false);
+    }
+
+    if (ui_menu_item(DM_TEXT_MIDI_BIND_LEARN_ANY, NULL, e->midi_input != NULL)) {
+        ed_midi_binding_learn(e, target, true);
+    }
+
+    if (binding && ui_menu_item(DM_TEXT_MIDI_BIND_CLEAR, NULL, true)) {
+        ed_midi_binding_clear(e, target);
+    }
+
+    ui_popup_end();
 }
 
 static void mixer_controls(Editor *e, int c, int port) {
@@ -650,6 +708,7 @@ static void mixer_controls(Editor *e, int c, int port) {
     }
 
     ui_tip(DM_TEXT_INITIAL_VOLUME_MIDDLE_CLICK);
+    mixer_midi_learn(e, ED_MIDI_VOLUME, c, port);
     float peak = e->mixer_peaks[part];
     ui_rect((UiRect){v.x + 30, v.y, 4, height}, BG, 2);
     ui_rect((UiRect){v.x + 30, v.y + height * (1 - fminf(peak, 1)), 4, height * fminf(peak, 1)},
@@ -668,6 +727,7 @@ static void mixer_controls(Editor *e, int c, int port) {
     }
 
     ui_tip(DM_TEXT_MUTE_THIS_PORT);
+    mixer_midi_learn(e, ED_MIDI_MUTE, c, port);
     ui_same();
     ui_accent(mix.solo);
 
@@ -682,6 +742,7 @@ static void mixer_controls(Editor *e, int c, int port) {
     }
 
     ui_tip(DM_TEXT_SOLO_THIS_PORT);
+    mixer_midi_learn(e, ED_MIDI_SOLO, c, port);
     ui_position(start.x, v.y + height + 32);
     ui_mixer_pan(&shown.pan, width);
 
@@ -691,6 +752,7 @@ static void mixer_controls(Editor *e, int c, int port) {
 
     snprintf(text, sizeof(text), DM_TEXT_PAN_MIDDLE_CLICK_RESET, shown.pan);
     ui_tip(text);
+    mixer_midi_learn(e, ED_MIDI_PAN, c, port);
     ui_position(start.x, v.y + height + 58);
     ui_mixer_value(&shown.volume, width);
 
@@ -705,7 +767,7 @@ static void mixer_controls(Editor *e, int c, int port) {
 
     if (mix.volume != original.volume || mix.pan != original.pan || mix.mute != original.mute ||
         mix.solo != original.solo) {
-        mixer_store(e, mix);
+        mixer_store(e, original, mix);
     }
 }
 

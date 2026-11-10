@@ -1,7 +1,7 @@
 #ifndef DM_SAMPLE_LIBRARY_H
 #define DM_SAMPLE_LIBRARY_H
 
-#include "sample_manifest.h"
+#include "manifest.h"
 
 /* The caller selects an existing library root. Saving replaces the named set after staging
    its complete contents; no saved history or pointer files are created. */

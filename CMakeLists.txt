@@ -36,19 +36,21 @@ endif()
 add_library(duckversion STATIC src/version.c)
 target_include_directories(duckversion PRIVATE "${DUCKMIDI_GENERATED}" src)
 add_dependencies(duckversion duckmidi_version)
-add_library(duckcore STATIC shared/spectrum.c src/core.c src/midi.c src/import_ports.c src/project.c src/project_compat.c src/compress.c src/instruments.c)
+add_library(duckcore STATIC shared/spectrum.c src/core/core.c src/core/midi.c
+  src/core/import_ports.c src/core/project.c src/core/project_compat.c src/core/compress.c
+  src/core/instruments.c)
 add_subdirectory(libraries/export_support)
 add_subdirectory(libraries/m64export)
 add_subdirectory(libraries/ootexport)
 include(tools/ffmpeg.cmake)
-add_library(duckmedia STATIC shared/audio_export.c shared/sample_import.c shared/sample_analysis.c
-  shared/sample_batch.c shared/sample_manifest.c shared/sample_library.c
-  shared/sample_export_snapshot.c shared/sample_export_catalog.c vendor/yyjson-0.12.0/yyjson.c)
+add_library(duckmedia STATIC shared/audio_export.c shared/sample/import.c shared/sample/analysis.c
+  shared/sample/batch.c shared/sample/manifest.c shared/sample/library.c
+  shared/sample/export_snapshot.c shared/sample/export_catalog.c vendor/yyjson-0.12.0/yyjson.c)
 target_include_directories(duckmedia PRIVATE vendor/yyjson-0.12.0)
 target_link_libraries(duckmedia PUBLIC duckcore ${FFMPEG_LIBRARIES} PRIVATE SDL3::SDL3)
 set_target_properties(duckcore duckmedia PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_subdirectory(libraries/sampletool)
-add_library(ducksamplesynth STATIC src/audio_samples.c)
+add_library(ducksamplesynth STATIC src/audio/samples.c)
 target_link_libraries(ducksamplesynth PUBLIC duckmedia fluidsynth)
 target_include_directories(duckcore PUBLIC src)
 if(NOT WIN32)
@@ -73,9 +75,12 @@ add_dependencies(duckgui duck_icons)
 target_include_directories(duckgui PRIVATE src ${IMGUI} ${IMGUI}/backends "${ICON_OUTPUT}")
 target_link_libraries(duckgui PUBLIC SDL3::SDL3)
 add_library(duckmidi_io STATIC ${RTMIDI}/RtMidi.cpp ${RTMIDI}/rtmidi_c.cpp)
-add_library(duckmidi_input_core STATIC src/midi_input_core.c)
+add_library(duckmidi_input_core STATIC src/midi_input/core.c)
 target_include_directories(duckmidi_input_core PUBLIC src)
-add_library(duckmidi_input STATIC src/midi_input.c)
+if(NOT WIN32)
+  target_link_libraries(duckmidi_input_core PUBLIC m)
+endif()
+add_library(duckmidi_input STATIC src/midi_input/midi_input.c)
 target_link_libraries(duckmidi_input PUBLIC duckmidi_input_core SDL3::SDL3 PRIVATE duckmidi_io)
 target_include_directories(duckmidi_io PUBLIC ${RTMIDI})
 if(WIN32)
@@ -90,8 +95,16 @@ else()
   target_compile_definitions(duckmidi_io PRIVATE __LINUX_ALSA__)
   target_link_libraries(duckmidi_io PRIVATE ALSA::ALSA Threads::Threads)
 endif()
-add_executable(duckmidi src/main.c src/editor.c src/editor_browser.c src/editor_dialogs.c src/editor_event_view.c src/editor_events.c src/editor_input.c src/editor_midi_inspector.c src/editor_notes.c src/editor_pitch.c src/editor_playlist.c src/editor_preferences.c src/editor_project.c src/editor_selection.c src/editor_shell.c src/editor_song_events.c src/editor_state.c src/editor_timeline.c src/editor_transport.c src/audio.c src/preferences.c)
-target_sources(duckmidi PRIVATE shared/pattern_generation.c src/editor_generate.c src/editor_percussion.c src/editor_note_ports.c src/editor_pattern_colors.c src/editor_save.c src/editor_samples.c src/export_plugins.c src/editor_export.c src/editor_export_ui.c src/editor_update.c src/update.c src/editor_midi_input.c)
+add_executable(duckmidi src/main.c src/audio/audio.c src/export_plugins.c src/preferences.c
+  src/update.c shared/pattern_generation.c
+  src/editor/browser.c src/editor/dialogs.c src/editor/editor.c src/editor/event_graph.c
+  src/editor/event_view.c src/editor/events.c src/editor/export.c src/editor/export_ui.c
+  src/editor/generate.c src/editor/input.c src/editor/midi_bindings.c src/editor/midi_input.c
+  src/editor/midi_inspector.c src/editor/note_ports.c src/editor/notes.c
+  src/editor/pattern_colors.c src/editor/percussion.c src/editor/pitch.c src/editor/playlist.c
+  src/editor/preferences.c src/editor/project.c src/editor/samples.c src/editor/save.c
+  src/editor/selection.c src/editor/shell.c src/editor/song_events.c src/editor/state.c
+  src/editor/timeline.c src/editor/transport.c src/editor/update.c)
 add_dependencies(duckmidi m64export ootexport sampletool)
 add_custom_command(TARGET duckmidi POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:duckmidi>/plugins"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:duck_export_support>" "$<TARGET_FILE_DIR:duckmidi>/plugins/"

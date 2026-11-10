@@ -1,5 +1,5 @@
-#include "editor_internal.h"
-#include "midi_input_core.h"
+#include "editor/internal.h"
+#include "midi_input/core.h"
 #include "text/en.h"
 
 /* MIDI input recording into the open pattern, alongside the computer-keyboard piano.
@@ -17,6 +17,7 @@
 
 typedef struct {
     double start, origin;
+    uint8_t key; /* Recorded key: the incoming key after the percussion remap at Note On. */
     uint8_t velocity, port;
     bool active;
 } InputNote;
@@ -33,16 +34,23 @@ typedef struct {
 
 struct DmEditorMidiInput {
     InputNote held[DM_MIDI_INPUTS][MIDI_CHANNELS][MIDI_KEYS];
+    /* Held keys shown on the piano keys, recording or not: the sounding key + 1 (0 none), and
+       how many held keys light each sounding key. */
+    uint8_t lit[DM_MIDI_INPUTS][MIDI_CHANNELS][MIDI_KEYS], lit_count[MIDI_KEYS];
     DmBytes notes, points;
+    DmMidiInputEvent activity;    /* Last unsynthesized event the editor popped. */
+    uint8_t note_map[MIDI_KEYS];  /* Incoming key to recorded key, as sent to audio. */
     InputLane lanes[INPUT_LANES]; /* The current loop pass's touched controller lanes. */
     uint64_t signature, commit_tick, discard_ns, wait_ns, session;
     uint32_t loop, pattern_uid;
     int pattern, channel, port;
+    int route;  /* Monitoring channel, or -1 while input has no destination. */
+    int window; /* The route plays for a window: 0 none, 1 instrument, 2 percussion. */
     double wait_beat;
     bool dirty;          /* Recorded data not yet written to the project. */
     bool unpublished;    /* Written data playback has not been rebuilt with. */
     bool lead_published; /* This pass was published ahead of its wrap. */
-    bool loop_seen, waiting, finishing;
+    bool loop_seen, waiting, finishing, draining, graph_blocked;
 };
 
 static unsigned lane_index(DmAutomation point) {
@@ -61,21 +69,35 @@ void ed_midi_input_attach(Editor *e, DmMidiInput *input) {
         return;
     }
 
+    if (!ed_midi_bindings_attach(e, input)) {
+        dm_midi_input_destroy(input);
+        ed_message(e, DM_TEXT_MIDI_BIND_MEMORY);
+        return;
+    }
+
+    ed_midi_bindings_cancel(e);
     ed_midi_input_finish(e, false);
     dm_audio_attach_midi_input(e->audio, NULL);
     dm_midi_input_destroy(e->midi_input);
     e->midi_input = input;
     dm_audio_attach_midi_input(e->audio, input);
+    ed_midi_input_apply(e);
 
     if (e->midi_input_state) {
         e->midi_input_state->signature = 0;
         e->midi_input_state->loop_seen = false;
+        e->midi_input_state->activity = (DmMidiInputEvent){0};
     }
 }
 
 void ed_midi_input_init(Editor *e) {
     e->midi_input_state = calloc(1, sizeof(*e->midi_input_state));
     e->midi_input = dm_midi_input_create(NULL);
+    e->input_options = (DmMidiInputOptions){.velocity = DM_MIDI_VELOCITY_MEDIUM};
+    e->input_controllers = DM_INPUT_CONTROLLERS_KEYBOARD;
+    e->input_latency_ms = NAN;
+    e->input_thru = true;
+    e->input_pickup = true;
 
     if (e->midi_input_state) {
         e->midi_input_state->pattern = -1;
@@ -84,9 +106,28 @@ void ed_midi_input_init(Editor *e) {
     if (e->midi_input && e->midi_input_state) {
         dm_audio_attach_midi_input(e->audio, e->midi_input);
     }
+
+    ed_midi_input_apply(e);
+}
+
+void ed_midi_input_apply(Editor *e) {
+    if (e->midi_input) {
+        dm_midi_input_set_options(e->midi_input, &e->input_options);
+        dm_audio_input_thru(e->audio, e->midi_input, e->input_thru);
+    }
+
+    dm_audio_input_controllers(e->audio, e->input_controllers);
+    dm_audio_input_offset(e->audio, e->input_latency_ms / 1000.0);
+
+    /* A new audio device or input starts with an identity map; send the current one again. */
+    if (e->midi_input_state) {
+        memset(e->midi_input_state->note_map, 0, sizeof(e->midi_input_state->note_map));
+    }
 }
 
 void ed_midi_input_restore(Editor *e) {
+    ed_midi_input_apply(e);
+
     if (!e->midi_input) {
         return;
     }
@@ -115,6 +156,60 @@ void ed_midi_input_names(Editor *e) {
     }
 }
 
+bool ed_midi_input_lit(const Editor *e, int key) {
+    const struct DmEditorMidiInput *m = e->midi_input_state;
+    return m && key >= 0 && key < MIDI_KEYS && m->lit_count[key];
+}
+
+static void unlight(struct DmEditorMidiInput *m, uint8_t *lit) {
+    if (*lit && m->lit_count[*lit - 1]) {
+        --m->lit_count[*lit - 1];
+    }
+
+    *lit = 0;
+}
+
+static void track_lit(struct DmEditorMidiInput *m, DmMidiInputEvent event) {
+    if (event.flags & DM_MIDI_EVENT_DEVICE_RELEASE) {
+        for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
+            for (unsigned k = 0; k < MIDI_KEYS; ++k) {
+                unlight(m, &m->lit[event.device][c][k]);
+            }
+        }
+
+        return;
+    }
+
+    unsigned type = event.status & MIDI_STATUS_MASK;
+
+    if ((type != MIDI_NOTE_ON && type != MIDI_NOTE_OFF) || event.device >= DM_MIDI_INPUTS ||
+        event.a >= MIDI_KEYS) {
+        return;
+    }
+
+    uint8_t *lit = &m->lit[event.device][event.status & MIDI_CHANNEL_MASK][event.a];
+    unlight(m, lit);
+
+    if (type == MIDI_NOTE_ON && event.b) {
+        *lit = (uint8_t)(m->note_map[event.a] + 1);
+        ++m->lit_count[m->note_map[event.a]];
+    }
+}
+
+bool ed_midi_input_activity(const Editor *e, DmMidiInputEvent *event, char name[DM_MIDI_NAME]) {
+    const struct DmEditorMidiInput *m = e->midi_input_state;
+
+    if (!m || !m->activity.ticks_ns || !e->midi_input) {
+        return false;
+    }
+
+    DmMidiInputStatus status[DM_MIDI_INPUTS];
+    dm_midi_input_status(e->midi_input, status);
+    *event = m->activity;
+    snprintf(name, DM_MIDI_NAME, "%s", status[event->device].name);
+    return true;
+}
+
 void ed_midi_input_take(Editor *e) {
     struct DmEditorMidiInput *m = e->midi_input_state;
 
@@ -129,7 +224,7 @@ void ed_midi_input_take(Editor *e) {
     m->channel = e->pattern_channel;
     m->port = ed_note_port(e);
     m->commit_tick = SDL_GetTicks();
-    m->dirty = m->unpublished = m->lead_published = m->loop_seen = false;
+    m->dirty = m->unpublished = m->lead_published = m->loop_seen = m->graph_blocked = false;
 }
 
 /* Whether an existing point gives way to the take. Replace mode clears a touched lane in the
@@ -249,6 +344,43 @@ static long merge_points(Editor *e) {
     return (long)(total - used);
 }
 
+/* Inspect existing lines before replace mode can remove them. The take snapshot covers
+   the mode change, and recorded points keep their original timestamps. */
+static int recorded_graph_mode(Editor *e, const DmPattern *pattern) {
+    struct DmEditorMidiInput *m = e->midi_input_state;
+
+    if (pattern->graph || pattern->mode || m->graph_blocked) {
+        return 0;
+    }
+
+    const InputPoint *pending = (const InputPoint *)m->points.data;
+    bool eligible = false;
+
+    for (size_t i = 0; i < m->points.size / sizeof(*pending); ++i) {
+        DmAutomation a = pending[i].point;
+
+        if (ed_graph_lane(a) &&
+            (a.type != MIDI_CONTROL || a.a < MIDI_CC_INCREMENT || a.a > MIDI_CC_RPN_MSB)) {
+            eligible = true;
+            break;
+        }
+    }
+
+    if (!eligible) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+
+        if (a.pattern == m->pattern && a.curve > 0 && ed_graph_lane(a)) {
+            return -1;
+        }
+    }
+
+    return 16;
+}
+
 /* Writes pending data; with publish, also rebuilds playback for anything written earlier. */
 static void commit(Editor *e, bool publish) {
     struct DmEditorMidiInput *m = e->midi_input_state;
@@ -266,6 +398,8 @@ static void commit(Editor *e, bool publish) {
         return;
     }
 
+    DmPattern *pattern = &e->project.patterns[m->pattern];
+    int graph = recorded_graph_mode(e, pattern);
     long removed = merge_points(e);
 
     if (removed < 0) {
@@ -273,9 +407,15 @@ static void commit(Editor *e, bool publish) {
         return;
     }
 
+    if (graph > 0) {
+        pattern->graph = graph;
+    } else if (graph < 0) {
+        m->graph_blocked = true;
+        ed_message(e, DM_TEXT_MIDI_RECORD_KEEP_POINT);
+    }
+
     /* Replace mode removes a lane's points across the pattern, including those still to play. */
     bool upcoming = removed > 0 && !e->overwrite;
-    DmPattern *pattern = &e->project.patterns[m->pattern];
     DmNote *notes = (DmNote *)m->notes.data;
     size_t count = m->notes.size / sizeof(*notes);
 
@@ -310,14 +450,14 @@ void ed_midi_input_flush(Editor *e) {
     }
 }
 
-static void note_end(Editor *e, InputNote *note, unsigned key, double beat) {
+static void note_end(Editor *e, InputNote *note, double beat) {
     if (!note->active) {
         return;
     }
 
     double start = fmax(0, note->start - note->origin);
-    double end = fmax(start, beat - note->origin);
-    DmNote result = {start, fmax(1.0 / DM_PPQ, end - start), key, note->velocity, 0, note->port};
+    double length = fmax(1.0 / DM_PPQ, fmax(start, beat - note->origin) - start);
+    DmNote result = {start, length, note->key, note->velocity, 0, note->port};
     struct DmEditorMidiInput *m = e->midi_input_state;
 
     if (dm_bytes(&m->notes, &result, sizeof(result))) {
@@ -333,7 +473,7 @@ static void close_device(Editor *e, unsigned device, double beat) {
 
     for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
         for (unsigned key = 0; key < MIDI_KEYS; ++key) {
-            note_end(e, &m->held[device][c][key], key, beat);
+            note_end(e, &m->held[device][c][key], beat);
         }
     }
 }
@@ -445,14 +585,18 @@ static void input_event(Editor *e, DmMidiInputEvent event) {
     InputNote *note = &m->held[event.device][event.status & MIDI_CHANNEL_MASK][event.a];
 
     if (type == MIDI_NOTE_ON) {
-        note_end(e, note, event.a, beat);
-        *note = (InputNote){beat, origin, event.b, ed_note_port(e), true};
+        note_end(e, note, beat);
+        *note = (InputNote){beat, origin, m->note_map[event.a], event.b, ed_note_port(e), true};
         return;
     }
 
     if (type == MIDI_NOTE_OFF) {
-        note_end(e, note, event.a, beat);
+        note_end(e, note, beat);
         return;
+    }
+
+    if (type == MIDI_KEY_PRESSURE) {
+        event.a = note->active ? note->key : m->note_map[event.a];
     }
 
     DmAutomation point = {.beat = fmax(0, beat - origin),
@@ -485,16 +629,58 @@ static void input_event(Editor *e, DmMidiInputEvent event) {
 /* The state ed_keyboard_channel reads; the route is recomputed only when it changes. */
 static uint64_t route_signature(Editor *e) {
     uint64_t hash = 1469598103934665603ULL;
-    int values[] = {e->active,           e->context,          e->channel_selected,
-                    e->selected_channel, e->selected_pattern, e->pattern_channel,
-                    e->preview_program,  e->preview_override, e->pattern_mode,
-                    (int)ed_note_port(e)};
+    int values[] = {e->active,
+                    e->context,
+                    e->channel_selected,
+                    e->selected_channel,
+                    e->selected_pattern,
+                    e->pattern_channel,
+                    e->preview_program,
+                    e->preview_override,
+                    e->pattern_mode,
+                    (int)ed_note_port(e),
+                    e->percussion_window,
+                    ed_instrument_topmost(e),
+                    e->instrument_channel,
+                    e->instrument_program,
+                    e->instrument_drums};
 
     for (unsigned i = 0; i < sizeof(values) / sizeof(*values); ++i) {
         hash = (hash ^ (unsigned)values[i]) * 1099511628211ULL;
     }
 
     return hash;
+}
+
+/* Keyboard synth program for a window's route, as its computer keys set it. */
+static void window_program(Editor *e, int channel, int program, bool drums) {
+    if (e->preview_route >= 0 && e->preview_route != channel) {
+        dm_audio_keyboard_program(e->audio, e->preview_route, -1, false);
+    }
+
+    dm_audio_keyboard_program(e->audio, channel, program, drums);
+    e->preview_route = channel;
+}
+
+/* A topmost instrument window plays its instrument, and the Percussion window plays the mapping
+   being edited on the drum channel, as computer keys do there. Returns the route, or -1. */
+static int window_route(Editor *e) {
+    struct DmEditorMidiInput *m = e->midi_input_state;
+
+    if (e->active && ed_instrument_topmost(e)) {
+        m->window = 1;
+        window_program(e, e->instrument_channel, e->instrument_program, e->instrument_drums);
+        return e->instrument_channel;
+    }
+
+    if (e->active && e->percussion_window) {
+        m->window = 2;
+        window_program(e, MIDI_DRUM_CHANNEL, 0, true);
+        return MIDI_DRUM_CHANNEL;
+    }
+
+    m->window = 0;
+    return -1;
 }
 
 static void update_route(Editor *e, bool enabled) {
@@ -505,7 +691,12 @@ static void update_route(Editor *e, bool enabled) {
         return;
     }
 
-    int route = enabled ? ed_keyboard_channel(e) : 0;
+    int route = window_route(e);
+    enabled |= route >= 0;
+
+    if (route < 0) {
+        route = enabled ? ed_keyboard_channel(e) : 0;
+    }
 
     /* A different pattern, channel or port ends the take, as it does for the keyboard. */
     if (e->take_started && (m->pattern != e->selected_pattern || m->channel != e->pattern_channel ||
@@ -516,30 +707,66 @@ static void update_route(Editor *e, bool enabled) {
     }
 
     dm_audio_input_route(e->audio, route, enabled);
+    m->route = enabled ? route : -1;
     m->signature = route_signature(e);
+}
+
+/* Incoming notes play the percussion mapping on a drum route, as computer keys do; elsewhere
+   they play as themselves. The map is rebuilt each frame because undo, project changes, channel
+   percussion flags and the Percussion window can all change it. */
+static void update_note_map(Editor *e) {
+    struct DmEditorMidiInput *m = e->midi_input_state;
+    uint8_t map[MIDI_KEYS];
+
+    if (m->window == 2) {
+        ed_percussion_midi_draft_map(e, map);
+    } else if (m->route >= 0 &&
+               (m->window == 1 ? e->instrument_drums : ed_route_drums(e, m->route))) {
+        ed_percussion_midi_map(e, map);
+    } else {
+        for (unsigned key = 0; key < MIDI_KEYS; ++key) {
+            map[key] = (uint8_t)key;
+        }
+    }
+
+    if (memcmp(map, m->note_map, sizeof(map))) {
+        memcpy(m->note_map, map, sizeof(map));
+        dm_audio_input_note_map(e->audio, map);
+    }
 }
 
 void ed_midi_input_frame(Editor *e) {
     struct DmEditorMidiInput *m = e->midi_input_state;
 
+    if (m && m->draining) {
+        return;
+    }
+
+    ed_midi_bindings_tick(e, SDL_GetTicksNS());
+
     if (!m || !e->midi_input) {
+        ed_midi_bindings_flush(e, SDL_GetTicksNS());
         return;
     }
 
-    if (!dm_midi_input_begin(e->midi_input, 1)) {
-        if (m->dirty && SDL_GetTicks() - m->commit_tick >= DM_MIDI_COMMIT_MS) {
-            commit(e, false);
-        }
-
-        return;
-    }
-
+    /* The route and note map follow the editor before input arrives, so the first note after a
+       pattern or mapping change already sounds on the new destination. */
     if (e->take_started) {
         resolve_take_pattern(e);
     }
 
     bool enabled = e->active && !(e->context == 1 && !e->channel_selected);
     update_route(e, enabled);
+    update_note_map(e);
+
+    if (!dm_midi_input_begin(e->midi_input, 1)) {
+        if (m->dirty && SDL_GetTicks() - m->commit_tick >= DM_MIDI_COMMIT_MS) {
+            commit(e, false);
+        }
+
+        ed_midi_bindings_flush(e, SDL_GetTicksNS());
+        return;
+    }
 
     if (dm_midi_input_overflow(e->midi_input, 1)) {
         close_notes(e, now_beat(e));
@@ -547,15 +774,54 @@ void ed_midi_input_frame(Editor *e) {
     }
 
     DmMidiInputEvent event;
+    DmMidiInputStatus devices[DM_MIDI_INPUTS];
+    bool device_snapshot = false;
     unsigned n = 0;
+    m->draining = true;
 
     for (; n < DM_MIDI_RECORD_DRAIN && dm_midi_input_pop(e->midi_input, 1, &event); ++n) {
-        if (enabled) {
+        if (!(event.flags & DM_MIDI_EVENT_RELEASE)) {
+            m->activity = event;
+        }
+
+        if (event.flags & (DM_MIDI_EVENT_BOUND | DM_MIDI_EVENT_LEARN)) {
+            if (!m->finishing) {
+                if (!device_snapshot) {
+                    dm_midi_input_status(e->midi_input, devices);
+                    device_snapshot = true;
+                }
+
+                ed_midi_binding_event(e, event, devices[event.device].name);
+            }
+
+            continue;
+        }
+
+        if (event.flags & DM_MIDI_EVENT_DEVICE_RELEASE) {
+            ed_midi_binding_event(e, event, "");
+        }
+
+        enabled = e->active && !(e->context == 1 && !e->channel_selected);
+        bool listened = ed_percussion_midi_listen(e, event);
+
+        if (!listened || (event.flags & DM_MIDI_EVENT_DEVICE_RELEASE)) {
+            track_lit(m, event);
+        }
+
+        if (!listened && enabled) {
             input_event(e, event);
         }
     }
 
     dm_midi_input_end(e->midi_input, 1);
+    m->draining = false;
+
+    if (device_snapshot) {
+        update_route(e, e->active && !(e->context == 1 && !e->channel_selected));
+        update_note_map(e);
+    }
+
+    ed_midi_bindings_flush(e, SDL_GetTicksNS());
     DmMidiClockValue clock;
 
     /* A wrap with no input after it still ends held notes at the loop end. */
@@ -585,7 +851,8 @@ void ed_midi_input_finish(Editor *e, bool publish) {
 
     m->finishing = true;
 
-    if (e->take_started || (e->recording_take && !e->take_snapshot) || e->wait_armed) {
+    if (!m->draining &&
+        (e->take_started || (e->recording_take && !e->take_snapshot) || e->wait_armed)) {
         ed_midi_input_frame(e);
     }
 
@@ -600,6 +867,7 @@ void ed_midi_input_free(Editor *e) {
     dm_audio_attach_midi_input(e->audio, NULL);
     dm_midi_input_destroy(e->midi_input);
     e->midi_input = NULL;
+    dm_bytes_free(&e->midi_bindings);
 
     if (e->midi_input_state) {
         dm_bytes_free(&e->midi_input_state->notes);

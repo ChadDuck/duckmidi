@@ -1,7 +1,7 @@
 #ifndef DM_AUDIO_SAMPLES_H
 #define DM_AUDIO_SAMPLES_H
 
-#include "../shared/sample_export_snapshot.h"
+#include "../../shared/sample/export_snapshot.h"
 #include <fluidsynth.h>
 
 typedef struct DmSampleSynth DmSampleSynth;

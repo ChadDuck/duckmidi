@@ -1,7 +1,7 @@
 #ifndef DM_SAMPLE_BATCH_H
 #define DM_SAMPLE_BATCH_H
 
-#include "sample_analysis.h"
+#include "analysis.h"
 
 enum { DM_SAMPLE_BATCH_MAX = 256, DM_SAMPLE_BATCH_PEAKS = 4096 };
 

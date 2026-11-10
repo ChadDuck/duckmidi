@@ -1,4 +1,4 @@
-#include "duck.h"
+#include "core/duck.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>

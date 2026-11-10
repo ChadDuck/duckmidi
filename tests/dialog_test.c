@@ -1,7 +1,7 @@
 #define SDL_MAIN_HANDLED
 #define main duckmidi_app_main
 #include "../src/main.c"
-#include "editor_internal.h"
+#include "editor/internal.h"
 #undef main
 #include <windows.h>
 #include <assert.h>

@@ -1,4 +1,4 @@
-#include "editor_internal.h"
+#include "editor/internal.h"
 #include "text/en.h"
 
 typedef enum {
@@ -291,8 +291,11 @@ void ed_song_event_dialog(Editor *e) {
         return;
     }
 
-    if (ui_dialog(DM_TEXT_SONG_EVENT, &e->song_event, fminf(1000, ui_display().x - 40),
-                  ui_display().y * .6f)) {
+    /* Add fits its fields; Edit's panels take the spare height, first 60% of the window. */
+    float height = ui_display().y * .6f;
+
+    if (ui_flexible_dialog(DM_TEXT_SONG_EVENT, &e->song_event, fminf(1000, ui_display().x - 40),
+                           height, false, e->song_event_add)) {
         ui_width(140);
 
         if (ui_combo(DM_TEXT_SONG_EVENT_MODE,
@@ -347,7 +350,7 @@ void ed_song_event_dialog(Editor *e) {
             }
         } else {
             size_t count = ed_song_event_rows(e, start, end);
-            ed_midi_event_panels(e, count, &e->song_event_split);
+            ed_midi_event_panels(e, count, &e->song_event_split, ui_flex(200, height - 90));
         }
     }
 
