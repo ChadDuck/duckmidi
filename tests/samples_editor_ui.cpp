@@ -181,8 +181,9 @@ extern "C" void test_samples_ui(Editor *e, const char *root, void (*check)(bool,
               !ed_samples_drop_target(e, overlap, nullptr),
           "frontmost Preferences wins over the overlapping Samples drop target");
     e->preferences = false;
-    ImGui::FocusWindow(window);
+    ImGui::FocusWindow(ImGui::FindWindowByName("##workspace"));
     frame(e);
+    check(!ui_window_focused("Samples"), "the workspace has focus before the sample drop");
     SDL_Event enter = {};
     enter.type = SDL_EVENT_DROP_BEGIN;
     editor_event(e, &enter);
@@ -190,7 +191,7 @@ extern "C" void test_samples_ui(Editor *e, const char *root, void (*check)(bool,
           "a drag without a position cannot show a premature generic overlay");
     drop(e, SDL_EVENT_DROP_BEGIN, rect);
     check(ed_samples_drop_target(e, e->drop_position, nullptr),
-          "the initial valid drag position resolves the Samples target immediately");
+          "the initial drag position resolves the visible, unfocused Samples target");
     drop(e, SDL_EVENT_DROP_POSITION, rect);
     drop(e, SDL_EVENT_DROP_FILE, rect, "agents/reports/audio-export/codec-0-0.wav");
     drop(e, SDL_EVENT_DROP_FILE, rect, "agents/reports/audio-export/tone_B4.aiff");
@@ -203,7 +204,7 @@ extern "C" void test_samples_ui(Editor *e, const char *root, void (*check)(bool,
         SDL_Delay(2);
     }
 
-    check(api->count(tool->instance) == 3, "collect the whole file-drop batch");
+    check(api->count(tool->instance) == 3, "an unfocused Samples window accepts the whole batch");
     DmeSampleDraft failed = {};
     check(api->draft(tool->instance, 2, &failed) == DME_OK && failed.error.length,
           "corrupt item remains alongside successful imports");

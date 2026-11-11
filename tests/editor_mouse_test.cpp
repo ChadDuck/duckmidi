@@ -88,6 +88,22 @@ extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) 
     mouse_frame(e, gx + 4 * 80 + 21, y, false);
     check(e->project.patterns[0].count == count + 2, "slice tool splits a note");
     e->tool = 1;
+    ed_deselect_notes(&e->project.patterns[0]);
+    auto *notes = e->project.patterns[0].notes;
+    notes[0].selected = 1;
+    mouse_frame(e, x + 4, y, true);
+    check(e->marquee && !e->drag, "the Marquee tool starts a box over an existing note");
+    mouse_frame(e, gx + 4 * 80 + 65, y + 14, true);
+    check(!notes[0].selected && notes[index].selected && notes[index + 1].selected,
+          "an unmodified drag replaces the previous note selection");
+    mouse_frame(e, gx + 4 * 80 + 65, y + 14, true, false, true);
+    check(notes[0].selected && notes[index].selected && notes[index + 1].selected,
+          "pressing Shift mid-drag restores the previous notes");
+    mouse_frame(e, x + 8, y + 14, true, false, true);
+    mouse_frame(e, x + 8, y + 14, false, false, true);
+    check(notes[0].selected && notes[index].selected && !notes[index + 1].selected &&
+              e->edit_focus == FOCUS_NOTES,
+          "shrinking an additive note box drops notes outside it and keeps piano roll focus");
     mouse_frame(e, gx + 4 * 80 - 4, y - 14, true);
     mouse_frame(e, gx + 4 * 80 + 65, y + 14, true);
     mouse_frame(e, gx + 4 * 80 + 65, y + 14, false);
@@ -97,7 +113,7 @@ extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) 
         selected += e->project.patterns[0].notes[i].selected != 0;
     }
 
-    check(selected >= 2, "marquee selects intersecting notes");
+    check(selected >= 2 && !notes[0].selected, "the next plain marquee replaces the selection");
     SDL_Event remove;
     SDL_zero(remove);
     remove.type = SDL_EVENT_KEY_DOWN;
@@ -1126,6 +1142,27 @@ static void metadata_export_ui(Editor *e, void (*check)(bool, const char *)) {
     e->export_window = false;
 }
 
+static void playlist_marquee_ui(Editor *e, void (*check)(bool, const char *)) {
+    editor_smoke(e);
+    e->automation_open = false;
+    e->tool = 0;
+    e->playlist_view = {1, 0, 0, 0};
+    mouse_frame(e, 0, 0, false);
+    auto *playlist = find_window("/Playlist_");
+    float clip_x = playlist->WorkRect.Min.x + e->label_width + 4 * 40 + 14;
+    float clip_y = playlist->WorkRect.Min.y + ImGui::GetFrameHeight() +
+                   ImGui::GetStyle().ItemSpacing.y + 28 + 64 + 20;
+    e->project.clips[0].selected = 1;
+    mouse_frame(e, clip_x, clip_y, false, false, true, true);
+    mouse_frame(e, clip_x, clip_y, true, false, true, true);
+    check(e->marquee && !e->drag, "Ctrl+Shift starts a marquee over a clip");
+    mouse_frame(e, clip_x + 30, clip_y + 15, true, false, true, true);
+    mouse_frame(e, clip_x + 30, clip_y + 15, false, false, true);
+    check(e->project.clips[0].selected && e->project.clips[2].selected &&
+              e->project.clips[2].beat == 4 && e->edit_focus == FOCUS_PLAYLIST && !e->marquee,
+          "Ctrl+Shift marquee adds placements from over a clip and keeps playlist focus");
+}
+
 extern "C" void test_editor_updates(Editor *e, void (*check)(bool, const char *)) {
     editor_smoke(e);
     group_drag(e, check);
@@ -1139,6 +1176,7 @@ extern "C" void test_editor_updates(Editor *e, void (*check)(bool, const char *)
     transport_shortcuts_ui(e, check);
     edit_gestures_ui(e, check);
     metadata_export_ui(e, check);
+    playlist_marquee_ui(e, check);
 }
 
 extern "C" void test_editor_stop(Editor *e) {
@@ -2696,6 +2734,10 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
 #endif
 
 #ifdef DM_TEST_SOURCE_WORKFLOW
+extern "C" void test_source_workflow_focus_workspace() {
+    ImGui::FocusWindow(ImGui::FindWindowByName("##workspace"));
+}
+
 static UiRect source_workflow_lane() {
     float x = FLT_MAX, y = FLT_MAX, right = -FLT_MAX, bottom = -FLT_MAX;
 
@@ -2808,10 +2850,30 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     check(e->project.automation_count == count &&
               e->event_selection.size == 2 * sizeof(DmAutomation),
           "standalone Point editor supports Ctrl marquee");
+    mouse_frame(e, gx + 210, gy + 5, true, false, true, true);
+    mouse_frame(e, gx + 250, gy + h - 3, true, false, true, true);
+    mouse_frame(e, gx + 250, gy + h - 3, false, false, true);
+    check(e->event_selection.size == 3 * sizeof(DmAutomation) && e->edit_focus == FOCUS_EVENTS,
+          "a Shift marquee adds the third Point event to an existing multi-selection");
+
     e->event_selection.size = 0;
     p.kind = 0;
     e->automation_browser = false;
     e->focus_pattern = false;
+    e->automation_cc = -3;
+    e->roll_view.scroll_x = 0;
+    p.notes[0].selected = 1;
+    dm_note_add(&p, {1.5, 1, 64, 70, 0});
+    mouse_frame(e, 0, 0, false);
+    lane = source_workflow_lane();
+    mouse_frame(e, lane.x + 100, lane.y + 10, false, false, true, true);
+    mouse_frame(e, lane.x + 100, lane.y + 10, true, false, true, true);
+    mouse_frame(e, lane.x + 145, lane.y + lane.h - 5, true, false, true, true);
+    mouse_frame(e, lane.x + 145, lane.y + lane.h - 5, false, false, true);
+    check(p.notes[0].selected && p.notes[1].selected && e->edit_focus == FOCUS_EVENTS &&
+              !e->marquee,
+          "an additive velocity marquee selects notes and keeps Events focus");
+
     e->roll_view.scroll_x = 80000;
     e->playlist_view.scroll_x = 120000;
     mouse_frame(e, 0, 0, false);

@@ -160,6 +160,7 @@ void ed_split_note(DmPattern *p, size_t index, double at) {
     }
 
     DmNote right = *n;
+    right.bend_id = 0;
     right.beat = at;
     right.length = n->beat + n->length - at;
     n->length = at - n->beat;
@@ -775,14 +776,11 @@ void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, cons
     }
 }
 
-void ed_marquee_outline(Editor *e, int context, UiMouse mouse) {
-    if (e->marquee && e->context == context) {
-        UiRect rect = {
-            fminf(mouse.pos.x, e->marquee_start.x), fminf(mouse.pos.y, e->marquee_start.y),
-            fabsf(mouse.pos.x - e->marquee_start.x), fabsf(mouse.pos.y - e->marquee_start.y)};
-        ui_border(rect, GREEN, 0, 1);
+void ed_marquee_outline(Editor *e, EditFocus focus, UiMouse mouse) {
+    if (e->marquee && ed_selection_focus(e) == focus) {
+        ui_border(ed_marquee_box(e, mouse), GREEN, 0, 1);
 
-        if (mouse.released) {
+        if (mouse.released || !mouse.left) {
             e->marquee = false;
         }
     }
@@ -881,8 +879,10 @@ static void start_placement_copy(Editor *e, UiMouse mouse, int hit) {
 
 void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, float scale,
                        const int *list, int count, UiMouse mouse, int hit) {
-    if (hit >= 0 && !e->song_event && ed_inside(mouse.pos, grid) && e->tool != 2 && e->tool != 3 &&
-        ed_gesture_pressed(e, GESTURE_COPY_PLACEMENTS, mouse)) {
+    bool marquee = mouse.clicked && (mouse.ctrl || e->tool == 1);
+
+    if (hit >= 0 && !marquee && !e->song_event && ed_inside(mouse.pos, grid) && e->tool != 2 &&
+        e->tool != 3 && ed_gesture_pressed(e, GESTURE_COPY_PLACEMENTS, mouse)) {
         start_placement_copy(e, mouse, hit);
         return;
     }
@@ -897,10 +897,8 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
         return;
     }
 
-    if (mouse.ctrl) {
-        ed_deselect(e);
-        e->marquee = true;
-        e->marquee_start = mouse.pos;
+    if (mouse.ctrl || (marquee && line != 0)) {
+        ed_marquee_begin(e, FOCUS_PLAYLIST, mouse);
         return;
     }
 
@@ -914,10 +912,6 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
         ed_song_event_open_bar(e, beat >= start && beat < end ? beat : position, add);
     } else if (hit >= 0) {
         ed_playlist_hit_click(e, mouse, hit, beat);
-    } else if (e->tool == 1) {
-        ed_deselect(e);
-        e->marquee = true;
-        e->marquee_start = mouse.pos;
     } else if (line <= count) {
         /* Patterns are placed by dragging their cards; a click only clears the selection. */
         ed_deselect(e);
@@ -973,10 +967,16 @@ static void draw_playlist_clip(Editor *e, DmClip *clip, UiRect box, UiRect grid,
 static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale, float row,
                           const int *list, int count, UiMouse mouse) {
     int hit = -1;
+    bool marquee = e->marquee && ed_selection_focus(e) == FOCUS_PLAYLIST;
+    UiRect selection = ed_marquee_box(e, mouse);
 
     for (size_t i = 0; i < e->project.clip_count; ++i) {
         DmClip *clip = &e->project.clips[i];
         int row_index = clip_row(*clip, list, count);
+
+        if (marquee) {
+            clip->selected = ed_marquee_retains(e, i, mouse.shift);
+        }
 
         if (row_index < 0) {
             continue;
@@ -988,6 +988,10 @@ static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale
 
         if (!ed_intersects(box, grid)) {
             continue;
+        }
+
+        if (marquee && ed_intersects(box, selection)) {
+            clip->selected = 1;
         }
 
         draw_playlist_clip(e, clip, box, grid, scale);
@@ -1003,11 +1007,6 @@ static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale
             if (e->drag_edge) {
                 ui_resize_cursor(false);
             }
-        }
-
-        if (e->marquee && e->context == 1) {
-            UiRect selection = ed_marquee_box(e, mouse);
-            clip->selected = ed_intersects(box, selection);
         }
     }
 
@@ -1199,6 +1198,6 @@ void ed_playlist(Editor *e, float width, float height) {
     }
 
     ed_playlist_drag(e, r, v, row, scale, list, count, mouse);
-    ed_marquee_outline(e, 1, mouse);
+    ed_marquee_outline(e, FOCUS_PLAYLIST, mouse);
     ui_child_end();
 }

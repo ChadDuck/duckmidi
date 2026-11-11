@@ -1,5 +1,20 @@
 # duckmidi changelog
 
+# 0.12.5
+
+1. Volume and Pan are shown in the Piano Roll's 'Events' section.
+    - There was no *easy* way of editing volume and pan events on imported MIDI files otherwise.
+    - This was purposefully set by me, so it's a revert, my bad.
+2. Mapping rows would sometimes trigger a UI warning. Fixed.
+3. Each event type now remembers its own display mode (Point or Graph); also asks for confirmation before switching / converting.
+4. Switching between patterns now clears the piano roll's selection.
+5. Pitch bends drawn on the piano roll, starting from a note, now move with it as a group. Editing the root point in the Piano Roll 'Events' section makes the bend independent.
+    - I'm still considering the logic behind how this should function.
+6. A 'detached' Pitch bend that starts from a root note now returns to a neutral position, preventing a pitch bend 'jump'.
+7. Some Percussion labels and mapping were missing names or descriptions. Fixed.
+8. Holding shift while selecting a group of notes wouldn't *add* to the selection. Fixed.
+9. 'Samples' and 'Preferences' windows now accept file drops when the respective window is unfocused.
+
 # 0.12.4
 
 1. MIDI playback scheduler was dropping program changes at the beginning of songs. Fixed.

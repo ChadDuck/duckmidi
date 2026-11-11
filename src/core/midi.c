@@ -1687,32 +1687,209 @@ static bool curve_sample(Midi *m, const DmClip *clip, DmAutomation a, double bea
                        (a.type & MIDI_SHORT_MASK) == MIDI_PROGRAM ? 2 : 3);
 }
 
-static bool curve_segment(const DmProject *p, Midi *m, const DmClip *clip, size_t index) {
+typedef struct {
+    int curve, root, range;
+    uint8_t port;
+    double scale;
+} BendRebase;
+
+static const DmAutomation *curve_next(const DmProject *p, size_t index) {
+    DmAutomation a = p->automation[index];
+
+    for (size_t j = index + 1; j < p->automation_count; ++j) {
+        const DmAutomation *b = &p->automation[j];
+
+        if (b->pattern == a.pattern && b->port == a.port && b->curve == a.curve &&
+            b->type == a.type && (a.type != MIDI_CONTROL || b->a == a.a)) {
+            return b;
+        }
+    }
+
+    return NULL;
+}
+
+static int bend_value(DmAutomation point) {
+    return point.a + (point.b << 7);
+}
+
+static bool bend_needs_rebase(DmAutomation root) {
+    return root.bend_root == DM_BEND_ROOT_PITCH && bend_value(root) != MIDI_BEND_CENTER;
+}
+
+/* Compare in wheel units so an authored semitone can differ by one unit after quantization. */
+static bool bend_root_matches(const DmPattern *pattern, DmAutomation root, double range) {
+    bool matches = false;
+    double offset = (bend_value(root) - MIDI_BEND_CENTER) * range;
+
+    for (size_t i = 0; i < pattern->count; ++i) {
+        DmNote note = pattern->notes[i];
+
+        if (note.port != root.port) {
+            continue;
+        }
+
+        if (root.bend_note && note.bend_id == root.bend_note) {
+            return false;
+        }
+
+        if (note.beat <= root.beat && root.beat < note.beat + note.length &&
+            fabs((note.key - root.anchor) * MIDI_BEND_CENTER - offset) <= range + 1e-9) {
+            matches = true;
+        }
+    }
+
+    return matches;
+}
+
+static int rebase_wheel(const BendRebase *rebase, double value) {
+    return (int)lround(fmax(0, fmin(MIDI_BEND_MAX,
+                                  MIDI_BEND_CENTER + (value - rebase->root) * rebase->scale)));
+}
+
+/* Increase the emitted sensitivity only when the translated curve would exceed the wheel range.
+   Include the outgoing curve's extremum so a shaped segment keeps its bend. */
+static BendRebase bend_rebase(const DmProject *p, DmAutomation root, double range) {
+    BendRebase rebase = {.curve = root.curve,
+                         .root = bend_value(root),
+                         .port = root.port,
+                         .scale = 1};
+    double low = rebase.root, high = rebase.root;
+    bool has_range = false;
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        DmAutomation a = p->automation[i];
+
+        if (a.pattern != root.pattern || a.port != root.port || a.curve != root.curve) {
+            continue;
+        }
+
+        if (a.type == MIDI_CONTROL && a.a == MIDI_CC_DATA) {
+            has_range = true;
+        }
+
+        if (a.type != MIDI_PITCH_BEND) {
+            continue;
+        }
+
+        double value = bend_value(a);
+        low = fmin(low, value);
+        high = fmax(high, value);
+
+        if (!dm_automation_curves(a) || a.bend == 0) {
+            continue;
+        }
+
+        const DmAutomation *next = curve_next(p, i);
+
+        if (next) {
+            double t = .5 + (bend_value(*next) - value) / (8 * a.bend);
+
+            if (t > 0 && t < 1) {
+                value = dm_curve_value(a, *next, t);
+                low = fmin(low, value);
+                high = fmax(high, value);
+            }
+        }
+    }
+
+    double factor = fmax((rebase.root - low) / MIDI_BEND_CENTER,
+                         (high - rebase.root) / (MIDI_BEND_MAX - MIDI_BEND_CENTER));
+
+    if (has_range && factor > 1 && range < 127) {
+        rebase.range = (int)fmin(127, ceil(range * factor));
+        rebase.scale = range / rebase.range;
+    }
+
+    return rebase;
+}
+
+static bool collect_bend_rebases(const DmProject *p, int pattern_id, DmBytes *rebases) {
+    const DmPattern *pattern = &p->patterns[pattern_id];
+
+    if (pattern->kind || dm_graph_resolution(pattern, -2)) {
+        return true;
+    }
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        DmAutomation root = p->automation[i];
+
+        if (root.pattern != pattern_id || root.curve <= 0 || !bend_needs_rebase(root)) {
+            continue;
+        }
+
+        double range = dm_pitch_range(p->automation, p->automation_count, root);
+
+        if (bend_root_matches(pattern, root, range)) {
+            BendRebase rebase = bend_rebase(p, root, range);
+
+            if (!dm_bytes(rebases, &rebase, sizeof(rebase))) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+static const BendRebase *find_bend_rebase(const DmBytes *rebases, DmAutomation point) {
+    const BendRebase *items = (const BendRebase *)rebases->data;
+
+    for (size_t i = 0; point.curve > 0 && i < rebases->size / sizeof(*items); ++i) {
+        if (items[i].curve == point.curve && items[i].port == point.port) {
+            return &items[i];
+        }
+    }
+
+    return NULL;
+}
+
+static DmAutomation rebase_discrete_bend(const DmProject *p, DmAutomation point) {
+    if (point.curve || !bend_needs_rebase(point) || p->patterns[point.pattern].kind ||
+        dm_graph_resolution(&p->patterns[point.pattern], -2)) {
+        return point;
+    }
+
+    double range = dm_pitch_range(p->automation, p->automation_count, point);
+
+    if (bend_root_matches(&p->patterns[point.pattern], point, range)) {
+        point.a = MIDI_BEND_CENTER & MIDI_DATA_MASK;
+        point.b = MIDI_BEND_CENTER >> 7;
+    }
+
+    return point;
+}
+
+static bool curve_segment(const DmProject *p, Midi *m, const DmClip *clip, size_t index,
+                          const BendRebase *rebase) {
     DmAutomation a = p->automation[index];
 
     if (!dm_automation_curves(a)) {
         return true;
     }
 
-    for (size_t j = index + 1; j < p->automation_count; ++j) {
-        DmAutomation b = p->automation[j];
+    const DmAutomation *next = curve_next(p, index);
 
-        if (b.pattern != a.pattern || b.curve != a.curve || b.type != a.type ||
-            (a.type == MIDI_CONTROL && b.a != a.a)) {
-            continue;
+    if (!next) {
+        return true;
+    }
+
+    DmAutomation b = *next;
+
+    if (a.type == MIDI_PITCH_BEND && !a.curve) {
+        a = rebase_discrete_bend(p, a);
+        b = rebase_discrete_bend(p, b);
+    }
+
+    int steps = (int)fmin(8192, fmax(1, ceil((b.beat - a.beat) * 48)));
+
+    for (int step = 1; step < steps; ++step) {
+        double t = (double)step / steps, value = dm_curve_value(a, b, t);
+        int wheel = rebase && a.type == MIDI_PITCH_BEND ? rebase_wheel(rebase, value)
+                                                        : (int)llround(value);
+
+        if (!curve_sample(m, clip, a, a.beat + (b.beat - a.beat) * t, wheel)) {
+            return false;
         }
-
-        int steps = (int)fmin(8192, fmax(1, ceil((b.beat - a.beat) * 48)));
-
-        for (int step = 1; step < steps; ++step) {
-            double t = (double)step / steps;
-            int value = (int)llround(dm_curve_value(a, b, t));
-
-            if (!curve_sample(m, clip, a, a.beat + (b.beat - a.beat) * t, value)) {
-                return false;
-            }
-        }
-        break;
     }
 
     return true;
@@ -1799,18 +1976,6 @@ static bool collect_portamento_gate(const DmProject *p, Midi *m, const DmClip *c
     return true;
 }
 
-/* Graph lanes hold bars: pitch bend and continuous controllers, as the editor's Graph mode
-   decides (ed_graph_lane). Index 0..127 for controllers, 128 for pitch bend, -1 otherwise. */
-static int graph_lane(DmAutomation a) {
-    if (a.type == MIDI_PITCH_BEND) {
-        return 128;
-    }
-
-    bool point_only = a.a == MIDI_CC_SUSTAIN || a.a == MIDI_CC_SOSTENUTO ||
-                      a.a == MIDI_CC_PORTAMENTO_TIME || curve_setup(a);
-    return a.type == MIDI_CONTROL && !point_only ? a.a : -1;
-}
-
 /* What a graph lane returns to after its last bar: the values the editor starts a lane from
    (ed_value_before), with no pitch bend. */
 static int graph_default(const DmProject *p, const DmClip *clip, int lane) {
@@ -1834,23 +1999,25 @@ static int graph_default(const DmProject *p, const DmClip *clip, int lane) {
 static bool graph_returns(const DmProject *p, Midi *m, const DmClip *clip) {
     const DmPattern *pat = &p->patterns[clip->pattern];
 
-    if (!pat->graph || pat->mode) {
+    if (!dm_pattern_has_graph(pat)) {
         return true;
     }
 
-    uint8_t seen[DM_NOTE_PORTS][(129 + 7) / 8] = {{0}};
-    double end = clip_end(p, clip), cell = 4.0 / pat->graph;
+    uint8_t seen[DM_NOTE_PORTS][(DM_GRAPH_LANES + 7) / 8] = {{0}};
+    double end = clip_end(p, clip);
 
     for (size_t j = p->automation_count; j-- > 0;) {
         DmAutomation a = p->automation[j];
-        int lane = graph_lane(a);
+        int lane = dm_automation_graph_lane(a);
 
-        if (a.pattern != clip->pattern || a.beat > end || lane < 0 || a.curve ||
+        if (a.pattern != clip->pattern || a.beat > end || lane < 0 ||
+            pat->graph_lanes[lane] <= DM_GRAPH_POINT || a.curve ||
             a.port >= DM_NOTE_PORTS || seen[a.port][lane / 8] & (1u << lane % 8)) {
             continue;
         }
 
         seen[a.port][lane / 8] |= (uint8_t)(1u << lane % 8);
+        double cell = 4.0 / pat->graph_lanes[lane];
 
         if (!curve_sample(m, clip, a, fmin(a.beat + cell, end), graph_default(p, clip, lane))) {
             return false;
@@ -1863,32 +2030,50 @@ static bool graph_returns(const DmProject *p, Midi *m, const DmClip *clip) {
 }
 
 static bool collect_pattern_automation(const DmProject *p, Midi *m, const DmClip *clip) {
-    if (!graph_returns(p, m, clip)) {
-        return false;
-    }
+    DmBytes rebases = {0};
+    bool ok = graph_returns(p, m, clip) && collect_bend_rebases(p, clip->pattern, &rebases);
 
-    for (size_t j = 0; j < p->automation_count; ++j) {
+    for (size_t j = 0; ok && j < p->automation_count; ++j) {
         DmAutomation a = p->automation[j];
 
         if (a.pattern != clip->pattern || a.beat > clip_end(p, clip)) {
             continue;
         }
 
-        if (!collect_portamento_gate(p, m, clip, j) || !curve_segment(p, m, clip, j)) {
-            return false;
+        const BendRebase *rebase = find_bend_rebase(&rebases, a);
+
+        if (!collect_portamento_gate(p, m, clip, j) || !curve_segment(p, m, clip, j, rebase)) {
+            ok = false;
+            break;
+        }
+
+        if (a.type == MIDI_PITCH_BEND) {
+            if (rebase) {
+                int wheel = rebase_wheel(rebase, bend_value(a));
+                a.a = wheel & MIDI_DATA_MASK;
+                a.b = wheel >> 7;
+            } else {
+                a = rebase_discrete_bend(p, a);
+            }
+        } else if (rebase && rebase->range && a.type == MIDI_CONTROL) {
+            if (a.a == MIDI_CC_DATA) {
+                a.b = rebase->range;
+            } else if (a.a == MIDI_CC_DATA_LSB) {
+                a.b = 0;
+            }
         }
 
         uint8_t message[] = {a.type | clip->channel, a.a, a.b};
+        ok = add_message(m, clip_time(clip, a.beat), clip->channel + 1, message,
+                         (a.type & MIDI_SHORT_MASK) == MIDI_PROGRAM ? 2 : 3);
 
-        if (!add_message(m, clip_time(clip, a.beat), clip->channel + 1, message,
-                         (a.type & MIDI_SHORT_MASK) == MIDI_PROGRAM ? 2 : 3)) {
-            return false;
+        if (ok) {
+            m->items[m->count - 1].phase = curve_phase(p, a);
         }
-
-        m->items[m->count - 1].phase = curve_phase(p, a);
     }
 
-    return true;
+    dm_bytes_free(&rebases);
+    return ok;
 }
 
 static bool collect_clip_notes(const DmProject *p, Midi *m, const DmClip *clip) {

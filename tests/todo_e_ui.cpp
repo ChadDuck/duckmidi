@@ -149,9 +149,35 @@ static UiRect event_lane() {
     return {x, y, right - x, bottom - y};
 }
 
+static void select_event(Editor *e, Check check, const char *window, const char *event) {
+    auto *w = find_window(window);
+    check(w != nullptr, "event panel renders");
+    ImGui::ActivateItemByID(w->GetID("##Event type"));
+    frame(e, -100, -100, false);
+    frame(e, -100, -100, false);
+    auto &popups = ImGui::GetCurrentContext()->OpenPopupStack;
+    check(popups.Size && popups.back().Window, "the event selector opens");
+    ImGui::ActivateItemByID(popups.back().Window->GetID(event));
+    frame(e, -100, -100, false);
+    frame(e, -100, -100, false);
+}
+
+static void switch_event_modes(Editor *e, Check check, const char *window, int resolution) {
+    select_event(e, check, window, DM_TEXT_PITCH_BEND);
+    check(e->automation_cc == -2 && !ed_graph_resolution(e) && !e->graph_switch,
+          "selecting pitch bend opens Point without a conversion warning");
+    select_event(e, check, window, DM_TEXT_EXPRESSION_CC11);
+    check(e->automation_cc == MIDI_CC_EXPRESSION && !ed_graph_resolution(e) && !e->graph_switch,
+          "selecting another event keeps its Point view");
+    select_event(e, check, window, DM_TEXT_MODULATION_CC1);
+    check(e->automation_cc == MIDI_CC_MODULATION && ed_graph_resolution(e) == resolution &&
+              !e->graph_switch,
+          "returning to modulation restores its Graph view and resolution");
+}
+
 static void event_points(Editor *e, Check check) {
     auto &p = e->project.patterns[0];
-    p.graph = 0;
+    p.graph_lanes[MIDI_CC_MODULATION] = 0;
     e->automation_open = true;
     e->automation_cc = 1;
     e->automation_raw = false;
@@ -174,7 +200,7 @@ static void event_points(Editor *e, Check check) {
     click(e, lane.x + 120, y, true);
     check(!e->automation_all && e->automation_node < 0 && e->project.automation_count == 2,
           "a right click in the event lane clears the point selection");
-    p.graph = 16;
+    p.graph_lanes[MIDI_CC_MODULATION] = 16;
     e->automation_all = true;
     frame(e, 0, 0, false);
     click(e, lane.x + 120, y, true);
@@ -184,7 +210,31 @@ static void event_points(Editor *e, Check check) {
     e->cursor_beat[1] = 1.1;
     frame(e, 0, 0, false);
     capture(e, "agents/reports/todo-e-2026-11-10/graph-playhead-pattern.bmp");
-    p.graph = 0;
+    switch_event_modes(e, check, "/Piano roll_", 16);
+    select_event(e, check, "/Piano roll_", DM_TEXT_VOLUME_CC7);
+    check(e->automation_cc == MIDI_CC_VOLUME, "the note pattern's event dropdown offers Volume");
+    auto *window = find_window("/Piano roll_");
+    ImGui::ActivateItemByID(window->GetID("##Event mode"));
+    frame(e, -100, -100, false);
+    frame(e, -100, -100, false);
+    auto &popups = ImGui::GetCurrentContext()->OpenPopupStack;
+    check(popups.Size && popups.back().Window, "the Volume lane offers a mode dropdown");
+    ImGui::ActivateItemByID(popups.back().Window->GetID(DM_TEXT_LFO));
+    frame(e, -100, -100, false);
+    check(popups.Size && !p.mode, "the pattern Volume mode dropdown excludes LFO");
+    ImGui::ActivateItemByID(popups.back().Window->GetID(DM_TEXT_GRAPH));
+    frame(e, -100, -100, false);
+    frame(e, -100, -100, false);
+    check(ed_graph_resolution(e) == 16, "the pattern Volume mode dropdown activates Graph");
+
+    select_event(e, check, "/Piano roll_", DM_TEXT_PAN_CC10);
+    check(e->automation_cc == MIDI_CC_PAN && !ed_graph_resolution(e),
+          "the note pattern's event dropdown offers an independent Pan lane");
+    select_event(e, check, "/Piano roll_", DM_TEXT_VOLUME_CC7);
+    check(ed_graph_resolution(e) == 16, "the Volume lane remembers Graph across lane changes");
+    p.graph_lanes[MIDI_CC_VOLUME] = 0;
+    e->automation_cc = MIDI_CC_MODULATION;
+    p.graph_lanes[MIDI_CC_MODULATION] = 0;
     e->automation_open = false;
 }
 
@@ -269,10 +319,17 @@ static void lfo_previews(Editor *e, Check check, int id) {
 }
 
 extern "C" void test_todo_e_ui(Editor *e, Check check) {
-    lfo_previews(e, check, lfo_pattern(e));
+    int id = lfo_pattern(e);
+    lfo_previews(e, check, id);
     SDL_CreateDirectory("agents/reports/todo-e-2026-11-10");
     song_event_window(e, check);
     playlist(e, check);
     piano_roll(e, check);
     event_points(e, check);
+    DmPattern &p = e->project.patterns[id];
+    p.mode = 0;
+    p.graph_lanes[MIDI_CC_MODULATION] = 32;
+    ed_open_pattern(e, id, false);
+    frame(e, -100, -100, false);
+    switch_event_modes(e, check, "/Event Editor_", 32);
 }

@@ -391,10 +391,7 @@ static bool action_pattern(Editor *e, int a) {
         if (ed_selection_focus(e) == FOCUS_EVENTS && ed_graph_resolution(e)) {
             ed_graph_snap(e); /* Snap bars. */
         } else if (e->context == 2 && ed_pattern(e)) {
-            ed_checkpoint(e);
-            dm_quantize(ed_pattern(e), .25);
-            dm_pattern_fit(&e->project, ed_pattern(e));
-            ed_commit(e);
+            ed_quantize_notes(e);
         }
         break;
     case ACT_NEXT:

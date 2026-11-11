@@ -157,6 +157,11 @@ static void channels_and_events(Editor *e) {
     check(!strcmp(dm_drum_name(42), "Closed Hi-Hat") &&
               !strcmp(dm_drum_name(35), "Acoustic Bass Drum"),
           "percussion keys carry GM names");
+    check(!strcmp(dm_drum_name(27), "High Q") && !strcmp(dm_drum_name(33), "Metronome Click") &&
+              !strcmp(dm_drum_name(34), "Metronome Bell") &&
+              !strcmp(dm_drum_name(82), "Shaker") && !strcmp(dm_drum_name(87), "Open Surdo") &&
+              !strcmp(dm_drum_name(88), "Unnamed Drum"),
+          "extended drum keys have GS names and unknown keys have a neutral label");
     ed_new_song_event(e);
     check(e->midi_draft.data[1] == MIDI_META_TEMPO, "new event defaults to tempo");
     e->event_beat = 2;

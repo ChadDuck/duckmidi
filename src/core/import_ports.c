@@ -31,7 +31,7 @@ static int copy_pattern(DmProject *to, const DmPattern *from, uint8_t port) {
     DmPattern *target = &to->patterns[id];
     target->kind = from->kind;
     target->mode = from->mode;
-    target->graph = from->graph;
+    memcpy(target->graph_lanes, from->graph_lanes, sizeof(target->graph_lanes));
     target->event = from->event;
     target->speed = from->speed;
     target->tension = from->tension;

@@ -49,18 +49,42 @@ static bool has_variants(bool percussion, const M64Instrument *target) {
     return false;
 }
 
+/* The numbered stems still identify the original AIFFs in the stock bank. */
+static const char *sample_description(const char *sample) {
+    if (!strcmp(sample, "08")) {
+        return "Snare";
+    }
+
+    if (!strcmp(sample, "09")) {
+        return "Tom";
+    }
+
+    if (!strcmp(sample, "0B")) {
+        return "Conga";
+    }
+
+    return "";
+}
+
 void m64_preset_label(bool percussion, int index, char *out, size_t capacity) {
     const M64Instrument *target = preset(percussion, m64_canonical_preset(percussion, index));
+    const char *description = sample_description(target->sample);
+    const char *separator = *description ? ", " : "";
 
     if (!has_variants(percussion, target)) {
-        snprintf(out, capacity, "%s", target->sample);
+        if (*description) {
+            snprintf(out, capacity, "%s (%s)", target->sample, description);
+        } else {
+            snprintf(out, capacity, "%s", target->sample);
+        }
     } else if (percussion) {
-        snprintf(out, capacity, "%s (pitch %.2fx)", target->sample, target->tuning);
+        snprintf(out, capacity, "%s (%s%spitch %.2fx)", target->sample, description, separator,
+                 target->tuning);
     } else {
         const char *release = target->release_rate <= 19   ? "short release"
                               : target->release_rate <= 30 ? "medium release"
                                                            : "long release";
-        snprintf(out, capacity, "%s (%s%s, %s)", target->sample,
+        snprintf(out, capacity, "%s (%s%s%s%s, %s)", target->sample, description, separator,
                  target->attack > 2 ? "soft attack, " : "",
                  target->sustain ? "sustained" : "decaying", release);
     }

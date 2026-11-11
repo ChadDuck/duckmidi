@@ -2,12 +2,10 @@
 name: Release
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag, such as v0.11.1. Empty uses the newest vX.Y.Z tag on the branch.'
+        description: 'Release tag. Empty uses the newest vX.Y.Z tag on the branch.'
         required: false
         default: ''
 
@@ -233,11 +231,11 @@ jobs:
           # A draft for this tag gets the new files; a published release is never changed.
           draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)
           if [ "$draft" = false ]; then
-            echo "$tag is already published. Push a new vX.Y.Z tag, or type one when starting the workflow." >&2
+            echo "$tag is already published. Start the workflow with a new vX.Y.Z tag." >&2
             exit 1
           fi
 
-          # Push missing tags with GITHUB_TOKEN so publication cannot create a new tag-push run.
+          # Create the tag at the commit used to build the packages.
           tag_ref=refs/tags/$tag
           remote_tag=$(git ls-remote --refs origin "$tag_ref")
           if [ -z "$remote_tag" ]; then

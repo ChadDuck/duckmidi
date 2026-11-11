@@ -140,9 +140,7 @@ void ed_export_picker_done(Editor *e, const char *path);
 
 enum { PENDING_NEW = 1, PENDING_OPEN, PENDING_PATH, PENDING_QUIT };
 
-typedef struct {
-    int range, cents, msb, lsb;
-} PitchState;
+typedef DmPitchState PitchState;
 
 typedef struct {
     size_t index;
@@ -248,6 +246,7 @@ void ed_select_all(Editor *e);
 void ed_duplicate_clips(Editor *e);
 void ed_duplicate_notes(Editor *e);
 void ed_deselect(Editor *e);
+bool ed_deselect_notes(DmPattern *p);
 void ed_clear_pattern_selection(Editor *e);
 bool ed_deselect_focused(Editor *e);
 int ed_piano_key(SDL_Scancode key);
@@ -276,6 +275,7 @@ void ed_finish_edit_feedback(Editor *e);
 void ed_edit_feedback(Editor *e, float pitch);
 void ed_release_piano(Editor *e);
 void ed_transpose(Editor *e, int steps);
+void ed_quantize_notes(Editor *e);
 bool ed_reserved(SDL_Scancode key, SDL_Keymod mods);
 void ed_action_zoom(Editor *e, int a);
 void ed_action(Editor *e, int a);
@@ -334,6 +334,8 @@ int ed_place_pattern(Editor *e, int id, int encoded, double beat);
 void ed_split_note(DmPattern *p, size_t index, double at);
 void ed_split_clip(Editor *e, size_t index, double at);
 bool ed_intersects(UiRect a, UiRect b);
+void ed_marquee_begin(Editor *e, EditFocus focus, UiMouse mouse);
+bool ed_marquee_retains(Editor *e, size_t index, bool shift);
 UiRect ed_marquee_box(Editor *e, UiMouse mouse);
 bool ed_black_key(int step);
 void ed_playlist_label_text(Editor *e, UiRect r, float label, float row, const int *list, int i,
@@ -349,15 +351,13 @@ void ed_resize_clip(Editor *e, DmClip *clip, double length);
 void ed_move_clip(Editor *e, DmClip *clip, int encoded, double beat);
 void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, const int *list,
                       int count, UiMouse mouse);
-void ed_marquee_outline(Editor *e, int context, UiMouse mouse);
+void ed_marquee_outline(Editor *e, EditFocus focus, UiMouse mouse);
 void ed_playlist_hit_click(Editor *e, UiMouse mouse, int hit, double beat);
 void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, float scale,
                        const int *list, int count, UiMouse mouse, int hit);
 void ed_playlist_remove(Editor *e, int hit);
 void ed_playlist(Editor *e, float width, float height);
 PitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat, unsigned port);
-PitchState ed_pitch_state_in(const DmAutomation *items, size_t count, int pattern_id, double beat,
-                             unsigned port);
 PitchState ed_pitch_state(Editor *e, double beat);
 int ed_curve_id(Editor *e);
 int ed_nearest_note(Editor *e, double beat);
@@ -368,8 +368,12 @@ DmAutomation ed_curve_node(Editor *e, double beat, int value, int cc, int id, in
 int ed_value_before(Editor *e, double beat, int cc);
 void ed_curve_range(Editor *e, double beat, int range, int cents, int msb, int lsb, int id);
 void ed_automation_line(Editor *e, double start, double end, int first, int last, int cc);
+void ed_note_bend_line(Editor *e, double start, double end, int value, DmNote *note);
+uint32_t ed_next_bend_id(Editor *e);
+double ed_note_bend_offset(Editor *e, const DmNote *notes, size_t count, double offset);
 bool ed_automation_line_overlaps(Editor *e, double start, double end, int cc);
-void ed_follow_note_curves(Editor *e, int pattern, const DmNote *before, size_t count);
+void ed_follow_note_curves(Editor *e, int pattern, const DmNote *before, size_t count,
+                           double previous_offset);
 bool ed_sounding(Editor *e, int key);
 void ed_resize_note_group(Editor *e, DmPattern *p, double delta, bool free);
 bool ed_gesture_moved(Editor *e, UiMouse mouse);
@@ -381,12 +385,10 @@ bool ed_pedal_event(int cc);
 bool ed_point_only_event(int cc);
 /* Graph editing (editor/event_graph.c). The resolution is 0 unless the displayed lane is a
    graph; ed_event_snap is its cell in beats, or the 0.25-beat point grid. */
-bool ed_graph_event(int cc);
-bool ed_graph_lane(DmAutomation point);
 int ed_graph_resolution(Editor *e);
 double ed_event_snap(Editor *e);
 bool ed_automation_raw(Editor *e);
-bool ed_graph_convert(Editor *e, int pattern, int graph);
+bool ed_graph_convert(Editor *e, int pattern);
 void ed_graph_mode(Editor *e, int mode, int graph);
 /* Asks before a switch to or from Graph when the pattern has events it would change. */
 void ed_graph_mode_request(Editor *e, int mode, int graph);
@@ -401,8 +403,7 @@ int ed_graph_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse);
 uint32_t ed_point_color(Editor *e);
 uint32_t ed_graph_color(Editor *e);
 bool ed_graph_controls(Editor *e, DmPattern *p, bool lfo);
-void ed_graph_resolution_controls(Editor *e, DmPattern *p);
-bool ed_automation_option(Editor *e, int cc);
+void ed_graph_resolution_controls(Editor *e);
 void ed_automation_selector(Editor *e);
 float ed_lane_step(UiRect lane);
 /* Raw value lanes (controllers, raw pitch bends and graph bars) have rows of a power-of-two value
@@ -414,6 +415,8 @@ int ed_value_snap(Editor *e, int value, int step);
 void ed_pitch_cache_begin(Editor *e);
 void ed_pitch_cache_end(Editor *e);
 float ed_automation_range(Editor *e, DmAutomation a);
+int ed_pitch_anchor(Editor *e, DmAutomation a);
+void ed_pitch_edit_units(Editor *e, DmAutomation *point, bool raw);
 float ed_automation_pitch(Editor *e, DmAutomation a);
 UiPoint ed_automation_point(Editor *e, DmAutomation a, UiRect lane, View *v, float scale);
 float ed_curve_units(Editor *e, DmAutomation a, UiRect lane, bool overlay);

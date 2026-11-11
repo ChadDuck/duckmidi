@@ -18,6 +18,7 @@ static void check(bool ok, const char *text) {
 }
 
 void test_source_workflow_ui(Editor *, void (*)(bool, const char *));
+void test_source_workflow_focus_workspace(void);
 
 static void fixture(Editor *e) {
     editor_smoke(e);
@@ -409,11 +410,13 @@ static void drop_checks(Editor *e) {
         ui_render(e->renderer);
     }
 
+    test_source_workflow_focus_workspace();
+    check(!ui_window_focused("Preferences"), "the workspace has focus before the SoundFont drop");
     event.drop.x = (e->preferences_rect.x + e->preferences_rect.w * .5f) * ui_scale();
     event.drop.y = (e->preferences_rect.y + e->preferences_rect.h * .5f) * ui_scale();
     event.drop.data = "agents/reports/generated-sine.sf2";
     editor_event(e, &event);
-    check(e->font_request, "SoundFont drop in Preferences starts background loading");
+    check(e->font_request, "unfocused Preferences accepts a SoundFont drop");
     uint64_t limit = SDL_GetTicks() + 15000;
 
     while (dm_audio_busy(audio) && SDL_GetTicks() < limit) {

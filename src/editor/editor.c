@@ -23,8 +23,8 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->pattern_drag = e->rename_pattern = e->pattern_color_target = -1;
     e->automation_node = -1;
     e->graph_switch = false;
-    e->graph_switch_pattern = -1;
-    e->graph_switch_mode = e->graph_switch_graph = 0;
+    e->graph_switch_uid = 0;
+    e->graph_switch_event = e->graph_switch_graph = 0;
     e->event_lane_height = 0;
     e->percussion_note = 36;
     e->display = SDL_GetDisplayForWindow(window);
@@ -163,6 +163,8 @@ void editor_free(Editor *e) {
     dm_bytes_free(&e->clipboard);
     dm_bytes_free(&e->event_clipboard);
     dm_bytes_free(&e->event_selection);
+    dm_bytes_free(&e->marquee_selection);
+    dm_bytes_free(&e->event_marquee_selection);
     dm_bytes_free(&e->record_original);
     dm_bytes_free(&e->midi_rows);
     dm_bytes_free(&e->song_event_groups);

@@ -115,8 +115,9 @@ typedef struct {
     EdMidiLearn midi_learn;
     uint64_t midi_binding_session, midi_mix_last;
     bool midi_mix_pending, midi_mix_dirty, midi_clear_bindings, midi_learn_any;
-    /* A Point / Graph switch waiting for confirmation: its pattern (-1 none), mode and graph. */
-    int graph_switch_pattern, graph_switch_mode, graph_switch_graph;
+    /* A Point / Graph switch waiting for confirmation on this pattern and event type. */
+    uint32_t graph_switch_uid;
+    int graph_switch_event, graph_switch_graph;
     float event_lane_height; /* Last drawn event lane height, for its value rows (0 none yet). */
     bool graph_switch;
     DmProject project;
@@ -170,7 +171,7 @@ typedef struct {
     double take_origin;
     bool take_origin_set;
     int preview_program, preview_route, preview_source_channel;
-    bool preview_override, channel_selected, event_marquee, event_marquee_overlay, midi_events;
+    bool preview_override, channel_selected, event_marquee, midi_events;
     int midi_event_kind, midi_event_index;
     uint64_t midi_selection_revision;
     float midi_split, song_event_split;
@@ -277,6 +278,7 @@ typedef struct {
     float sidebar, roll_height;
     View playlist_view, roll_view;
     UiPoint marquee_start;
+    DmBytes marquee_selection, event_marquee_selection; /* Selection at mouse-down. */
     bool marquee;
     int automation_cc;
     int bend_range;

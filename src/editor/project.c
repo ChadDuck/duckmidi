@@ -253,7 +253,7 @@ static void reset_regions(Editor *e) {
     e->preview_override = false;
     e->preview_source_channel = -1;
     e->channel_selected = true;
-    e->curve_drag = e->event_marquee = false;
+    e->curve_drag = e->marquee = e->event_marquee = false;
     e->wait_armed = e->take_started = false;
     e->event_selection.size = 0;
     e->selected_clip = -1;

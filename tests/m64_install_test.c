@@ -175,7 +175,20 @@ static void install(const DmeExporter *exporter, void *settings, const DmeContex
     assert(status == DME_OK);
 }
 
+static void sample_labels(void) {
+    char label[220];
+    m64_preset_label(true, 40, label, sizeof(label));
+    assert(!strcmp(label, "08 (Snare)"));
+    m64_preset_label(true, 41, label, sizeof(label));
+    assert(!strcmp(label, "09 (Tom, pitch 0.47x)"));
+    m64_preset_label(true, 62, label, sizeof(label));
+    assert(!strcmp(label, "0B (Conga, pitch 0.65x)"));
+    m64_preset_label(false, 116, label, sizeof(label));
+    assert(!strcmp(label, "09 (Tom)"));
+}
+
 int main(void) {
+    sample_labels();
     assert(SDL_Init(0));
     assert(SDL_CreateDirectory("agents/reports/m64-install"));
     sm64[0].data = sequences;

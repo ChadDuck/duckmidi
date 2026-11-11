@@ -243,9 +243,13 @@ static void mapping(Editor *e, DmExportFormat *format, const DmeField *field, un
 
     if (ui_child("sources", left, height, true)) {
         for (uint32_t i = 0; i < field->row_count; i++) {
+            ui_id((int)i);
+
             if (ui_select(field->rows[i].label, *selected == (int)i, 0, 0)) {
                 *selected = (int)i;
             }
+
+            ui_pop_id();
         }
     }
 
@@ -770,9 +774,13 @@ void ed_export_review_dialog(Editor *e) {
 
             if (ui_child("affected-sources", left, height, true)) {
                 for (uint32_t i = 0; i < review.count; i++) {
+                    ui_id((int)i);
+
                     if (ui_select(review.rows[i].label, h->review_selected == (int)i, 0, 0)) {
                         h->review_selected = (int)i;
                     }
+
+                    ui_pop_id();
                 }
             }
 

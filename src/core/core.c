@@ -558,7 +558,7 @@ int dm_pattern_copy(DmProject *p, int source) {
     to->length = from->length;
     to->kind = from->kind;
     to->mode = from->mode;
-    to->graph = from->graph;
+    memcpy(to->graph_lanes, from->graph_lanes, sizeof(to->graph_lanes));
     to->event = from->event;
     to->speed = from->speed;
     to->tension = from->tension;
@@ -832,6 +832,49 @@ bool dm_automation_later(DmAutomation a, DmAutomation b) {
     return a.curve < 0 && b.curve >= 0;
 }
 
+int dm_graph_lane(int event) {
+    switch (event) {
+    case -2:
+        return DM_GRAPH_PITCH_LANE;
+    case MIDI_CC_PORTAMENTO_TIME:
+    case MIDI_CC_DATA:
+    case MIDI_CC_DATA_LSB:
+    case MIDI_CC_SUSTAIN:
+    case MIDI_CC_SOSTENUTO:
+    case MIDI_CC_RPN_LSB:
+    case MIDI_CC_RPN_MSB:
+        return -1;
+    default:
+        return event >= 0 && event < DM_GRAPH_PITCH_LANE ? event : -1;
+    }
+}
+
+int dm_automation_graph_lane(DmAutomation point) {
+    return point.type == MIDI_PITCH_BEND ? DM_GRAPH_PITCH_LANE
+           : point.type == MIDI_CONTROL  ? dm_graph_lane(point.a)
+                                          : -1;
+}
+
+int dm_graph_resolution(const DmPattern *pattern, int event) {
+    int lane = dm_graph_lane(event);
+    int setting = pattern && !pattern->mode && lane >= 0 ? pattern->graph_lanes[lane] : 0;
+    return setting > DM_GRAPH_POINT ? setting : 0;
+}
+
+bool dm_pattern_has_graph(const DmPattern *pattern) {
+    if (pattern->mode) {
+        return false;
+    }
+
+    for (int lane = 0; lane < DM_GRAPH_LANES; ++lane) {
+        if (pattern->graph_lanes[lane] > DM_GRAPH_POINT) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool dm_automation_add(DmProject *p, DmAutomation a) {
     if (a.pattern < -1 || (a.pattern >= 0 && (size_t)a.pattern >= p->pattern_count)) {
         return false;
@@ -881,6 +924,62 @@ double dm_curve_value(DmAutomation first, DmAutomation last, double t) {
     double a = automation_value(first), b = automation_value(last);
     double value = a + (b - a) * t + first.bend * 4 * t * (1 - t);
     return fmax(0, fmin(first.type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX, value));
+}
+
+/* The bend range at beat from a list of automation points in project order: the whole project's,
+   or a subset holding at least the pattern's RPN and data entry controllers. */
+DmPitchState dm_pitch_state(const DmAutomation *items, size_t count, int pattern_id, double beat,
+                             unsigned port) {
+    DmPitchState state = {2, 0, 127, 127};
+
+    for (size_t i = 0; i < count; ++i) {
+        DmAutomation a = items[i];
+
+        if (a.beat > beat) {
+            continue;
+        }
+
+        if (a.pattern != pattern_id || a.type != MIDI_CONTROL || a.port != port) {
+            continue;
+        }
+
+        if (a.a == MIDI_CC_RPN_MSB) {
+            state.msb = a.b;
+        } else if (a.a == MIDI_CC_RPN_LSB) {
+            state.lsb = a.b;
+        } else if (state.msb == 0 && state.lsb == 0) {
+            if (a.a == MIDI_CC_DATA) {
+                state.range = a.b;
+            }
+
+            if (a.a == MIDI_CC_DATA_LSB) {
+                state.cents = a.b;
+            }
+        }
+    }
+
+    return state;
+}
+
+double dm_pitch_range(const DmAutomation *items, size_t count, DmAutomation point) {
+    DmPitchState state = dm_pitch_state(items, count, point.pattern, point.beat, point.port);
+
+    for (size_t i = 0; point.curve > 0 && i < count; ++i) {
+        DmAutomation a = items[i];
+
+        if (a.pattern != point.pattern || a.port != point.port || a.curve != point.curve ||
+            a.type != MIDI_CONTROL) {
+            continue;
+        }
+
+        if (a.a == MIDI_CC_DATA) {
+            state.range = a.b;
+        } else if (a.a == MIDI_CC_DATA_LSB) {
+            state.cents = a.b;
+        }
+    }
+
+    return fmax(.01, state.range + state.cents * .01);
 }
 
 double dm_bar(const DmProject *p) {

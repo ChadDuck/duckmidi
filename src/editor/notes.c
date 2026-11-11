@@ -250,6 +250,7 @@ static void make_note_copies(Editor *e, DmPattern *p) {
         }
 
         DmNote copy = p->notes[i];
+        copy.bend_id = 0;
         p->notes[i].selected = 0;
 
         if (!dm_note_add(p, copy)) {
@@ -300,6 +301,9 @@ static void note_drag(Editor *e, DmPattern *p, float scale, float row, UiMouse m
             if (e->drag_edge) {
                 ed_resize_note_group(e, p, delta, mouse.alt);
             } else {
+                DmNote dragged = p->notes[e->drag_index];
+                double previous_offset = dragged.beat - e->drag_beat;
+                int previous_pitch = dragged.key - e->drag_key;
                 double offset = ed_snap(e->drag_beat + delta, .25, mouse.alt) - e->drag_beat;
                 int pitch_delta = -(int)roundf((mouse.pos.y - e->marquee_start.y) / row);
 
@@ -313,6 +317,12 @@ static void note_drag(Editor *e, DmPattern *p, float scale, float row, UiMouse m
                     }
                 }
 
+                if (!copying) {
+                    offset = previous_offset +
+                             ed_note_bend_offset(e, e->drag_notes, e->drag_note_count,
+                                                 offset - previous_offset);
+                }
+
                 for (size_t i = 0; i < e->drag_note_count; ++i) {
                     DmNote original = e->drag_notes[i];
 
@@ -320,6 +330,12 @@ static void note_drag(Editor *e, DmPattern *p, float scale, float row, UiMouse m
                         p->notes[i].beat = original.beat + offset;
                         p->notes[i].key = (uint8_t)(original.key + pitch_delta);
                     }
+                }
+
+                /* Copies leave pitch bends with the notes they were copied from. */
+                if (!copying && (offset != previous_offset || pitch_delta != previous_pitch)) {
+                    ed_follow_note_curves(e, e->selected_pattern, e->drag_notes, e->drag_note_count,
+                                          previous_offset);
                 }
             }
 
@@ -345,12 +361,6 @@ static void note_drag(Editor *e, DmPattern *p, float scale, float row, UiMouse m
             e->copy_pending = false;
 
             if (e->edit_moved) {
-                /* Copies leave pitch bends with the notes they were copied from. */
-                if (!e->drag_edge && !copying) {
-                    ed_follow_note_curves(e, e->selected_pattern, e->drag_notes,
-                                          e->drag_note_count);
-                }
-
                 ed_publish(e);
             }
         }
@@ -380,7 +390,11 @@ static void note_bend(Editor *e, UiRect grid, View *v, float scale, float row, U
                 ed_checkpoint(e);
             }
 
-            ed_automation_line(e, start, end, MIDI_BEND_CENTER, value, -2);
+            DmPattern *p = ed_pattern(e);
+
+            if (p && e->drag_index >= 0 && (size_t)e->drag_index < p->count) {
+                ed_note_bend_line(e, start, end, value, &p->notes[e->drag_index]);
+            }
             ed_commit(e);
         }
     }
@@ -473,7 +487,7 @@ static void piano_hit_click(Editor *e, DmPattern *p, UiRect grid, View *v, float
         }
 
         /* Bend lines on notes belong to Point mode; Graph mode edits bends in the events. */
-        if (mouse.shift && !e->drag_edge && !p->graph) {
+        if (mouse.shift && !e->drag_edge && !dm_graph_resolution(p, -2)) {
             e->marquee_start.x =
                 grid.x +
                 (float)ed_snap((mouse.pos.x - grid.x + v->scroll_x) / scale, .25, false) * scale -
@@ -570,7 +584,9 @@ static bool start_note_copy(Editor *e, DmPattern *p, UiMouse mouse, int hit) {
 
 void ed_piano_click(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, float scale, float row,
                     UiMouse mouse, int hit, UiRect hit_box) {
-    if (hit >= 0 && ed_inside(mouse.pos, grid) && e->tool != 2 && e->tool != 3 &&
+    bool marquee = mouse.clicked && (mouse.ctrl || e->tool == 1);
+
+    if (hit >= 0 && !marquee && ed_inside(mouse.pos, grid) && e->tool != 2 && e->tool != 3 &&
         ed_gesture_pressed(e, GESTURE_COPY_NOTES, mouse)) {
         e->automation_node = -1;
         start_note_copy(e, p, mouse, hit);
@@ -583,10 +599,9 @@ void ed_piano_click(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, flo
             return;
         }
 
-        if (mouse.ctrl) {
-            ed_deselect(e);
-            e->marquee = true;
-            e->marquee_start = mouse.pos;
+        if (marquee) {
+            e->automation_node = -1;
+            ed_marquee_begin(e, FOCUS_NOTES, mouse);
             return;
         }
 
@@ -597,10 +612,6 @@ void ed_piano_click(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, flo
 
         if (hit >= 0) {
             piano_hit_click(e, p, grid, v, scale, row, mouse, hit, hit_box, beat);
-        } else if (e->tool == 1) {
-            ed_deselect(e);
-            e->marquee = true;
-            e->marquee_start = mouse.pos;
         } else {
             ed_checkpoint(e);
             ed_deselect(e);
@@ -748,10 +759,7 @@ static void piano_header(Editor *e, DmPattern *p) {
         }
 
         if (ui_menu_item(DM_TEXT_QUANTIZE, NULL, true)) {
-            ed_checkpoint(e);
-            dm_quantize(p, .25);
-            dm_pattern_fit(&e->project, p);
-            ed_commit(e);
+            ed_quantize_notes(e);
         }
 
         ui_popup_end();
@@ -826,6 +834,8 @@ static int piano_notes(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, 
                        float row, UiMouse mouse, UiRect *hit_result) {
     int hit = -1;
     UiRect hit_box = {0};
+    bool marquee = e->marquee && ed_selection_focus(e) == FOCUS_NOTES;
+    UiRect selection = ed_marquee_box(e, mouse);
 
     for (size_t i = 0; i < p->count; ++i) {
         DmNote n = p->notes[i];
@@ -833,7 +843,15 @@ static int piano_notes(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, 
                       r.y + 28 + (127 - n.key) * row - v->scroll_y + 1,
                       fmaxf(3, (float)n.length * scale), row - 2};
 
-        if (!ed_intersects(box, grid)) {
+        bool visible = ed_intersects(box, grid);
+
+        if (marquee) {
+            n.selected = ed_marquee_retains(e, i, mouse.shift) ||
+                         (visible && ed_intersects(box, selection));
+            p->notes[i].selected = n.selected;
+        }
+
+        if (!visible) {
             continue;
         }
 
@@ -850,11 +868,6 @@ static int piano_notes(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, 
         if (ed_inside(mouse.pos, target) && ed_inside(mouse.pos, grid)) {
             hit = (int)i;
             hit_box = box;
-        }
-
-        if (e->marquee && e->context == 2) {
-            UiRect selection = ed_marquee_box(e, mouse);
-            p->notes[i].selected = ed_intersects(box, selection);
         }
     }
 
@@ -944,6 +957,8 @@ static int insert_bend_node(Editor *e, int segment, UiRect grid, View *v, float 
         break;
     }
 
+    a.bend_note = 0;
+    a.bend_root = DM_BEND_ROOT_NONE;
     dm_automation_add(&e->project, a);
     int hit = -1;
 
@@ -972,7 +987,7 @@ static void move_bend_node(Editor *e, UiRect grid, View *v, float scale, UiMouse
         a->beat = ed_snap(e->node_beat + (mouse.pos.x - e->marquee_start.x) / scale, .25, false);
         ed_set_event_value(
             a, (int)ed_clampf(MIDI_BEND_CENTER +
-                                  (pitch - (a->curve ? a->anchor : ed_nearest_note(e, 0))) *
+                                  (pitch - ed_pitch_anchor(e, *a)) *
                                       MIDI_BEND_CENTER / ed_automation_range(e, *a),
                               0, MIDI_BEND_MAX));
         ed_edit_feedback(e, ed_automation_pitch(e, *a));
@@ -1000,7 +1015,7 @@ bool ed_bend_mouse(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse) 
         return true;
     }
 
-    if (mouse.ctrl) {
+    if (mouse.ctrl || e->tool == 1) {
         return false;
     }
 
@@ -1075,7 +1090,7 @@ void ed_piano_mouse(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, flo
     bool handle = false, bend = false;
 
     /* Pitch bend points are shown and edited on the notes only in Point mode. */
-    if (!p->graph) {
+    if (!dm_graph_resolution(p, -2)) {
         ui_clip(grid);
         handle = ed_curve_handles(e, grid, v, scale, mouse, true, hovered);
         ui_unclip();
@@ -1226,7 +1241,7 @@ void ed_roll(Editor *e, float width, float height) {
     }
 
     UiRect hit_box = {0};
-    if (!p->graph) {
+    if (!dm_graph_resolution(p, -2)) {
         pitch_underlay(e, grid, v, scale);
     }
 
@@ -1248,7 +1263,7 @@ void ed_roll(Editor *e, float width, float height) {
 
     note_placement_tip(e, p, grid, v, row, mouse, hovered);
     note_bend(e, grid, v, scale, row, mouse);
-    ed_marquee_outline(e, 2, mouse);
+    ed_marquee_outline(e, FOCUS_NOTES, mouse);
 
     ed_automation_panel(e, r, v, scale, label, mouse);
     ui_child_end();

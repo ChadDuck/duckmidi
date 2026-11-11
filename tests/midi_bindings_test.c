@@ -155,7 +155,7 @@ static void recording(Editor *e) {
     assert(e->project.automation_count == 1);
     DmAutomation recorded = e->project.automation[0];
     assert(recorded.type == MIDI_CONTROL && recorded.a == 74 && recorded.b == 52);
-    assert(ed_pattern(e)->graph == 16);
+    assert(dm_graph_resolution(ed_pattern(e), 74) == 16);
 
     /* A transport binding can finish a take during the drain without entering it again. */
     bind(e, (EdMidiTarget){.kind = ED_MIDI_STOP}, false, MIDI_CONTROL, 116, 0);

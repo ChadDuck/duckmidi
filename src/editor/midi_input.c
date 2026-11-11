@@ -50,7 +50,7 @@ struct DmEditorMidiInput {
     bool dirty;          /* Recorded data not yet written to the project. */
     bool unpublished;    /* Written data playback has not been rebuilt with. */
     bool lead_published; /* This pass was published ahead of its wrap. */
-    bool loop_seen, waiting, finishing, draining, graph_blocked;
+    bool loop_seen, waiting, finishing, draining;
 };
 
 static unsigned lane_index(DmAutomation point) {
@@ -224,7 +224,7 @@ void ed_midi_input_take(Editor *e) {
     m->channel = e->pattern_channel;
     m->port = ed_note_port(e);
     m->commit_tick = SDL_GetTicks();
-    m->dirty = m->unpublished = m->lead_published = m->loop_seen = m->graph_blocked = false;
+    m->dirty = m->unpublished = m->lead_published = m->loop_seen = false;
 }
 
 /* Whether an existing point gives way to the take. Replace mode clears a touched lane in the
@@ -344,41 +344,55 @@ static long merge_points(Editor *e) {
     return (long)(total - used);
 }
 
-/* Inspect existing lines before replace mode can remove them. The take snapshot covers
-   the mode change, and recorded points keep their original timestamps. */
-static int recorded_graph_mode(Editor *e, const DmPattern *pattern) {
+/* Prefer Graph for newly recorded lanes. Keep the settings of other lanes, including
+   implicit Point lanes that already have data before a replace-mode take. */
+static bool recorded_graph_modes(Editor *e, const DmPattern *pattern, uint16_t *graphs) {
     struct DmEditorMidiInput *m = e->midi_input_state;
 
-    if (pattern->graph || pattern->mode || m->graph_blocked) {
-        return 0;
+    memcpy(graphs, pattern->graph_lanes, sizeof(pattern->graph_lanes));
+
+    if (pattern->mode || !m->points.size) {
+        return false;
     }
 
     const InputPoint *pending = (const InputPoint *)m->points.data;
+    bool touched[DM_GRAPH_LANES] = {0};
     bool eligible = false;
 
     for (size_t i = 0; i < m->points.size / sizeof(*pending); ++i) {
         DmAutomation a = pending[i].point;
+        int lane = dm_automation_graph_lane(a);
 
-        if (ed_graph_lane(a) &&
+        if (lane >= 0 && !graphs[lane] &&
             (a.type != MIDI_CONTROL || a.a < MIDI_CC_INCREMENT || a.a > MIDI_CC_RPN_MSB)) {
+            touched[lane] = true;
             eligible = true;
-            break;
         }
     }
 
     if (!eligible) {
-        return 0;
+        return false;
     }
+
+    bool kept_point = false;
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
+        int lane = dm_automation_graph_lane(a);
 
-        if (a.pattern == m->pattern && a.curve > 0 && ed_graph_lane(a)) {
-            return -1;
+        if (a.pattern == m->pattern && lane >= 0 && touched[lane]) {
+            graphs[lane] = DM_GRAPH_POINT;
+            kept_point |= a.curve > 0 || a.ramp;
         }
     }
 
-    return 16;
+    for (int lane = 0; lane < DM_GRAPH_LANES; ++lane) {
+        if (touched[lane] && !graphs[lane]) {
+            graphs[lane] = 16;
+        }
+    }
+
+    return kept_point;
 }
 
 /* Writes pending data; with publish, also rebuilds playback for anything written earlier. */
@@ -399,7 +413,8 @@ static void commit(Editor *e, bool publish) {
     }
 
     DmPattern *pattern = &e->project.patterns[m->pattern];
-    int graph = recorded_graph_mode(e, pattern);
+    uint16_t graphs[DM_GRAPH_LANES];
+    bool kept_point = recorded_graph_modes(e, pattern, graphs);
     long removed = merge_points(e);
 
     if (removed < 0) {
@@ -407,10 +422,9 @@ static void commit(Editor *e, bool publish) {
         return;
     }
 
-    if (graph > 0) {
-        pattern->graph = graph;
-    } else if (graph < 0) {
-        m->graph_blocked = true;
+    memcpy(pattern->graph_lanes, graphs, sizeof(graphs));
+
+    if (kept_point) {
         ed_message(e, DM_TEXT_MIDI_RECORD_KEEP_POINT);
     }
 

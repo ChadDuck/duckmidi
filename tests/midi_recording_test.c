@@ -54,34 +54,48 @@ static void recorded_graph(Editor *e) {
     send_at(e, .173, MIDI_CONTROL, MIDI_CC_MODULATION, 48);
     ed_midi_input_frame(e);
     ed_midi_input_flush(e);
-    assert(ed_pattern(e)->graph == 16 && e->project.automation_count == 1);
+    assert(dm_graph_resolution(ed_pattern(e), MIDI_CC_MODULATION) == 16 &&
+           e->project.automation_count == 1);
     assert(fabs(e->project.automation[0].beat - .346) < 1e-7);
     ed_toggle_record(e);
     ed_undo(e, false);
-    assert(!ed_pattern(e)->graph && !e->project.automation_count);
+    assert(!dm_pattern_has_graph(ed_pattern(e)) && !e->project.automation_count);
 
     reset(e, true);
     point(e, .5, MIDI_CC_MODULATION, 10);
     point(e, 1, MIDI_CC_MODULATION, 70);
     e->project.automation[0].curve = e->project.automation[1].curve = 1;
     send_at(e, .173, MIDI_PITCH_BEND, 30, 70);
+    send_at(e, .225, MIDI_CONTROL, MIDI_CC_MODULATION, 80);
     ed_midi_input_frame(e);
     ed_midi_input_flush(e);
-    assert(!ed_pattern(e)->graph && e->project.automation_count == 3);
-    assert(e->project.automation[1].curve == 1 && e->project.automation[2].curve == 1);
+    assert(dm_graph_resolution(ed_pattern(e), -2) == 16 &&
+           !dm_graph_resolution(ed_pattern(e), MIDI_CC_MODULATION) &&
+           e->project.automation_count == 4);
+    assert(e->project.automation[2].curve == 1 && e->project.automation[3].curve == 1);
     assert(strstr(e->status, "Choose Graph"));
+
+    reset(e, true);
+    ed_pattern(e)->graph_lanes[MIDI_CC_MODULATION] = DM_GRAPH_POINT;
+    send_at(e, .173, MIDI_CONTROL, MIDI_CC_MODULATION, 48);
+    send_at(e, .225, MIDI_CONTROL, MIDI_CC_EXPRESSION, 60);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(!dm_graph_resolution(ed_pattern(e), MIDI_CC_MODULATION) &&
+           dm_graph_resolution(ed_pattern(e), MIDI_CC_EXPRESSION) == 16 &&
+           e->project.automation_count == 2);
 
     reset(e, true);
     send_at(e, .173, MIDI_CONTROL, MIDI_CC_SUSTAIN, 127);
     send_at(e, .225, MIDI_CONTROL, MIDI_CC_SUSTAIN, 0);
     ed_midi_input_frame(e);
     ed_midi_input_flush(e);
-    assert(!ed_pattern(e)->graph && e->project.automation_count == 2);
+    assert(!dm_pattern_has_graph(ed_pattern(e)) && e->project.automation_count == 2);
     send_at(e, .273, MIDI_CONTROL, MIDI_CC_RPN_MSB, 0);
     send_at(e, .375, MIDI_CHANNEL_PRESSURE, 30, 0);
     ed_midi_input_frame(e);
     ed_midi_input_flush(e);
-    assert(!ed_pattern(e)->graph && e->project.automation_count == 4);
+    assert(!dm_pattern_has_graph(ed_pattern(e)) && e->project.automation_count == 4);
 }
 
 static DmNote record_pad(Editor *e, int program, uint8_t key, bool unmap_before_release) {

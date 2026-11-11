@@ -1678,16 +1678,17 @@ int ui_topmost(const char *const *titles, int count) {
 }
 
 bool ui_window_front_at(const char *title, UiPoint at) {
-    auto *target = ImGui::FindWindowByName(title);
-    auto &windows = ImGui::GetCurrentContext()->WindowsFocusOrder;
+    const auto *target = ImGui::FindWindowByName(title);
+    /* The workspace can take keyboard focus without moving in front of floating windows. */
+    const auto &windows = ImGui::GetCurrentContext()->Windows;
 
     for (int i = windows.Size - 1; target && i >= 0; --i) {
-        auto *window = windows[i];
+        const auto *window = windows[i];
 
-        if (window->Active && !window->Hidden &&
+        if (window == window->RootWindow && window->Active && !window->Hidden &&
             !(window->Flags & ImGuiWindowFlags_NoMouseInputs) &&
             window->Rect().Contains({at.x, at.y})) {
-            return window->RootWindow == target->RootWindow;
+            return window == target->RootWindow;
         }
     }
 

@@ -82,12 +82,53 @@ static void continuous(Editor *e) {
         check(scheduled_value(&s, cc, 2) == baseline, "LFO placement restores baseline");
         dm_schedule_free(&s);
     }
+}
 
-    fixture(e, 7, false);
-    check(!ed_automation_option(e, 7) && !ed_automation_option(e, 10),
-          "volume and pan absent from note pattern selector");
+static void imported_mix_controls(Editor *e) {
+    static const uint8_t midi[] = {
+        'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0, 96,
+        'M', 'T', 'r', 'k', 0, 0, 0, 28,
+        0, MIDI_CONTROL, MIDI_CC_VOLUME, 93,
+        0, MIDI_CONTROL, MIDI_CC_PAN, 37,
+        0, MIDI_NOTE_ON, 60, 100,
+        96, MIDI_CONTROL, MIDI_CC_VOLUME, 45,
+        0, MIDI_CONTROL, MIDI_CC_PAN, 80,
+        96, MIDI_NOTE_OFF, 60, 0,
+        0, MIDI_META, MIDI_META_END, 0,
+    };
+    fixture(e, MIDI_CC_VOLUME, false);
+    char error[256] = {0};
+    check(dm_import(&e->project, midi, sizeof(midi), 0, 0, error, sizeof(error)), error);
     ed_open_pattern(e, 0, false);
-    check(e->automation_cc == -3, "opening note pattern leaves volume automation view");
+    check(e->automation_cc == MIDI_CC_VOLUME && !ed_pattern(e)->kind &&
+              ed_event_type_used(e, MIDI_CC_VOLUME) && ed_event_type_used(e, MIDI_CC_PAN),
+          "opening an imported note pattern keeps its Volume lane and exposes both controls");
+
+    ed_graph_mode_request(e, 0, 16);
+    check(e->graph_switch && e->graph_switch_event == MIDI_CC_VOLUME,
+          "converting imported Volume points uses the normal warning");
+    e->graph_switch = false;
+    ed_graph_mode(e, 0, 16);
+
+    UiRect lane = {100, 100, 600, 200};
+    View view = {.zoom = 1};
+    UiPoint bar = {lane.x + 80, lane.y + lane.h - 8 - 64.5f * (lane.h - 8) / 127};
+    ed_graph_paint(e, lane, &view, 80, bar, bar, true);
+    DmSchedule schedule = {0};
+    check(dm_schedule(&e->project, &schedule), "schedule edited imported controls");
+    check(scheduled_value(&schedule, MIDI_CC_VOLUME, .55) == 64 &&
+              scheduled_value(&schedule, MIDI_CC_VOLUME, .65) == 93 &&
+              scheduled_value(&schedule, MIDI_CC_PAN, .65) == 80,
+          "the Volume bar plays and resets while imported Pan keeps its Point value");
+    dm_schedule_free(&schedule);
+
+    e->automation_cc = MIDI_CC_PAN;
+    check(!ed_graph_resolution(e), "Volume's Graph conversion leaves Pan in Point");
+    ed_graph_mode(e, 0, 32);
+    ed_open_pattern(e, 0, false);
+    check(e->automation_cc == MIDI_CC_PAN && ed_graph_resolution(e) == 32 &&
+              dm_graph_resolution(ed_pattern(e), MIDI_CC_VOLUME) == 16 && !ed_pattern(e)->mode,
+          "Pan and Volume keep independent Graph settings in the note pattern");
 }
 
 static void switches_and_glide(Editor *e) {
@@ -227,6 +268,7 @@ int main(void) {
     ui_frame();
     ui_root(0, 900);
     continuous(e);
+    imported_mix_controls(e);
     switches_and_glide(e);
     program_change_points(e);
     ui_end();

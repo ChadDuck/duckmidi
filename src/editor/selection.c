@@ -7,7 +7,7 @@ static int transpose_delta(DmPattern *p, int steps);
 static int copy_pattern_between(DmProject *to, const DmProject *from, int source);
 static bool copy_notes(Editor *e, DmProject *to);
 static bool copy_clips(Editor *e, DmProject *to);
-static void paste_notes(Editor *e, const DmProject *from, double at);
+static void paste_notes(Editor *e, DmProject *from, double at);
 static void paste_clips(Editor *e, const DmProject *from, double at);
 static void delete_selected_notes(DmPattern *p);
 static void store_clipboard(Editor *e, DmBytes bytes);
@@ -266,15 +266,45 @@ void ed_duplicate_notes(Editor *e) {
     ed_commit(e);
 }
 
+bool ed_deselect_notes(DmPattern *p) {
+    bool selected = false;
+
+    if (p) {
+        for (size_t i = 0; i < p->count; ++i) {
+            selected |= p->notes[i].selected != 0;
+            p->notes[i].selected = 0;
+        }
+    }
+
+    return selected;
+}
+
+void ed_marquee_begin(Editor *e, EditFocus focus, UiMouse mouse) {
+    const DmPattern *pattern = focus == FOCUS_PLAYLIST ? NULL : ed_pattern(e);
+    size_t count = pattern ? pattern->count : e->project.clip_count;
+    DmBytes *selection = &e->marquee_selection;
+
+    if (count && !dm_reserve((void **)&selection->data, &selection->capacity, count, 1)) {
+        return;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        selection->data[i] = pattern ? pattern->notes[i].selected : e->project.clips[i].selected;
+    }
+
+    selection->size = count;
+    ed_focus_edit(e, focus);
+    e->marquee = true;
+    e->marquee_start = mouse.pos;
+}
+
+bool ed_marquee_retains(Editor *e, size_t index, bool shift) {
+    return shift && index < e->marquee_selection.size && e->marquee_selection.data[index];
+}
+
 void ed_deselect(Editor *e) {
     if (e->context == 2) {
-        DmPattern *p = ed_pattern(e);
-
-        if (p) {
-            for (size_t i = 0; i < p->count; ++i) {
-                p->notes[i].selected = 0;
-            }
-        }
+        ed_deselect_notes(ed_pattern(e));
     } else {
         for (size_t i = 0; i < e->project.clip_count; ++i) {
             e->project.clips[i].selected = 0;
@@ -299,14 +329,7 @@ bool ed_deselect_focused(Editor *e) {
         bool selected = e->automation_all || e->automation_node >= 0 || e->event_selection.size;
         ed_deselect_events(e);
 
-        if (ed_pattern(e)) {
-            for (size_t i = 0; i < ed_pattern(e)->count; ++i) {
-                selected |= ed_pattern(e)->notes[i].selected;
-                ed_pattern(e)->notes[i].selected = 0;
-            }
-        }
-
-        return selected;
+        return ed_deselect_notes(ed_pattern(e)) || selected;
     }
 
     bool selected = e->pattern_highlight;
@@ -352,7 +375,7 @@ void ed_transpose(Editor *e, int steps) {
         }
 
         if (before) {
-            ed_follow_note_curves(e, e->selected_pattern, before, p->count);
+            ed_follow_note_curves(e, e->selected_pattern, before, p->count, 0);
             free(before);
         }
     } else {
@@ -385,6 +408,37 @@ void ed_transpose(Editor *e, int steps) {
     ed_commit(e);
 }
 
+void ed_quantize_notes(Editor *e) {
+    DmPattern *p = ed_pattern(e);
+    DmNote *before = malloc((p->count + 1) * sizeof(*before));
+
+    if (!before) {
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_NOTE);
+        return;
+    }
+
+    if (p->count) {
+        memcpy(before, p->notes, p->count * sizeof(*before));
+    }
+
+    ed_checkpoint(e);
+    dm_quantize(p, .25);
+
+    for (size_t i = 0; i < p->count; ++i) {
+        DmNote note = before[i];
+        double shift = p->notes[i].beat - note.beat;
+        note.selected = 1;
+
+        if (note.bend_id && ed_note_bend_offset(e, &note, 1, shift) > shift) {
+            p->notes[i] = before[i];
+        }
+    }
+
+    ed_follow_note_curves(e, e->selected_pattern, before, p->count, 0);
+    free(before);
+    ed_commit(e);
+}
+
 static int copy_pattern_between(DmProject *to, const DmProject *from, int source) {
     int id = dm_pattern_add(to, from->patterns[source].name);
 
@@ -404,7 +458,7 @@ static int copy_pattern_between(DmProject *to, const DmProject *from, int source
     target->length = pat->length;
     target->kind = pat->kind;
     target->mode = pat->mode;
-    target->graph = pat->graph;
+    memcpy(target->graph_lanes, pat->graph_lanes, sizeof(target->graph_lanes));
     target->event = pat->event;
     target->speed = pat->speed;
     target->tension = pat->tension;
@@ -586,18 +640,43 @@ static bool copy_clips(Editor *e, DmProject *to) {
     return ok;
 }
 
-static void paste_notes(Editor *e, const DmProject *from, double at) {
+static void paste_notes(Editor *e, DmProject *from, double at) {
     DmPattern *p = ed_pattern(e);
 
     if (!p) {
         return;
     }
 
+    uint32_t next_bend_id = ed_next_bend_id(e);
+
+    /* Use IDs above both projects' IDs so rewritten roots cannot match a later source note. */
+    for (size_t i = 0; i < from->patterns[0].count; ++i) {
+        uint32_t id = from->patterns[0].notes[i].bend_id;
+
+        if (next_bend_id && id >= next_bend_id) {
+            next_bend_id = id == UINT32_MAX ? 0 : id + 1;
+        }
+    }
+
     for (size_t i = 0; i < from->patterns[0].count; ++i) {
         DmNote n = from->patterns[0].notes[i];
+        uint32_t old_id = n.bend_id;
         n.beat += at;
         n.selected = 1;
-        ed_add_note(e, p, n);
+
+        if (old_id && next_bend_id) {
+            n.bend_id = next_bend_id++;
+        } else {
+            n.bend_id = 0;
+        }
+
+        bool added = ed_add_note(e, p, n);
+
+        for (size_t j = 0; old_id && j < from->automation_count; ++j) {
+            if (from->automation[j].bend_note == old_id && from->automation[j].port == n.port) {
+                from->automation[j].bend_note = added ? n.bend_id : 0;
+            }
+        }
     }
 }
 

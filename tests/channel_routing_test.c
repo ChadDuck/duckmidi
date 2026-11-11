@@ -129,42 +129,225 @@ static void linked_slices(Editor *e) {
     }
 }
 
-/* A bend drawn on a note keeps its register and timing when the note moves. */
+/* A pitch bend keeps its own root through branching and note edits. */
 static void note_curves(Editor *e) {
     fixture(e);
-    DmAutomation start = {2, 0xe0, 0, 0, 64, 0, 5, 64, 0, false};
-    DmAutomation end = start, restore = start, other = start;
-    end.beat = 3;
-    end.b = 96;
-    restore.curve = -5;
-    restore.beat = 3;
-    other.curve = 6;
-    other.anchor = 60;
-    other.beat = .5;
-    dm_automation_add(&e->project, start);
-    dm_automation_add(&e->project, end);
-    dm_automation_add(&e->project, restore);
-    dm_automation_add(&e->project, other);
     DmPattern *p = ed_pattern(e);
+    e->automation_cc = -2;
+    e->automation_raw = false;
+    e->bend_range = 12;
+    ed_note_bend_line(e, .25, .75, 10240, &p->notes[0]);
+    ed_note_bend_line(e, 2, 3, 12288, &p->notes[1]);
+
+    size_t root = 0;
+
+    while (e->project.automation[root].bend_note != p->notes[1].bend_id) {
+        ++root;
+        check(root < e->project.automation_count, "second section has an attached root");
+    }
+
+    DmAutomation branch = ed_split_curve_node(e, (int)root, e->project.automation[root + 1], 2.5);
+    check(!branch.bend_note && dm_automation_add(&e->project, branch),
+          "a branch belongs to the section without acquiring a root of its own");
+    DmAutomation original[31];
+    check(e->project.automation_count == SDL_arraysize(original), "section setup and resets");
+    memcpy(original, e->project.automation, sizeof(original));
+
     DmNote before[3];
     memcpy(before, p->notes, sizeof(before));
+    before[1].selected = 1;
+    p->notes[1].key = 65;
+    p->notes[1].beat = 3;
+    ed_follow_note_curves(e, 0, before, 3, 0);
     p->notes[1].key = 66;
     p->notes[1].beat = 4;
-    ed_follow_note_curves(e, 0, before, 3);
-    bool followed = true, untouched = false;
+    ed_follow_note_curves(e, 0, before, 3, 1);
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
-        DmAutomation a = e->project.automation[i];
+        DmAutomation expected = original[i];
 
-        if (abs(a.curve) == 5) {
-            followed &= a.anchor == 66 && (a.beat == 4 || a.beat == 5);
-        } else {
-            untouched = a.curve == 6 && a.anchor == 60 && a.beat == .5;
+        if (abs(expected.curve) == 2) {
+            expected.beat += 2;
+
+            if (expected.type == MIDI_PITCH_BEND) {
+                expected.anchor = 66;
+            }
+        }
+
+        check(ed_same_event(expected, e->project.automation[i]),
+              "only the moved note's root, branch, range and reset move");
+    }
+
+    UiRect lane = {0, 0, 640, 300};
+    View view = {0};
+    ed_automation_lane_click(e, lane, &view, 80, (UiMouse){.pos = {320, 150}}, (int)root);
+    ed_automation_node_drag(e, lane, &view, 80,
+                            (UiMouse){.left = true, .shift = true, .pos = {340, 150}});
+    ed_automation_node_drag(e, lane, &view, 80, (UiMouse){.released = true, .pos = {340, 150}});
+    memcpy(original, e->project.automation, sizeof(original));
+    memcpy(before, p->notes, sizeof(before));
+    p->notes[1].beat = 5;
+    p->notes[1].key = 69;
+    ed_follow_note_curves(e, 0, before, 3, 0);
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        check(ed_same_event(original[i], e->project.automation[i]),
+              "moving the root in Events detaches the whole section");
+    }
+}
+
+static void independent_bends(Editor *e) {
+    fixture(e);
+    DmPattern *p = ed_pattern(e);
+    p->notes[0].length = 2; /* Its end meets the next note's onset. */
+    e->automation_cc = -2;
+    e->automation_raw = false;
+    e->automation_center = 64;
+    UiRect lane = {0, 0, 640, 300};
+    View view = {0};
+    UiMouse click = {.pos = {160, 150}, .released = true};
+    e->drag = 4;
+    e->marquee_start = click.pos;
+    ed_automation_drag(e, lane, &view, 80, click);
+    check(e->project.automation_count == 1, "Events places one independent pitch point");
+    DmAutomation point = e->project.automation[0];
+    check(point.fixed_anchor && point.anchor == 64 && !point.bend_note &&
+              ed_event_value(point) == MIDI_BEND_CENTER,
+          "a pitch point placed on the new note's onset sets a neutral MIDI bend");
+
+    e->automation_raw = true;
+    e->drag = 4;
+    e->marquee_start = (UiPoint){480, 145};
+    ed_automation_drag(e, lane, &view, 80,
+                       (UiMouse){.pos = {560, 105}, .released = true, .alt = true});
+    check(e->project.automation_count == 16, "MIDI Values places an independent curve with setup");
+    DmAutomation original[16];
+    memcpy(original, e->project.automation, sizeof(original));
+    DmNote before[3];
+    memcpy(before, p->notes, sizeof(before));
+    p->notes[1].beat += 1;
+    p->notes[1].key = 70;
+    p->notes[2].beat += 1;
+    p->notes[2].key = 72;
+    ed_follow_note_curves(e, 0, before, 3, 0);
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        check(ed_same_event(original[i], e->project.automation[i]) &&
+                  !e->project.automation[i].bend_note,
+              "Events bends keep their stored position in pitch and MIDI value views");
+    }
+
+    check(ed_automation_pitch(e, point) == 64, "an independent point keeps its pitch reference");
+    dm_pattern_fit(&e->project, p);
+
+    DmBytes saved = {0};
+    DmProject loaded;
+    dm_project_init(&loaded);
+    char error[256] = {0};
+    check(dm_pack(&e->project, &saved) &&
+              dm_unpack(&loaded, saved.data, saved.size, error, sizeof(error)) &&
+              ed_same_event(loaded.automation[0], point),
+          "saving and reopening preserves an independent point's pitch reference");
+    dm_project_free(&loaded);
+    dm_bytes_free(&saved);
+}
+
+static void scheduled_bend(Editor *e, int *start, int *middle, int *range, int *reset) {
+    DmSchedule schedule = {0};
+    check(dm_schedule(&e->project, &schedule), "build the pattern playback schedule");
+    *start = *middle = *reset = -1;
+    *range = 2;
+
+    for (size_t i = 0; i < schedule.count; ++i) {
+        DmScheduled event = schedule.items[i];
+        int type = event.status & MIDI_STATUS_MASK;
+
+        if (type == MIDI_CONTROL && event.a == MIDI_CC_DATA && event.seconds <= .25) {
+            *range = event.b;
+        }
+
+        if (type != MIDI_PITCH_BEND) {
+            continue;
+        }
+
+        int value = event.a + (event.b << 7);
+
+        if (fabs(event.seconds - .25) < 1e-6) {
+            *start = value;
+        } else if (fabs(event.seconds - .5) < 1e-6) {
+            *middle = value;
+        } else if (fabs(event.seconds - .75) < 1e-6) {
+            *reset = value;
         }
     }
 
-    check(followed, "a moved note carries its drawn bend and re-anchors it to the new key");
-    check(untouched, "curves on other notes stay in place");
+    dm_schedule_free(&schedule);
+}
+
+static void detached_pitch_playback(Editor *e) {
+    fixture(e);
+    DmPattern *p = ed_pattern(e);
+    p->notes[0].key = 55;
+    p->notes[0].length = 1.5;
+    p->notes[1].beat = 1.5;
+    p->notes[1].key = 55;
+    e->project.bpm = 120;
+    e->automation_cc = -2;
+    e->automation_raw = false;
+    e->automation_center = 55;
+    e->bend_range = 12;
+    check(dm_clip_add(&e->project, (DmClip){.pattern = 0}), "place the bend fixture");
+    ed_note_bend_line(e, .5, 1.5, MIDI_BEND_CENTER, &p->notes[0]);
+    size_t root = 0;
+
+    while (e->project.automation[root].bend_root != DM_BEND_ROOT_PITCH) {
+        ++root;
+        check(root < e->project.automation_count, "drawn curve has a Pitch root");
+    }
+
+    UiRect lane = {0, 0, 640, 300};
+    View view = {0};
+    ed_automation_lane_click(e, lane, &view, 80, (UiMouse){.pos = {40, 150}}, (int)root);
+    ed_automation_node_drag(e, lane, &view, 80,
+                            (UiMouse){.left = true, .ctrl = true, .pos = {40, 210}});
+    ed_automation_node_drag(e, lane, &view, 80, (UiMouse){.released = true, .pos = {40, 210}});
+
+    DmAutomation *point = &e->project.automation[root];
+    DmAutomation *end = point + 1;
+    check(!point->bend_note && point->bend_root == DM_BEND_ROOT_PITCH &&
+              fabs(ed_automation_pitch(e, *point) - 52) < .002,
+          "editing the root in Pitch detaches it and retains its drawn pitch");
+
+    p->notes[0].key = 52;
+    int start, middle, range, reset;
+    scheduled_bend(e, &start, &middle, &range, &reset);
+    check(start == MIDI_BEND_CENTER && middle == 9216 && range == 12 && reset == MIDI_BEND_CENTER,
+          "detached Pitch playback glides from the sounding note and restores the original value");
+    check(ed_event_value(*point) == 6144 && ed_event_value(*end) == MIDI_BEND_CENTER,
+          "compiling playback leaves the original curve and its display reference intact");
+
+    p->notes[0].key = 53;
+    scheduled_bend(e, &start, &middle, &range, &reset);
+    check(start == 6144 && middle == 7168, "a root off the sounding pitch retains its offsets");
+    p->notes[0].key = 52;
+    p->notes[0].length = .5;
+    scheduled_bend(e, &start, &middle, &range, &reset);
+    check(start == 6144 && middle == 7168, "a note ending at the root is no longer sounding");
+
+    p->notes[0].length = 1.5;
+    ed_pitch_edit_units(e, end, true);
+    scheduled_bend(e, &start, &middle, &range, &reset);
+    check(point->bend_root == DM_BEND_ROOT_MIDI && start == 6144 && middle == 7168,
+          "a MIDI Values edit preserves literal offsets throughout the section");
+
+    p->notes[0].key = 46;
+    ed_pitch_edit_units(e, point, false);
+    ed_set_event_value(point, 2048);
+    ed_set_event_value(end, 14336);
+    scheduled_bend(e, &start, &middle, &range, &reset);
+    check(start == MIDI_BEND_CENTER && range > 12 &&
+              fabs((middle - MIDI_BEND_CENTER) * range / (double)MIDI_BEND_CENTER - 9) < .003,
+          "the bend range expands when needed to preserve the glide's interval");
 }
 
 /* A channel's type changes in place, including when channel 10 is already in use. */
@@ -540,6 +723,8 @@ int main(void) {
     ui_root(0, 900);
     programs(e);
     note_curves(e);
+    independent_bends(e);
+    detached_pitch_playback(e);
     drum_channel(e);
     late_initial_program(e);
     delete_port(e);

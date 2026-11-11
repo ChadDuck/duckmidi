@@ -138,9 +138,32 @@ static void converter(Editor *e) {
     check(dm_schedule(&e->project, &before), "schedule the point lanes");
     int history = e->undo_count;
     ed_graph_mode(e, 0, 16);
-    check(ed_pattern(e)->graph == 16 && !ed_pattern(e)->mode && e->undo_count == history + 1,
+    check(ed_graph_resolution(e) == 16 && !ed_pattern(e)->mode && e->undo_count == history + 1,
           "Graph mode is one undo step at 1/16");
-    check(only_discrete(e, 0), "every converted lane holds discrete points only");
+    check(!only_discrete(e, 0) && !dm_graph_resolution(ed_pattern(e), MIDI_CC_EXPRESSION) &&
+              !dm_graph_resolution(ed_pattern(e), -2),
+          "converting modulation leaves the expression ramp and pitch bend in Point");
+    check(dm_schedule(&e->project, &after), "schedule the mixed Point and Graph lanes");
+
+    for (double beat = 0; beat <= 4; beat += .125) {
+        double time = dm_beat_seconds(&e->project, beat);
+        check(scheduled(&before, MIDI_CONTROL, MIDI_CC_EXPRESSION, time) ==
+                      scheduled(&after, MIDI_CONTROL, MIDI_CC_EXPRESSION, time) &&
+                  scheduled(&before, MIDI_PITCH_BEND, 0, time) ==
+                      scheduled(&after, MIDI_PITCH_BEND, 0, time) &&
+                  scheduled(&before, MIDI_CONTROL, MIDI_CC_DATA, time) ==
+                      scheduled(&after, MIDI_CONTROL, MIDI_CC_DATA, time),
+              "the Point lanes keep their original playback and bend range");
+    }
+
+    dm_schedule_free(&after);
+    e->automation_cc = MIDI_CC_EXPRESSION;
+    ed_graph_mode(e, 0, 32);
+    e->automation_cc = -2;
+    ed_graph_mode(e, 0, 16);
+    e->automation_cc = MIDI_CC_MODULATION;
+    check(ed_graph_resolution(e) == 16 && only_discrete(e, 0),
+          "each Graph lane converts separately and keeps its resolution");
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         other += e->project.automation[i].pattern == 1 && e->project.automation[i].ramp;
@@ -166,9 +189,10 @@ static void converter(Editor *e) {
               "the bend range is unchanged");
     }
 
-    check(scheduled(&after, MIDI_CONTROL, 1, 3.3 * seconds) == 0 &&
-              scheduled(&after, MIDI_CONTROL, 11, 3.3 * seconds) == 127,
-          "after their last bar, controllers return to their defaults");
+    check(scheduled(&after, MIDI_CONTROL, 1, 3.2 * seconds) == 10 &&
+              scheduled(&after, MIDI_CONTROL, 11, 3.2 * seconds) == 127 &&
+              scheduled(&after, MIDI_CONTROL, 1, 3.3 * seconds) == 0,
+          "each Graph lane returns to its default after its own cell");
     dm_schedule_free(&before);
     dm_schedule_free(&after);
     check(lane_point(e, 2, 127) && !lane_point(e, 2.5, 127) && lane_point(e, 3, 10) &&
@@ -176,10 +200,15 @@ static void converter(Editor *e) {
           "a held node is one bar, and the section ends at its restoration value");
 
     ed_graph_mode(e, 0, 0);
-    check(!ed_pattern(e)->graph && only_discrete(e, 0), "To Point keeps the bars");
+    check(!ed_graph_resolution(e) && only_discrete(e, 0) &&
+              dm_graph_resolution(ed_pattern(e), MIDI_CC_EXPRESSION) == 32,
+          "To Point keeps the bars and the other lane's Graph setting");
     ed_undo(e, false);
     ed_undo(e, false);
-    check(!ed_pattern(e)->graph && !only_discrete(e, 0), "undo restores the line sections");
+    ed_undo(e, false);
+    ed_undo(e, false);
+    check(!dm_pattern_has_graph(ed_pattern(e)) && !only_discrete(e, 0),
+          "undo restores the line sections and independent settings");
 }
 
 static void modes(Editor *e) {
@@ -187,19 +216,38 @@ static void modes(Editor *e) {
     ed_graph_mode(e, 0, 32);
     check(ed_graph_resolution(e) == 32 && ed_event_snap(e) == .125, "1/32 cells are 1/8 beat");
     ed_graph_mode(e, 1, 32);
-    check(ed_pattern(e)->mode == 1 && !ed_pattern(e)->graph, "LFO patterns cannot be graphs");
-    ed_graph_mode(e, 0, 64);
+    check(ed_pattern(e)->mode == 1 && !ed_graph_resolution(e), "LFO hides the Graph lanes");
+    ed_graph_mode(e, 0, 32);
 
     for (int cc = -5; cc <= 127; ++cc) {
         e->automation_cc = cc;
 
         if (cc == -3 || ed_point_only_event(cc)) {
-            check(!ed_graph_event(cc) && !ed_graph_resolution(e),
+            check(dm_graph_lane(cc) < 0 && !ed_graph_resolution(e),
                   "velocity and point-only events never show a graph");
         }
     }
 
     e->automation_cc = -2;
+    check(!ed_graph_resolution(e) && !ed_automation_raw(e), "pitch bend still opens in Point");
+    add(e, bend_point(0, 8000, 0));
+    ed_graph_mode_request(e, 0, 64);
+    check(e->graph_switch && e->graph_switch_event == -2 && !ed_graph_resolution(e),
+          "switching a populated lane asks before conversion");
+    e->graph_switch = false;
+    e->automation_cc = MIDI_CC_EXPRESSION;
+    ed_graph_mode_request(e, 0, 16);
+    check(!e->graph_switch && ed_graph_resolution(e) == 16,
+          "an empty lane enters Graph even when another type has data");
+    ed_graph_mode_request(e, 0, 0);
+    check(!e->graph_switch && !ed_graph_resolution(e),
+          "an empty lane returns to Point without a warning");
+    e->automation_cc = -2;
+    ed_graph_mode(e, 0, 64);
+    ed_graph_mode_request(e, 0, 0);
+    check(e->graph_switch && !e->graph_switch_graph && ed_graph_resolution(e) == 64,
+          "a populated Graph lane asks before changing to Point");
+    e->graph_switch = false;
     check(ed_graph_resolution(e) == 64 && ed_automation_raw(e),
           "graph pitch bends use raw MIDI values");
     DmBytes saved = {0};
@@ -207,8 +255,10 @@ static void modes(Editor *e) {
     dm_project_init(&loaded);
     check(dm_pack(&e->project, &saved) &&
               dm_unpack(&loaded, saved.data, saved.size, e->status, sizeof(e->status)) &&
-              loaded.patterns[0].graph == 64,
-          "the resolution is saved and reloaded");
+              dm_graph_resolution(&loaded.patterns[0], -2) == 64 &&
+              dm_graph_resolution(&loaded.patterns[0], MIDI_CC_MODULATION) == 32 &&
+              !dm_graph_resolution(&loaded.patterns[0], MIDI_CC_EXPRESSION),
+          "each event type's mode and resolution are saved and reloaded");
     dm_bytes_free(&saved);
     dm_project_free(&loaded);
 }
@@ -346,6 +396,23 @@ static void selection_and_clipboard(Editor *e) {
           "a pasted line becomes bars in a Graph pattern");
 }
 
+static void mixed_clipboard(Editor *e) {
+    fixture(e, MIDI_CC_MODULATION);
+    add(e, cc_point(0, MIDI_CC_MODULATION, 0, 1));
+    add(e, bend_point(0, 4000, 2));
+    add(e, cc_point(1, MIDI_CC_MODULATION, 127, 1));
+    add(e, bend_point(1, 12000, 2));
+    ed_copy_event_lane(e, true);
+    e->selected_pattern = 1;
+    ed_graph_mode(e, 0, 32);
+    ed_paste_event_lane(e);
+    check(lane_points(e) == 9 && lane_point(e, .5, 64),
+          "Paste all samples the modulation line at the destination's Graph resolution");
+    e->automation_cc = -2;
+    check(!ed_graph_resolution(e) && lane_points(e) == 2 && !only_discrete(e, 1),
+          "Paste all keeps the pitch bend line in the destination's Point lane");
+}
+
 static void input_frame(Editor *e, UiMouse mouse) {
     ui_frame();
     ui_root(0, 900);
@@ -353,6 +420,34 @@ static void input_frame(Editor *e, UiMouse mouse) {
     ed_automation_input(e, lane, &view, scale, mouse, true, hit);
     ui_end();
     ui_render(e->renderer);
+}
+
+static void additive_marquee(Editor *e) {
+    fixture(e, MIDI_CC_MODULATION);
+    ed_graph_mode(e, 0, 16);
+    add(e, cc_point(.25, MIDI_CC_MODULATION, 60, 0));
+    add(e, cc_point(1, MIDI_CC_MODULATION, 60, 0));
+    add(e, cc_point(1.5, MIDI_CC_MODULATION, 60, 0));
+    e->automation_node = 0;
+    UiMouse mouse = {.pos = {beat_x(.9), value_y(70)}, .left = true, .clicked = true, .ctrl = true};
+    input_frame(e, mouse);
+    mouse = (UiMouse){.pos = {beat_x(1.8), value_y(50)}, .left = true, .shift = true};
+    input_frame(e, mouse);
+    check(ed_event_selected(e, 0) && ed_event_selected(e, 1) && ed_event_selected(e, 2),
+          "Shift adds bars to a single preselected event");
+    mouse.pos.x = beat_x(1.2);
+    input_frame(e, mouse);
+    check(ed_event_selected(e, 0) && ed_event_selected(e, 1) && !ed_event_selected(e, 2),
+          "shrinking the Graph marquee removes swept-in bars outside the box");
+    mouse.shift = false;
+    input_frame(e, mouse);
+    check(!ed_event_selected(e, 0) && ed_event_selected(e, 1),
+          "releasing Shift returns to replacement selection");
+    mouse = (UiMouse){.pos = mouse.pos, .released = true, .shift = true};
+    input_frame(e, mouse);
+    check(ed_event_selected(e, 0) && ed_event_selected(e, 1) && !ed_event_selected(e, 2) &&
+              !e->event_marquee && e->edit_focus == FOCUS_EVENTS,
+          "the final Shift state is applied on mouse release");
 }
 
 /* The lane's own gestures: a left drag paints in one undo step, a right drag erases. */
@@ -429,6 +524,8 @@ int main(void) {
     returns(e);
     snapping(e);
     selection_and_clipboard(e);
+    mixed_clipboard(e);
+    additive_marquee(e);
     gestures(e);
     drawing(e);
     printf("PASS event graph: %d checks\n", checks);

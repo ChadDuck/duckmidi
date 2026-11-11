@@ -6,42 +6,7 @@ static void replace_curve_range(Editor *e, double start, double end, int cc);
 static bool curve_overlaps(Editor *e, double start, double end, int cc);
 
 PitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat, unsigned port) {
-    return ed_pitch_state_in(p->automation, p->automation_count, pattern_id, beat, port);
-}
-
-/* The bend range at beat from a list of automation points in project order: the whole project's,
-   or a subset holding at least the pattern's RPN and data entry controllers. */
-PitchState ed_pitch_state_in(const DmAutomation *items, size_t count, int pattern_id, double beat,
-                             unsigned port) {
-    PitchState state = {2, 0, 127, 127};
-
-    for (size_t i = 0; i < count; ++i) {
-        DmAutomation a = items[i];
-
-        if (a.beat > beat) {
-            continue;
-        }
-
-        if (a.pattern != pattern_id || a.type != MIDI_CONTROL || a.port != port) {
-            continue;
-        }
-
-        if (a.a == MIDI_CC_RPN_MSB) {
-            state.msb = a.b;
-        } else if (a.a == MIDI_CC_RPN_LSB) {
-            state.lsb = a.b;
-        } else if (state.msb == 0 && state.lsb == 0) {
-            if (a.a == MIDI_CC_DATA) {
-                state.range = a.b;
-            }
-
-            if (a.a == MIDI_CC_DATA_LSB) {
-                state.cents = a.b;
-            }
-        }
-    }
-
-    return state;
+    return dm_pitch_state(p->automation, p->automation_count, pattern_id, beat, port);
 }
 
 PitchState ed_pitch_state(Editor *e, double beat) {
@@ -65,7 +30,7 @@ int ed_curve_id(Editor *e) {
 int ed_nearest_note(Editor *e, double beat) {
     DmPattern *p = ed_pattern(e);
     int key = p && p->kind ? p->reference : 60;
-    double distance = HUGE_VAL;
+    double distance = HUGE_VAL, onset = -1;
 
     for (size_t i = 0; p && i < p->count; ++i) {
         if (p->notes[i].port != ed_note_port(e)) {
@@ -78,8 +43,9 @@ int ed_nearest_note(Editor *e, double beat) {
             d = 0;
         }
 
-        if (d < distance) {
+        if (d < distance || (d == 0 && distance == 0 && p->notes[i].beat > onset)) {
             distance = d;
+            onset = p->notes[i].beat;
             key = p->notes[i].key;
         }
     }
@@ -136,6 +102,7 @@ DmAutomation ed_curve_node(Editor *e, double beat, int value, int cc, int id, in
                       0,
                       false,
                       (uint8_t)ed_note_port(e)};
+    a.fixed_anchor = a.type == MIDI_PITCH_BEND;
     ed_set_event_value(&a, value);
     return a;
 }
@@ -211,7 +178,7 @@ static void replace_curve_range(Editor *e, double start, double end, int cc) {
         bool match = (cc < 0 && a.type == MIDI_PITCH_BEND) || (a.type == MIDI_CONTROL && a.a == cc);
 
         if (a.pattern != e->selected_pattern || a.port != ed_note_port(e) || !match ||
-            a.beat < start || a.beat > end) {
+            a.beat < start || a.beat > end || (cc == -2 && a.curve)) {
             continue;
         }
 
@@ -261,8 +228,11 @@ bool ed_automation_line_overlaps(Editor *e, double start, double end, int cc) {
     return curve_overlaps(e, low, high, cc);
 }
 
-void ed_automation_line(Editor *e, double start, double end, int first, int last, int cc) {
-    if (end < start) {
+static void automation_line(Editor *e, double start, double end, int first, int last, int cc,
+                            DmNote *note) {
+    bool reverse = end < start;
+
+    if (reverse) {
         double b = start;
         start = end;
         end = b;
@@ -278,7 +248,16 @@ void ed_automation_line(Editor *e, double start, double end, int first, int last
         return;
     }
 
-    int id = ed_curve_id(e), anchor = cc < 0 ? e->drag_key : ed_nearest_note(e, start);
+    size_t added = cc == -2 ? 15 : 3;
+
+    if (!dm_reserve((void **)&e->project.automation, &e->project.automation_capacity,
+                    e->project.automation_count + added, sizeof(DmAutomation))) {
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_AUTOMATION_SECTION);
+        return;
+    }
+
+    int id = ed_curve_id(e);
+    int anchor = note ? note->key : cc < 0 ? e->drag_key : ed_nearest_note(e, start);
     int baseline = cc == 64 || cc == 66 ? 0 : ed_value_before(e, start, cc);
     PitchState previous = ed_pitch_state(e, start);
     replace_curve_range(e, start, end, cc);
@@ -287,8 +266,25 @@ void ed_automation_line(Editor *e, double start, double end, int first, int last
         ed_curve_range(e, start, e->bend_range, 0, 127, 127, id);
     }
 
-    dm_automation_add(&e->project, ed_curve_node(e, start, first, cc, id, anchor));
-    dm_automation_add(&e->project, ed_curve_node(e, end, last, cc, id, anchor));
+    DmAutomation from = ed_curve_node(e, start, first, cc, id, anchor);
+    DmAutomation to = ed_curve_node(e, end, last, cc, id, anchor);
+
+    DmAutomation *root = reverse ? &to : &from;
+
+    if (cc == -2) {
+        root->bend_root = note || !ed_automation_raw(e) ? DM_BEND_ROOT_PITCH : DM_BEND_ROOT_MIDI;
+    }
+
+    if (note) {
+        if (!note->bend_id) {
+            note->bend_id = ed_next_bend_id(e);
+        }
+
+        root->bend_note = note->bend_id;
+    }
+
+    dm_automation_add(&e->project, from);
+    dm_automation_add(&e->project, to);
     /* A user-created section is bounded; imported discrete MIDI is untouched outside it. */
     double after = end;
     dm_automation_add(&e->project, ed_curve_node(e, after, baseline, cc, -id, anchor));
@@ -300,24 +296,80 @@ void ed_automation_line(Editor *e, double start, double end, int first, int last
     dm_pattern_fit(&e->project, ed_pattern(e));
 }
 
-/* Finds the note a drawn curve was attached to: its anchor key and the time of its first point. */
-static bool curve_on_note(const DmProject *project, int pattern, int curve, DmNote note) {
-    for (size_t i = 0; i < project->automation_count; ++i) {
-        DmAutomation a = project->automation[i];
+void ed_automation_line(Editor *e, double start, double end, int first, int last, int cc) {
+    automation_line(e, start, end, first, last, cc, NULL);
+}
 
-        if (a.pattern == pattern && a.curve == curve && a.port == note.port) {
-            return a.anchor == note.key && a.beat >= note.beat - .25 &&
-                   a.beat <= note.beat + note.length + .25;
+void ed_note_bend_line(Editor *e, double start, double end, int value, DmNote *note) {
+    automation_line(e, start, end, MIDI_BEND_CENTER, value, -2, note);
+}
+
+uint32_t ed_next_bend_id(Editor *e) {
+    DmPattern *p = ed_pattern(e);
+    uint32_t last = 0;
+
+    for (size_t i = 0; i < p->count; ++i) {
+        if (p->notes[i].bend_id > last) {
+            last = p->notes[i].bend_id;
         }
     }
 
-    return false;
+    /* A deleted note's curve can remain in the pattern. Do not give its ID to another note. */
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+
+        if (a.pattern == e->selected_pattern && a.bend_note > last) {
+            last = a.bend_note;
+        }
+    }
+
+    return last < UINT32_MAX ? last + 1 : 0;
 }
 
-/* Curves drawn on a note follow it when the note moves: they shift by the same time and take the
-   note's new key as their anchor, so bends keep their register relative to the moved note.
-   before holds the pattern's notes from before the edit, in the same order. */
-void ed_follow_note_curves(Editor *e, int pattern, const DmNote *before, size_t count) {
+static bool same_bend(DmAutomation a, DmAutomation root) {
+    return a.pattern == root.pattern && a.port == root.port && abs(a.curve) == root.curve;
+}
+
+static size_t bend_note_index(DmAutomation root, const DmNote *notes, size_t count) {
+    for (size_t n = 0; n < count; ++n) {
+        if (notes[n].bend_id == root.bend_note && notes[n].port == root.port) {
+            return n;
+        }
+    }
+
+    return count;
+}
+
+/* A backwards bend can extend to the left of its note. Stop the whole drag at beat zero. */
+double ed_note_bend_offset(Editor *e, const DmNote *notes, size_t count, double offset) {
+    DmProject *p = &e->project;
+
+    for (size_t i = 0; offset < 0 && i < p->automation_count; ++i) {
+        DmAutomation root = p->automation[i];
+
+        if (!root.bend_note || root.pattern != e->selected_pattern) {
+            continue;
+        }
+
+        size_t n = bend_note_index(root, notes, count);
+
+        if (n == count || !notes[n].selected) {
+            continue;
+        }
+
+        for (size_t j = 0; j < p->automation_count; ++j) {
+            if (same_bend(p->automation[j], root)) {
+                offset = fmax(offset, -p->automation[j].beat);
+            }
+        }
+    }
+
+    return offset;
+}
+
+/* Move the section with its note, including range setup and the restoration at the end. */
+void ed_follow_note_curves(Editor *e, int pattern, const DmNote *before, size_t count,
+                           double previous_offset) {
     DmProject *project = &e->project;
 
     if (pattern < 0 || (size_t)pattern >= project->pattern_count) {
@@ -325,42 +377,45 @@ void ed_follow_note_curves(Editor *e, int pattern, const DmNote *before, size_t 
     }
 
     DmPattern *p = &project->patterns[pattern];
-    size_t automation = project->automation_count;
-    bool *moved = calloc(automation + 1, sizeof(*moved));
+    count = count < p->count ? count : p->count;
+    bool changed = false;
 
-    if (!moved) {
-        return;
-    }
+    for (size_t i = 0; i < project->automation_count; ++i) {
+        DmAutomation root = project->automation[i];
 
-    for (size_t n = 0; n < count && n < p->count; ++n) {
-        DmNote old = before[n], now = p->notes[n];
-        double shift = now.beat - old.beat;
-
-        if (shift == 0 && now.key == old.key) {
+        if (!root.bend_note || root.pattern != pattern) {
             continue;
         }
 
-        for (size_t i = 0; i < automation; ++i) {
-            DmAutomation a = project->automation[i];
+        size_t n = bend_note_index(root, before, count);
 
-            if (moved[i] || a.pattern != pattern || a.curve <= 0 ||
-                !curve_on_note(project, pattern, a.curve, old)) {
-                continue;
-            }
+        if (n == count) {
+            continue;
+        }
 
-            /* Move every node of this curve once, including setup and restoration nodes. */
-            for (size_t j = 0; j < automation; ++j) {
-                DmAutomation *node = &project->automation[j];
+        DmNote old = before[n], now = p->notes[n];
+        double shift = now.beat - old.beat - (old.selected ? previous_offset : 0);
 
-                if (!moved[j] && node->pattern == pattern && abs(node->curve) == a.curve) {
-                    node->beat = fmax(0, node->beat + shift);
-                    node->anchor = node->anchor == old.key ? now.key : node->anchor;
-                    moved[j] = true;
+        if (shift == 0 && now.key == root.anchor) {
+            continue;
+        }
+
+        changed = true;
+
+        for (size_t j = 0; j < project->automation_count; ++j) {
+            DmAutomation *node = &project->automation[j];
+
+            if (same_bend(*node, root)) {
+                node->beat = fmax(0, node->beat + shift);
+
+                if (node->type == MIDI_PITCH_BEND) {
+                    node->anchor = now.key;
                 }
             }
         }
     }
 
-    free(moved);
-    ed_sort_automation(e);
+    if (changed) {
+        ed_sort_automation(e);
+    }
 }

@@ -109,6 +109,10 @@ static void retain_note_selection(DmPattern *next, const DmPattern *live);
 static void retain_selection(DmProject *next, const DmProject *live);
 
 void ed_focus_edit(Editor *e, EditFocus focus) {
+    if (ed_selection_focus(e) != focus) {
+        e->marquee = e->event_marquee = false;
+    }
+
     e->edit_focus = focus;
 
     if (focus == FOCUS_NOTES || focus == FOCUS_EVENTS) {
@@ -336,15 +340,19 @@ void ed_reset_preview_instrument(Editor *e) {
 }
 
 void ed_open_pattern(Editor *e, int id, bool created) {
-    e->curve_drag = e->event_marquee = false;
+    e->curve_drag = e->marquee = e->event_marquee = false;
 
     if (created || id != e->selected_pattern || !e->preview_override) {
         preview_open_pattern(e, id);
     }
 
     e->event_selection.size = 0;
+    DmPattern *next =
+        id >= 0 && (size_t)id < e->project.pattern_count ? &e->project.patterns[id] : NULL;
 
     if (id != e->selected_pattern) {
+        ed_deselect_notes(ed_pattern(e));
+        ed_deselect_notes(next);
         e->loop_enabled[1] = false;
 
         if (e->pattern_mode) {
@@ -352,17 +360,13 @@ void ed_open_pattern(Editor *e, int id, bool created) {
         }
     }
 
-    if (id >= 0 && (size_t)id < e->project.pattern_count) {
-        e->automation_browser = e->project.patterns[id].kind != 0;
+    if (next) {
+        e->automation_browser = next->kind != 0;
 
         if (e->automation_browser) {
-            e->automation_cc = e->project.patterns[id].event;
+            e->automation_cc = next->event;
         } else {
-            e->last_note_pattern_uid = e->project.patterns[id].uid;
-
-            if (e->automation_cc == 7 || e->automation_cc == 10) {
-                e->automation_cc = -3;
-            }
+            e->last_note_pattern_uid = next->uid;
         }
     }
 
@@ -829,7 +833,7 @@ void ed_undo(Editor *e, bool redo) {
     ed_close_instrument(e);
     e->midi_event_index = -1;
     e->song_event = false;
-    e->curve_drag = e->event_marquee = false;
+    e->curve_drag = e->marquee = e->event_marquee = false;
     e->wait_armed = e->take_started = false;
     e->event_selection.size = 0;
     ed_release_piano(e);

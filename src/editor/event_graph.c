@@ -1,21 +1,15 @@
 /* Graph editing: an event lane drawn as one bar per point, painted on a grid of bar cells.
 
-   Bars are ordinary discrete points (curve 0), so playback and export are unchanged. A pattern's
-   `graph` field holds the cell size as a note denominator (16 = 1/16 note = 0.25 beat). A Graph
-   pattern keeps its graph-eligible lanes discrete: entering Graph converts line sections, and
-   pasting converts the pasted lines. */
+   Bars are ordinary discrete points (curve 0). Each Graph lane stores its cell size as a note
+   denominator (16 = 1/16 note = 0.25 beat). Entering Graph or pasting into it converts lines
+   on that lane to bars. */
 #include "editor/internal.h"
 #include "text/en.h"
 
 static const int graph_resolutions[] = {8, 16, 32, 64, 128, 256};
 
-bool ed_graph_event(int cc) {
-    return cc != -3 && !ed_point_only_event(cc);
-}
-
 int ed_graph_resolution(Editor *e) {
-    DmPattern *p = ed_pattern(e);
-    return p && !p->mode && ed_graph_event(e->automation_cc) ? p->graph : 0;
+    return dm_graph_resolution(ed_pattern(e), e->automation_cc);
 }
 
 double ed_event_snap(Editor *e) {
@@ -32,11 +26,6 @@ bool ed_automation_raw(Editor *e) {
 static bool range_setup(DmAutomation a) {
     return a.type == MIDI_CONTROL && (a.a == MIDI_CC_RPN_MSB || a.a == MIDI_CC_RPN_LSB ||
                                       a.a == MIDI_CC_DATA || a.a == MIDI_CC_DATA_LSB);
-}
-
-bool ed_graph_lane(DmAutomation a) {
-    return a.type == MIDI_PITCH_BEND ||
-           (a.type == MIDI_CONTROL && !range_setup(a) && ed_graph_event(a.a));
 }
 
 static bool same_lane(DmAutomation a, DmAutomation b) {
@@ -77,6 +66,8 @@ static bool converted_id(const int *ids, size_t count, int curve) {
 
 static DmAutomation discrete(DmAutomation a) {
     a.curve = 0;
+    a.bend_note = 0;
+    a.bend_root = DM_BEND_ROOT_NONE;
     a.ramp = a.hold = false;
     a.bend = 0;
     return a;
@@ -131,23 +122,24 @@ static void sort_points(DmAutomation *items, size_t count) {
     }
 }
 
-/* The automation with the line sections and ramps of every graph-eligible lane of `pattern`
+/* The automation with the line sections and ramps of the selected Graph lanes of `pattern`
    replaced by discrete points: each node keeps its beat, and every cell start inside a curving
    segment gets the value the segment plays there. A section's range setup and restoration points
    become discrete points at their beats, so the pitch range and the value after the section are
    unchanged. Sets *points to the new array of *count points, or NULL when nothing changes.
    Returns false when memory runs out. */
-static bool graph_points(Editor *e, int pattern, int graph, DmAutomation **points, size_t *count) {
+static bool graph_points(Editor *e, int pattern, const uint16_t *graphs, DmAutomation **points,
+                         size_t *count) {
     const DmAutomation *items = e->project.automation;
     size_t total = e->project.automation_count, id_count = 0, kept_count = 0;
-    double cell = 4.0 / graph;
     int *ids = malloc((total + 1) * sizeof(*ids));
     DmAutomation *kept = malloc((total + 1) * sizeof(*kept));
     DmBytes added = {0};
     bool ok = ids && kept, changed = false;
 
     for (size_t i = 0; ok && i < total; ++i) {
-        if (items[i].pattern == pattern && items[i].curve > 0 && ed_graph_lane(items[i])) {
+        if (items[i].pattern == pattern && items[i].curve > 0 &&
+            items[i].type == MIDI_PITCH_BEND && graphs[DM_GRAPH_PITCH_LANE] > DM_GRAPH_POINT) {
             ids[id_count++] = items[i].curve;
         }
     }
@@ -158,17 +150,25 @@ static bool graph_points(Editor *e, int pattern, int graph, DmAutomation **point
 
     for (size_t i = 0; ok && i < total; ++i) {
         DmAutomation a = items[i];
-        bool lane = a.pattern == pattern && ed_graph_lane(a);
-        bool line = lane && a.curve > 0, ramp = lane && !a.curve && a.ramp;
+        int lane = dm_automation_graph_lane(a);
+        int graph = a.pattern == pattern && lane >= 0 ? graphs[lane] : 0;
+        bool convert = graph > DM_GRAPH_POINT;
+        bool line = convert && a.curve > 0, ramp = convert && !a.curve && a.ramp;
+        bool pitch_setup = a.pattern == pattern && range_setup(a) &&
+                           converted_id(ids, id_count, a.curve);
 
-        if (a.pattern == pattern && a.curve && converted_id(ids, id_count, a.curve) &&
-            (a.curve < 0 || range_setup(a))) {
+        if ((convert && a.curve < 0) || pitch_setup) {
             kept[kept_count++] = discrete(a); /* Restoration or range setup of a section. */
             changed = true;
             continue;
         }
 
         if (!line && !ramp) {
+            if (convert && a.bend_root) {
+                a.bend_root = DM_BEND_ROOT_NONE;
+                changed = true;
+            }
+
             kept[kept_count++] = a;
             continue;
         }
@@ -182,7 +182,7 @@ static bool graph_points(Editor *e, int pattern, int graph, DmAutomation **point
         }
 
         if (end && dm_automation_curves(a)) {
-            ok = add_samples(&added, a, *end, cell);
+            ok = add_samples(&added, a, *end, 4.0 / graph);
         }
     }
 
@@ -211,13 +211,19 @@ static void apply_points(Editor *e, DmAutomation *points, size_t count) {
     }
 }
 
-/* Converts `pattern`'s lines to bars of the given resolution. The caller owns the undo step.
+/* Converts pasted lines on `pattern`'s Graph lanes. The caller owns the undo step.
    Returns false, leaving the project unchanged, when memory runs out. */
-bool ed_graph_convert(Editor *e, int pattern, int graph) {
-    size_t count;
+bool ed_graph_convert(Editor *e, int pattern) {
+    const DmPattern *p = &e->project.patterns[pattern];
+
+    if (!dm_pattern_has_graph(p)) {
+        return true;
+    }
+
+    size_t count = 0;
     DmAutomation *points;
 
-    if (!graph_points(e, pattern, graph, &points, &count)) {
+    if (!graph_points(e, pattern, p->graph_lanes, &points, &count)) {
         ed_message(e, DM_TEXT_CANNOT_ALLOCATE_AUTOMATION_EDIT);
         return false;
     }
@@ -226,21 +232,37 @@ bool ed_graph_convert(Editor *e, int pattern, int graph) {
     return true;
 }
 
-/* Switches the open pattern between Point (mode 0, graph 0), LFO (mode 1) and Graph (mode 0,
-   graph > 0) as one undo step. Entering Graph converts lines; leaving it keeps the data. */
+static bool graph_lane_has_data(const Editor *e, int lane) {
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+
+        if (a.pattern == e->selected_pattern && dm_automation_graph_lane(a) == lane) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* Switches the displayed event between Point and Graph in one undo step. LFO is a
+   separate pattern-wide mode. */
 void ed_graph_mode(Editor *e, int mode, int graph) {
     DmPattern *p = ed_pattern(e);
-    graph = mode ? 0 : graph;
+    int lane = dm_graph_lane(e->automation_cc);
+    int setting = graph ? graph : DM_GRAPH_POINT;
 
-    if (!p || (p->mode == mode && p->graph == graph)) {
+    if (!p || lane < 0 || (p->mode == mode && (mode || p->graph_lanes[lane] == setting))) {
         return;
     }
 
     size_t count = 0;
     DmAutomation *points = NULL;
 
-    if (graph && !p->graph) {
-        if (!graph_points(e, e->selected_pattern, graph, &points, &count)) {
+    if (!mode && graph && p->graph_lanes[lane] <= DM_GRAPH_POINT && graph_lane_has_data(e, lane)) {
+        uint16_t graphs[DM_GRAPH_LANES] = {0};
+        graphs[lane] = (uint16_t)graph;
+
+        if (!graph_points(e, e->selected_pattern, graphs, &points, &count)) {
             ed_message(e, DM_TEXT_CANNOT_ALLOCATE_AUTOMATION_EDIT);
             return;
         }
@@ -250,7 +272,11 @@ void ed_graph_mode(Editor *e, int mode, int graph) {
     apply_points(e, points, count);
     p = ed_pattern(e);
     p->mode = mode;
-    p->graph = graph;
+
+    if (!mode) {
+        p->graph_lanes[lane] = (uint16_t)setting;
+    }
+
     e->automation_node = -1;
     e->automation_all = false;
     ed_commit(e);
@@ -258,23 +284,22 @@ void ed_graph_mode(Editor *e, int mode, int graph) {
 
 void ed_graph_mode_request(Editor *e, int mode, int graph) {
     DmPattern *p = ed_pattern(e);
-    bool to_graph = !mode && graph, from_graph = p && !p->mode && p->graph;
-    bool data = false;
+    int lane = dm_graph_lane(e->automation_cc);
 
-    for (size_t i = 0; p && (to_graph || from_graph) && i < e->project.automation_count && !data;
-         ++i) {
-        DmAutomation a = e->project.automation[i];
-        data = a.pattern == e->selected_pattern && ed_graph_lane(a);
+    if (!p || lane < 0) {
+        return;
     }
 
-    if (!data) {
+    bool switching = !mode && ((graph != 0) != (ed_graph_resolution(e) != 0));
+
+    if (!switching || !graph_lane_has_data(e, lane)) {
         ed_graph_mode(e, mode, graph);
         return;
     }
 
     e->graph_switch = true;
-    e->graph_switch_pattern = e->selected_pattern;
-    e->graph_switch_mode = mode;
+    e->graph_switch_uid = p->uid;
+    e->graph_switch_event = e->automation_cc;
     e->graph_switch_graph = graph;
 }
 
@@ -283,8 +308,7 @@ void ed_graph_mode_dialog(Editor *e) {
         return;
     }
 
-    bool to_graph = !e->graph_switch_mode && e->graph_switch_graph;
-    ui_wrap(to_graph ? DM_TEXT_GRAPH_SWITCH_TO_GRAPH : DM_TEXT_GRAPH_SWITCH_TO_POINT);
+    ui_wrap(e->graph_switch_graph ? DM_TEXT_GRAPH_SWITCH_TO_GRAPH : DM_TEXT_GRAPH_SWITCH_TO_POINT);
 
     if (ui_button(DM_TEXT_CANCEL, 110, 0)) {
         e->graph_switch = false;
@@ -294,9 +318,10 @@ void ed_graph_mode_dialog(Editor *e) {
     ui_same();
 
     if (ui_button(DM_TEXT_GRAPH_SWITCH_CONFIRM, 110, 0)) {
-        /* The pattern may have changed while the question was open. */
-        if (e->graph_switch_pattern == e->selected_pattern) {
-            ed_graph_mode(e, e->graph_switch_mode, e->graph_switch_graph);
+        DmPattern *p = ed_pattern(e);
+
+        if (p && p->uid == e->graph_switch_uid && e->automation_cc == e->graph_switch_event) {
+            ed_graph_mode(e, 0, e->graph_switch_graph);
         }
 
         e->graph_switch = false;
@@ -411,7 +436,8 @@ static bool any_in_range(Editor *e, double from, double to) {
 
 static void place_bar(Editor *e, UiRect lane, double beat, double from, double to, float y,
                       bool free) {
-    DmAutomation point = ed_curve_node(e, beat, 0, e->automation_cc, 0, ed_curve_anchor(e, beat));
+    int anchor = e->automation_cc == -2 ? ed_nearest_note(e, beat) : ed_curve_anchor(e, beat);
+    DmAutomation point = ed_curve_node(e, beat, 0, e->automation_cc, 0, anchor);
     ed_set_event_value(&point, ed_lane_value(e, lane, y, point, free));
     remove_range(e, from, to);
     dm_automation_add(&e->project, point);
@@ -592,9 +618,9 @@ int ed_graph_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse) {
    pattern. Returns false when the displayed event has only points (velocity, pedals). */
 bool ed_graph_controls(Editor *e, DmPattern *p, bool lfo) {
     const char *modes[] = {DM_TEXT_POINT, DM_TEXT_LFO, DM_TEXT_GRAPH};
-    int current = p->mode ? 1 : p->graph ? 2 : 0;
+    int current = p->mode ? 1 : ed_graph_resolution(e) ? 2 : 0;
 
-    if (!ed_graph_event(e->automation_cc)) {
+    if (dm_graph_lane(e->automation_cc) < 0) {
         return false;
     }
 
@@ -614,13 +640,15 @@ bool ed_graph_controls(Editor *e, DmPattern *p, bool lfo) {
 }
 
 /* The resolution and Snap bars, while the displayed lane is a graph. */
-void ed_graph_resolution_controls(Editor *e, DmPattern *p) {
-    if (!ed_graph_resolution(e)) {
+void ed_graph_resolution_controls(Editor *e) {
+    int graph = ed_graph_resolution(e);
+
+    if (!graph) {
         return;
     }
 
     char label[16];
-    snprintf(label, sizeof(label), DM_TEXT_GRAPH_RESOLUTION, p->graph);
+    snprintf(label, sizeof(label), DM_TEXT_GRAPH_RESOLUTION, graph);
     ui_same();
     ui_width(80);
 
@@ -628,11 +656,9 @@ void ed_graph_resolution_controls(Editor *e, DmPattern *p) {
         for (size_t i = 0; i < sizeof(graph_resolutions) / sizeof(*graph_resolutions); ++i) {
             snprintf(label, sizeof(label), DM_TEXT_GRAPH_RESOLUTION, graph_resolutions[i]);
 
-            if (ui_select(label, p->graph == graph_resolutions[i], 0, 0) &&
-                p->graph != graph_resolutions[i]) {
-                ed_checkpoint(e);
-                ed_pattern(e)->graph = graph_resolutions[i];
-                ed_commit(e);
+            if (ui_select(label, graph == graph_resolutions[i], 0, 0) &&
+                graph != graph_resolutions[i]) {
+                ed_graph_mode(e, 0, graph_resolutions[i]);
             }
         }
 

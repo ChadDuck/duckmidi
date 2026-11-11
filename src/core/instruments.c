@@ -139,7 +139,16 @@ const char *dm_program_name(int program) {
 }
 
 const char *dm_drum_name(int key) {
-    static const char *names[] = {DM_TEXT_ACOUSTIC_BASS_DRUM,
+    /* The GS Standard kit extends the General MIDI names at both ends. */
+    static const char *names[] = {DM_TEXT_HIGH_Q,
+                                  DM_TEXT_SLAP,
+                                  DM_TEXT_SCRATCH_PUSH,
+                                  DM_TEXT_SCRATCH_PULL,
+                                  DM_TEXT_STICKS,
+                                  DM_TEXT_SQUARE_CLICK,
+                                  DM_TEXT_METRONOME_CLICK,
+                                  DM_TEXT_METRONOME_BELL,
+                                  DM_TEXT_ACOUSTIC_BASS_DRUM,
                                   DM_TEXT_BASS_DRUM_1,
                                   DM_TEXT_SIDE_STICK,
                                   DM_TEXT_ACOUSTIC_SNARE,
@@ -185,8 +194,14 @@ const char *dm_drum_name(int key) {
                                   DM_TEXT_MUTE_CUICA,
                                   DM_TEXT_OPEN_CUICA,
                                   DM_TEXT_MUTE_TRIANGLE,
-                                  DM_TEXT_OPEN_TRIANGLE};
-    return key >= 35 && key <= 81 ? names[key - 35] : DM_TEXT_UNASSIGNED;
+                                  DM_TEXT_OPEN_TRIANGLE,
+                                  DM_TEXT_SHAKER,
+                                  DM_TEXT_JINGLE_BELL,
+                                  DM_TEXT_BELL_TREE,
+                                  DM_TEXT_CASTANETS,
+                                  DM_TEXT_MUTE_SURDO,
+                                  DM_TEXT_OPEN_SURDO};
+    return key >= 27 && key <= 87 ? names[key - 27] : DM_TEXT_UNNAMED_DRUM;
 }
 
 const char *dm_drum_kit_name(int program) {

@@ -39,7 +39,7 @@ static bool point_only_event(int event) {
            event == MIDI_CC_SUSTAIN || event == MIDI_CC_SOSTENUTO;
 }
 
-static bool graph_resolution_valid(int graph) {
+static bool graph_resolution_valid(uint32_t graph) {
     return graph == 0 || (graph >= 8 && graph <= 256 && !(graph & (graph - 1)));
 }
 
@@ -301,12 +301,32 @@ static uint32_t crc32(const uint8_t *p, size_t size) {
     return ~crc;
 }
 
+static bool pack_graph_lanes(const DmPattern *p, DmBytes *b) {
+    uint32_t count = 0;
+
+    for (unsigned lane = 0; lane < DM_GRAPH_LANES; ++lane) {
+        count += p->graph_lanes[lane] != 0;
+    }
+
+    if (!u32(b, count)) {
+        return false;
+    }
+
+    for (unsigned lane = 0; lane < DM_GRAPH_LANES; ++lane) {
+        if (p->graph_lanes[lane] && (!u32(b, lane) || !u32(b, p->graph_lanes[lane]))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static bool pack_pattern_mode(const DmPattern *p, DmBytes *b) {
     return u32(b, p->kind) && u32(b, p->mode) && u32(b, (uint32_t)p->event) && real(b, p->speed) &&
            real(b, p->tension) && real(b, p->skew) && real(b, p->pulse) && real(b, p->amount) &&
            real(b, p->center) && real(b, p->pitch_center) && u32(b, p->reference) &&
            u32(b, p->inverted) && u32(b, p->control_scope) && u32(b, p->port) && u32(b, p->color) &&
-           u32(b, (uint32_t)p->graph);
+           pack_graph_lanes(p, b);
 }
 
 static bool pack_patterns(const DmProject *p, DmBytes *b) {
@@ -327,7 +347,8 @@ static bool pack_patterns(const DmProject *p, DmBytes *b) {
             DmNote n = pat->notes[j];
 
             if (!time_after(b, n.beat, j ? pat->notes[j - 1].beat : 0) || !real(b, n.length) ||
-                !u32(b, n.key) || !u32(b, n.velocity) || !u32(b, n.selected) || !u32(b, n.port)) {
+                !u32(b, n.key) || !u32(b, n.velocity) || !u32(b, n.selected) || !u32(b, n.port) ||
+                !u32(b, n.bend_id)) {
                 return false;
             }
         }
@@ -407,7 +428,8 @@ static bool pack_automation(const DmProject *p, DmBytes *target) {
         ok = time_after(&b, a.beat, i ? p->automation[i - 1].beat : 0) && u32(&b, a.type) &&
              u32(&b, a.channel) && u32(&b, a.a) && u32(&b, a.b) && u32(&b, (uint32_t)a.pattern) &&
              u32(&b, (uint32_t)a.curve) && u32(&b, a.anchor) && real(&b, a.bend) &&
-             u32(&b, a.ramp) && u32(&b, a.port) && u32(&b, a.hold);
+             u32(&b, a.ramp) && u32(&b, a.port) && u32(&b, a.hold) &&
+             u32(&b, a.fixed_anchor) && u32(&b, a.bend_note) && u32(&b, a.bend_root);
     }
 
     *target = b;
@@ -516,8 +538,9 @@ static bool unpack_note(DmPattern *pat, Input *in) {
     n.velocity = (uint8_t)vel;
     n.selected = (uint8_t)selected;
     n.port = (uint8_t)port;
+    n.bend_id = in->schema >= 17 ? get32(in) : 0;
 
-    if (!dm_note_add(pat, n)) {
+    if (!in->ok || !dm_note_add(pat, n)) {
         return false;
     }
 
@@ -553,6 +576,37 @@ static bool unpack_lfo_center(DmPattern *p, Input *in) {
     return in->ok;
 }
 
+static bool unpack_graph_lanes(DmPattern *p, Input *in) {
+    if (in->schema < 16) {
+        uint32_t graph = schema_15(in) ? get32(in) : 0;
+
+        /* Pass the old pattern-wide value to upgrade_15_to_16. */
+        p->graph_lanes[DM_GRAPH_PITCH_LANE] = (uint16_t)graph;
+        return in->ok && graph_resolution_valid(graph) &&
+               !(graph && (p->mode || (p->kind && point_only_event(p->event))));
+    }
+
+    uint32_t count = get32(in);
+
+    if (count > DM_GRAPH_LANES) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t lane = get32(in), setting = get32(in);
+        int event = lane == DM_GRAPH_PITCH_LANE ? -2 : (int)lane;
+
+        if (lane >= DM_GRAPH_LANES || dm_graph_lane(event) < 0 || p->graph_lanes[lane] ||
+            !setting || (setting != DM_GRAPH_POINT && !graph_resolution_valid(setting))) {
+            return false;
+        }
+
+        p->graph_lanes[lane] = (uint16_t)setting;
+    }
+
+    return in->ok;
+}
+
 static bool unpack_pattern_mode(DmPattern *p, Input *in) {
     p->kind = (int)get32(in);
     p->mode = (int)get32(in);
@@ -576,9 +630,7 @@ static bool unpack_pattern_mode(DmPattern *p, Input *in) {
     }
 
     p->color = (uint8_t)color;
-    p->graph = schema_15(in) ? (int)get32(in) : 0;
-    return in->ok && graph_resolution_valid(p->graph) && !(p->graph && p->mode) &&
-           !(p->graph && p->kind && point_only_event(p->event)) && p->port >= 0 &&
+    return unpack_graph_lanes(p, in) && p->port >= 0 &&
            p->port < DM_NOTE_PORTS && p->control_scope >= 0 && p->control_scope <= 2 &&
            p->kind >= 0 && p->kind <= 1 && p->mode >= 0 && p->mode <= 1 &&
            !(p->mode && point_only_event(p->event)) && automation_event_valid(p->event) &&
@@ -827,6 +879,30 @@ static bool unpack_automation(DmProject *p, Input *in) {
         }
 
         a.hold = hold != 0;
+
+        if (in->schema >= 17) {
+            uint32_t fixed_anchor = get32(in);
+            a.bend_note = get32(in);
+
+            if (fixed_anchor > 1 || (fixed_anchor && a.type != MIDI_PITCH_BEND) ||
+                (a.bend_note && (a.type != MIDI_PITCH_BEND || a.curve <= 0 || a.pattern < 0))) {
+                return false;
+            }
+
+            a.fixed_anchor = fixed_anchor != 0;
+        }
+
+        if (in->schema >= 18) {
+            uint32_t root = get32(in);
+
+            if (root > DM_BEND_ROOT_MIDI ||
+                (root && (a.type != MIDI_PITCH_BEND || a.curve < 0 || a.pattern < 0 ||
+                          (!a.curve && !a.fixed_anchor)))) {
+                return false;
+            }
+
+            a.bend_root = (uint8_t)root;
+        }
 
         if (a.pattern >= 0 && (size_t)a.pattern < p->pattern_count && p->patterns[a.pattern].kind &&
             a.beat > p->patterns[a.pattern].length) {

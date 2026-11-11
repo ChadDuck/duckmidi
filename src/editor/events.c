@@ -35,8 +35,8 @@ static double pasted_section_start(const DmProject *from, int curve);
 static bool later_selector(const DmProject *from, size_t index);
 static DmAutomation *prepare_pasted_events(Editor *e, const DmProject *from, double at);
 static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, double at, int offset,
-                            bool all);
-static bool paste_events(Editor *e, const DmProject *from, double at, bool all);
+                            bool all, bool note_bends);
+static bool paste_events(Editor *e, const DmProject *from, double at, bool all, bool note_bends);
 
 /* The event-type value (as in automation_cc) that an authored point belongs to, or INT32_MIN
    for types the event selector does not offer. */
@@ -134,7 +134,8 @@ bool ed_same_event(DmAutomation a, DmAutomation b) {
     return a.pattern == b.pattern && a.beat == b.beat && a.type == b.type &&
            a.channel == b.channel && a.a == b.a && a.b == b.b && a.curve == b.curve &&
            a.anchor == b.anchor && a.bend == b.bend && a.ramp == b.ramp && a.port == b.port &&
-           a.hold == b.hold;
+           a.hold == b.hold && a.fixed_anchor == b.fixed_anchor && a.bend_note == b.bend_note &&
+           a.bend_root == b.bend_root;
 }
 
 static int event_identity(const void *left, const void *right) {
@@ -161,7 +162,28 @@ static int event_identity(const void *left, const void *right) {
         return a->bend < b->bend ? -1 : 1;
     }
 
-    return (int)a->ramp - b->ramp;
+    if (a->ramp != b->ramp) {
+        return (int)a->ramp - b->ramp;
+    }
+
+    if (a->hold != b->hold) {
+        return (int)a->hold - b->hold;
+    }
+
+    if (a->fixed_anchor != b->fixed_anchor) {
+        return (int)a->fixed_anchor - b->fixed_anchor;
+    }
+
+    if (a->bend_root != b->bend_root) {
+        return (int)a->bend_root - b->bend_root;
+    }
+
+    return (a->bend_note > b->bend_note) - (a->bend_note < b->bend_note);
+}
+
+static bool event_selection_contains(const DmBytes *selection, DmAutomation a) {
+    return selection->size &&
+           bsearch(&a, selection->data, selection->size / sizeof(a), sizeof(a), event_identity);
 }
 
 bool ed_event_selected(Editor *e, size_t index) {
@@ -175,9 +197,7 @@ bool ed_event_selected(Editor *e, size_t index) {
         return true;
     }
 
-    return e->event_selection.size &&
-           bsearch(&a, e->event_selection.data, e->event_selection.size / sizeof(a), sizeof(a),
-                   event_identity) != NULL;
+    return event_selection_contains(&e->event_selection, a);
 }
 
 static const char *automation_help(int controller) {
@@ -278,10 +298,6 @@ bool ed_point_only_event(int cc) {
     return ed_pedal_event(cc) || cc == 5 || cc == -1 || cc == -4 || cc == -5;
 }
 
-bool ed_automation_option(Editor *e, int cc) {
-    return (cc != 7 && cc != 10) || (ed_pattern(e) && ed_pattern(e)->kind);
-}
-
 static void choose_event_type(Editor *e, int value) {
     if (value != -3 && ed_pattern(e)->kind && ed_pattern(e)->event != value) {
         ed_checkpoint(e);
@@ -289,13 +305,13 @@ static void choose_event_type(Editor *e, int value) {
 
         if (ed_point_only_event(value)) {
             ed_pattern(e)->mode = 0;
-            ed_pattern(e)->graph = 0;
         }
 
         ed_commit(e);
     }
 
     e->automation_cc = value;
+    e->marquee = e->event_marquee = false;
     e->automation_node = -1;
     e->automation_all = false;
     e->event_selection.size = 0;
@@ -317,23 +333,19 @@ void ed_automation_selector(Editor *e) {
 
     enum { TYPES = sizeof(all_values) / sizeof(*all_values) };
 
-    /* Velocity belongs to note patterns only; other types follow the pattern's options. */
+    /* Velocity belongs to note patterns only. */
+    const DmPattern *pattern = ed_pattern(e);
     int values[TYPES], count = 0, current = -1;
 
     for (int i = 0; i < TYPES; ++i) {
-        bool available = all_values[i] == -3 ? ed_pattern(e) && !ed_pattern(e)->kind
-                                             : ed_automation_option(e, all_values[i]);
-
-        if (available) {
+        if (all_values[i] != -3 || (pattern && !pattern->kind)) {
             current = all_values[i] == e->automation_cc ? count : current;
             values[count++] = i;
         }
     }
 
     const char *preview = automation_name(e->automation_cc);
-    ui_width((ed_pattern(e) && ed_pattern(e)->kind && ed_pattern(e)->mode) || ui_available().x < 600
-                 ? 130
-                 : 220);
+    ui_width((pattern && pattern->kind && pattern->mode) || ui_available().x < 600 ? 130 : 220);
 
     bool populated = ed_event_type_used(e, e->automation_cc);
     UiPoint at = ui_cursor();
@@ -488,33 +500,47 @@ float ed_automation_range(Editor *e, DmAutomation a) {
     size_t count = e->project.automation_count;
     const DmAutomation *items = range_controllers(e, a.pattern, &count);
     items = items ? items : e->project.automation;
-    PitchState state = ed_pitch_state_in(items, count, a.pattern, a.beat, a.port);
+    return (float)dm_pitch_range(items, count, a);
+}
 
-    if (a.curve > 0) {
-        for (size_t i = 0; i < count; ++i) {
-            DmAutomation item = items[i];
+int ed_pitch_anchor(Editor *e, DmAutomation a) {
+    return a.curve || a.fixed_anchor ? a.anchor : bend_anchor(e);
+}
 
-            if (item.pattern != a.pattern || item.port != a.port || item.curve != a.curve ||
-                item.type != MIDI_CONTROL) {
-                continue;
-            }
+void ed_pitch_edit_units(Editor *e, DmAutomation *point, bool raw) {
+    if (point->type != MIDI_PITCH_BEND || point->curve < 0 || point->pattern < 0) {
+        return;
+    }
 
-            if (item.a == MIDI_CC_DATA) {
-                state.range = item.b;
-            }
+    if (!point->curve) {
+        if (raw && !point->fixed_anchor) {
+            return;
+        }
 
-            if (item.a == MIDI_CC_DATA_LSB) {
-                state.cents = item.b;
+        point->anchor = ed_pitch_anchor(e, *point);
+        point->fixed_anchor = true;
+        point->bend_root = raw ? DM_BEND_ROOT_MIDI : DM_BEND_ROOT_PITCH;
+    } else if (!raw) {
+        if (point->bend_root) {
+            point->bend_root = DM_BEND_ROOT_PITCH;
+        }
+    } else {
+        /* Translating a section would change a raw value entered anywhere in that section. */
+        for (size_t i = 0; i < e->project.automation_count; ++i) {
+            DmAutomation *root = &e->project.automation[i];
+
+            if (root->bend_root && root->pattern == point->pattern && root->port == point->port &&
+                root->curve == point->curve) {
+                root->bend_root = DM_BEND_ROOT_MIDI;
+                break;
             }
         }
     }
-
-    return fmaxf(.01f, state.range + state.cents * .01f);
 }
 
 float ed_automation_pitch(Editor *e, DmAutomation a) {
     float range = ed_automation_range(e, a);
-    int anchor = a.curve ? a.anchor : bend_anchor(e);
+    int anchor = ed_pitch_anchor(e, a);
     return anchor + (ed_event_value(a) - MIDI_BEND_CENTER) * range / MIDI_BEND_CENTER;
 }
 
@@ -775,7 +801,7 @@ int ed_lane_value(Editor *e, UiRect lane, float y, DmAutomation a, bool free) {
 
         float range = a.curve == INT32_MAX ? e->bend_range : ed_automation_range(e, a);
         return (int)ed_clampf(MIDI_BEND_CENTER +
-                                  (pitch - (a.curve ? a.anchor : ed_nearest_note(e, 0))) *
+                                  (pitch - ed_pitch_anchor(e, a)) *
                                       MIDI_BEND_CENTER / range,
                               0, MIDI_BEND_MAX);
     }
@@ -825,7 +851,7 @@ static void reencode_pitch(DmAutomation *a, float old) {
 
 DmAutomation ed_expand_pitch_range(Editor *e, DmAutomation node, float pitch) {
     float old = ed_automation_range(e, node);
-    int anchor = node.curve ? node.anchor : ed_nearest_note(e, 0);
+    int anchor = ed_pitch_anchor(e, node);
 
     if (old >= 127 || fabsf(pitch - anchor) < old - .001f) {
         return node;
@@ -949,7 +975,13 @@ static void curve_drag_update(Editor *e, UiRect lane, UiMouse mouse) {
             bend = e->curve_origin + (e->curve_y - mouse.pos.y) / ed_curve_units(e, a, lane, false);
         }
 
-        e->project.automation[left].bend = fmax(-MIDI_BEND_MAX, fmin(MIDI_BEND_MAX, bend));
+        DmAutomation *point = &e->project.automation[left];
+
+        if (!e->curve_overlay && ed_automation_raw(e)) {
+            ed_pitch_edit_units(e, point, true);
+        }
+
+        point->bend = fmax(-MIDI_BEND_MAX, fmin(MIDI_BEND_MAX, bend));
         e->project.automation[left].ramp = true;
         e->project.automation[left].hold = false;
         ed_changed(e);
@@ -1141,7 +1173,8 @@ void ed_select_edited_node(Editor *e, DmAutomation edited) {
 
         if (candidate.pattern == edited.pattern && candidate.curve == edited.curve &&
             candidate.type == edited.type && candidate.beat == edited.beat &&
-            candidate.a == edited.a && candidate.b == edited.b) {
+            candidate.a == edited.a && candidate.b == edited.b &&
+            candidate.bend_note == edited.bend_note) {
             e->automation_node = (int)i;
             break;
         }
@@ -1238,9 +1271,14 @@ static void event_group_values(Editor *e, UiRect lane, UiMouse mouse) {
         int value =
             pitch
                 ? (int)lround(MIDI_BEND_CENTER + (items[i].pitch + delta -
-                                                  (a->curve ? a->anchor : ed_nearest_note(e, 0))) *
+                                                  ed_pitch_anchor(e, *a)) *
                                                      MIDI_BEND_CENTER / ed_automation_range(e, *a))
                 : ed_event_value(items[i].original) + (int)delta;
+        if (delta != 0 && value != ed_event_value(*a)) {
+            a->bend_note = 0;
+            ed_pitch_edit_units(e, a, !pitch);
+        }
+
         ed_set_event_value(a, value);
     }
 }
@@ -1267,7 +1305,14 @@ static bool event_group_drag(Editor *e, UiRect lane, float scale, UiMouse mouse)
         }
 
         for (size_t i = 0; i < count; ++i) {
-            e->project.automation[items[i].index].beat = items[i].original.beat + delta;
+            DmAutomation *a = &e->project.automation[items[i].index];
+
+            if (delta != 0 && a->beat == items[i].original.beat) {
+                a->bend_note = 0;
+                ed_pitch_edit_units(e, a, ed_automation_raw(e));
+            }
+
+            a->beat = items[i].original.beat + delta;
         }
 
         event_group_values(e, lane, mouse);
@@ -1331,12 +1376,24 @@ void ed_automation_node_drag(Editor *e, UiRect lane, View *v, float scale, UiMou
         a = &e->project.automation[e->automation_node];
 
         if (!mouse.ctrl) {
-            a->beat = ed_snap(e->node_beat + (mouse.pos.x - e->marquee_start.x) / scale,
-                              ed_event_snap(e), mouse.alt);
+            double beat = ed_snap(e->node_beat + (mouse.pos.x - e->marquee_start.x) / scale,
+                                  ed_event_snap(e), mouse.alt);
+
+            if (beat != a->beat) {
+                a->bend_note = 0;
+                ed_pitch_edit_units(e, a, ed_automation_raw(e));
+                a->beat = beat;
+            }
         }
 
         if (!mouse.shift && !ed_pedal_event(e->automation_cc)) {
-            ed_set_event_value(a, ed_lane_value(e, lane, mouse.pos.y, *a, mouse.alt));
+            int value = ed_lane_value(e, lane, mouse.pos.y, *a, mouse.alt);
+
+            if (value != ed_event_value(*a)) {
+                a->bend_note = 0;
+                ed_pitch_edit_units(e, a, ed_automation_raw(e));
+                ed_set_event_value(a, value);
+            }
         }
 
         if (a->type == MIDI_PITCH_BEND) {
@@ -1399,10 +1456,28 @@ DmAutomation ed_split_curve_node(Editor *e, int left, DmAutomation last, double 
     DmAutomation first = e->project.automation[left], node = first;
     double t = (beat - first.beat) / (last.beat - first.beat);
     node.beat = beat;
+    node.bend_note = 0;
+    node.bend_root = DM_BEND_ROOT_NONE;
     ed_set_event_value(&node, (int)llround(dm_curve_value(first, last, t)));
     e->project.automation[left].bend = first.bend * t * t;
     node.bend = first.bend * (1 - t) * (1 - t);
     return node;
+}
+
+static void detach_bend(Editor *e, DmAutomation node) {
+    if (node.type != MIDI_PITCH_BEND || node.curve <= 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation *a = &e->project.automation[i];
+
+        if (a->pattern == node.pattern && a->port == node.port && a->curve == node.curve &&
+            a->bend_note) {
+            a->bend_note = 0;
+            return;
+        }
+    }
 }
 
 bool ed_insert_lane_node(Editor *e, double beat) {
@@ -1420,6 +1495,12 @@ bool ed_insert_lane_node(Editor *e, double beat) {
         }
 
         ed_checkpoint(e);
+        detach_bend(e, a);
+
+        if (ed_automation_raw(e)) {
+            ed_pitch_edit_units(e, &e->project.automation[i], true);
+        }
+
         DmAutomation node = ed_split_curve_node(e, (int)i, e->project.automation[right], beat);
         dm_automation_add(&e->project, node);
         e->last_automation = node;
@@ -1442,9 +1523,11 @@ static bool events_selected(Editor *e) {
 
 /* A standalone point at the cursor: a plain click, or Shift + click with no point to connect to. */
 static void add_cursor_point(Editor *e, UiRect lane, UiMouse mouse, double beat) {
-    DmAutomation point = ed_curve_node(e, beat, 0, e->automation_cc, 0, ed_curve_anchor(e, beat));
+    int anchor = e->automation_cc == -2 ? ed_nearest_note(e, beat) : ed_curve_anchor(e, beat);
+    DmAutomation point = ed_curve_node(e, beat, 0, e->automation_cc, 0, anchor);
 
     if (point.type == MIDI_PITCH_BEND) {
+        ed_pitch_edit_units(e, &point, ed_automation_raw(e));
         point = lane_edited(e, point, lane, mouse.pos.y, mouse.alt);
     }
 
@@ -1463,6 +1546,10 @@ static void add_cursor_point(Editor *e, UiRect lane, UiMouse mouse, double beat)
 static DmAutomation connect_point(Editor *e, UiRect lane, int nearest, float y, double beat,
                                   bool free) {
     DmAutomation a = e->project.automation[nearest];
+    detach_bend(e, a);
+    a.bend_note = 0;
+    a.bend_root = DM_BEND_ROOT_NONE;
+    bool raw = ed_automation_raw(e);
     double original_beat = a.beat;
     bool converted = !a.curve && a.type != MIDI_PROGRAM;
     PitchState incoming = ed_pitch_state(e, fmin(a.beat, beat));
@@ -1471,14 +1558,18 @@ static DmAutomation connect_point(Editor *e, UiRect lane, int nearest, float y, 
     if (converted) {
         baseline = ed_value_before(e, fmax(0, fmin(a.beat, beat) - 1e-8), e->automation_cc);
         a.curve = ed_curve_id(e);
-        a.anchor = ed_nearest_note(e, 0);
+        a.anchor = ed_pitch_anchor(e, e->project.automation[nearest]);
         e->project.automation[nearest].curve = a.curve;
         e->project.automation[nearest].anchor = a.anchor;
 
         if (a.type == MIDI_PITCH_BEND) {
+            e->project.automation[nearest].bend_root =
+                raw ? DM_BEND_ROOT_MIDI : DM_BEND_ROOT_PITCH;
             ed_curve_range(e, fmin(a.beat, beat), incoming.range, incoming.cents, incoming.msb,
                            incoming.lsb, a.curve);
         }
+    } else if (raw) {
+        ed_pitch_edit_units(e, &e->project.automation[nearest], true);
     }
 
     a.beat = beat;
@@ -1596,6 +1687,8 @@ static void point_menu(Editor *e, int hit) {
 
     if (ui_slider(DM_TEXT_VALUE, &value, 0, maximum, 180)) {
         ed_checkpoint(e);
+        a->bend_note = 0;
+        ed_pitch_edit_units(e, a, true);
         ed_set_event_value(a, value);
         ed_commit(e);
     }
@@ -1606,6 +1699,7 @@ static void point_menu(Editor *e, int hit) {
 
         if (ui_menu_check(DM_TEXT_CURVE_LINE, line) && !line) {
             ed_checkpoint(e);
+            a->bend_note = 0;
             a->ramp = !a->curve;
             a->hold = false;
             ed_commit(e);
@@ -1613,6 +1707,7 @@ static void point_menu(Editor *e, int hit) {
 
         if (ui_menu_check(DM_TEXT_CURVE_HOLD, !line) && line) {
             ed_checkpoint(e);
+            a->bend_note = 0;
             a->ramp = false;
             a->hold = a->curve > 0;
             ed_commit(e);
@@ -1760,7 +1855,9 @@ void ed_automation_drag(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
     double start =
         ed_snap((e->marquee_start.x - lane.x + v->scroll_x) / scale, ed_event_snap(e), mouse.alt);
     double end = ed_snap((mouse.pos.x - lane.x + v->scroll_x) / scale, ed_event_snap(e), mouse.alt);
-    e->drag_key = ed_curve_anchor(e, start);
+    double anchor_beat = fmin(start, end);
+    e->drag_key = e->automation_cc == -2 ? ed_nearest_note(e, anchor_beat)
+                                         : ed_curve_anchor(e, start);
     DmAutomation a = ed_curve_node(e, start, 0, e->automation_cc, 1, e->drag_key);
 
     if (e->automation_cc < 0) {
@@ -1790,6 +1887,7 @@ void ed_automation_drag(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
         DmAutomation point = ed_curve_node(e, start, first, e->automation_cc, 0, e->drag_key);
 
         if (point.type == MIDI_PITCH_BEND) {
+            ed_pitch_edit_units(e, &point, ed_automation_raw(e));
             point = lane_edited(e, point, lane, e->marquee_start.y, mouse.alt);
         }
 
@@ -1803,6 +1901,34 @@ void ed_automation_drag(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
 
     e->drag = 0;
     ed_commit(e);
+}
+
+static bool event_marquee_begin(Editor *e, UiMouse mouse) {
+    DmBytes *selection = &e->event_marquee_selection;
+    selection->size = 0;
+
+    if (e->automation_all || e->automation_node >= 0 || e->event_selection.size) {
+        for (size_t i = 0; i < e->project.automation_count; ++i) {
+            if (ed_event_selected(e, i) &&
+                !dm_bytes(selection, &e->project.automation[i], sizeof(DmAutomation))) {
+                selection->size = 0;
+                return false;
+            }
+        }
+
+        if (selection->size) {
+            qsort(selection->data, selection->size / sizeof(DmAutomation), sizeof(DmAutomation),
+                  event_identity);
+        }
+    }
+
+    ed_focus_edit(e, FOCUS_EVENTS);
+    ed_deselect_events(e);
+    e->event_marquee = true;
+    e->event_marquee_start = mouse.pos;
+    e->drag = 0;
+    e->curve_drag = false;
+    return true;
 }
 
 void ed_event_box_select(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse) {
@@ -1821,14 +1947,18 @@ void ed_event_box_select(Editor *e, UiRect lane, View *v, float scale, UiMouse m
                 continue;
             }
 
-            if (graph) {
-                UiRect bar = ed_graph_bar(e, a, lane, v, scale, INFINITY);
+            bool selected =
+                mouse.shift && event_selection_contains(&e->event_marquee_selection, a);
 
-                if (bar.x > box.x + box.w || bar.x + bar.w < box.x || bar.y > box.y + box.h ||
-                    bar.y + bar.h < box.y) {
-                    continue;
-                }
-            } else if (!ed_inside(ed_automation_point(e, a, lane, v, scale), box)) {
+            if (!selected && graph) {
+                UiRect bar = ed_graph_bar(e, a, lane, v, scale, INFINITY);
+                selected = bar.x <= box.x + box.w && bar.x + bar.w >= box.x &&
+                           bar.y <= box.y + box.h && bar.y + bar.h >= box.y;
+            } else if (!selected) {
+                selected = ed_inside(ed_automation_point(e, a, lane, v, scale), box);
+            }
+
+            if (!selected) {
                 continue;
             }
 
@@ -1845,6 +1975,7 @@ void ed_event_box_select(Editor *e, UiRect lane, View *v, float scale, UiMouse m
 
     if (mouse.released || !mouse.left) {
         e->event_marquee = false;
+        e->event_marquee_selection.size = 0;
     }
 }
 
@@ -1984,15 +2115,8 @@ void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse m
     bool start =
         hovered && ed_inside(mouse.pos, lane) && mouse.clicked && (mouse.ctrl || e->tool == 1);
 
-    if (start) {
-        ed_focus_edit(e, FOCUS_EVENTS);
-        e->automation_node = -1;
-        e->automation_all = false;
-        e->event_selection.size = 0;
-        e->event_marquee = true;
-        e->event_marquee_start = mouse.pos;
-        e->drag = 0;
-        e->curve_drag = false;
+    if (start && !event_marquee_begin(e, mouse)) {
+        return;
     }
 
     if (e->event_marquee) {
@@ -2277,11 +2401,24 @@ bool ed_copy_note_bends(Editor *e, DmProject *to, double origin, bool *selected)
             continue;
         }
 
+        uint32_t owner = 0;
+
+        for (size_t j = 0; a.curve > 0 && j < e->project.automation_count; ++j) {
+            DmAutomation root = e->project.automation[j];
+
+            if (root.pattern == a.pattern && root.port == a.port && root.curve == a.curve &&
+                root.bend_note) {
+                owner = root.bend_note;
+                break;
+            }
+        }
+
         for (size_t n = 0; n < p->count; ++n) {
             DmNote note = p->notes[n];
+            bool contains = owner ? owner == note.bend_id
+                                  : a.beat >= note.beat && a.beat <= note.beat + note.length;
 
-            if (note.selected && note.port == a.port && a.beat >= note.beat &&
-                a.beat <= note.beat + note.length) {
+            if (note.selected && note.port == a.port && contains) {
                 selected[i] = true;
                 break;
             }
@@ -2310,6 +2447,8 @@ static bool copy_event_points(Editor *e, DmProject *to, const bool *selected, do
 
             if (count == 1) {
                 a.curve = 0;
+                a.bend_note = 0;
+                a.fixed_anchor |= a.bend_root != DM_BEND_ROOT_NONE;
             }
         } else if (a.type == MIDI_PITCH_BEND) {
             PitchState state = ed_pattern_pitch_state(&e->project, a.pattern, a.beat, a.port);
@@ -2344,7 +2483,7 @@ static void paste_discrete_pitch(Editor *e, const DmProject *from, DmAutomation 
     PitchState source = ed_pattern_pitch_state(from, 0, source_beat, source_port);
     double bend = (ed_event_value(*a) - MIDI_BEND_CENTER) * (source.range + source.cents * .01) /
                   MIDI_BEND_CENTER;
-    float pitch = ed_nearest_note(e, 0) + (float)bend;
+    float pitch = ed_pitch_anchor(e, *a) + (float)bend;
     ed_expand_pitch_range(e, *a, pitch);
     float range = ed_automation_range(e, *a);
     a->bend *= (source.range + source.cents * .01) / range;
@@ -2427,7 +2566,7 @@ static DmAutomation *prepare_pasted_events(Editor *e, const DmProject *from, dou
 }
 
 static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, double at, int offset,
-                            bool all) {
+                            bool all, bool note_bends) {
     if (!all && e->automation_cc == -2 && a.type == MIDI_CONTROL && !a.curve) {
         return true;
     }
@@ -2441,6 +2580,10 @@ static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, do
 
     if (a.curve) {
         a.curve = (a.curve < 0 ? -1 : 1) * (abs(a.curve) + offset);
+    }
+
+    if (!note_bends) {
+        a.bend_note = 0;
     }
 
     a.beat += at;
@@ -2466,7 +2609,7 @@ static bool paste_one_event(Editor *e, const DmProject *from, DmAutomation a, do
 }
 
 void ed_paste_events(Editor *e, const DmProject *from, double at) {
-    paste_events(e, from, at, false);
+    paste_events(e, from, at, false, false);
 }
 
 /* Bends keep their notes' original note-color routes. The paste helpers read pitch ranges and
@@ -2492,7 +2635,7 @@ bool ed_paste_note_bends(Editor *e, const DmProject *from, double at) {
 
             if (ok && route.automation_count) {
                 e->note_ports[e->pattern_channel] = p;
-                ok = paste_events(e, &route, at, false);
+                ok = paste_events(e, &route, at, false, true);
             }
         }
     }
@@ -2504,7 +2647,7 @@ bool ed_paste_note_bends(Editor *e, const DmProject *from, double at) {
     return ok;
 }
 
-static bool paste_events(Editor *e, const DmProject *from, double at, bool all) {
+static bool paste_events(Editor *e, const DmProject *from, double at, bool all, bool note_bends) {
     size_t bytes = from->automation_count * sizeof(DmAutomation);
 
     if (!ed_pattern(e) ||
@@ -2533,7 +2676,7 @@ static bool paste_events(Editor *e, const DmProject *from, double at, bool all) 
     bool ok = true;
 
     for (size_t i = 0; i < from->automation_count; ++i) {
-        if (!paste_one_event(e, from, items[i], at, offset, all)) {
+        if (!paste_one_event(e, from, items[i], at, offset, all, note_bends)) {
             ok = false;
             break;
         }
@@ -2543,9 +2686,8 @@ static bool paste_events(Editor *e, const DmProject *from, double at, bool all) 
     qsort(e->event_selection.data, e->event_selection.size / sizeof(DmAutomation),
           sizeof(DmAutomation), event_identity);
 
-    /* A Graph pattern keeps its lanes discrete, so pasted lines become bars. */
-    if (ok && ed_pattern(e)->graph && !ed_pattern(e)->mode) {
-        ok = ed_graph_convert(e, e->selected_pattern, ed_pattern(e)->graph);
+    if (ok) {
+        ok = ed_graph_convert(e, e->selected_pattern);
     }
 
     dm_pattern_fit(&e->project, ed_pattern(e));
@@ -2638,7 +2780,7 @@ void ed_paste_event_lane(Editor *e) {
     bool ok = true;
 
     if (from.automation_count) {
-        ok = paste_events(e, &from, 0, e->event_clipboard_all);
+        ok = paste_events(e, &from, 0, e->event_clipboard_all, false);
     }
 
     /* Velocity is a note property: apply it to matching notes without creating notes. */

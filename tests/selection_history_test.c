@@ -96,6 +96,32 @@ static void history(Editor *e) {
           "selecting and releasing a graph point stays silent and out of history");
 }
 
+static void pattern_note_selection(Editor *e) {
+    editor_smoke(e);
+    DmPattern *first = &e->project.patterns[0], *second = &e->project.patterns[1];
+    first->notes[0].selected = second->notes[0].selected = 1;
+    int history_count = e->undo_count;
+    ed_choose_pattern_card(e, 1, false);
+    check(e->selected_pattern == 1 && !first->notes[0].selected && !second->notes[0].selected,
+          "a different pattern card clears both the old selection and any stale selection");
+
+    second->notes[0].selected = 1;
+    ed_choose_pattern_card(e, 1, true);
+    check(second->notes[0].selected, "selecting the same pattern keeps its note selection");
+
+    ed_focus_edit(e, FOCUS_PLAYLIST);
+    UiMouse mouse = {.pos = {100, 100}};
+    ed_playlist_hit_click(e, mouse, 0, 0);
+    mouse.released = true;
+    int rows[] = {0, 1, 9};
+    ed_playlist_drag(e, (UiRect){0, 0, 600, 400}, &e->playlist_view, 64, 40, rows, 3, mouse);
+    check(e->selected_pattern == 0 && !first->notes[0].selected && !second->notes[0].selected &&
+              e->project.clips[0].selected,
+          "returning through a playlist placement opens the pattern with no notes selected");
+    check(!e->dirty && e->undo_count == history_count,
+          "clearing notes when switching patterns stays out of edit history");
+}
+
 static void selection_visibility(Editor *e) {
     editor_smoke(e);
     ed_open_pattern(e, 0, false);
@@ -164,6 +190,7 @@ int main(void) {
     editor_init(e, w, r, NULL, "", "", true);
     editing_focus(e);
     history(e);
+    pattern_note_selection(e);
     selection_visibility(e);
     copy_seeking(e);
     editor_smoke(e);

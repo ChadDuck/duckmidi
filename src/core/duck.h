@@ -11,8 +11,8 @@
 #define DM_LANES 32
 #define DM_PPQ 960
 #define DM_PIANO_KEYS 37
-#define DM_PROJECT_SCHEMA 15
-#define DM_PROJECT_SCHEMA_PREVIOUS 14 /* Still loaded through src/core/project_compat.c. */
+#define DM_PROJECT_SCHEMA 18
+#define DM_PROJECT_SCHEMA_PREVIOUS 17 /* Still loaded through src/core/project_compat.c. */
 #define DM_PROJECT_SCHEMA_OLDEST 9    /* Schema 9 (0.10.1) also loads, converted through 10. */
 #define DM_NOTE_PORTS 128
 #define DM_PATTERN_COLORS 16
@@ -43,7 +43,10 @@ typedef struct {
 typedef struct {
     double beat, length;
     uint8_t key, velocity, selected, port;
+    uint32_t bend_id; /* Pattern-local identity assigned when a bend is attached. */
 } DmNote;
+
+enum { DM_GRAPH_POINT = 1, DM_GRAPH_PITCH_LANE = 128, DM_GRAPH_LANES };
 
 typedef struct {
     char name[64];
@@ -61,7 +64,9 @@ typedef struct {
     int port;
     bool inverted;
     uint8_t color; /* 0 uses the application color; 1..DM_PATTERN_COLORS select the palette. */
-    int graph;     /* 0 points; otherwise the bar resolution as a note denominator, 8..256. */
+    /* Indexed by controller or DM_GRAPH_PITCH_LANE. 0 is the default Point view,
+       DM_GRAPH_POINT is explicitly Point, and 8..256 is a Graph note denominator. */
+    uint16_t graph_lanes[DM_GRAPH_LANES];
 } DmPattern;
 
 typedef struct {
@@ -73,6 +78,8 @@ typedef struct {
     double offset; /* Pattern beat shown at the placement start; slices share one pattern. */
 } DmClip;
 
+enum { DM_BEND_ROOT_NONE, DM_BEND_ROOT_PITCH, DM_BEND_ROOT_MIDI };
+
 typedef struct {
     double beat;
     int type, channel, a, b;
@@ -82,7 +89,24 @@ typedef struct {
     bool ramp;         /* Discrete-source outgoing segment was explicitly converted to a curve. */
     uint8_t port;
     bool hold; /* Line node: the outgoing segment holds this value until the next point. */
+    bool fixed_anchor; /* A discrete pitch point keeps the pitch reference it was drawn against. */
+    uint32_t bend_note; /* Only the root point of a note-attached curve names its note. */
+    uint8_t bend_root; /* Authoring units of a pitch bend's root or standalone point. */
 } DmAutomation;
+
+typedef struct {
+    int range, cents, msb, lsb;
+} DmPitchState;
+
+DmPitchState dm_pitch_state(const DmAutomation *items, size_t count, int pattern, double beat,
+                            unsigned port);
+double dm_pitch_range(const DmAutomation *items, size_t count, DmAutomation point);
+
+/* Graph-capable event types and their stored lanes. Pitch bend uses event type -2. */
+int dm_graph_lane(int event);
+int dm_automation_graph_lane(DmAutomation point);
+int dm_graph_resolution(const DmPattern *pattern, int event);
+bool dm_pattern_has_graph(const DmPattern *pattern);
 
 typedef struct {
     bool enabled, mute, solo;

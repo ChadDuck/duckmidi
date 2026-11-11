@@ -1,4 +1,4 @@
-/* Loads generated schema-9 through schema-14 projects and checks their conversion to the current
+/* Loads generated schema-9 through schema-17 projects and checks their conversion to the current
    schema. The writers below follow those layouts field by field; they exist only to produce these
    fixtures. */
 #include "core/duck.h"
@@ -178,12 +178,12 @@ static void t10(DmBytes *b, const char *s) {
 }
 
 /* A schema-10 automation point; schema 11 adds the hold flag after the port. */
-static void point10(DmBytes *b, uint32_t schema, double beat, double previous, int value, int curve,
-                    int ramp) {
+static void point10(DmBytes *b, uint32_t schema, double beat, double previous, int type, int a,
+                    int value, int curve, int ramp) {
     r10(b, beat - previous); /* Time delta from the previous point. */
-    v10(b, MIDI_CONTROL);
+    v10(b, (uint32_t)type);
     v10(b, 0);
-    v10(b, MIDI_CC_MODULATION);
+    v10(b, (uint32_t)a);
     v10(b, (uint32_t)value);
     v10(b, 0); /* Pattern. */
     v10(b, (uint32_t)curve);
@@ -195,11 +195,15 @@ static void point10(DmBytes *b, uint32_t schema, double beat, double previous, i
     if (schema >= 11) {
         v10(b, 0); /* Hold. */
     }
+
+    if (schema >= 17) {
+        v10(b, type == MIDI_PITCH_BEND && curve > 0); /* Fixed pitch reference. */
+        v10(b, 0);                                 /* Detached. */
+    }
 }
 
-/* One pattern with one note, one placement, a modulation line (two nodes of curve 1 and its
-   restoration node) and a discrete point curving toward the next discrete point, saved as schema
-   10 through 14. */
+/* One pattern with one note, one placement and modulation data, saved as schema 10 through 17.
+   The schema-15 fixture has a Graph resolution, discrete bars and a percussion mapping. */
 static DmBytes line_project(uint32_t schema) {
     DmBytes body = {0}, stored = {0}, file = {0};
     t10(&body, "Line song");
@@ -213,10 +217,16 @@ static DmBytes line_project(uint32_t schema) {
     v10(&body, 1); /* Sequence count. */
     v10(&body, 1); /* Port count. */
     v10(&body, 0); /* Ports. */
-    v10(&body, 0); /* Percussion override. */
+    v10(&body, schema >= 15); /* Percussion override. */
 
     for (int i = 0; i < 128; ++i) {
         v10(&body, 0);
+    }
+
+    if (schema >= 15) {
+        for (int i = 0; i < 128; ++i) {
+            v10(&body, i == 36 ? 61 : 0);
+        }
     }
 
     for (int c = 0; c < 16; ++c) {
@@ -260,12 +270,24 @@ static DmBytes line_project(uint32_t schema) {
     v10(&body, 0); /* Control scope. */
     v10(&body, 0); /* Pattern port. */
     v10(&body, 0); /* Pattern color. */
+
+    if (schema >= 16) {
+        v10(&body, 0); /* No Graph lanes. */
+    } else if (schema == 15) {
+        v10(&body, 32); /* Pattern-wide Graph resolution. */
+    }
+
     r10(&body, 0); /* Note. */
     r10(&body, 4);
-    v10(&body, 60);
+    v10(&body, schema == 17 ? 57 : 60);
     v10(&body, 100);
     v10(&body, 0);
     v10(&body, 0);
+
+    if (schema >= 17) {
+        v10(&body, 0); /* Note bend identity. */
+    }
+
     v10(&body, 1); /* Placement. */
     r10(&body, 0);
     v10(&body, 0);
@@ -274,11 +296,23 @@ static DmBytes line_project(uint32_t schema) {
     r10(&body, 0);
     v10(&body, 0);
     r10(&body, 0); /* Offset. */
-    v10(&body, 4); /* Automation count. */
-    point10(&body, schema, 0, 0, 0, 1, 0);
-    point10(&body, schema, 2, 0, 127, 1, 0);
-    point10(&body, schema, 2, 2, 0, (int)-1, 0);
-    point10(&body, schema, 3, 2, 40, 0, 1);
+    if (schema >= 16) {
+        v10(&body, 7);
+        point10(&body, schema, 0, 0, MIDI_CONTROL, MIDI_CC_DATA, 12, 1, 0);
+        point10(&body, schema, 0, 0, MIDI_PITCH_BEND, 0, schema == 17 ? 48 : 64, 1, 0);
+        point10(&body, schema, 1, 0, MIDI_PITCH_BEND, 0, 90, 1, 0);
+        point10(&body, schema, 2, 1, MIDI_CONTROL, MIDI_CC_DATA, 127, 2, 0);
+        point10(&body, schema, 2, 2, MIDI_PITCH_BEND, 0, 64, 2, 0);
+        point10(&body, schema, 3, 2, MIDI_PITCH_BEND, 0, 90, 2, 0);
+        point10(&body, schema, 4, 3, MIDI_PITCH_BEND, 0, 64, 0, 0);
+    } else {
+        v10(&body, 4); /* Automation count. */
+        int id = schema < 15 ? 1 : 0;
+        point10(&body, schema, 0, 0, MIDI_CONTROL, MIDI_CC_MODULATION, 0, id, 0);
+        point10(&body, schema, 2, 0, MIDI_CONTROL, MIDI_CC_MODULATION, 127, id, 0);
+        point10(&body, schema, 2, 2, MIDI_CONTROL, MIDI_CC_MODULATION, 0, -id, 0);
+        point10(&body, schema, 3, 2, MIDI_CONTROL, MIDI_CC_MODULATION, 40, 0, schema < 15);
+    }
     v10(&body, 0); /* Events. */
     v10(&body, 0); /* Views. */
     v10(&body, 0); /* Port mixer. */
@@ -460,27 +494,30 @@ static void check_graph_and_percussion_midi(void) {
     uint8_t none[128] = {0};
     DmBytes previous = line_project(14), saved = {0};
     check(dm_unpack(&p, previous.data, previous.size, error, sizeof(error)), error);
-    check(p.pattern_count == 1 && !p.patterns[0].graph && !memcmp(p.percussion_midi, none, 128),
+    check(p.pattern_count == 1 && !dm_pattern_has_graph(&p.patterns[0]) &&
+              !memcmp(p.percussion_midi, none, 128),
           "schema-14 patterns edit points and play incoming notes as themselves");
-    p.patterns[0].graph = 32;
+    p.patterns[0].graph_lanes[MIDI_CC_MODULATION] = 32;
     p.percussion_override = true;
     p.percussion_midi[36] = 61;
     check(dm_pack(&p, &saved) && saved.data[8] == DM_PROJECT_SCHEMA,
           "converted schema-14 projects save as the current schema");
     check(dm_unpack(&q, saved.data, saved.size, error, sizeof(error)) &&
-              q.patterns[0].graph == 32 && q.percussion_midi[36] == 61,
+              dm_graph_resolution(&q.patterns[0], MIDI_CC_MODULATION) == 32 &&
+              q.percussion_midi[36] == 61,
           "the graph resolution and percussion MIDI mapping are saved and reloaded");
 
     static const int bad_graph[] = {4, 12, 24, 512};
 
     for (unsigned i = 0; i < sizeof(bad_graph) / sizeof(*bad_graph); ++i) {
-        p.patterns[0].graph = bad_graph[i];
+        p.patterns[0].graph_lanes[MIDI_CC_MODULATION] = (uint16_t)bad_graph[i];
         check(!reloads(&p), "graph resolutions other than 1/8 to 1/256 are rejected");
     }
 
-    p.patterns[0].graph = 16;
+    p.patterns[0].graph_lanes[MIDI_CC_MODULATION] = 16;
     p.patterns[0].mode = 1;
-    check(!reloads(&p), "LFO patterns cannot be graphs");
+    check(reloads(&p) && !dm_pattern_has_graph(&p.patterns[0]),
+          "LFO hides saved Graph settings while active");
     p.patterns[0].mode = 0;
     p.percussion_midi[38] = 61;
     check(!reloads(&p), "one incoming note plays one drum");
@@ -488,16 +525,16 @@ static void check_graph_and_percussion_midi(void) {
     p.percussion_override = false;
     check(!reloads(&p), "the project MIDI mapping requires the project override");
     p.percussion_override = true;
-    check(reloads(&p), "valid schema-15 fields reload");
+    check(reloads(&p), "valid graph and percussion fields reload");
 
     /* Point-only events keep discrete points. */
     p.patterns[0].count = 0;
     p.automation_count = p.clip_count = 0;
     p.patterns[0].kind = 1;
     p.patterns[0].event = MIDI_CC_SUSTAIN;
-    check(!reloads(&p), "point-only automation cannot be a graph");
-    p.patterns[0].graph = 0;
-    check(reloads(&p), "point-only automation reloads without a graph");
+    check(reloads(&p), "opening a point-only event preserves another lane's Graph setting");
+    p.patterns[0].graph_lanes[MIDI_CC_SUSTAIN] = 16;
+    check(!reloads(&p), "point-only events reject their own graph setting");
 
     dm_bytes_free(&previous);
     dm_bytes_free(&saved);
@@ -505,9 +542,80 @@ static void check_graph_and_percussion_midi(void) {
     dm_project_free(&q);
 }
 
+static void check_legacy_graph(void) {
+    DmProject p, q;
+    dm_project_init(&p);
+    dm_project_init(&q);
+    char error[256] = {0};
+    DmBytes old = line_project(15);
+    check(dm_unpack(&p, old.data, old.size, error, sizeof(error)), error);
+    check(p.pattern_count == 1 && p.automation_count == 4 && p.percussion_midi[36] == 61 &&
+              dm_graph_resolution(&p.patterns[0], -2) == 32 &&
+              dm_graph_resolution(&p.patterns[0], MIDI_CC_MODULATION) == 32 &&
+              dm_graph_resolution(&p.patterns[0], MIDI_CC_EXPRESSION) == 32 &&
+              !dm_graph_resolution(&p.patterns[0], MIDI_CC_SUSTAIN),
+          "schema-15 Graph patterns retain their resolution on all eligible event types");
+    DmBytes midi = old_metadata_midi(&p, &old);
+    check(dm_import(&q, midi.data, midi.size, -1, 0, error, sizeof(error)), error);
+    check(q.pattern_count == 1 &&
+              !memcmp(q.patterns[0].graph_lanes, p.patterns[0].graph_lanes,
+                      sizeof(p.patterns[0].graph_lanes)),
+          "embedded schema-15 Graph settings also convert");
+    dm_bytes_free(&midi);
+    dm_bytes_free(&old);
+    dm_project_free(&p);
+    dm_project_free(&q);
+}
+
+static void check_legacy_bends(void) {
+    DmProject p, q;
+    dm_project_init(&p);
+    dm_project_init(&q);
+    char error[256] = {0};
+    DmBytes old = line_project(16), saved = {0};
+    check(dm_unpack(&p, old.data, old.size, error, sizeof(error)), error);
+    uint32_t id = p.patterns[0].notes[0].bend_id;
+    check(id && p.automation[1].bend_note == id && !p.automation[2].bend_note,
+          "schema-16 piano-roll bend acquires a root attached to the note");
+    check(!p.automation[4].bend_note && !p.automation[6].fixed_anchor,
+          "schema-16 Events line and imported discrete point retain their behavior");
+    check(dm_pack(&p, &saved) && dm_unpack(&q, saved.data, saved.size, error, sizeof(error)) &&
+              q.patterns[0].notes[0].bend_id == id && q.automation[1].bend_note == id,
+          "the migrated attachment survives saving and reopening");
+    dm_bytes_free(&saved);
+    dm_bytes_free(&old);
+    dm_project_free(&q);
+    dm_project_free(&p);
+}
+
+static void check_legacy_pitch_units(void) {
+    DmProject p, q;
+    dm_project_init(&p);
+    dm_project_init(&q);
+    char error[256] = {0};
+    DmBytes old = line_project(17), saved = {0};
+    check(dm_unpack(&p, old.data, old.size, error, sizeof(error)), error);
+    check(p.automation[1].bend_root == DM_BEND_ROOT_PITCH && !p.automation[1].bend_note &&
+              p.automation[2].bend_root == DM_BEND_ROOT_NONE,
+          "schema-17 detached piano-roll bend gets a Pitch root");
+    check(p.automation[4].bend_root == DM_BEND_ROOT_NONE &&
+              p.automation[6].bend_root == DM_BEND_ROOT_NONE,
+          "ambiguous Events lines and imported points keep their MIDI values");
+    check(dm_pack(&p, &saved) && dm_unpack(&q, saved.data, saved.size, error, sizeof(error)) &&
+              q.automation[1].bend_root == DM_BEND_ROOT_PITCH,
+          "the migrated Pitch root survives saving and reopening");
+    dm_bytes_free(&saved);
+    dm_bytes_free(&old);
+    dm_project_free(&q);
+    dm_project_free(&p);
+}
+
 int main(void) {
+    check_legacy_pitch_units();
+    check_legacy_bends();
     check_patch_replacements();
     check_graph_and_percussion_midi();
+    check_legacy_graph();
     DmProject p, again;
     dm_project_init(&p);
     dm_project_init(&again);

@@ -158,6 +158,8 @@ static void automation_value_input(Editor *e) {
     if (ui_int(DM_TEXT_VALUE, &value, 0,
                a->type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX)) {
         ed_checkpoint(e);
+        a->bend_note = 0;
+        ed_pitch_edit_units(e, a, true);
         ed_set_event_value(a, value);
         ed_commit(e);
     }
@@ -338,6 +340,8 @@ bool ed_transfer_automation(Editor *e) {
     p->patterns[id].reference = p->patterns[source].count ? p->patterns[source].notes[0].key : 60;
     p->patterns[id].pitch_center = p->patterns[id].reference;
     p->patterns[id].event = event;
+    memcpy(p->patterns[id].graph_lanes, p->patterns[source].graph_lanes,
+           sizeof(p->patterns[id].graph_lanes));
     p->patterns[id].length = p->patterns[source].length;
     int lanes[16] = {0};
 
@@ -363,6 +367,7 @@ bool ed_transfer_automation(Editor *e) {
     for (size_t i = 0; i < p->automation_count; ++i) {
         if (p->automation[i].pattern == source) {
             p->automation[i].pattern = id;
+            p->automation[i].bend_note = 0;
         }
     }
 
@@ -617,7 +622,7 @@ static void event_editor_header(Editor *e, DmPattern *p) {
         ui_frame_toggle(DM_TEXT_MIDI_VALUES, &e->automation_raw);
     }
 
-    ed_graph_resolution_controls(e, p);
+    ed_graph_resolution_controls(e);
 
     if (!p->mode) {
         automation_value_input(e);
@@ -834,19 +839,17 @@ static void velocity_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse) {
 
 static void velocity_select(Editor *e, DmPattern *p, UiRect lane, View *v, float scale,
                             UiMouse mouse) {
-    UiRect box = {fminf(e->event_marquee_start.x, mouse.pos.x),
-                  fminf(e->event_marquee_start.y, mouse.pos.y),
-                  fabsf(e->event_marquee_start.x - mouse.pos.x),
-                  fabsf(e->event_marquee_start.y - mouse.pos.y)};
+    UiRect box = ed_marquee_box(e, mouse);
 
     for (size_t i = 0; i < p->count; ++i) {
-        p->notes[i].selected = ed_inside(velocity_point(p->notes[i], lane, v, scale), box);
+        p->notes[i].selected = ed_marquee_retains(e, i, mouse.shift) ||
+                               ed_inside(velocity_point(p->notes[i], lane, v, scale), box);
     }
 
     ui_border(box, e->accent, 0, 1);
 
     if (mouse.released || !mouse.left) {
-        e->event_marquee = false;
+        e->marquee = false;
     }
 }
 
@@ -855,8 +858,7 @@ static void velocity_input(Editor *e, DmPattern *p, UiMouse mouse, bool hovered,
         ed_focus_edit(e, FOCUS_EVENTS);
 
         if (mouse.ctrl || e->tool == 1) {
-            e->event_marquee = true;
-            e->event_marquee_start = mouse.pos;
+            ed_marquee_begin(e, FOCUS_EVENTS, mouse);
         } else if (hit >= 0) {
             if (!p->notes[hit].selected && !mouse.shift) {
                 ed_deselect(e);
@@ -906,13 +908,13 @@ static void velocity_panel(Editor *e, UiRect lane, View *v, float scale, UiMouse
     }
 
     /* Over a point only while nothing else holds the mouse. */
-    if ((hovered && hit >= 0 && !e->drag && !e->event_marquee) || e->drag == 11) {
+    if ((hovered && hit >= 0 && !e->drag && !e->marquee) || e->drag == 11) {
         ui_gesture_cursor(true);
     }
 
     velocity_input(e, p, mouse, hovered, hit);
 
-    if (e->event_marquee) {
+    if (e->marquee && ed_selection_focus(e) == FOCUS_EVENTS) {
         velocity_select(e, p, lane, v, scale, mouse);
     }
 
@@ -963,9 +965,7 @@ void ed_automation_panel(Editor *e, UiRect r, View *v, float scale, float label,
         ui_frame_toggle(DM_TEXT_MIDI_VALUES, &e->automation_raw);
     }
 
-    if (pattern) {
-        ed_graph_resolution_controls(e, pattern);
-    }
+    ed_graph_resolution_controls(e);
 
     if (e->automation_cc != -3) {
         automation_value_input(e);
