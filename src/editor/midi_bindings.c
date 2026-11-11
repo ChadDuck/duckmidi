@@ -175,14 +175,17 @@ bool ed_midi_bindings_replace(Editor *e, DmBytes *list) {
     return true;
 }
 
-static void change_binding(Editor *e, EdMidiTarget target, const EdMidiBinding *new_binding) {
+/* Replaces the binding of `target` (and any binding of new_binding's source) with new_binding.
+   A NULL target removes every binding. */
+static void change_binding(Editor *e, const EdMidiTarget *target,
+                           const EdMidiBinding *new_binding) {
     DmBytes next = {0};
     bool ok = true;
 
-    for (size_t i = 0; i < ed_midi_binding_count(e) && ok; ++i) {
+    for (size_t i = 0; i < ed_midi_binding_count(e) && ok && target; ++i) {
         EdMidiBinding *old = ed_midi_binding_at(e, i);
 
-        if (target.kind != ED_MIDI_TARGETS && !same_target(old->target, target) &&
+        if (!same_target(old->target, *target) &&
             (!new_binding || !same_source(&old->source, &new_binding->source))) {
             ok = dm_bytes(&next, old, sizeof(*old));
         }
@@ -218,11 +221,16 @@ bool ed_midi_bindings_cancel(Editor *e) {
 }
 
 void ed_midi_binding_clear(Editor *e, EdMidiTarget target) {
-    if (target.kind == ED_MIDI_TARGETS || same_target(e->midi_learn.target, target)) {
+    if (same_target(e->midi_learn.target, target)) {
         ed_midi_bindings_cancel(e);
     }
 
-    change_binding(e, target, NULL);
+    change_binding(e, &target, NULL);
+}
+
+void ed_midi_bindings_clear_all(Editor *e) {
+    ed_midi_bindings_cancel(e);
+    change_binding(e, NULL, NULL);
 }
 
 void ed_midi_binding_learn(Editor *e, EdMidiTarget target, bool any_device) {
@@ -261,7 +269,7 @@ static void learn(Editor *e, DmMidiInputEvent event, DmMidiBindingSource source)
         binding.input[event.device].previous = event.b;
     }
 
-    change_binding(e, session.target, &binding);
+    change_binding(e, &session.target, &binding);
     ed_midi_bindings_cancel(e);
 }
 
@@ -339,9 +347,10 @@ static void mixer_event(Editor *e, EdMidiBinding *binding, DmMidiInputEvent even
         *value = !*value;
     }
 
+    /* Continuous moves share an undo step until they pause; every mute or solo press is its own. */
     uint64_t ns = event.ticks_ns;
-    bool new_gesture =
-        !e->midi_mix_last || (ns >= e->midi_mix_last && ns - e->midi_mix_last >= MIX_GESTURE_NS);
+    bool new_gesture = !continuous || !e->midi_mix_last ||
+                       (ns >= e->midi_mix_last && ns - e->midi_mix_last >= MIX_GESTURE_NS);
     bool checkpoint = false;
 
     if (new_gesture) {
@@ -372,6 +381,7 @@ static void mixer_event(Editor *e, EdMidiBinding *binding, DmMidiInputEvent even
     if (!continuous) {
         ed_midi_bindings_flush(e, ns);
         ed_publish(e);
+        e->midi_mix_last = 0;
     }
 }
 

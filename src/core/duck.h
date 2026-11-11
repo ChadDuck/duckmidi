@@ -46,7 +46,8 @@ typedef struct {
     uint32_t bend_id; /* Pattern-local identity assigned when a bend is attached. */
 } DmNote;
 
-enum { DM_GRAPH_POINT = 1, DM_GRAPH_PITCH_LANE = 128, DM_GRAPH_LANES };
+/* DM_GRAPH_DEFAULT is the bar resolution a lane gets when it first becomes a Graph (1/16). */
+enum { DM_GRAPH_POINT = 1, DM_GRAPH_DEFAULT = 16, DM_GRAPH_PITCH_LANE = 128, DM_GRAPH_LANES };
 
 typedef struct {
     char name[64];

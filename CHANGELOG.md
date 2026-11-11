@@ -1,5 +1,9 @@
 # duckmidi changelog
 
+# 0.12.6
+
+1. Mute and solo presses from a MIDI controller are now undone one at a time, instead of grouping quick presses together.
+
 # 0.12.5
 
 1. Volume and Pan are shown in the Piano Roll's 'Events' section.

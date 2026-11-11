@@ -92,7 +92,13 @@ static void options_and_bindings(void) {
     assert(stats.echoes == 1);
 
     dm_midi_input_set_options(input, &(DmMidiInputOptions){0});
-    dm_midi_input_set_bound(input, 0, 1, DM_MIDI_SOURCE_CC, MIDI_CC_MODULATION, true);
+    DmMidiBindingSource modulation = {
+        .kind = DM_MIDI_SOURCE_CC, .channel = 1, .number = MIDI_CC_MODULATION};
+    DmMidiBindingSource sustain = {
+        .kind = DM_MIDI_SOURCE_CC, .channel = 1, .number = MIDI_CC_SUSTAIN};
+    DmMidiBindingSource data = {.kind = DM_MIDI_SOURCE_CC, .channel = 1, .number = MIDI_CC_DATA};
+    DmMidiBindingSource note = {.kind = DM_MIDI_SOURCE_NOTE, .channel = 1, .number = 61};
+    assert(dm_midi_input_bind_sources(input, &modulation, 1));
     fixture_emit(&f, 0, MIDI_CONTROL | 1, MIDI_CC_MODULATION, 67, SDL_GetTicksNS());
     assert(fixture_drain(input, 0, NULL) == 0);
     DmMidiInputEvent bound = pop_one(input, 1);
@@ -103,7 +109,7 @@ static void options_and_bindings(void) {
     /* Binding a held pedal still releases it on the original route. */
     fixture_emit(&f, 0, MIDI_CONTROL | 1, MIDI_CC_SUSTAIN, 127, SDL_GetTicksNS());
     assert(pop_one(input, 0).b == 127 && pop_one(input, 1).b == 127);
-    dm_midi_input_set_bound(input, 0, 1, DM_MIDI_SOURCE_CC, MIDI_CC_SUSTAIN, true);
+    assert(dm_midi_input_bind_sources(input, (DmMidiBindingSource[]){modulation, sustain}, 2));
     fixture_emit(&f, 0, MIDI_CONTROL | 1, MIDI_CC_SUSTAIN, 0, SDL_GetTicksNS());
     release = pop_one(input, 0);
     assert(release.b == 0 && (release.flags & DM_MIDI_EVENT_RELEASE));
@@ -111,13 +117,14 @@ static void options_and_bindings(void) {
     fixture_emit(&f, 0, MIDI_CONTROL | 1, MIDI_CC_SUSTAIN, 127, SDL_GetTicksNS());
     fixture_emit(&f, 0, MIDI_CONTROL | 1, MIDI_CC_SUSTAIN, 0, SDL_GetTicksNS());
     assert(fixture_drain(input, 0, NULL) == 0 && fixture_drain(input, 1, NULL) == 2);
-    dm_midi_input_set_bound(input, 0, 1, DM_MIDI_SOURCE_CC, MIDI_CC_SUSTAIN, false);
+    assert(dm_midi_input_bind_sources(input, &modulation, 1));
 
-    dm_midi_input_set_bound(input, 0, 1, DM_MIDI_SOURCE_CC, MIDI_CC_DATA, true);
+    /* Data entry is not bindable, so the list is refused and the previous bindings stay. */
+    assert(!dm_midi_input_bind_sources(input, (DmMidiBindingSource[]){modulation, data}, 2));
     fixture_emit(&f, 0, MIDI_CONTROL | 1, MIDI_CC_DATA, 32, SDL_GetTicksNS());
     assert(pop_one(input, 0).b == 32 && !(pop_one(input, 1).flags & DM_MIDI_EVENT_BOUND));
 
-    dm_midi_input_set_bound(input, 0, 1, DM_MIDI_SOURCE_NOTE, 61, true);
+    assert(dm_midi_input_bind_sources(input, (DmMidiBindingSource[]){modulation, note}, 2));
     fixture_emit(&f, 0, MIDI_NOTE_ON | 1, 61, 70, SDL_GetTicksNS());
     assert(fixture_drain(input, 0, NULL) == 0);
     assert(pop_one(input, 1).flags & DM_MIDI_EVENT_BOUND);
@@ -136,7 +143,7 @@ static void options_and_bindings(void) {
     atomic_store(&f.available, 255);
     dm_midi_input_refresh(input);
     fixture_wait(input, 0, DM_MIDI_OPEN);
-    dm_midi_input_clear_bound(input);
+    assert(dm_midi_input_bind_sources(input, NULL, 0));
     fixture_emit(&f, 0, MIDI_CONTROL | 1, MIDI_CC_MODULATION, 69, SDL_GetTicksNS());
     assert(pop_one(input, 0).b == 69 && !(pop_one(input, 1).flags & DM_MIDI_EVENT_BOUND));
     dm_midi_input_destroy(input);

@@ -5,11 +5,12 @@ static void curve_cc(Editor *e, double beat, int cc, int value, int id);
 static void replace_curve_range(Editor *e, double start, double end, int cc);
 static bool curve_overlaps(Editor *e, double start, double end, int cc);
 
-PitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat, unsigned port) {
+DmPitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat,
+                                    unsigned port) {
     return dm_pitch_state(p->automation, p->automation_count, pattern_id, beat, port);
 }
 
-PitchState ed_pitch_state(Editor *e, double beat) {
+DmPitchState ed_pitch_state(Editor *e, double beat) {
     return ed_pattern_pitch_state(&e->project, e->selected_pattern, beat, ed_note_port(e));
 }
 
@@ -259,7 +260,7 @@ static void automation_line(Editor *e, double start, double end, int first, int 
     int id = ed_curve_id(e);
     int anchor = note ? note->key : cc < 0 ? e->drag_key : ed_nearest_note(e, start);
     int baseline = cc == 64 || cc == 66 ? 0 : ed_value_before(e, start, cc);
-    PitchState previous = ed_pitch_state(e, start);
+    DmPitchState previous = ed_pitch_state(e, start);
     replace_curve_range(e, start, end, cc);
 
     if (cc == -2) { /* Pitch bends carry their bend range. */

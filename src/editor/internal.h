@@ -45,6 +45,7 @@ bool ed_midi_bindings_attach(Editor *e, DmMidiInput *input);
 bool ed_midi_bindings_replace(Editor *e, DmBytes *list);
 bool ed_midi_bindings_cancel(Editor *e);
 void ed_midi_binding_clear(Editor *e, EdMidiTarget target);
+void ed_midi_bindings_clear_all(Editor *e);
 void ed_midi_binding_learn(Editor *e, EdMidiTarget target, bool any_device);
 bool ed_midi_binding_learning(const Editor *e, EdMidiTarget target);
 void ed_midi_bindings_reset_pickup(Editor *e);
@@ -139,8 +140,6 @@ const char *ed_export_extension(Editor *e);
 void ed_export_picker_done(Editor *e, const char *path);
 
 enum { PENDING_NEW = 1, PENDING_OPEN, PENDING_PATH, PENDING_QUIT };
-
-typedef DmPitchState PitchState;
 
 typedef struct {
     size_t index;
@@ -357,8 +356,9 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
                        const int *list, int count, UiMouse mouse, int hit);
 void ed_playlist_remove(Editor *e, int hit);
 void ed_playlist(Editor *e, float width, float height);
-PitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat, unsigned port);
-PitchState ed_pitch_state(Editor *e, double beat);
+DmPitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat,
+                                    unsigned port);
+DmPitchState ed_pitch_state(Editor *e, double beat);
 int ed_curve_id(Editor *e);
 int ed_nearest_note(Editor *e, double beat);
 int ed_curve_anchor(Editor *e, double beat);

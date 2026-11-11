@@ -1205,7 +1205,7 @@ static void midi_clear_confirmation(Editor *e) {
     ui_same();
 
     if (ui_button(DM_TEXT_MIDI_BIND_CLEAR_ALL, 110, 0)) {
-        ed_midi_binding_clear(e, (EdMidiTarget){.kind = ED_MIDI_TARGETS});
+        ed_midi_bindings_clear_all(e);
         e->midi_clear_bindings = false;
         ui_close_popup();
     }

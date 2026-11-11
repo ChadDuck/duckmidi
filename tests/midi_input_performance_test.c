@@ -1,6 +1,7 @@
 /* Manual MIDI input flood measurement over the dense frame fixture:
-   midi_input_performance_test [seconds] [record]. Set DM_MIDI_TEST_DRIVER to pick the audio
-   driver (default dummy). */
+   midi_input_performance_test [seconds] [record|bound]. Set DM_MIDI_TEST_DRIVER to pick the audio
+   driver (default dummy). record also compares the recorded Graph lane with Point at the widest
+   zoom; bound sends the controller flood to eight CCs learned to four mixer strips. */
 #include "frame_fixture.h"
 #include "midi_input_fixture.h"
 
@@ -27,7 +28,10 @@ typedef struct {
     MidiFixture *source;
     atomic_bool stop;
     atomic_uint sent;
+    bool bound;
 } Flood;
+
+enum { BOUND_STRIPS = 4, BOUND_FIRST_CC = 20 };
 
 static int flood(void *context) {
     Flood *f = context;
@@ -39,8 +43,10 @@ static int flood(void *context) {
         unsigned due = (unsigned)((ns - start) * 3000 / 1000000000);
 
         while (controls < due) {
-            fixture_emit(f->source, 0, MIDI_CONTROL, MIDI_CC_MODULATION, controls % 128,
-                         SDL_GetTicksNS());
+            unsigned control = f->bound ? BOUND_FIRST_CC + controls % (2 * BOUND_STRIPS)
+                                        : MIDI_CC_MODULATION;
+            unsigned value = f->bound ? controls / (2 * BOUND_STRIPS) % 128 : controls % 128;
+            fixture_emit(f->source, 0, MIDI_CONTROL, control, value, SDL_GetTicksNS());
             ++controls;
             atomic_fetch_add(&f->sent, 1);
         }
@@ -63,6 +69,7 @@ static int flood(void *context) {
 int main(int argc, char **argv) {
     double duration = argc > 1 ? atof(argv[1]) : 60;
     bool record = argc > 2 && !strcmp(argv[2], "record");
+    bool bound = argc > 2 && !strcmp(argv[2], "bound");
     const char *driver = SDL_getenv("DM_MIDI_TEST_DRIVER");
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, driver ? driver : "dummy");
     check(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO), "SDL");
@@ -104,13 +111,29 @@ int main(int argc, char **argv) {
     atomic_store(&source.delay, 0);
     e->overwrite = true;
 
+    if (bound) {
+        /* Volume and pan of four strips, as a controller's faders and knobs would be learned. */
+        DmBytes list = {0};
+
+        for (unsigned i = 0; i < 2 * BOUND_STRIPS; ++i) {
+            EdMidiBinding binding = {
+                .source = {.kind = DM_MIDI_SOURCE_CC, .number = (uint8_t)(BOUND_FIRST_CC + i)},
+                .target = {i % 2 ? ED_MIDI_PAN : ED_MIDI_VOLUME, (uint8_t)(i / 2), 0}};
+            check(ed_midi_binding_append(&list, binding), "binding");
+        }
+
+        check(ed_midi_bindings_replace(e, &list), "bindings");
+        e->active = true;
+        e->input_pickup = false;
+    }
+
     if (record) {
         ed_toggle_record(e);
         ed_play(e);
     }
 
     midi_performance_callbacks(audio, true);
-    Flood stream = {.source = &source};
+    Flood stream = {.source = &source, .bound = bound};
     SDL_Thread *producer = SDL_CreateThread(flood, "MIDI flood", &stream);
     check(producer != NULL, "flood thread");
     double begin = now(), total = 0, maximum = 0;
@@ -167,6 +190,31 @@ int main(int argc, char **argv) {
         e->roll_view.scroll_x, e->roll_view.zoom, first_control, last_control, visible_points,
         e->automation_all);
     printf("timing_fallbacks=%llu\n", (unsigned long long)stats.timing_fallbacks);
+
+    if (bound) {
+        int moved = 0;
+
+        for (int c = 0; c < BOUND_STRIPS; ++c) {
+            DmChannel channel = e->project.channels[c];
+            printf("strip=%d volume=%d pan=%d\n", c, channel.volume, channel.pan);
+            moved += channel.volume != 100 || channel.pan != 64;
+        }
+
+        check(moved == BOUND_STRIPS, "bound controls moved every strip");
+    }
+
+    if (record) {
+        /* The take records Modulation into Graph; compare the same lane drawn as Point. */
+        DmPattern *pattern = &e->project.patterns[0];
+        check(pattern->graph_lanes[MIDI_CC_MODULATION] > DM_GRAPH_POINT, "take recorded Graph");
+        e->roll_view.zoom = .15f;
+        e->roll_view.scroll_x = 0;
+        double graph = average_frame(e, 240);
+        pattern->graph_lanes[MIDI_CC_MODULATION] = DM_GRAPH_POINT;
+        double point = average_frame(e, 240);
+        printf("zoom_out_graph_frame_ms=%.3f zoom_out_point_frame_ms=%.3f ratio=%.3f\n", graph,
+               point, graph / point);
+    }
     check(!record || last_control > duration, "recorded positions span the whole take");
     check(stats.dropped == 0, "flood retained every input event");
     check(request_ms < 100, "slow open is asynchronous");

@@ -129,11 +129,21 @@ static void mixer(Editor *e) {
     bind(e, mute, false, MIDI_NOTE_ON | 15, 60, 99);
     emit(e, 0, MIDI_NOTE_OFF | 15, 60, 64);
     assert(!e->project.channels[0].mute);
+    undo = e->undo_count;
     emit(e, 0, MIDI_NOTE_ON | 15, 60, 60);
-    assert(e->project.channels[0].mute);
+    assert(e->project.channels[0].mute && e->undo_count == undo + 1);
     bind(e, solo, false, MIDI_CONTROL | 15, 73, 0);
     emit(e, 0, MIDI_CONTROL | 15, 73, 127);
     assert(e->project.channels[0].solo);
+
+    /* Each button press is its own undo step, even straight after another press or a fader move. */
+    emit(e, 0, MIDI_NOTE_ON | 15, 60, 60);
+    undo = e->undo_count;
+    emit(e, 0, MIDI_NOTE_ON | 15, 60, 60);
+    emit(e, 0, MIDI_NOTE_ON | 15, 60, 60);
+    assert(!e->project.channels[0].mute && e->undo_count == undo + 2);
+    emit(e, 0, MIDI_CONTROL | 15, 71, 30);
+    assert(e->undo_count == undo + 3);
 }
 
 static void recording(Editor *e) {
@@ -196,7 +206,7 @@ static void preferences(Editor *e) {
     ed_midi_binding_find(e, (EdMidiTarget){.kind = ED_MIDI_CHANNEL_NEXT})->toggle = true;
     size_t count = ed_midi_binding_count(e);
     assert(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names));
-    ed_midi_binding_clear(e, (EdMidiTarget){.kind = ED_MIDI_TARGETS});
+    ed_midi_bindings_clear_all(e);
     assert(!ed_midi_binding_count(e));
     assert(dm_preferences_load(e, ed_shortcut_schema()) && ed_midi_binding_count(e) == count);
     assert(!strcmp(ed_midi_binding_find(e, pan)->source.device, "Knob, \"quoted\" name"));

@@ -812,7 +812,7 @@ int ed_lane_value(Editor *e, UiRect lane, float y, DmAutomation a, bool free) {
 }
 
 static double next_pitch_range(Editor *e, double beat) {
-    PitchState state = {2, 0, 127, 127};
+    DmPitchState state = {2, 0, 127, 127};
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
@@ -881,7 +881,7 @@ DmAutomation ed_expand_pitch_range(Editor *e, DmAutomation node, float pitch) {
     }
 
     if (!node.curve) {
-        PitchState previous = ed_pitch_state(e, node.beat);
+        DmPitchState previous = ed_pitch_state(e, node.beat);
         ed_curve_range(e, fmax(0, node.beat - .5 / DM_PPQ), 127, 0, previous.msb, previous.lsb, 0);
     }
 
@@ -1552,7 +1552,7 @@ static DmAutomation connect_point(Editor *e, UiRect lane, int nearest, float y, 
     bool raw = ed_automation_raw(e);
     double original_beat = a.beat;
     bool converted = !a.curve && a.type != MIDI_PROGRAM;
-    PitchState incoming = ed_pitch_state(e, fmin(a.beat, beat));
+    DmPitchState incoming = ed_pitch_state(e, fmin(a.beat, beat));
     int baseline = 0;
 
     if (converted) {
@@ -2451,7 +2451,7 @@ static bool copy_event_points(Editor *e, DmProject *to, const bool *selected, do
                 a.fixed_anchor |= a.bend_root != DM_BEND_ROOT_NONE;
             }
         } else if (a.type == MIDI_PITCH_BEND) {
-            PitchState state = ed_pattern_pitch_state(&e->project, a.pattern, a.beat, a.port);
+            DmPitchState state = ed_pattern_pitch_state(&e->project, a.pattern, a.beat, a.port);
             const int cc[] = {MIDI_CC_RPN_MSB,  MIDI_CC_RPN_LSB, MIDI_CC_DATA,
                               MIDI_CC_DATA_LSB, MIDI_CC_RPN_MSB, MIDI_CC_RPN_LSB};
             const int value[] = {0, 0, state.range, state.cents, state.msb, state.lsb};
@@ -2480,7 +2480,7 @@ static bool copy_event_points(Editor *e, DmProject *to, const bool *selected, do
 
 static void paste_discrete_pitch(Editor *e, const DmProject *from, DmAutomation *a,
                                  double source_beat, int source_port) {
-    PitchState source = ed_pattern_pitch_state(from, 0, source_beat, source_port);
+    DmPitchState source = ed_pattern_pitch_state(from, 0, source_beat, source_port);
     double bend = (ed_event_value(*a) - MIDI_BEND_CENTER) * (source.range + source.cents * .01) /
                   MIDI_BEND_CENTER;
     float pitch = ed_pitch_anchor(e, *a) + (float)bend;
@@ -2537,7 +2537,7 @@ static DmAutomation *prepare_pasted_events(Editor *e, const DmProject *from, dou
         }
 
         double start = fmax(0, at + pasted_section_start(from, a->curve) - 1e-8);
-        PitchState prior = ed_pitch_state(e, start);
+        DmPitchState prior = ed_pitch_state(e, start);
 
         if (a->type == MIDI_PITCH_BEND) {
             ed_set_event_value(a, ed_value_before(e, start, -2));

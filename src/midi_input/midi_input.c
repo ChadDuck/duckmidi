@@ -238,14 +238,6 @@ static void release_notes(InputSlot *slot, int channel, DmMidiInputEvent event, 
     }
 }
 
-static void clear_slot_bound(DmMidiInput *input, unsigned device) {
-    for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
-        for (unsigned w = 0; w < 8; ++w) {
-            atomic_store_explicit(&input->bound[device][c][w], 0, memory_order_relaxed);
-        }
-    }
-}
-
 static void bind_slot(DmMidiInput *input, unsigned slot, const char *name) {
     unsigned words[MIDI_CHANNELS][8] = {0};
 
@@ -828,30 +820,6 @@ bool dm_midi_input_bind_sources(DmMidiInput *input, const DmMidiBindingSource *s
 
 void dm_midi_input_learn(DmMidiInput *input, DmMidiLearnMode mode) {
     atomic_store_explicit(&input->learning, mode, memory_order_relaxed);
-}
-
-void dm_midi_input_set_bound(DmMidiInput *input, unsigned device, unsigned channel,
-                             DmMidiInputSource kind, unsigned number, bool bound) {
-    if (device >= DM_MIDI_INPUTS || channel >= MIDI_CHANNELS ||
-        !dm_midi_source_bindable(kind, number)) {
-        return;
-    }
-
-    unsigned word = number / 32 + (kind == DM_MIDI_SOURCE_CC ? 0 : 4);
-    atomic_uint *bits = &input->bound[device][channel][word];
-    unsigned mask = 1u << (number % 32);
-
-    if (bound) {
-        atomic_fetch_or_explicit(bits, mask, memory_order_relaxed);
-    } else {
-        atomic_fetch_and_explicit(bits, ~mask, memory_order_relaxed);
-    }
-}
-
-void dm_midi_input_clear_bound(DmMidiInput *input) {
-    for (unsigned i = 0; i < DM_MIDI_INPUTS; ++i) {
-        clear_slot_bound(input, i);
-    }
 }
 
 void dm_midi_input_set_thru(DmMidiInput *input, bool enabled) {

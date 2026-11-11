@@ -629,7 +629,7 @@ bool ed_graph_controls(Editor *e, DmPattern *p, bool lfo) {
     if (ui_combo(lfo ? "##Automation mode" : "##Event mode", modes[current])) {
         for (int i = 0; i < 3; ++i) {
             if ((i != 1 || lfo) && ui_select(modes[i], current == i, 0, 0) && current != i) {
-                ed_graph_mode_request(e, i == 1, i == 2 ? 16 : 0);
+                ed_graph_mode_request(e, i == 1, i == 2 ? DM_GRAPH_DEFAULT : 0);
             }
         }
 

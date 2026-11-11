@@ -32,34 +32,6 @@ While the design, usability, UI, and goals of this program were dictated by a hu
    - The bundled M64 & OoT plugins converts General MIDI arrangements into their respective sequences; transforming a previously arduous task into a quick and painless experience.
    - Your custom samples can be exported as well, and every change made to your game repository can be quickly reverted.
 
-## Performance
-
-Estimates; tested against a *Release* candidate v0.11.1 using a complex midi composition.
-- RAM Usage: ~350 MiB
-- CPU Usage (All threads): ~5%
-- GPU Usage: ~16% (Lower for simpler songs, around ~8%)
-
-## Planned
-
-- Core
-   - Performance
-      - Improve Resource consumption
-      - ~~Improve GUI performance~~
-   - GUI
-      - ~~Pattern colors~~
-      - 'Unslop' parts of the GUI
-      - More keyboard shortcuts.
-   - MIDI Input Support
-   - Better implementation for Polyphonic Aftertouch
-   - API Expansion
-- Plugins
-   - ~~M64 - Export to repo~~
-   - ~~M64 - Automatic adjustment of sequence memory code to match export requirements~~
-   - ~~M64 - Loop Points~~
-   - ~~OoT Exporting~~
-   - MM Exporting
-- Probably a lot more
-
 
 ## Getting Started
 

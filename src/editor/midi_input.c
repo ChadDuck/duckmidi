@@ -388,7 +388,7 @@ static bool recorded_graph_modes(Editor *e, const DmPattern *pattern, uint16_t *
 
     for (int lane = 0; lane < DM_GRAPH_LANES; ++lane) {
         if (touched[lane] && !graphs[lane]) {
-            graphs[lane] = 16;
+            graphs[lane] = DM_GRAPH_DEFAULT;
         }
     }
 

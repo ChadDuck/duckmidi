@@ -436,6 +436,7 @@ void ed_quantize_notes(Editor *e) {
 
     ed_follow_note_curves(e, e->selected_pattern, before, p->count, 0);
     free(before);
+    dm_pattern_fit(&e->project, ed_pattern(e));
     ed_commit(e);
 }
 

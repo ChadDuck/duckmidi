@@ -1,8 +1,8 @@
 # MIDI input backend
 
 The backend monitors and records standard MIDI channel messages into the open note pattern.
-The computer-keyboard piano remains available independently. There is no input device picker or
-mapping interface yet. Projects keep schema 14 and their existing note and automation formats.
+The computer-keyboard piano remains available independently. Devices, shaping and learned
+controls are set in **Preferences > MIDI input**; the user guide describes the interface.
 
 ## Devices and lifetime
 
@@ -81,6 +81,38 @@ device sends active sensing, 300 ms without any message triggers a release on th
 held state after callback/timeout races; it is never forwarded or recorded as automation.
 Safety resets also release sustain and centre bend on routes used by the lost device. Slow
 driver operations can delay worker sensing checks; they cannot block the GUI or audio thread.
+
+## Options and bound controls
+
+`dm_midi_input_set_options` stores a `DmMidiInputOptions` snapshot in one atomic. The worker
+applies `dm_midi_shape` after the echo check and before held-state tracking:
+
+- Velocity curve, Note On only: `round(127 * (v / 127)^g)`, at least 1, with g = 0.6 (light),
+  1 (medium) or 1.6 (heavy). A nonzero fixed velocity replaces the result. Release velocity is
+  unchanged.
+- Sustain invert maps CC 64 to `127 - value`.
+- The channel filter (0 = all, 1–16) returns its verdict; filtered messages are counted. A note
+  or pedal admitted before a filter change still releases on its original route.
+
+`dm_midi_input_bind_sources` installs the editor's learned controls as a per-device, per-channel
+bitmap of CC and note numbers. A source with an empty device name applies to every device. The
+worker rebuilds a slot's bitmap before opening it, so a reconnected device keeps its bindings.
+Bound messages carry `DM_MIDI_EVENT_BOUND` and reach only the editor (consumer 1); monitoring,
+thru and recording never see them. Note bindings match Note On and Off. Bank select, data
+entry, RPN/NRPN and channel-mode controllers cannot be bound (`dm_midi_source_bindable`). While
+`dm_midi_input_learn` is on, the next eligible message goes to the editor flagged for learning
+instead of playing.
+
+The editor dispatches bound events in `src/editor/midi_bindings.c`. Volume and pan use pickup
+when enabled: a control takes over within ±2 of the current value or when it crosses it, and
+pickup resets when the value changes elsewhere. Their moves apply to audio at once, share one
+undo step until 500 ms pass without a move, and republish playback after 250 ms idle. Each mute
+or solo press is one undo step and republishes immediately. Momentary buttons act on Note On or
+a CC rising to 64 or more; Toggle buttons act on every value change.
+
+The editor publishes the Percussion window's MIDI map with `dm_audio_input_note_map` while the
+route is the drum channel, so audio and recording use the sounding drum key. Audio stores the
+sounding key with each held note, so a map change cannot strand a release.
 
 ## Monitoring, routing and thru
 
@@ -172,6 +204,44 @@ literal, matching other preferences. An empty value means no saved inputs. Empty
 duplicates, control characters, overlong names and lists above eight are rejected by the
 existing preference validation. The existing `midi_output` key is unchanged.
 
+The options, learned controls and global MIDI drum map have their own sections:
+
+```ini
+[midi_input]
+velocity=medium
+fixed_velocity=0
+thru=1
+controllers=keyboard
+latency=auto
+sustain_invert=0
+channel=0
+pickup=1
+
+[midi_bindings]
+mixer.volume.1.0="FLkey 49",16,cc,71,momentary
+action.play="",16,cc,115,toggle
+
+[percussion_midi]
+bass_drum_1=48
+```
+
+`velocity` is `light`, `medium` or `heavy`; `controllers` is `keyboard` or `song`; `latency` is
+`auto` or milliseconds from −1,000 to 1,000; `channel` 0 is all.
+
+A binding key is `mixer.volume`, `mixer.pan`, `mixer.mute` or `mixer.solo` followed by
+`.channel.port` (channel 1–16, note-color port), or one of `action.play`, `action.stop`,
+`action.record`, `action.metronome`, `action.quantize`, `action.undo`, `action.redo`,
+`action.channel_previous` and `action.channel_next`. The value is the quoted device name
+(`""` for any device), the source channel 1–16, `cc` or `note`, its number, and `momentary` or
+`toggle`. Volume and pan accept only `cc` and `momentary`. Each target and each source appears
+once.
+
+In `[percussion_midi]` the key names the drum as in `[percussion]` (its General MIDI name in
+lower case with underscores, or `unassigned_N` outside notes 35–81) and the value is the
+incoming MIDI note. Projects can override the map; the project file stores it since schema 15.
+
+Any invalid line rejects the whole file, as in the other sections.
+
 The editor restores saved requests after loading preferences and collects requested names
 before shutdown. The desktop editor remains the application entry point. Developer tools and
 tests do not read or write installed preferences or user media.
@@ -206,9 +276,10 @@ describe observed traffic; they do not change input interpretation.
 
 ## Validation
 
-`midi_input_core`, `midi_input_worker`, `midi_monitor_decode`, `midi_input_audio_test` and
-`midi_recording_test` exercise the core, scripted drivers, audio and editor boundaries.
-The existing recording, loop, feedback, live-edit and gesture tests remain enabled.
+`midi_input_core`, `midi_input_worker`, `midi_monitor_decode`, `midi_input_audio_test`,
+`midi_recording_test`, `midi_bindings_test` and `midi_input_preferences_test` exercise the core,
+scripted drivers, audio, bindings, Preferences and editor boundaries. The existing recording,
+loop, feedback, live-edit and gesture tests remain enabled.
 
 The manual `midi_input_performance_test` reuses the dense frame fixture. Run from the project
 root, with generated SoundFonts available:
@@ -216,13 +287,17 @@ root, with generated SoundFonts available:
 ```text
 set DM_MIDI_TEST_DRIVER=dummy
 build\development\cmake\tests\bin\midi_input_performance_test.exe 60 record
+build\development\cmake\tests\bin\midi_input_performance_test.exe 60 bound
 set DM_MIDI_TEST_DRIVER=wasapi
 build\development\cmake\tests\bin\midi_input_performance_test.exe 60
 ```
 
 It is built but not registered with CTest. It sends 3,000 controllers and 20 note pairs per
-second, measures GUI and callback budgets,
-checks drops and exercises a five-second open. Callback budget overruns are measured; SDL does
-not expose a hardware underrun counter here. Device, OS-loopback and listening checks require
-available hardware. Results and limits are in
-[`agents/reports/2026-11-08-midi-input/VALIDATION.md`](../agents/reports/2026-11-08-midi-input/VALIDATION.md).
+second, measures GUI and callback budgets, checks drops and exercises a five-second open.
+`record` also compares frame time for the recorded Graph lane against the same lane in Point at
+the widest zoom. `bound` sends the controllers to eight CCs learned to four mixer strips.
+Callback budget overruns are measured; SDL does not expose a hardware underrun counter here.
+Device, OS-loopback and listening checks require available hardware. Results and limits are in
+[`agents/reports/2026-11-08-midi-input/VALIDATION.md`](../agents/reports/2026-11-08-midi-input/VALIDATION.md)
+and
+[`agents/reports/2026-11-10-second-pass/VALIDATION.md`](../agents/reports/2026-11-10-second-pass/VALIDATION.md).

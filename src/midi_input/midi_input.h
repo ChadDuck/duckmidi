@@ -56,12 +56,9 @@ void dm_midi_input_close(DmMidiInput *input, const char *name);
 void dm_midi_input_status(DmMidiInput *input, DmMidiInputStatus status[DM_MIDI_INPUTS]);
 void dm_midi_input_stats(DmMidiInput *input, DmMidiInputStats *stats);
 void dm_midi_input_set_options(DmMidiInput *input, const DmMidiInputOptions *options);
-/* Device slots and source channels are zero-based. Note bindings match both Note On and Off. */
-void dm_midi_input_set_bound(DmMidiInput *input, unsigned device, unsigned channel,
-                             DmMidiInputSource kind, unsigned number, bool bound);
-void dm_midi_input_clear_bound(DmMidiInput *input);
 bool dm_midi_source_bindable(DmMidiInputSource kind, unsigned number);
-/* Copies the saved source list and applies it to current and subsequently requested slots. */
+/* Copies the saved source list and applies it to current and subsequently requested slots.
+   Source channels are zero-based. Note bindings match both Note On and Off. */
 bool dm_midi_input_bind_sources(DmMidiInput *input, const DmMidiBindingSource *sources,
                                 size_t count);
 void dm_midi_input_learn(DmMidiInput *input, DmMidiLearnMode mode);

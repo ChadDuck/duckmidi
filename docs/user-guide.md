@@ -92,9 +92,34 @@ With the notes section focused, **Ctrl + Shift + C / X** copies or cuts selected
 | Wait | F3 | Start recording on your first note |
 | Overlap | F4 | Only replace notes your new take overlaps |
 
-Turn the keyboard piano off when you want letter shortcuts back. To choose which key plays which drum, open the piano roll's top-left menu and choose **Percussion keyboard mapping**.
+Turn the keyboard piano off when you want letter shortcuts back. To choose which key plays which drum, open the piano roll's top-left menu and choose **Percussion keyboard mapping**. Select a drum and click **Listen for key**, or **Listen for MIDI** and hit a pad on your controller.
 
 ![The percussion keyboard mapping window](images/percussion-mapping.png)
+
+### Use a MIDI keyboard
+
+1. Open **Edit > Preferences** (**P**) and expand **MIDI input**.
+2. Under **Devices**, tick your keyboard. Click **Refresh** if you plugged it in after starting duckmidi. **Activity** shows the last messages it sent.
+3. Play. Recording works the same as with the computer keyboard.
+
+| Setting | What it does |
+| --- | --- |
+| Velocity curve | **Light** makes soft playing louder, **Heavy** makes it quieter. **Fixed velocity** plays every note at one level. |
+| MIDI thru | Sends what you play to the MIDI output as well. |
+| Controllers affect | **Keyboard only** keeps knobs and wheels on what you play; **Song** lets them change the song's channel too. |
+| Input latency | **Auto**, or an offset in ms if recorded notes land early or late. |
+| Invert sustain pedal | For pedals that work backwards. |
+| Channel | Listen to one MIDI channel, or **All**. |
+
+Controller data you record, like modulation, goes into the events in **Graph** mode (see below). If that event type already has points, it stays in **Point** mode.
+
+### Control duckmidi from your controller
+
+Right-click a mixer strip's volume, pan, **M** or **S** and choose **Learn MIDI control**, then move a knob or press a button. **Learn MIDI control from any device** works whichever keyboard you use. Right-click again to **Clear MIDI control**.
+
+Transport and editing buttons are in **Edit > Preferences > MIDI input > MIDI controls**: Play, Stop, Record, Metronome, Quantize, Undo, Redo and the channel arrows. Click **Learn** beside one, or **Clear all** to start over. Choose **Toggle** for buttons that send on and off with each press; leave **Momentary** for the rest.
+
+With **Pickup for knobs and faders** on, a knob only takes over once it reaches the current value, so the volume never jumps. Learned controls don't play notes or get recorded.
 
 ## 6. Add expression
 
@@ -109,6 +134,16 @@ Events shape how notes sound over time: velocity, pitch bend, modulation, volume
 For velocity, drag the note stems up or down. **Shift + right-click** a point to change its value or make it **Hold** until the next one.
 
 Event types with data are marked in the application color; **Velocity** is marked once a note's velocity differs from the default of 100. **Copy** captures the displayed event type for the current note color; hold **Shift** for **Copy all** event types. **Paste** restores their original positions, regardless of the playhead. These buttons have their own clipboard. Copied velocities apply to notes with matching positions and pitches.
+
+### Graph mode
+
+Switch **Point** to **Graph** to draw an event type as bars, like a step sequencer. Each event type keeps its own mode, and duckmidi asks first if switching changes existing data.
+
+- Drag to paint bars. Pick the bar width (**1/8** to **1/256**) beside the mode; hold **Alt** to paint freely.
+- Right-drag erases. **Shift**-drag selected bars to raise or lower them together.
+- **Snap bars** (or **Ctrl + Q**) moves bars to the nearest value row.
+
+After the last bar, the value returns to its default.
 
 ### Repeating effects (LFOs)
 

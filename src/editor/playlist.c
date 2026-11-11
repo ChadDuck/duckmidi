@@ -897,7 +897,8 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
         return;
     }
 
-    if (mouse.ctrl || (marquee && line != 0)) {
+    /* Ctrl starts a marquee on any row; the Marquee tool leaves the song-event row to clicks. */
+    if (marquee && (mouse.ctrl || line != 0)) {
         ed_marquee_begin(e, FOCUS_PLAYLIST, mouse);
         return;
     }
