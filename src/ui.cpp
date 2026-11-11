@@ -331,14 +331,6 @@ void ui_separator() {
     ImGui::Separator();
 }
 
-void ui_gap_separator() {
-    /* Drawn in the spacing above the next item, so the layout keeps its height. */
-    ImGuiWindow *window = ImGui::GetCurrentWindow();
-    float y = IM_ROUND(window->DC.CursorPos.y - ImGui::GetStyle().ItemSpacing.y * .5f);
-    window->DrawList->AddLine({window->WorkRect.Min.x, y}, {window->WorkRect.Max.x, y},
-                              ImGui::GetColorU32(ImGuiCol_Separator));
-}
-
 void ui_text(const char *t) {
     ImGui::TextUnformatted(t);
 }
@@ -807,14 +799,6 @@ bool ui_input_submit(const char *label, char *value, size_t cap) {
     return ImGui::InputText(label, value, cap,
                             ImGuiInputTextFlags_AutoSelectAll |
                                 ImGuiInputTextFlags_EnterReturnsTrue);
-}
-
-bool ui_input_select_all(const char *label, char *value, size_t cap) {
-    if (!(GImGui->NextItemData.HasFlags & ImGuiNextItemDataFlags_HasWidth)) {
-        ImGui::SetNextItemWidth(240);
-    }
-
-    return ImGui::InputText(label, value, cap, ImGuiInputTextFlags_AutoSelectAll);
 }
 
 bool ui_section(const char *label) {
@@ -1387,12 +1371,6 @@ bool ui_expanding_dialog(const char *title, bool *open, float width, float heigh
     return visible;
 }
 
-bool ui_resizable_dialog(const char *s, bool *open, float w, float h) {
-    ImVec2 work = ImGui::GetMainViewport()->WorkSize;
-    ImGui::SetNextWindowSizeConstraints({ImMin(320.0f, work.x), ImMin(220.0f, work.y)}, work);
-    return ui_dialog(s, open, ImMin(w, work.x), ImMin(h, work.y));
-}
-
 static bool growing_dialog(const char *s, bool *open, float w, float h) {
     /* The height follows last frame's contents, limited to the work area so the options and the
        resize corner stay visible; the width stays the user's. */
@@ -1629,10 +1607,6 @@ bool ui_active() {
     return ImGui::IsItemActive();
 }
 
-bool ui_focused() {
-    return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-}
-
 bool ui_text_active() {
     return ImGui::GetIO().WantTextInput ||
            (ImGui::GetActiveID() != 0 && ImGui::GetInputTextState(ImGui::GetActiveID()) != nullptr);
@@ -1640,10 +1614,6 @@ bool ui_text_active() {
 
 bool ui_any_active() {
     return ImGui::IsAnyItemActive();
-}
-
-bool ui_item_changed() {
-    return ImGui::IsItemDeactivatedAfterEdit();
 }
 
 void ui_disabled(bool value) {
@@ -1737,11 +1707,6 @@ void ui_focus_next() {
 void ui_canvas(const char *s, float w, float h) {
     ImGui::InvisibleButton(s, {w, h},
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-}
-
-void ui_scroll(float x, float y) {
-    ImGui::SetScrollX(ImGui::GetScrollX() + x);
-    ImGui::SetScrollY(ImGui::GetScrollY() + y);
 }
 
 void ui_scroll_to(float y) {
@@ -2102,16 +2067,6 @@ void ui_clamp_windows() {
         if (pos.x != w->Pos.x || pos.y != w->Pos.y) {
             ImGui::SetWindowPos(w, pos);
         }
-    }
-}
-
-void ui_keyboard_navigation(bool enabled) {
-    auto &io = ImGui::GetIO();
-
-    if (enabled) {
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    } else {
-        io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     }
 }
 

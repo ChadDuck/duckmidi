@@ -859,16 +859,8 @@ bool es_repository_read(EsRepository *r, const char *path, EsFile *out, char *er
     return es_fs_read(r->root, path, out, error, cap);
 }
 
-const char *es_repository_checkout(const EsRepository *r) {
-    return es_root_name(r->root);
-}
-
 const char *es_repository_identity(const EsRepository *r) {
     return es_root_identity(r->root);
-}
-
-const DmeHost *es_repository_host(const EsRepository *r) {
-    return r->host;
 }
 
 bool es_repository_paths(EsRepository *r, const char *path, bool recursive, EsPaths *out,

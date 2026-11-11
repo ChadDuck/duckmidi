@@ -30,7 +30,6 @@ bool es_fs_stage_available(EsRoot *, const char *, uint64_t, size_t, char *, siz
 char *es_fs_destination_key(EsRoot *, const char *, char *, size_t);
 bool es_fs_mkdir(EsRoot *, const char *, char *, size_t);
 bool es_fs_rmdir(EsRoot *, const char *, char *, size_t);
-bool es_fs_paths(EsRoot *, const char *, bool recursive, EsPaths *, char *, size_t);
 void *es_writer_lock(const char *plugins, char *, size_t);
 void es_writer_unlock(void *);
 const char *es_writer_database(void *);

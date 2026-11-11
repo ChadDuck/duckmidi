@@ -22,7 +22,6 @@ void dm_audio_input_thru(DmAudio *audio, DmMidiInput *input, bool enabled);
 void dm_audio_input_note_map(DmAudio *audio, const uint8_t map[128]);
 /* Offset in seconds, or NAN for one device buffer. */
 void dm_audio_input_offset(DmAudio *audio, double seconds);
-void dm_audio_input_stats(DmAudio *audio, DmAudioInputStats *stats);
 DmAudio *dm_audio_create(char *error, size_t cap);
 void dm_audio_destroy(DmAudio *audio);
 bool dm_audio_publish(DmAudio *audio, const DmProject *project, double seconds, bool playing,
@@ -61,8 +60,6 @@ void dm_audio_preview(DmAudio *audio, int channel, int key, int velocity, bool o
 void dm_audio_audition(DmAudio *audio, int channel, int key, int velocity, double duration);
 bool dm_audio_sample_audition(DmAudio *audio, const DmeContext *context, const DmeHost *host,
                               int key, bool sustained, bool looping, char *error, size_t cap);
-bool dm_audio_preset_audition(DmAudio *audio, const DmPatchReplacement *replacement, int key,
-                              char *error, size_t cap);
 bool dm_audio_instrument_preview(DmAudio *audio, const DmPatchReplacement *replacement, int route,
                                  char *error, size_t cap);
 void dm_audio_sample_audition_stop(DmAudio *audio);

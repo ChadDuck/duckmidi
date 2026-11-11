@@ -134,7 +134,6 @@ bool m64_hacker_expanded(const uint8_t *config, uint64_t size);
 bool m64_patch_hacker_data_h(const uint8_t *data, uint64_t size, uint64_t required, bool expanded,
                              M64Text *out, bool *changed, char *error, size_t capacity);
 uint64_t m64_fingerprint(const uint8_t *data, uint64_t size);
-bool m64_stock_memory_file(const char *path, const uint8_t *data, uint64_t size);
 void m64_text_free(M64Text *text);
 bool m64_patch_data_c(const uint8_t *data, uint64_t size, const M64MemoryPlan *plan, M64Text *out,
                       char *error, size_t capacity);

@@ -1879,27 +1879,6 @@ void dm_audio_input_offset(DmAudio *a, double seconds) {
     }
 }
 
-void dm_audio_input_stats(DmAudio *a, DmAudioInputStats *stats) {
-    *stats = (DmAudioInputStats){0};
-
-    if (!a) {
-        return;
-    }
-
-    stats->played = atomic_load(&a->input_played);
-    stats->dropped = atomic_load(&a->input_dropped);
-    SDL_LockMutex(a->device_lock);
-    DmMidiInput *input = atomic_load(&a->input);
-
-    if (input) {
-        DmMidiInputStats received;
-        dm_midi_input_stats(input, &received);
-        stats->dropped += received.dropped;
-    }
-
-    SDL_UnlockMutex(a->device_lock);
-}
-
 DmAudio *dm_audio_create(char *error, size_t cap) {
     DmAudio *a = calloc(1, sizeof(*a));
 
@@ -3378,39 +3357,6 @@ bool dm_audio_sample_audition(DmAudio *a, const DmeContext *context, const DmeHo
     return audition_begin(a, bank, 1, key, sustained, looping, error, cap);
 }
 
-bool dm_audio_preset_audition(DmAudio *a, const DmPatchReplacement *replacement, int key,
-                              char *error, size_t cap) {
-    DmProject project = {.patch_replacements = (DmPatchReplacement *)replacement,
-                         .patch_replacement_count = 1};
-    DmSampleExportSnapshot *snapshot = NULL;
-    DmeContext context = {0};
-    uint32_t preset = 0;
-    DmSampleSynth *bank = NULL;
-    bool looping = false;
-
-    if (dm_sample_playback_snapshot(&project, &context, NULL, &preset, &snapshot) && preset) {
-        const DmeSamplePreset *view = &context.sample_presets[preset - 1];
-
-        for (uint32_t i = 0; i < view->zone_count; ++i) {
-            const DmeSampleZoneParams *zone = &context.sample_zones[view->first_zone + i].params;
-
-            if (key < 0 || (unsigned)key < zone->key_lo || (unsigned)key > zone->key_hi) {
-                if (!i) {
-                    key = view->flags & DME_SAMPLE_PERCUSSION ? (int)zone->key_lo
-                                                               : (int)zone->root;
-                    key = (int)fmin(zone->key_hi, fmax(zone->key_lo, key));
-                }
-            }
-
-            looping |= zone->loop_mode != DME_SAMPLE_NO_LOOP;
-        }
-
-        bank = dm_sample_synth_create(&context, snapshot, NULL);
-    }
-
-    dm_sample_export_free(snapshot);
-    return audition_begin(a, bank, preset, key, false, looping, error, cap);
-}
 void dm_audio_program(DmAudio *a, int channel, int program) {
     if (a) {
         queue_put(&a->preview, (Command){MIDI_PROGRAM | (channel & MIDI_CHANNEL_MASK),

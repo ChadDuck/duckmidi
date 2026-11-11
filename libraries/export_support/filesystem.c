@@ -1135,16 +1135,6 @@ bool es_fs_scan(EsRoot *root, const char *path, bool recursive, EsFsVisit visit,
     return scan_directory(&scan, path ? path : "", 0);
 }
 
-static bool collect_path(void *user, const char *path, const EsStat *info) {
-    (void)info;
-    return es_paths_add(user, path);
-}
-
-bool es_fs_paths(EsRoot *root, const char *path, bool recursive, EsPaths *out, char *error,
-                 size_t cap) {
-    return es_fs_scan(root, path, recursive, collect_path, out, error, cap);
-}
-
 typedef struct {
     EsRoot *root;
     Directory history;

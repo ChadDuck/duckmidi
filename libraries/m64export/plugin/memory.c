@@ -39,14 +39,6 @@ uint64_t m64_fingerprint(const uint8_t *data, uint64_t size) {
     return hash;
 }
 
-bool m64_stock_memory_file(const char *path, const uint8_t *data, uint64_t size) {
-    uint64_t hash = m64_fingerprint(data, size);
-
-    return (!strcmp(path, M64_DATA_C) && hash == STOCK_DATA_C) ||
-           (!strcmp(path, M64_DATA_H) && hash == STOCK_DATA_H) ||
-           (!strcmp(path, M64_BUFFERS_C) && hash == STOCK_BUFFERS_C);
-}
-
 M64MemoryPlan m64_memory_plan(uint64_t required) {
     M64MemoryPlan plan = {0};
     uint64_t pool = (required + 0xFF) & ~(uint64_t)0xFF;

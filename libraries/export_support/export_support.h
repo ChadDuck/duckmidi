@@ -156,9 +156,7 @@ DES_API bool es_repository_baseline_exists(EsRepository *, const char *path, boo
                                            size_t);
 /* Current checkout content. */
 DES_API bool es_repository_read(EsRepository *, const char *path, EsFile *, char *, size_t);
-DES_API const char *es_repository_checkout(const EsRepository *);
 DES_API const char *es_repository_identity(const EsRepository *);
-DES_API const DmeHost *es_repository_host(const EsRepository *);
 DES_API bool es_repository_paths(EsRepository *, const char *directory, bool recursive, EsPaths *,
                                  char *, size_t);
 DES_API bool es_repository_baseline_paths(EsRepository *, EsPaths *, char *, size_t);
@@ -171,7 +169,6 @@ DES_API void es_root_close(EsRoot *);
 DES_API const char *es_root_name(const EsRoot *);
 DES_API const char *es_root_identity(const EsRoot *);
 DES_API bool es_fs_read(EsRoot *, const char *, EsFile *, char *, size_t);
-DES_API bool es_fs_paths(EsRoot *, const char *, bool recursive, EsPaths *, char *, size_t);
 
 DES_API bool es_paths_add(EsPaths *, const char *);
 DES_API bool es_paths_has(const EsPaths *, const char *);
