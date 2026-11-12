@@ -392,7 +392,6 @@ static void edit_menu(Editor *e) {
         if (ui_menu_item(DM_TEXT_MIDI_EVENTS, NULL, e->active)) {
             e->midi_events = true;
             e->song_event = false;
-            e->song_event_channel = -1;
             e->midi_event_index = -1;
         }
 

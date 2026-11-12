@@ -214,8 +214,13 @@ static void source_checks(Editor *e) {
     double start, end;
     check(ed_song_event_bar(e, 1, &start, &end) == 1 && start == 0 && end == change,
           "a meter change ends the preceding bar at its exact beat");
-    check(ed_song_event_rows(e, start, end, -1) == 5 && ed_midi_rows(e) == 11,
-          "song list keeps composition events while MIDI Events includes system and routing");
+    check(ed_song_event_rows(e, start, end, -1) == 6 && ed_midi_rows(e) == 11,
+          "song list keeps composition events and a collapsed channel's program change while "
+          "MIDI Events includes system and routing");
+    e->channel_expanded[0] = true;
+    check(ed_song_event_rows(e, start, end, -1) == 5,
+          "an expanded channel's program change leaves the song list for its own Events row");
+    e->channel_expanded[0] = false;
     check(ed_song_event_bar(e, change, &start, &end) == 2 && start == change && end == change + 3 &&
               ed_song_event_rows(e, start, end, -1) == 2,
           "meter and following tempo belong to the new bar");
@@ -246,15 +251,27 @@ static void source_checks(Editor *e) {
           "track name editor loads the selected event and its source");
     const uint8_t updated[] = "Renamed track";
     check(ed_midi_replace_payload(e, updated, sizeof(updated) - 1), "edit track-name payload");
-    e->event_beat = change;
-    int history = e->undo_count;
-    check(!ed_midi_apply_draft(e) && e->undo_count == history && *e->midi_error,
-          "editing cannot move an event outside its selected bar");
     e->event_beat = 0;
     check(ed_midi_apply_draft(e) && e->project.events[index].message.size == sizeof(updated) + 2 &&
               !memcmp(e->project.events[index].message.data + 3, updated, sizeof(updated) - 1) &&
               e->project.events[index].track == 2 && e->project.events[index].port == 1,
           "text edit preserves event position and source");
+    ed_midi_select(e, (MidiRow){.beat = 0, .index = index});
+    e->event_beat = change + 1;
+    bool moved = ed_midi_apply_draft(e);
+    double start_after, end_after;
+    ed_song_event_bar(e, e->song_event_anchor, &start_after, &end_after);
+    bool found = false;
+
+    for (size_t i = 0; i < e->project.event_count; ++i) {
+        const DmEvent *event = &e->project.events[i];
+        found |= event->beat == change + 1 && event->message.data[1] == MIDI_META_TRACK_NAME &&
+                 event->track == 2 && event->port == 1;
+    }
+
+    check(moved && found && start_after == change,
+          "editing moves an event into another bar and the window follows it");
+    e->event_beat = 0;
     ed_song_event_open_bar(e, change, false, -1);
     check(e->midi_draft.data[1] == MIDI_META_TIME, "meter starts the next bar's event list");
     index = e->midi_event_index;
@@ -287,7 +304,7 @@ static void song_program_repeats(Editor *e) {
     DmAutomation a = {.beat = 1, .type = MIDI_PROGRAM, .a = 4, .pattern = -1};
     check(dm_automation_add(&e->project, a) && dm_automation_add(&e->project, a),
           "create repeated song-level program automation");
-    check(ed_midi_rows(e) == 8 && ed_song_event_rows(e, 0, 4, -1) == 0 &&
+    check(ed_midi_rows(e) == 8 && ed_song_event_rows(e, 0, 4, -1) == 6 &&
               ed_song_event_rows(e, 0, 4, 0) == 5,
           "Channel event folds duplicate programs without changing the underlying project");
     ed_song_event_open_bar(e, 1, false, 0);

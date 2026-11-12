@@ -752,12 +752,17 @@ static int window_route(Editor *e) {
     return -1;
 }
 
-static void update_route(Editor *e, bool enabled) {
-    struct DmEditorMidiInput *m = e->midi_input_state;
+/* An open automation pattern previews on the channel of its placement, or on the selected
+   channel when it is not placed, so its channel follows those choices as they change. */
+static void follow_automation_channel(Editor *e) {
     if (ed_pattern(e) && ed_pattern(e)->kind) {
         e->pattern_channel = event_channel(e);
     }
+}
 
+static void update_route(Editor *e, bool enabled) {
+    struct DmEditorMidiInput *m = e->midi_input_state;
+    follow_automation_channel(e);
     uint64_t signature = route_signature(e);
 
     if (signature == m->signature) {

@@ -165,33 +165,65 @@ static void replace_recorded_overlap(Editor *e, DmPattern *p, unsigned port, dou
     }
 }
 
-/* Song beat where pattern beat 0 falls for a recording take starting at a song beat. Pattern
-   playback records at the pattern's own position. With the playlist focused and its playhead on
-   a placement of the pattern, notes land where the playhead is. Otherwise the take starts at the
-   pattern's beginning, keeping the beat within the bar where playing began. */
-double ed_recording_origin(Editor *e, double beat) {
-    if (e->pattern_mode) {
-        return 0;
+static bool placement_contains(const Editor *e, DmClip c, double beat) {
+    return c.pattern == e->selected_pattern && beat >= c.beat - 1e-7 &&
+           beat < c.beat + dm_clip_length(&e->project, c);
+}
+
+/* Song beat where pattern beat 0 falls for a note played at a song beat. Pattern playback
+   records at the pattern's own position. In song playback, a placement of the pattern under the
+   playhead decides, whatever has focus, so notes land where they were played; the selected
+   placement wins where placements overlap. Off its placements, the pattern starts at the bar
+   where playing began, keeping the beat within that bar. */
+static bool placement_origin(const Editor *e, double beat, double *origin) {
+    int selected = e->selected_clip;
+    const DmClip *found = NULL;
+
+    if (selected >= 0 && (size_t)selected < e->project.clip_count &&
+        placement_contains(e, e->project.clips[selected], beat)) {
+        found = &e->project.clips[selected];
     }
 
-    if (ed_selection_focus(e) == FOCUS_PLAYLIST) {
-        for (size_t i = 0; i < e->project.clip_count; ++i) {
-            DmClip c = e->project.clips[i];
-
-            if (c.pattern == e->selected_pattern && beat >= c.beat - 1e-7 &&
-                beat < c.beat + dm_clip_length(&e->project, c)) {
-                return c.beat - c.offset;
-            }
+    for (size_t i = 0; !found && i < e->project.clip_count; ++i) {
+        if (placement_contains(e, e->project.clips[i], beat)) {
+            found = &e->project.clips[i];
         }
     }
 
+    if (found) {
+        *origin = found->beat - found->offset;
+    }
+
+    return found != NULL;
+}
+
+static double bar_origin(const Editor *e, double beat) {
     DmMeter meter = dm_meter(&e->project, beat);
     return meter.origin + floor((beat - meter.origin) / meter.bar + 1e-9) * meter.bar;
 }
 
+double ed_recording_origin(Editor *e, double beat) {
+    double origin = 0;
+
+    if (!e->pattern_mode && !placement_origin(e, beat, &origin)) {
+        origin = bar_origin(e, beat);
+    }
+
+    return origin;
+}
+
+/* Each note is placed by the placement it was played in, so a take that crosses from one
+   placement into the next lands in both. Off the placements, the take's first note fixes the
+   bar origin for the rest of the take; a loop back to an earlier beat restarts it. */
 double ed_record_origin(Editor *e, double beat) {
+    double origin = 0;
+
+    if (e->pattern_mode || placement_origin(e, beat, &origin)) {
+        return origin;
+    }
+
     if (!e->take_origin_set || beat < e->take_origin) {
-        e->take_origin = ed_recording_origin(e, beat);
+        e->take_origin = bar_origin(e, beat);
         e->take_origin_set = true;
     }
 

@@ -302,6 +302,23 @@ void ui_width(float width) {
     ImGui::SetNextItemWidth(width);
 }
 
+void ui_default_width(float width) {
+    auto &g = *GImGui;
+
+    if (!(g.NextItemData.HasFlags & ImGuiNextItemDataFlags_HasWidth) &&
+        !g.CurrentWindow->DC.ItemWidthStack.Size) {
+        ImGui::SetNextItemWidth(width);
+    }
+}
+
+void ui_push_width(float width) {
+    ImGui::PushItemWidth(width);
+}
+
+void ui_pop_width(void) {
+    ImGui::PopItemWidth();
+}
+
 void ui_newline() {
     ImGui::NewLine();
 }
@@ -320,6 +337,10 @@ void ui_group_begin() {
 
 void ui_group_end() {
     ImGui::EndGroup();
+}
+
+void ui_same_label() {
+    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
 }
 
 void ui_same() {
@@ -740,7 +761,7 @@ bool ui_check(const char *s, bool *v) {
 }
 
 bool ui_int(const char *s, int *v, int lo, int hi) {
-    ImGui::SetNextItemWidth(125);
+    ui_default_width(125);
     bool changed = ImGui::InputInt(s, v, 1, 10);
 
     if (ImGui::IsItemActive()) {
@@ -769,7 +790,7 @@ bool ui_float(const char *s, float *v, float lo, float hi) {
 bool ui_float_step(const char *s, float *v, float lo, float hi, float step) {
     auto &style = ImGui::GetStyle();
     float content = ImGui::CalcTextSize("999.00").x + style.FramePadding.x * 2;
-    ImGui::SetNextItemWidth(
+    ui_default_width(
         ImMax(125.0f, content + 2 * (ImGui::GetFrameHeight() + style.ItemInnerSpacing.x)));
     bool changed = ImGui::InputFloat(s, v, step, step * 10, "%.2f");
 
@@ -793,10 +814,7 @@ bool ui_float_step(const char *s, float *v, float lo, float hi, float step) {
 }
 
 bool ui_input(const char *s, char *v, size_t n) {
-    /* 240 px unless ui_width chose a width for this field. */
-    if (!(GImGui->NextItemData.HasFlags & ImGuiNextItemDataFlags_HasWidth)) {
-        ImGui::SetNextItemWidth(240);
-    }
+    ui_default_width(240);
 
     return ImGui::InputText(s, v, n);
 }
@@ -1325,7 +1343,10 @@ static bool flexible_dialog(const char *s, bool *open, float w, float h, bool at
     float minimum = 32, needed = 32, requested = -1;
     bool measured = window && window->WasActive && !window->Appearing && !window->Collapsed;
 
-    if (window && (!measured || window->StateStorage.GetInt(ImHashStr(flex_layout_key)) != layout)) {
+    /* A new layout takes the requested width again; otherwise a width the user dragged stays. */
+    bool relayout = window && window->StateStorage.GetInt(ImHashStr(flex_layout_key)) != layout;
+
+    if (window && (!measured || relayout)) {
         window->StateStorage.SetBool(ImHashStr(flex_sized_key), false);
     }
 
@@ -1344,12 +1365,12 @@ static bool flexible_dialog(const char *s, bool *open, float w, float h, bool at
         float height = ImClamp(sized ? window->SizeFull.y : needed + want, minimum,
                                view->WorkSize.y);
         requested = height;
-        float width = ImMin(window->SizeFull.x, max_width);
+        float width = ImMin(relayout ? w : window->SizeFull.x, max_width);
         float top =
             ImClamp(window->Pos.y, view->WorkPos.y, view->WorkPos.y + view->WorkSize.y - height);
         ImGui::SetNextWindowSize({width, height}, ImGuiCond_Always);
 
-        if (window->StateStorage.GetBool(ImHashStr(flex_center_key), false)) {
+        if (relayout || window->StateStorage.GetBool(ImHashStr(flex_center_key), false)) {
             ImVec2 center = view->GetCenter();
             top = ImClamp(center.y - height * .5f, view->WorkPos.y,
                           view->WorkPos.y + view->WorkSize.y - height);
@@ -1358,7 +1379,7 @@ static bool flexible_dialog(const char *s, bool *open, float w, float h, bool at
             ImGui::SetNextWindowPos({window->Pos.x, top}, ImGuiCond_Always);
         }
     } else {
-        float width = window ? window->SizeFull.x : w;
+        float width = window && !relayout ? window->SizeFull.x : w;
         ImGui::SetNextWindowSize({ImMin(width, max_width), ImMin(h, view->WorkSize.y)},
                                  ImGuiCond_Always);
         ImGui::SetNextWindowPos(view->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});

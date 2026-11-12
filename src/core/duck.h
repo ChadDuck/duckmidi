@@ -321,6 +321,8 @@ DmChannel dm_channel_default(int channel);
 bool dm_channel_drums(const DmProject *p, int channel);
 /* Exchanges the two MIDI channel numbers and all data owned by them in the active view. */
 bool dm_channel_swap(DmProject *p, int a, int b);
+/* The channel number that "channel" has after channels a and b are swapped. */
+int dm_channel_swapped(int channel, int a, int b);
 bool dm_view_switch(DmProject *p, int port, int sequence, char *error, size_t cap);
 bool dm_read(const char *path, DmBytes *out, char *error, size_t cap);
 bool dm_write(const char *path, const void *data, size_t size, char *error, size_t cap);

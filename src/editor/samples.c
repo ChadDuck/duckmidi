@@ -638,7 +638,8 @@ bool ed_sample_source_picker(Editor *e, DmPatchKey key, const DmPatchReplacement
         label = *set->name ? set->name : current->set_id;
     }
 
-    ui_width(ui_available().x - ui_text_width(DM_TEXT_SAMPLE_SOURCE) - 2 * ui_item_spacing_x());
+    ui_default_width(ui_available().x - ui_text_width(DM_TEXT_SAMPLE_SOURCE) -
+                     2 * ui_item_spacing_x());
 
     if (ui_combo(DM_TEXT_SAMPLE_SOURCE, label)) {
         if (key.port && ui_select(DM_TEXT_SAMPLE_INHERIT, !current, 0, 0)) {

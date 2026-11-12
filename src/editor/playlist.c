@@ -17,7 +17,7 @@ static bool channel_expander(Editor *e, UiRect r, float label, float row, int ch
 static void playlist_rows(Editor *e, UiRect r, View *v, float label, float row, const int *list,
                           int count, UiMouse mouse);
 static void playlist_events(Editor *e, UiRect grid, View *v, float row, float scale, int line,
-                            int channel);
+                            int channel, const int *list, int count);
 static void clip_edit_begin(Editor *e);
 static int clip_row(DmClip clip, const int *list, int count);
 static void draw_playlist_clip(Editor *e, DmClip *clip, UiRect box, UiRect grid, float scale);
@@ -25,6 +25,73 @@ static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale
                           const int *list, int count, UiMouse mouse);
 static bool playlist_label_resize(Editor *e, UiRect r, float *label, UiMouse mouse);
 static void playlist_context(Editor *e, int hit);
+
+/* Row index i of the playlist (0 is Song Events): its height, and the separator space above it.
+   Each channel after the first starts below a gap that sets it apart from the channel above.
+   Within a channel, a narrower gap starts each section: the Events row and the first
+   automation subrow. The channel Events row is half height. */
+static PlaylistRow row_extent(const int *list, int i, float row) {
+    PlaylistRow layout = {.height = row};
+
+    if (i) {
+        int code = list[i - 1];
+        int lane = ed_row_lane(code);
+        bool channel = i > 1 && !lane && !ed_row_note(code);
+        bool section = lane == ED_ROW_CHANNEL_EVENTS || lane == 1;
+        layout.height = lane == ED_ROW_CHANNEL_EVENTS ? row * .5f : row;
+        layout.gap = channel ? ED_CHANNEL_GAP : section ? ED_SECTION_GAP : 0;
+    }
+
+    return layout;
+}
+
+PlaylistRow ed_playlist_row(const int *list, int count, int index, float row) {
+    float bottom = 0;
+
+    for (int i = 0; i <= count; ++i) {
+        PlaylistRow layout = row_extent(list, i, row);
+        layout.top = bottom + layout.gap;
+
+        if (i == index) {
+            return layout;
+        }
+
+        bottom = layout.top + layout.height;
+    }
+
+    return (PlaylistRow){.top = bottom};
+}
+
+/* A point in a channel gap belongs to the row below it. */
+int ed_playlist_row_at(const int *list, int count, float y, float row) {
+    if (y < 0) {
+        return -1;
+    }
+
+    float bottom = 0;
+
+    for (int i = 0; i <= count; ++i) {
+        PlaylistRow layout = row_extent(list, i, row);
+        bottom += layout.gap + layout.height;
+
+        if (y < bottom) {
+            return i;
+        }
+    }
+
+    return count + 1;
+}
+
+/* An automation subrow's own name, or "Automation N" by its position while it has none. */
+void ed_lane_label(const Editor *e, int channel, int lane, char *text, size_t capacity) {
+    const char *name = e->project.lane_names[channel][lane - 1];
+
+    if (*name) {
+        snprintf(text, capacity, "%s", name);
+    } else {
+        snprintf(text, capacity, "%s%d", DM_TEXT_AUTOMATION_NUMBER_PREFIX, lane);
+    }
+}
 
 int ed_playlist_channels(Editor *e, int *list) {
     int base[16], count = ed_channels(e, base), n = 0;
@@ -81,6 +148,24 @@ bool ed_remove_note_row(Editor *e, int channel) {
     --e->project.note_rows[channel];
     ed_commit(e);
     return true;
+}
+
+/* Remove asks first when the bottom row holds placements; an empty row goes at once. */
+static void request_remove_note_row(Editor *e, int channel) {
+    int bottom = e->project.note_rows[channel] - 1;
+    bool occupied = false;
+
+    for (size_t i = 0; i < e->project.clip_count && !occupied; ++i) {
+        DmClip clip = e->project.clips[i];
+        occupied = clip.channel == channel && !clip.lane && clip.row == bottom;
+    }
+
+    e->remove_note_row_channel = channel;
+    e->remove_note_row = occupied;
+
+    if (!occupied) {
+        ed_remove_note_row(e, channel);
+    }
 }
 
 static bool placement_valid(Editor *e, int pattern_id, int encoded) {
@@ -152,7 +237,7 @@ static void pattern_drop(Editor *e, UiRect r, UiRect grid, View *v, float scale,
 
     e->pattern_drag_on_playlist = e->pattern_drag >= 0;
 
-    int line = (int)((mouse.pos.y - r.y - 28 + v->scroll_y) / row);
+    int line = ed_playlist_row_at(list, count, mouse.pos.y - r.y - 28 + v->scroll_y, row);
 
     if (line < 1 || line > count) {
         return;
@@ -164,8 +249,9 @@ static void pattern_drop(Editor *e, UiRect r, UiRect grid, View *v, float scale,
 
     double beat = ed_snap((mouse.pos.x - grid.x + v->scroll_x) / scale, playlist_step(scale),
                           ed_gesture_held(e, GESTURE_FREE, mouse));
-    UiRect ghost = {grid.x + (float)beat * scale - v->scroll_x, r.y + 28 + line * row - v->scroll_y,
-                    (float)e->project.patterns[pattern_id].length * scale, row - 4};
+    PlaylistRow layout = ed_playlist_row(list, count, line, row);
+    UiRect ghost = {grid.x + (float)beat * scale - v->scroll_x, r.y + 28 + layout.top - v->scroll_y,
+                    (float)e->project.patterns[pattern_id].length * scale, layout.height - 4};
     ui_rect(ghost, (e->accent & 0xffffffu) | 0x44000000u, 3);
     ui_border(ghost, e->accent, 3, 2);
     ui_label_fit((UiPoint){ghost.x + 6, ghost.y + 6}, ghost.w - 12, TEXT,
@@ -319,7 +405,7 @@ static void ed_playlist_label_text(Editor *e, float label, const int *list, int 
         }
 
         if (lane) {
-            snprintf(text, capacity, "%s", e->project.lane_names[c][lane - 1]);
+            ed_lane_label(e, c, lane, text, capacity);
             return;
         }
 
@@ -403,8 +489,11 @@ void ed_playlist_label_action(Editor *e, int channel, int lane, UiMouse mouse) {
             e->lane_channel = channel;
             e->lane_index = lane;
             e->lane_settings = true;
-            snprintf(e->rename_text, 64, "%s",
-                     lane ? e->project.lane_names[channel][lane - 1] : "");
+            e->rename_text[0] = 0;
+
+            if (lane) {
+                ed_lane_label(e, channel, lane, e->rename_text, sizeof(e->rename_text));
+            }
         } else {
             ed_open_instrument(e, channel, false);
         }
@@ -418,7 +507,9 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
     int channel = ed_row_channel(encoded), lane = ed_row_lane(encoded);
     bool enabled = i && !lane && e->project.channels[channel].enabled;
     float height = enabled ? row * e->project.note_rows[channel] : row;
-    float buttons = enabled ? 20 : 0;
+    bool show_buttons =
+        enabled && ed_inside(mouse.pos, (UiRect){r.x, y, label, height}) && ed_inside(mouse.pos, r);
+    float buttons = show_buttons ? 20 : 0;
     ed_playlist_label_text(e, label, list, i, text, sizeof(text));
     const char *sample = i && !lane ? ed_sample_channel_name(e, channel) : NULL;
 
@@ -446,7 +537,7 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
 
     bool controls_hovered = false;
 
-    if (enabled) {
+    if (show_buttons) {
         UiRect controls = {r.x, y + height - buttons, label - 18, buttons};
         bool multiple = e->project.note_rows[channel] > 1;
         float width = controls.w / (multiple ? 2 : 1);
@@ -463,18 +554,7 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
         if (multiple &&
             ui_canvas_button(DM_TEXT_REMOVE_NOTE_ROW,
                              (UiRect){controls.x + width, controls.y, width, buttons})) {
-            e->remove_note_row_channel = channel;
-            e->remove_note_row = false;
-
-            for (size_t k = 0; k < e->project.clip_count; ++k) {
-                DmClip clip = e->project.clips[k];
-                e->remove_note_row |= clip.channel == channel && !clip.lane &&
-                                      clip.row == e->project.note_rows[channel] - 1;
-            }
-
-            if (!e->remove_note_row) {
-                ed_remove_note_row(e, channel);
-            }
+            request_remove_note_row(e, channel);
         }
 
         ui_pop_id();
@@ -508,33 +588,51 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
 static void playlist_rows(Editor *e, UiRect r, View *v, float label, float row, const int *list,
                           int count, UiMouse mouse) {
     UiRect body = {r.x, r.y + 28, r.w, r.h - 28};
+    float origin = r.y + 28 - v->scroll_y, bottom = 0;
     ui_clip(body);
 
-    for (int i = 0; i < count + 1; ++i) {
-        float y = r.y + 28 + i * row - v->scroll_y;
-        UiRect line = {r.x, y, r.w, row};
+    for (int i = 0; i <= count; ++i) {
+        PlaylistRow layout = row_extent(list, i, row);
+        layout.top = bottom + layout.gap;
+        bottom = layout.top + layout.height;
+        float y = origin + layout.top;
 
-        if (y + row < r.y + 28 || y > r.y + r.h) {
+        if (y + layout.height < body.y || y - layout.gap > body.y + body.h) {
             continue;
         }
 
-        ui_rect(line, i % 2 ? ui_background_shade(19) : ui_background_shade(24), 0);
-        ui_line((UiPoint){r.x, y + row}, (UiPoint){r.x + r.w, y + row}, GRID, 1);
+        /* A channel gap is a dark band edged by grid lines across the label and the grid. */
+        if (layout.gap) {
+            UiRect band = {r.x, y - layout.gap, r.w, layout.gap};
+            ui_rect(band, ui_background_shade(8), 0);
+            ui_line((UiPoint){r.x, band.y}, (UiPoint){r.x + r.w, band.y}, GRID, 1);
+        }
+
+        ui_rect((UiRect){r.x, y, r.w, layout.height},
+                i % 2 ? ui_background_shade(19) : ui_background_shade(24), 0);
+        ui_line((UiPoint){r.x, y + layout.height}, (UiPoint){r.x + r.w, y + layout.height}, GRID,
+                1);
     }
 
     /* Draw labels after the grid so later rows cannot paint over a merged channel label. */
+    bottom = 0;
+
     for (int i = 0; i <= count; ++i) {
+        PlaylistRow layout = row_extent(list, i, row);
+        layout.top = bottom + layout.gap;
+        bottom = layout.top + layout.height;
+
         if (i && ed_row_note(list[i - 1])) {
             continue;
         }
 
-        float y = r.y + 28 + i * row - v->scroll_y;
+        float y = origin + layout.top;
         float height = i && !ed_row_lane(list[i - 1])
                            ? row * e->project.note_rows[ed_row_channel(list[i - 1])]
-                           : row;
+                           : layout.height;
 
-        if (y + height >= r.y + 28 && y <= r.y + r.h) {
-            ed_playlist_label(e, body, label, row, list, i, y, mouse);
+        if (y + height >= body.y && y <= body.y + body.h) {
+            ed_playlist_label(e, body, label, layout.height, list, i, y, mouse);
         }
     }
 
@@ -615,10 +713,15 @@ typedef struct {
    project or the visible bars change, not on every frame. */
 static size_t song_event_groups(Editor *e, double left, double right, int channel) {
     SongEventCache *cache = &e->song_event_groups[channel + 1];
+    unsigned expanded = 0;
+
+    for (int c = 0; c < 16; ++c) {
+        expanded |= (unsigned)e->channel_expanded[c] << c;
+    }
 
     if (cache->revision == e->export_revision && cache->left == left && cache->right == right &&
         cache->events == e->project.event_count &&
-        cache->automation == e->project.automation_count) {
+        cache->automation == e->project.automation_count && cache->expanded == expanded) {
         return cache->groups.size / sizeof(SongEventGroup);
     }
 
@@ -651,12 +754,15 @@ static size_t song_event_groups(Editor *e, double left, double right, int channe
     cache->right = right;
     cache->events = e->project.event_count;
     cache->automation = e->project.automation_count;
+    cache->expanded = expanded;
     return cache->groups.size / sizeof(SongEventGroup);
 }
 
 static void playlist_events(Editor *e, UiRect grid, View *v, float row, float scale, int line,
-                            int channel) {
-    float y = grid.y + line * row - v->scroll_y;
+                            int channel, const int *list, int count) {
+    PlaylistRow layout = ed_playlist_row(list, count, line, row);
+    float y = grid.y + layout.top - v->scroll_y;
+    row = layout.height;
 
     if (y + row <= grid.y || y >= grid.y + grid.h) {
         return;
@@ -666,13 +772,13 @@ static void playlist_events(Editor *e, UiRect grid, View *v, float row, float sc
     double left_start, left_end, right_start, right_end;
     ed_song_event_bar(e, v->scroll_x / scale, &left_start, &left_end);
     ed_song_event_bar(e, (v->scroll_x + grid.w) / scale, &right_start, &right_end);
-    size_t count = song_event_groups(e, left_start, right_end, channel);
+    size_t groups_count = song_event_groups(e, left_start, right_end, channel);
     const SongEventGroup *groups =
         (const SongEventGroup *)e->song_event_groups[channel + 1].groups.data;
     UiMouse mouse = ui_mouse();
     uint32_t fill = (e->accent & 0x00ffffffu) | 0x54000000u;
 
-    for (size_t i = 0; i < count; i++) {
+    for (size_t i = 0; i < groups_count; i++) {
         double start = groups[i].start, end = groups[i].end;
         float x = grid.x + (float)(start * scale - v->scroll_x);
         float edge = grid.x + (float)(end * scale - v->scroll_x);
@@ -834,7 +940,7 @@ void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, cons
                            fmax(.25, ed_snap(e->drag_length + delta, .25,
                                              ed_gesture_held(e, GESTURE_FREE, mouse))));
         } else {
-            int line = (int)((mouse.pos.y - r.y - 28 + v->scroll_y) / row);
+            int line = ed_playlist_row_at(list, count, mouse.pos.y - r.y - 28 + v->scroll_y, row);
             size_t clips = e->project.clip_count;
 
             if (e->clip_drag.size != clips * sizeof(DmClip)) {
@@ -1008,6 +1114,14 @@ static void start_placement_copy(Editor *e, UiMouse mouse, int hit) {
     e->clip_drag.size = 0;
 }
 
+/* A click on empty playlist space clears the placement selection and the pattern chosen in the
+   Patterns section, as Escape does, without changing whether the pattern editor is shown. */
+static void clear_playlist_selection(Editor *e) {
+    bool hidden = e->roll_auto_hidden;
+    ed_clear_pattern_selection(e);
+    e->roll_auto_hidden = hidden;
+}
+
 void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, float scale,
                        const int *list, int count, UiMouse mouse, int hit) {
     bool marquee =
@@ -1024,7 +1138,7 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
         return;
     }
 
-    int line = (int)((mouse.pos.y - r.y - 28 + v->scroll_y) / row);
+    int line = ed_playlist_row_at(list, count, mouse.pos.y - r.y - 28 + v->scroll_y, row);
 
     bool event_row = line == 0 || (line > 0 && line <= count &&
                                    ed_row_lane(list[line - 1]) == ED_ROW_CHANNEL_EVENTS);
@@ -1058,9 +1172,9 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
         ed_song_event_open_bar(e, beat, add, channel);
     } else if (hit >= 0) {
         ed_playlist_hit_click(e, mouse, hit, beat);
-    } else if (line <= count) {
+    } else {
         /* Patterns are placed by dragging their cards; a click only clears the selection. */
-        ed_deselect(e);
+        clear_playlist_selection(e);
     }
 }
 
@@ -1128,9 +1242,10 @@ static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale
             continue;
         }
 
+        PlaylistRow layout = ed_playlist_row(list, count, row_index, row);
         UiRect box = {grid.x + (float)clip->beat * scale - v->scroll_x,
-                      r.y + 28 + row_index * row - v->scroll_y + 5,
-                      (float)dm_clip_length(&e->project, *clip) * scale - 2, row - 10};
+                      r.y + 28 + layout.top - v->scroll_y + 5,
+                      (float)dm_clip_length(&e->project, *clip) * scale - 2, layout.height - 10};
 
         if (!ed_intersects(box, grid)) {
             continue;
@@ -1290,8 +1405,9 @@ void ed_playlist(Editor *e, float width, float height) {
 
     View *v = &e->playlist_view;
     float total = fmaxf((float)dm_duration(&e->project) * scale, r.w - label);
-    ed_grid_scroll(e, v, (UiRect){r.x + label, r.y, r.w - label, r.h}, total, (count + 1) * row,
-                   row, false);
+    float content_height = ed_playlist_row(list, count, count + 1, row).top;
+    ed_grid_scroll(e, v, (UiRect){r.x + label, r.y, r.w - label, r.h}, total, content_height, row,
+                   false);
     scale = 40 * v->zoom;
     total = fmaxf((float)dm_duration(&e->project) * scale, r.w - label);
     v->scroll_x = fmaxf(0, v->scroll_x);
@@ -1311,11 +1427,11 @@ void ed_playlist(Editor *e, float width, float height) {
 
     int hit = playlist_clips(e, r, grid, v, scale, row, list, count, mouse);
     pattern_drop(e, r, grid, v, scale, row, list, count, dropped);
-    playlist_events(e, grid, v, row, scale, 0, -1);
+    playlist_events(e, grid, v, row, scale, 0, -1, list, count);
 
     for (int i = 0; i < count; ++i) {
         if (ed_row_lane(list[i]) == ED_ROW_CHANNEL_EVENTS) {
-            playlist_events(e, grid, v, row, scale, i + 1, ed_row_channel(list[i]));
+            playlist_events(e, grid, v, row, scale, i + 1, ed_row_channel(list[i]), list, count);
         }
     }
     playlist_context(e, hit);
@@ -1324,7 +1440,7 @@ void ed_playlist(Editor *e, float width, float height) {
     ui_unclip();
     ed_horizontal_scroll(v, (UiRect){grid.x, r.y, grid.w, r.h}, total);
     ui_scrollbar(DM_TEXT_PLAYLIST_VERTICAL, (UiRect){r.x + r.w + 2, r.y + 28, 12, r.h - 28}, true,
-                 &v->scroll_y, r.h - 28, (count + 1) * row);
+                 &v->scroll_y, r.h - 28, content_height);
     ed_timeline_drag(e, r, v, scale, label, 1, hovered);
 
     if (hovered) {
@@ -1334,9 +1450,7 @@ void ed_playlist(Editor *e, float width, float height) {
     /* A right click clears the placement selection; holding it erases placements. */
     if (hovered && mouse.right_clicked && !e->drag && ed_right_free(e, mouse) &&
         ed_inside(mouse.pos, grid)) {
-        bool hidden = e->roll_auto_hidden;
-        ed_clear_pattern_selection(e);
-        e->roll_auto_hidden = hidden;
+        clear_playlist_selection(e);
     }
 
     if (hovered && mouse.right && hit >= 0 && ed_right_free(e, mouse) &&

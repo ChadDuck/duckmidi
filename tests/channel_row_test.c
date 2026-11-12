@@ -524,6 +524,18 @@ static void channel_events(Editor *e) {
     free(events);
     int rows[ED_PLAYLIST_ROWS];
     int row_count = ed_playlist_channels(e, rows);
+    PlaylistRow event_row = ed_playlist_row(rows, row_count, 2, 64);
+    PlaylistRow lane_row = ed_playlist_row(rows, row_count, 3, 64);
+    PlaylistRow note_row = ed_playlist_row(rows, row_count, 1, 64);
+    check(event_row.height == 32 && event_row.gap == ED_SECTION_GAP &&
+              event_row.top == note_row.top + 64 + ED_SECTION_GAP &&
+              lane_row.gap == ED_SECTION_GAP &&
+              lane_row.top == event_row.top + 32 + ED_SECTION_GAP &&
+              ed_playlist_row_at(rows, row_count, lane_row.top - ED_SECTION_GAP - 1, 64) == 2 &&
+              ed_playlist_row_at(rows, row_count, lane_row.top - 1, 64) == 3 &&
+              ed_playlist_row_at(rows, row_count, lane_row.top, 64) == 3,
+          "channel sections are separated, Events is half height, and a gap belongs to the row "
+          "below it");
     UiRect area = {0, 0, 1200, 400}, grid = {200, 28, 1000, 372};
     e->playlist_view.scroll_x = e->playlist_view.scroll_y = 0;
     ed_playlist_click(e, area, grid, &e->playlist_view, 64, 40, rows, row_count,

@@ -115,7 +115,6 @@ static void source_settings(Editor *e) {
             e->midi_events = false;
             e->midi_event_index = -1;
             e->song_event = false;
-            e->song_event_channel = -1;
             ed_release_piano(e);
             ed_checkpoint(e);
             dm_audio_transport(e->audio, false);
@@ -451,6 +450,59 @@ static bool channel_has_content(Editor *e, int channel) {
     return false;
 }
 
+/* Exchanges two MIDI channel numbers with everything they own, as one undo step. Editor state
+   kept per channel follows its channel. */
+bool ed_swap_channels(Editor *e, int a, int b) {
+    ed_release_piano(e);
+    ed_midi_input_finish(e, false);
+
+    if (!ed_checkpoint(e)) {
+        return false;
+    }
+
+    dm_channel_swap(&e->project, a, b);
+    bool expanded = e->channel_expanded[a];
+    e->channel_expanded[a] = e->channel_expanded[b];
+    e->channel_expanded[b] = expanded;
+    uint8_t port = e->note_ports[a];
+    e->note_ports[a] = e->note_ports[b];
+    e->note_ports[b] = port;
+    DmChannel reset = e->reset_channels[a];
+    e->reset_channels[a] = e->reset_channels[b];
+    e->reset_channels[b] = reset;
+
+    for (int p = 0; p < DM_NOTE_PORTS; ++p) {
+        int left = p * MIDI_CHANNELS + a, right = p * MIDI_CHANNELS + b;
+        float peak = e->mixer_peaks[left], target = e->mixer_peak_targets[left];
+        e->mixer_peaks[left] = e->mixer_peaks[right];
+        e->mixer_peaks[right] = peak;
+        e->mixer_peak_targets[left] = e->mixer_peak_targets[right];
+        e->mixer_peak_targets[right] = target;
+        uint8_t volume = e->mixer_live_volume[left], pan = e->mixer_live_pan[left];
+        e->mixer_live_volume[left] = e->mixer_live_volume[right];
+        e->mixer_live_volume[right] = volume;
+        e->mixer_live_pan[left] = e->mixer_live_pan[right];
+        e->mixer_live_pan[right] = pan;
+    }
+
+    e->selected_channel = dm_channel_swapped(e->selected_channel, a, b);
+    e->pattern_channel = dm_channel_swapped(e->pattern_channel, a, b);
+    e->piano_channel = dm_channel_swapped(e->piano_channel, a, b);
+    e->preview_source_channel = dm_channel_swapped(e->preview_source_channel, a, b);
+    e->song_event_channel = dm_channel_swapped(e->song_event_channel, a, b);
+    e->instrument_channel = dm_channel_swapped(e->instrument_channel, a, b);
+    e->lane_channel = dm_channel_swapped(e->lane_channel, a, b);
+    e->remove_note_row_channel = dm_channel_swapped(e->remove_note_row_channel, a, b);
+    e->last_automation.channel = dm_channel_swapped(e->last_automation.channel, a, b);
+    e->instrument_source.key.channel =
+        (uint8_t)dm_channel_swapped(e->instrument_source.key.channel, a, b);
+    e->midi_sample_source.key.channel =
+        (uint8_t)dm_channel_swapped(e->midi_sample_source.key.channel, a, b);
+    ed_keyboard_channel(e);
+    ed_commit(e);
+    return true;
+}
+
 bool ed_remove_channel(Editor *e, int channel) {
     if (channel < 0 || channel >= 16 || !e->project.channels[channel].enabled) {
         return false;
@@ -495,7 +547,6 @@ bool ed_remove_channel(Editor *e, int channel) {
     e->note_ports[channel] = 0;
     e->channel_expanded[channel] = false;
     e->song_event = e->midi_events = false;
-    e->song_event_channel = -1;
     e->midi_event_index = -1;
 
     if (e->lane_settings && e->lane_channel == channel) {
@@ -566,7 +617,6 @@ void ed_apply_instrument(Editor *e) {
             if (type_changed && !create) {
                 clear_channel_events(&e->project, c, false);
                 e->song_event = e->midi_events = false;
-                e->song_event_channel = -1;
                 e->midi_event_index = -1;
             }
 

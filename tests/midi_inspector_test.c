@@ -179,8 +179,12 @@ static void imported_channel_events(Editor *e) {
     check(e->midi_draft.size == 2 && e->midi_draft.data[0] == (MIDI_PROGRAM | 2) &&
               e->midi_draft.data[1] == 41,
           "channel row retains the imported program and channel");
-    check(ed_song_event_rows(e, 1, 4, -1) == 0 && ed_song_event_rows(e, 1, 4, 0) == 0,
-          "song events and other channels exclude the imported program");
+    e->channel_expanded[2] = false;
+    check(ed_song_event_rows(e, 1, 4, -1) == 1 && ed_song_event_rows(e, 1, 4, 0) == 0,
+          "collapsed channel programs appear in Song Events but not another channel");
+    e->channel_expanded[2] = true;
+    check(ed_song_event_rows(e, 1, 4, -1) == 0 && ed_song_event_rows(e, 1, 4, 2) == 1,
+          "expanding the channel moves its program out of Song Events");
     bool volume = false;
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {

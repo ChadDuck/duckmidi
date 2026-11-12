@@ -381,9 +381,11 @@ static void midi_channel_fields(Editor *e, uint8_t *m, size_t size) {
     int type = m[0] & MIDI_STATUS_MASK, channel = (m[0] & MIDI_CHANNEL_MASK) + 1;
 
     bool bound = e->song_event && e->song_event_channel >= 0;
+    /* The compact Add form keeps only the fields needed to choose the event. */
+    bool adding = e->song_event && e->song_event_add;
     ui_disabled(bound);
 
-    if (ui_int(DM_TEXT_MIDI_CHANNEL, &channel, 1, 16)) {
+    if (ui_int(adding ? DM_TEXT_EVENT_CHANNEL : DM_TEXT_MIDI_CHANNEL, &channel, 1, 16)) {
         m[0] = type | (channel - 1);
     }
 
@@ -405,15 +407,19 @@ static void midi_channel_fields(Editor *e, uint8_t *m, size_t size) {
             ui_combo_end();
         }
 
-        char number[80];
-        snprintf(number, sizeof(number), DM_TEXT_PROGRAM_MIDI_VALUE, m[1] + 1, m[1]);
-        ui_dim(number);
+        if (!adding) {
+            char number[80];
+            snprintf(number, sizeof(number), DM_TEXT_PROGRAM_MIDI_VALUE, m[1] + 1, m[1]);
+            ui_dim(number);
+        }
+
         ed_sample_program_source(e);
     } else if (type == MIDI_CONTROL) {
         char label[128];
         snprintf(label, sizeof(label), "%s", controller_name(m[1]));
 
-        ui_disabled(bound);
+        /* Song events hold only Volume and Pan controllers; another number would be hidden. */
+        ui_disabled(e->song_event);
 
         if (ui_combo(DM_TEXT_CONTROLLER, label)) {
             for (int i = 0; i < 128; ++i) {
@@ -792,7 +798,7 @@ static void midi_event_inspector(Editor *e) {
         return;
     }
 
-    ed_song_event_position(e);
+    ed_song_event_position(e, 0);
     ui_separator();
 
     if (e->song_event) {
@@ -883,14 +889,15 @@ void ed_midi_event_panels(Editor *e, size_t count, float *split, float height) {
     if (height > 0) {
         size.y = height;
     }
-    float spacing = ui_item_spacing_x();
+    /* The split is the list's share of the panels' width, so it follows the window's size and
+       is not set from the narrow width of a frame in which the window is being measured. */
+    float panels = size.x - 8 - ui_item_spacing_x() * 2;
 
-    if (*split <= 0) {
-        *split = (size.x - 8 - spacing * 2) * .5f;
+    if (*split <= 0 || *split >= 1) {
+        *split = .5f;
     }
 
-    float left = ed_clampf(*split, 130, fmaxf(130, size.x - 260));
-    *split = left;
+    float left = ed_clampf(*split * panels, 130, fmaxf(130, size.x - 260));
     ui_child(DM_TEXT_MIDI_EVENT_LIST, left, size.y, true);
 
     if (e->song_event && !count) {
@@ -900,7 +907,10 @@ void ed_midi_event_panels(Editor *e, size_t count, float *split, float height) {
     }
     ui_child_end();
     ui_same();
-    ui_splitter(split, 130, fmaxf(130, size.x - 260), size.y);
+    if (ui_splitter(&left, 130, fmaxf(130, size.x - 260), size.y) && panels > 0) {
+        *split = left / panels;
+    }
+
     ui_same();
     ui_child(DM_TEXT_MIDI_EVENT_DETAILS, 0, size.y, true);
     midi_event_inspector(e);

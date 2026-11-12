@@ -101,7 +101,7 @@ bool dm_channel_drums(const DmProject *p, int channel) {
     return channel >= 0 && channel < 16 && p->channels[channel].drums;
 }
 
-static int swapped_channel(int channel, int a, int b) {
+int dm_channel_swapped(int channel, int a, int b) {
     return channel == a ? b : channel == b ? a : channel;
 }
 
@@ -115,7 +115,7 @@ static void swap_rhythm_part(DmBytes *message, int a, int b) {
         return;
     }
 
-    int next = swapped_channel(channel, a, b);
+    int next = dm_channel_swapped(channel, a, b);
 
     if (next == channel) {
         return;
@@ -157,18 +157,18 @@ bool dm_channel_swap(DmProject *p, int a, int b) {
     memcpy(p->lane_names[b], names, sizeof(names));
 
     for (size_t i = 0; i < p->clip_count; ++i) {
-        p->clips[i].channel = swapped_channel(p->clips[i].channel, a, b);
+        p->clips[i].channel = dm_channel_swapped(p->clips[i].channel, a, b);
     }
 
     for (size_t i = 0; i < p->automation_count; ++i) {
-        p->automation[i].channel = swapped_channel(p->automation[i].channel, a, b);
+        p->automation[i].channel = dm_channel_swapped(p->automation[i].channel, a, b);
     }
 
     for (size_t i = 0; i < p->event_count; ++i) {
         DmBytes *message = &p->events[i].message;
 
         if (message->size && message->data[0] >= MIDI_NOTE_OFF && message->data[0] < MIDI_SYSTEM) {
-            int c = swapped_channel(message->data[0] & MIDI_CHANNEL_MASK, a, b);
+            int c = dm_channel_swapped(message->data[0] & MIDI_CHANNEL_MASK, a, b);
             message->data[0] = (uint8_t)((message->data[0] & MIDI_STATUS_MASK) | c);
         } else {
             swap_rhythm_part(message, a, b);
@@ -176,12 +176,12 @@ bool dm_channel_swap(DmProject *p, int a, int b) {
     }
 
     for (size_t i = 0; i < p->port_mix_count; ++i) {
-        p->port_mix[i].channel = swapped_channel(p->port_mix[i].channel, a, b);
+        p->port_mix[i].channel = dm_channel_swapped(p->port_mix[i].channel, a, b);
     }
 
     for (size_t i = 0; i < p->patch_replacement_count; ++i) {
         DmPatchKey *key = &p->patch_replacements[i].key;
-        key->channel = (uint8_t)swapped_channel(key->channel, a, b);
+        key->channel = (uint8_t)dm_channel_swapped(key->channel, a, b);
     }
 
     return true;
@@ -694,18 +694,6 @@ static bool automation_series(DmAutomation a, DmAutomation b) {
            ((a.type != MIDI_CONTROL && a.type != MIDI_KEY_PRESSURE) || a.a == b.a);
 }
 
-static const DmAutomation *automation_curve_next(const DmProject *p, size_t index) {
-    DmAutomation a = p->automation[index];
-
-    for (size_t i = index + 1; i < p->automation_count; ++i) {
-        if (automation_series(a, p->automation[i]) && a.curve == p->automation[i].curve) {
-            return &p->automation[i];
-        }
-    }
-
-    return NULL;
-}
-
 static DmAutomation automation_curve_node(DmAutomation a, DmAutomation b, double beat) {
     int value = (int)llround(dm_curve_value(a, b, (beat - a.beat) / (b.beat - a.beat)));
     a.beat = beat;
@@ -722,29 +710,56 @@ static DmAutomation automation_curve_node(DmAutomation a, DmAutomation b, double
     return a;
 }
 
+/* The node after "at" on the same line, among the pattern's points in time order. */
+static const DmAutomation *automation_curve_next(const DmAutomation *const *items, size_t count,
+                                                 size_t at) {
+    for (size_t i = at + 1; i < count; ++i) {
+        if (automation_series(*items[at], *items[i]) && items[at]->curve == items[i]->curve) {
+            return items[i];
+        }
+    }
+
+    return NULL;
+}
+
 /* Preserve authored nodes and identities; only the two cut boundaries need new nodes.
    Restricting a quadratic to a fraction of its span scales its midpoint bend by that fraction
-   squared, just as splitting a curve node does in the editor. */
+   squared, just as splitting a curve node does in the editor. Project automation is kept in
+   time order, so the pattern's points are too. */
 static bool pattern_trim_automation(const DmProject *p, DmClip clip, DmBytes *points) {
     double end = clip.offset + dm_clip_length(p, clip);
+    size_t count = 0;
 
     for (size_t i = 0; i < p->automation_count; ++i) {
-        DmAutomation original = p->automation[i];
+        count += p->automation[i].pattern == clip.pattern;
+    }
 
-        if (original.pattern != clip.pattern || original.beat > end) {
-            continue;
+    const DmAutomation **items = malloc((count ? count : 1) * sizeof(*items));
+
+    if (!items) {
+        return false;
+    }
+
+    for (size_t i = 0, n = 0; i < p->automation_count; ++i) {
+        if (p->automation[i].pattern == clip.pattern) {
+            items[n++] = &p->automation[i];
         }
+    }
 
-        const DmAutomation *next = automation_curve_next(p, i);
+    bool ok = true;
+
+    for (size_t i = 0; ok && i < count && items[i]->beat <= end; ++i) {
+        DmAutomation original = *items[i];
+        const DmAutomation *next = automation_curve_next(items, count, i);
         bool segment = dm_automation_curves(original) && next && next->beat > original.beat;
         DmAutomation a = original;
 
         if (a.beat < clip.offset) {
+            /* Only the series' last point before the offset carries its value to beat 0. */
             bool last = true;
 
-            for (size_t j = i + 1; last && j < p->automation_count; ++j) {
-                last = !automation_series(original, p->automation[j]) ||
-                       p->automation[j].beat > clip.offset;
+            for (size_t j = i + 1; last && j < count && items[j]->beat <= clip.offset; ++j) {
+                last = !automation_series(original, *items[j]);
             }
 
             if (!last) {
@@ -772,53 +787,48 @@ static bool pattern_trim_automation(const DmProject *p, DmClip clip, DmBytes *po
         }
 
         a.beat -= clip.offset;
+        ok = dm_bytes(points, &a, sizeof(a));
 
-        if (!dm_bytes(points, &a, sizeof(a))) {
-            return false;
-        }
-
-        if (segment && original.beat < end && next->beat > end) {
+        if (ok && segment && original.beat < end && next->beat > end) {
             a = automation_curve_node(original, *next, end);
             a.beat -= clip.offset;
             a.bend = 0;
             a.bend_note = 0;
             a.bend_root = DM_BEND_ROOT_NONE;
-
-            if (!dm_bytes(points, &a, sizeof(a))) {
-                return false;
-            }
+            ok = dm_bytes(points, &a, sizeof(a));
         }
     }
 
     /* A cut can remove a bend's root while keeping later nodes of its curve. Move the link to
        the earliest retained node; note bend ids remain pattern-local and do not need changing. */
-    DmAutomation *items = (DmAutomation *)points->data;
-    size_t count = points->size / sizeof(*items);
+    DmAutomation *kept = (DmAutomation *)points->data;
+    size_t kept_count = ok ? points->size / sizeof(*kept) : 0;
 
-    for (size_t i = 0; i < p->automation_count; ++i) {
-        DmAutomation root = p->automation[i];
-        size_t first = count;
+    for (size_t i = 0; i < count; ++i) {
+        const DmAutomation *root = items[i];
+        size_t first = kept_count;
 
-        if (root.pattern != clip.pattern || !root.bend_note) {
+        if (!root->bend_note) {
             continue;
         }
 
-        for (size_t j = 0; j < count; ++j) {
-            if (automation_series(root, items[j]) && items[j].curve == root.curve) {
-                items[j].bend_note = 0;
+        for (size_t j = 0; j < kept_count; ++j) {
+            if (automation_series(*root, kept[j]) && kept[j].curve == root->curve) {
+                kept[j].bend_note = 0;
 
-                if (first == count || items[j].beat < items[first].beat) {
+                if (first == kept_count || kept[j].beat < kept[first].beat) {
                     first = j;
                 }
             }
         }
 
-        if (first < count) {
-            items[first].bend_note = root.bend_note;
+        if (first < kept_count) {
+            kept[first].bend_note = root->bend_note;
         }
     }
 
-    return true;
+    free(items);
+    return ok;
 }
 
 int dm_clip_make_unique(DmProject *p, size_t index) {

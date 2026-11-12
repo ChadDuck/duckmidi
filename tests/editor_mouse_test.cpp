@@ -140,6 +140,12 @@ static ImGuiWindow *find_window(const char *part) {
     return nullptr;
 }
 
+static float playlist_row_top(Editor *e, int index) {
+    int list[ED_PLAYLIST_ROWS];
+    int count = ed_playlist_channels(e, list);
+    return ed_playlist_row(list, count, index, 64).top;
+}
+
 static void direct_key(Editor *e, SDL_Scancode key, SDL_Keymod mods = SDL_KMOD_NONE) {
     SDL_Event event;
     SDL_zero(event);
@@ -233,6 +239,29 @@ extern "C" void test_channel_row_ui(Editor *e, void (*check)(bool, const char *)
     playlist = find_window("/Playlist_");
     float label_x = playlist->WorkRect.Min.x;
     float top = playlist->WorkRect.Min.y + 32 + ImGui::GetStyle().ItemSpacing.y + 28;
+    auto label_buttons = [&](int hovered_channel) {
+        int list[ED_PLAYLIST_ROWS];
+        ed_playlist_channels(e, list);
+        ui_frame();
+        ui_root(0, 900);
+        ImGui::LogToBuffer();
+
+        for (int i = 1; i <= 2; ++i) {
+            ed_playlist_label(e, {0, 0, 500, 400}, 250, 64, list, i, (float)(i * 64),
+                              {.pos = {20, (float)((hovered_channel + 1) * 64 + 10)}});
+        }
+
+        const char *text = ImGui::GetCurrentContext()->LogBuffer.c_str();
+        const char *add = std::strstr(text, "Add");
+        bool result = hovered_channel < 0 ? !add : add && !std::strstr(add + 3, "Add");
+        ImGui::LogFinish();
+        ui_end();
+        ui_render(e->renderer);
+        return result;
+    };
+    check(label_buttons(-1) && label_buttons(0) && label_buttons(1),
+          "only the hovered channel label draws Add and moving away hides every Add button");
+    mouse_frame(e, 0, 0, false);
     float add_y = top + 2 * 64 - 10;
     auto click = [&](float cx, float cy, bool right = false) {
         mouse_frame(e, cx, cy, false);
@@ -595,7 +624,7 @@ static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
     check(w != nullptr, "playlist exists");
     float x = w->Pos.x + w->WindowPadding.x + 24;
     float y = w->Pos.y + w->WindowPadding.y + ImGui::GetFrameHeight() +
-              ImGui::GetStyle().ItemSpacing.y + 28 + 64 * 2 + 32;
+              ImGui::GetStyle().ItemSpacing.y + 28 + playlist_row_top(e, 2) + 32;
     mouse_frame(e, x, y, true);
     mouse_frame(e, x, y, false);
     check(e->selected_channel == 1 && e->instrument_channel < 0,
@@ -617,7 +646,7 @@ static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, x + 16, y + 5, true);
     float target_x = w->Pos.x + w->WindowPadding.x + e->label_width + 40 * 5;
     float target_y = w->Pos.y + w->WindowPadding.y + ImGui::GetFrameHeight() +
-                     ImGui::GetStyle().ItemSpacing.y + 28 + 64 + 32;
+                     ImGui::GetStyle().ItemSpacing.y + 28 + playlist_row_top(e, 1) + 32;
     /* ImGui closes a drag's tooltip by the flags of the drag's first frame. Skipping the tooltip
        partway through closed another window instead, which flickered the layout and the drop
        state every other frame; the card must stay over the playlist on every frame. */
@@ -1154,6 +1183,42 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, 800, 53, false);
     check(e->pattern_highlight && e->selected_pattern == selected,
           "clicking another section retains the shared pattern selection");
+    auto *empty_area = find_window("/Playlist_");
+    float ex = empty_area->WorkRect.Max.x - 60, ey = empty_area->WorkRect.Max.y - 40;
+    mouse_frame(e, ex, ey, false);
+    mouse_frame(e, ex, ey, true);
+    mouse_frame(e, ex, ey, false);
+    check(!e->pattern_highlight && !e->linked_highlight,
+          "a left click on empty playlist space clears the pattern card selection");
+    mouse_frame(e, cx, cy, false);
+    mouse_frame(e, cx, cy, true);
+    mouse_frame(e, cx, cy, false);
+    mouse_frame(e, ex, ey, false);
+    mouse_frame(e, ex, ey, false, false, false, false, 0, true);
+    mouse_frame(e, ex, ey, false);
+    check(!e->pattern_highlight && !e->linked_highlight,
+          "a right click on the playlist clears the pattern card selection");
+    /* Empty space inside the first channel row, past the last placement. */
+    e->playlist_view.scroll_y = 0;
+    mouse_frame(e, 0, 0, false);
+    float row_y = empty_area->WorkRect.Min.y + ImGui::GetFrameHeight() +
+                  ImGui::GetStyle().ItemSpacing.y + 28 + playlist_row_top(e, 1) + 32;
+    size_t placements = e->project.clip_count;
+
+    for (int right = 0; right < 2; ++right) {
+        mouse_frame(e, cx, cy, false);
+        mouse_frame(e, cx, cy, true);
+        mouse_frame(e, cx, cy, false);
+        mouse_frame(e, ex, row_y, false);
+        mouse_frame(e, ex, row_y, !right, false, false, false, 0, right);
+        mouse_frame(e, ex, row_y, false);
+        check(!e->pattern_highlight && !e->linked_highlight && e->project.clip_count == placements,
+              right ? "a right click on empty space in a channel row clears the pattern selection"
+                    : "a left click on empty space in a channel row clears the pattern selection");
+    }
+    mouse_frame(e, cx, cy, false);
+    mouse_frame(e, cx, cy, true);
+    mouse_frame(e, cx, cy, false);
     e->confirm = true;
     mouse_frame(e, 0, 0, false);
     auto *confirm = ImGui::FindWindowByName("Unsaved project");
@@ -1206,7 +1271,7 @@ static void playlist_marquee_ui(Editor *e, void (*check)(bool, const char *)) {
     auto *playlist = find_window("/Playlist_");
     float clip_x = playlist->WorkRect.Min.x + e->label_width + 4 * 40 + 14;
     float clip_y = playlist->WorkRect.Min.y + ImGui::GetFrameHeight() +
-                   ImGui::GetStyle().ItemSpacing.y + 28 + 64 + 20;
+                   ImGui::GetStyle().ItemSpacing.y + 28 + playlist_row_top(e, 1) + 20;
     e->project.clips[0].selected = 1;
     mouse_frame(e, clip_x, clip_y, false, false, true, true);
     mouse_frame(e, clip_x, clip_y, true, false, true, true);
@@ -1755,6 +1820,7 @@ extern "C" void test_channel_events_ui(Editor *e, void (*check)(bool, const char
         check(popups.Size && popups.back().Window, "channel event type dropdown opens");
         activate(popups.back().Window, type);
     };
+    capture_workspace_navigation(e, "agents/reports/channel-events-add.bmp");
     choose("Volume");
     check(e->midi_draft.size == 3 && e->midi_draft.data[1] == MIDI_CC_VOLUME &&
               e->midi_draft.data[2] == 100,
@@ -1803,15 +1869,55 @@ extern "C" void test_channel_events_ui(Editor *e, void (*check)(bool, const char
     ed_song_event_dialog(e);
     const char *logged = ImGui::GetCurrentContext()->LogBuffer.c_str();
     check(std::strstr(logged, "Tempo") && std::strstr(logged, "Marker") &&
-              !std::strstr(logged, "Program change"),
-          "song event Type dropdown offers composition events without program changes");
+              std::strstr(logged, "Program change") && std::strstr(logged, "Volume") &&
+              std::strstr(logged, "Pan"),
+          "song event Type dropdown offers composition and channel events");
     ImGui::LogFinish();
     ui_end();
     ui_render(e->renderer);
     ImGui::ClosePopupToLevel(0, true);
+    e->selected_channel = MIDI_DRUM_CHANNEL;
+    choose("Volume");
+    check(e->midi_draft.data[0] == (MIDI_CONTROL | MIDI_DRUM_CHANNEL),
+          "Song Events defaults a channel event to the selected channel");
+    e->midi_draft.data[0] = MIDI_CONTROL | 2;
+    e->midi_draft.data[2] = 73;
+    size_t before = e->project.automation_count;
+    activate(dialog, "Add event");
+    bool saved = false;
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        const DmAutomation &added = e->project.automation[i];
+        saved |= added.channel == 2 && added.pattern == -1 && added.port == 0 &&
+                 added.type == MIDI_CONTROL && added.a == MIDI_CC_VOLUME && added.b == 73;
+    }
+
+    check(e->project.automation_count == before + 1 && saved,
+          "Song Events adds Volume as lasting automation for the chosen channel");
     e->song_event = false;
     mouse_frame(e, 0, 0, false);
     capture_workspace_navigation(e, "agents/reports/channel-events-rows.bmp");
+    ed_new_project(e);
+    dm_automation_add(&e->project,
+                      {.beat = 4, .type = MIDI_PROGRAM, .channel = 0, .a = 41, .pattern = -1});
+    mouse_frame(e, 0, 0, false);
+    check(e->song_event_groups[0].groups.size > 0,
+          "collapsed channel program is drawn in Song Events");
+    auto *playlist = find_window("/Playlist_");
+    float top =
+        playlist->WorkRect.Min.y + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y + 28;
+    float x = playlist->WorkRect.Min.x + e->label_width - 9;
+    float y = top + playlist_row_top(e, 1) + 32;
+    mouse_frame(e, x, y, false);
+    mouse_frame(e, x, y, true);
+    mouse_frame(e, x, y, false);
+    check(e->channel_expanded[0] && !e->song_event_groups[0].groups.size &&
+              e->song_event_groups[1].groups.size > 0,
+          "expanding a channel invalidates the cache and draws its program only in Events");
+    mouse_frame(e, x, y, true);
+    mouse_frame(e, x, y, false);
+    check(!e->channel_expanded[0] && e->song_event_groups[0].groups.size > 0,
+          "collapsing the channel restores its program to Song Events");
 }
 
 extern "C" void test_midi_browser_ui(Editor *e, void (*check)(bool, const char *)) {
@@ -1953,7 +2059,7 @@ extern "C" void test_channel_routing_ui(Editor *e, void (*check)(bool, const cha
     mouse_frame(e, sx, sy, false);
     mouse_frame(e, sx, sy, true);
     mouse_frame(e, sx + 16, sy + 5, true);
-    float dx = gx + 200, dy = top + 3 * 64 + 32;
+    float dx = gx + 200, dy = top + playlist_row_top(e, 4) + 32;
     mouse_frame(e, dx, dy, true);
     mouse_frame(e, dx, dy, true);
     mouse_frame(e, dx, dy, false);
@@ -1961,8 +2067,28 @@ extern "C" void test_channel_routing_ui(Editor *e, void (*check)(bool, const cha
               e->project.clips[0].channel == 2,
           "dropping notes onto automation subrow creates no placement or phantom selection");
     capture_workspace_navigation(e, "agents/reports/channel-routing-rejected-drop.bmp");
+    int automation = dm_pattern_add(&e->project, "Half-height drop");
+    e->project.patterns[automation].kind = 1;
+    e->automation_browser = true;
+    mouse_frame(e, 0, 0, false);
+    patterns = find_window("/Patterns_");
+    sx = patterns->WorkRect.Min.x + 24;
+    sy = patterns->WorkRect.Min.y + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y + 35;
+    dy = top + playlist_row_top(e, 4) + 8;
+    mouse_frame(e, sx, sy, false);
+    mouse_frame(e, sx, sy, true);
+    mouse_frame(e, sx + 16, sy + 5, true);
+    mouse_frame(e, dx, dy, true);
+    mouse_frame(e, dx, dy, true);
+    mouse_frame(e, dx, dy, false);
+    check(e->project.clip_count == 2 && e->project.clips[1].pattern == automation &&
+              e->project.clips[1].channel == 2 && e->project.clips[1].lane == 1,
+          "dropping below half-height Events reaches the automation lane");
+    e->automation_browser = false;
 
     /* The instrument dropdown's Reset button ends at the piano roll header's right edge. */
+    ed_open_pattern(e, 0, true);
+    e->selected_clip = 0;
     auto click_reset = [&]() {
         auto *roll = roll_window();
 
@@ -2297,7 +2423,7 @@ extern "C" void test_automation_transfer_ui(Editor *e, void (*check)(bool, const
     float gx = ed_playlist->WorkRect.Min.x + e->label_width;
     /* Events row, channel row and its Channel Events subrow come before the first lane. */
     float rowy = ed_playlist->WorkRect.Min.y + ImGui::GetFrameHeight() +
-                 ImGui::GetStyle().ItemSpacing.y + 28 + 3 * 64;
+                 ImGui::GetStyle().ItemSpacing.y + 28 + playlist_row_top(e, 3);
     double original_pattern_length = e->project.patterns[e->selected_pattern].length;
     float edge = gx + (float)dm_clip_length(&e->project, e->project.clips[8]) * 40 - 5;
     mouse_frame(e, edge, rowy + 20, false);
@@ -2313,8 +2439,20 @@ extern "C" void test_automation_transfer_ui(Editor *e, void (*check)(bool, const
     mouse_frame(e, labelx, rowy + 20, false, false, false, false, 0, true);
     mouse_frame(e, labelx, rowy + 20, false);
     check(e->lane_settings, "subrow context opens lane controls");
-    std::snprintf(e->rename_text, 64, "%s", "Expression % ## literal");
+    check(!std::strcmp(e->rename_text, "Automation 1"),
+          "an unnamed subrow is labeled Automation and its position");
     auto *ed_dialog = ImGui::FindWindowByName("Automation lane");
+    ImGui::ClearActiveID();
+    ImGui::ActivateItemByID(ed_dialog->GetID("Apply name"));
+    mouse_frame(e, 0, 0, false);
+    check(!*e->project.lane_names[0][0],
+          "applying the automatic name keeps the subrow numbered by position");
+    e->lane_settings = true;
+    e->lane_channel = 0;
+    e->lane_index = 1;
+    mouse_frame(e, 0, 0, false);
+    std::snprintf(e->rename_text, 64, "%s", "Expression % ## literal");
+    ed_dialog = ImGui::FindWindowByName("Automation lane");
     ImGui::ClearActiveID();
     ImGui::ActivateItemByID(ed_dialog->GetID("Apply name"));
     mouse_frame(e, 0, 0, false);
@@ -2473,7 +2611,7 @@ extern "C" void test_lfo_shapes_ui(Editor *e, void (*check)(bool, const char *))
     auto *ed_playlist = find_window("/Playlist_");
     float px = ed_playlist->WorkRect.Min.x + e->label_width + 20;
     float py = ed_playlist->WorkRect.Min.y + ImGui::GetFrameHeight() +
-               ImGui::GetStyle().ItemSpacing.y + 28 + 20 + 64;
+               ImGui::GetStyle().ItemSpacing.y + 28 + playlist_row_top(e, 1) + 20;
     size_t placements = e->project.clip_count;
     int history = e->undo_count;
     mouse_frame(e, px, py, false);
@@ -2503,7 +2641,7 @@ extern "C" void test_event_clipboard_ui(Editor *e, void (*check)(bool, const cha
     auto *playlist = find_window("/Playlist_");
     float px = playlist->WorkRect.Min.x + e->label_width + 1.13f * 40 + 20;
     float py = playlist->WorkRect.Min.y + ImGui::GetFrameHeight() +
-               ImGui::GetStyle().ItemSpacing.y + 28 + 64 + 20;
+               ImGui::GetStyle().ItemSpacing.y + 28 + playlist_row_top(e, 1) + 20;
     int history = e->undo_count;
     mouse_frame(e, px, py, false);
     mouse_frame(e, px, py, true);
@@ -2732,7 +2870,7 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     double source_length = dm_clip_length(&e->project, e->project.clips[0]);
     float px = ed_playlist->WorkRect.Min.x + e->label_width + (float)source_length * 40 - 5;
     float py = ed_playlist->WorkRect.Min.y + ImGui::GetFrameHeight() +
-               ImGui::GetStyle().ItemSpacing.y + 28 + 20 + 64;
+               ImGui::GetStyle().ItemSpacing.y + 28 + playlist_row_top(e, 1) + 20;
     mouse_frame(e, px, py, false);
     mouse_frame(e, px, py, true);
     check(e->drag == DRAG_CLIP_RESIZE, "note placement edge activates resizing");

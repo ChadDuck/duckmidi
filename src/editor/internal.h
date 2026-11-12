@@ -405,6 +405,20 @@ static inline int ed_row_note(int code) {
 }
 
 int ed_playlist_channels(Editor *e, int *list);
+void ed_lane_label(const Editor *e, int channel, int lane, char *text, size_t capacity);
+
+/* Pixels between one channel's playlist rows and the next, and between the sections of one
+   channel (note rows, Events row, automation subrows). */
+enum { ED_CHANNEL_GAP = 6, ED_SECTION_GAP = 3 };
+
+typedef struct {
+    float top, height;
+    float gap; /* Separator space above the row; nonzero on a channel's first row. */
+} PlaylistRow;
+
+/* Index zero is Song Events; count + 1 returns the content's bottom edge. */
+PlaylistRow ed_playlist_row(const int *list, int count, int index, float row);
+int ed_playlist_row_at(const int *list, int count, float y, float row);
 bool ed_add_note_row(Editor *e, int channel);
 bool ed_remove_note_row(Editor *e, int channel);
 void ed_playlist_label_action(Editor *e, int channel, int lane, UiMouse mouse);
@@ -554,6 +568,7 @@ void ed_close_instrument(Editor *e);
 void ed_apply_instrument(Editor *e);
 void ed_step_instrument(Editor *e, int direction);
 bool ed_remove_channel(Editor *e, int channel);
+bool ed_swap_channels(Editor *e, int a, int b);
 int ed_initial_bank(const DmProject *project, int port, int channel);
 const char *ed_sample_channel_name(Editor *e, int channel);
 void ed_instrument(Editor *e);
@@ -561,7 +576,7 @@ void ed_preferences(Editor *e);
 void ed_shortcuts(Editor *e);
 bool ed_song_event_add(Editor *e);
 bool ed_song_event_position_valid(Editor *e);
-void ed_song_event_position(Editor *e);
+void ed_song_event_position(Editor *e, float column);
 void ed_song_event_dialog(Editor *e);
 size_t ed_midi_rows(Editor *e);
 size_t ed_midi_rows_between(Editor *e, double start, double end);

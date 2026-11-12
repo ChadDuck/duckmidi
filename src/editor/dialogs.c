@@ -40,26 +40,24 @@ static void lane_dialog(Editor *e) {
 
     int c = e->lane_channel, lane = e->lane_index;
 
+    /* Fields span the window; Add subrow and Apply name share a row, and the destructive
+       Remove subrow takes its own full-width row, as in the Instrument window. */
     if (ui_dialog(DM_TEXT_AUTOMATION_LANE, &e->lane_settings,
                   (UiDialog){.width = 420, .escape_closes = true})) {
+        float half = (ui_available().x - ui_item_spacing_x()) * .5f;
+
         if (lane) {
             if (ui_appearing()) {
                 ui_focus_next();
             }
 
+            ui_width(ui_available().x - ui_text_width(DM_TEXT_NAME) - ui_item_spacing_x());
             ui_input(DM_TEXT_NAME, e->rename_text, sizeof(e->rename_text));
-
-            if (ui_button(DM_TEXT_APPLY_NAME, 0, 0) || ui_dialog_enter()) {
-                ed_checkpoint(e);
-                snprintf(e->project.lane_names[c][lane - 1], 64, "%s", e->rename_text);
-                ed_changed(e);
-                e->lane_settings = false;
-            }
         }
 
         ui_disabled(e->project.lane_count[c] >= DM_LANES);
 
-        if (ui_button(DM_TEXT_ADD_SUBROW, 0, 0)) {
+        if (ui_button(DM_TEXT_ADD_SUBROW, lane ? half : ui_available().x, 0)) {
             ed_checkpoint(e);
             ++e->project.lane_count[c];
             e->channel_expanded[c] = true;
@@ -69,7 +67,24 @@ static void lane_dialog(Editor *e) {
 
         ui_disabled_end();
 
-        if (lane && ui_button(DM_TEXT_REMOVE_SUBROW, 0, 0)) {
+        if (lane) {
+            ui_same();
+
+            if (ui_button(DM_TEXT_APPLY_NAME, half, 0) || ui_dialog_enter()) {
+                /* The position-based default name is stored as no name, so it keeps
+                   following the subrow's position. */
+                char automatic[64];
+                snprintf(automatic, sizeof(automatic), "%s%d", DM_TEXT_AUTOMATION_NUMBER_PREFIX, lane);
+                bool numbered = !strcmp(e->rename_text, automatic);
+                ed_checkpoint(e);
+                snprintf(e->project.lane_names[c][lane - 1], 64, "%s",
+                         numbered ? "" : e->rename_text);
+                ed_changed(e);
+                e->lane_settings = false;
+            }
+        }
+
+        if (lane && ui_button(DM_TEXT_REMOVE_SUBROW, ui_available().x, 0)) {
             ed_checkpoint(e);
 
             for (size_t i = e->project.clip_count; i > 0; --i) {

@@ -103,76 +103,20 @@ static void channel_switch(Editor *e, bool solo) {
     ed_commit(e);
 }
 
-static int swapped_channel(int channel, int a, int b) {
-    return channel == a ? b : channel == b ? a : channel;
-}
-
+/* Swaps the selected channel with the next enabled channel above or below it in the playlist. */
 static void move_channel(Editor *e, int direction) {
     if (!e->active || e->edit_focus != FOCUS_PLAYLIST || !e->channel_selected) {
         return;
     }
 
-    int channels[MIDI_CHANNELS], count = ed_channels(e, channels), a = e->selected_channel;
-    int b = -1;
+    int channels[MIDI_CHANNELS], count = ed_channels(e, channels);
 
     for (int i = 0; i < count; ++i) {
-        if (channels[i] == a && i + direction >= 0 && i + direction < count) {
-            b = channels[i + direction];
-            break;
+        if (channels[i] == e->selected_channel && i + direction >= 0 && i + direction < count) {
+            ed_swap_channels(e, channels[i], channels[i + direction]);
+            return;
         }
     }
-
-    if (b < 0) {
-        return;
-    }
-
-    ed_release_piano(e);
-    ed_midi_input_finish(e, false);
-
-    if (!ed_checkpoint(e)) {
-        return;
-    }
-
-    dm_channel_swap(&e->project, a, b);
-    bool expanded = e->channel_expanded[a];
-    e->channel_expanded[a] = e->channel_expanded[b];
-    e->channel_expanded[b] = expanded;
-    uint8_t port = e->note_ports[a];
-    e->note_ports[a] = e->note_ports[b];
-    e->note_ports[b] = port;
-    DmChannel reset = e->reset_channels[a];
-    e->reset_channels[a] = e->reset_channels[b];
-    e->reset_channels[b] = reset;
-
-    for (int p = 0; p < DM_NOTE_PORTS; ++p) {
-        int left = p * MIDI_CHANNELS + a, right = p * MIDI_CHANNELS + b;
-        float peak = e->mixer_peaks[left], target = e->mixer_peak_targets[left];
-        e->mixer_peaks[left] = e->mixer_peaks[right];
-        e->mixer_peaks[right] = peak;
-        e->mixer_peak_targets[left] = e->mixer_peak_targets[right];
-        e->mixer_peak_targets[right] = target;
-        uint8_t volume = e->mixer_live_volume[left], pan = e->mixer_live_pan[left];
-        e->mixer_live_volume[left] = e->mixer_live_volume[right];
-        e->mixer_live_volume[right] = volume;
-        e->mixer_live_pan[left] = e->mixer_live_pan[right];
-        e->mixer_live_pan[right] = pan;
-    }
-
-    e->selected_channel = b;
-    e->pattern_channel = swapped_channel(e->pattern_channel, a, b);
-    e->piano_channel = swapped_channel(e->piano_channel, a, b);
-    e->preview_source_channel = swapped_channel(e->preview_source_channel, a, b);
-    e->song_event_channel = swapped_channel(e->song_event_channel, a, b);
-    e->instrument_channel = swapped_channel(e->instrument_channel, a, b);
-    e->lane_channel = swapped_channel(e->lane_channel, a, b);
-    e->remove_note_row_channel = swapped_channel(e->remove_note_row_channel, a, b);
-    e->last_automation.channel = swapped_channel(e->last_automation.channel, a, b);
-    e->instrument_source.key.channel =
-        (uint8_t)swapped_channel(e->instrument_source.key.channel, a, b);
-    e->midi_sample_source.key.channel =
-        (uint8_t)swapped_channel(e->midi_sample_source.key.channel, a, b);
-    ed_keyboard_channel(e);
-    ed_commit(e);
 }
 
 /* Shift+E: with a note pattern in the pattern editor, show or hide its Events section; with the
@@ -708,12 +652,8 @@ void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
         e->record_start[note] = e->record && dm_audio_playing(e->audio)
                                     ? dm_seconds_beat(&e->project, dm_audio_position(e->audio))
                                     : -1;
-        /* The take's first note fixes where the pattern starts; a loop back restarts it. */
-        if (e->record_start[note] >= 0) {
-            ed_record_origin(e, e->record_start[note]);
-        }
-
-        e->record_origin[note] = e->take_origin_set ? e->take_origin : 0;
+        e->record_origin[note] =
+            e->record_start[note] >= 0 ? ed_record_origin(e, e->record_start[note]) : 0;
     }
 }
 

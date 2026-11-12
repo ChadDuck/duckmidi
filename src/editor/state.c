@@ -888,7 +888,6 @@ void ed_undo(Editor *e, bool redo) {
     ed_close_instrument(e);
     e->midi_event_index = -1;
     e->song_event = false;
-    e->song_event_channel = -1;
     e->curve_drag = e->marquee = e->event_marquee = false;
     e->wait_armed = e->take_started = false;
     e->event_selection.size = 0;

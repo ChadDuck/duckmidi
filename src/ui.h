@@ -70,6 +70,8 @@ UiPoint ui_scroll_value(void);
 UiMouse ui_mouse(void);
 float ui_delta_time(void);
 void ui_same(void);
+/* Same line at the gap a field leaves before its own label, for a label drawn separately. */
+void ui_same_label(void);
 float ui_item_spacing_x(void);
 float ui_item_spacing_y(void);
 void ui_indent(float width);
@@ -78,6 +80,11 @@ void ui_group_begin(void);
 void ui_group_end(void);
 void ui_newline(void);
 void ui_width(float width);
+/* The width of the next field unless ui_width or ui_push_width chose one. */
+void ui_default_width(float width);
+/* One width for every field until ui_pop_width, such as a form's field column. */
+void ui_push_width(float width);
+void ui_pop_width(void);
 void ui_space(float h);
 void ui_separator(void);
 void ui_text(const char *text);

@@ -65,20 +65,22 @@ static bool channel_event_type(int type, int a) {
 static bool song_event_row(const Editor *e, MidiRow row, int channel) {
     if (row.automation) {
         DmAutomation a = e->project.automation[row.index];
-        return channel >= 0 && a.pattern < 0 && a.channel == channel &&
+        return a.pattern < 0 &&
+               (channel >= 0 ? a.channel == channel : !e->channel_expanded[a.channel]) &&
                channel_event_type(a.type, a.a);
     }
 
     const DmBytes *m = &e->project.events[row.index].message;
 
-    if (channel >= 0) {
+    if (m->size && m->data[0] < MIDI_SYSTEM) {
         int type = m->size ? m->data[0] & MIDI_STATUS_MASK : 0;
-        return m->size >= 2 && (m->data[0] & MIDI_CHANNEL_MASK) == channel &&
+        int source = m->data[0] & MIDI_CHANNEL_MASK;
+        return m->size >= 2 && (channel >= 0 ? source == channel : !e->channel_expanded[source]) &&
                channel_event_type(type, m->data[1]) &&
                (type == MIDI_PROGRAM || (m->size == 3 && row.beat != 0));
     }
 
-    if (m->size >= 2 && m->data[0] == MIDI_META) {
+    if (channel < 0 && m->size >= 2 && m->data[0] == MIDI_META) {
         switch (m->data[1]) {
         case MIDI_META_TEMPO:
         case MIDI_META_TIME:
@@ -143,7 +145,7 @@ static void song_event_add_draft(Editor *e, SongEventKind kind) {
         break;
     }
     case CHANNEL_PROGRAM: {
-        int channel = e->song_event_channel;
+        int channel = e->song_event_channel >= 0 ? e->song_event_channel : e->selected_channel;
         data[0] = MIDI_PROGRAM | channel;
         data[1] = (uint8_t)fmax(0, e->project.channels[channel].program);
         size = 2;
@@ -151,7 +153,7 @@ static void song_event_add_draft(Editor *e, SongEventKind kind) {
     }
     case CHANNEL_VOLUME:
     case CHANNEL_PAN: {
-        int channel = e->song_event_channel;
+        int channel = e->song_event_channel >= 0 ? e->song_event_channel : e->selected_channel;
         data[0] = MIDI_CONTROL | channel;
         data[1] = kind == CHANNEL_VOLUME ? MIDI_CC_VOLUME : MIDI_CC_PAN;
         data[2] = kind == CHANNEL_VOLUME ? e->project.channels[channel].volume
@@ -223,17 +225,6 @@ bool ed_song_event_position_valid(Editor *e) {
         return false;
     }
 
-    /* Add moves its bar with the beat; Edit keeps an event in the bar its list shows. */
-    if (!e->song_event_add) {
-        double start, end;
-        ed_song_event_bar(e, e->song_event_anchor, &start, &end);
-
-        if (e->event_beat < start || e->event_beat >= end) {
-            snprintf(e->midi_error, sizeof(e->midi_error), DM_TEXT_SONG_EVENT_BEAT_RANGE);
-            return false;
-        }
-    }
-
     if (e->song_event_channel >= 0) {
         const DmBytes *m = &e->midi_draft;
 
@@ -278,7 +269,7 @@ bool ed_song_event_add(Editor *e) {
     bool pushed = ed_checkpoint(e);
     bool saved;
 
-    if (e->song_event_channel >= 0) {
+    if (m->data[0] < MIDI_SYSTEM && channel_event_type(m->data[0] & MIDI_STATUS_MASK, m->data[1])) {
         DmAutomation a = {.beat = beat,
                           .type = m->data[0] & MIDI_STATUS_MASK,
                           .channel = m->data[0] & MIDI_CHANNEL_MASK,
@@ -313,16 +304,23 @@ bool ed_song_event_add(Editor *e) {
         song_event_mode(e, false);
     } else {
         e->song_event = false;
-        e->song_event_channel = -1;
     }
 
     return true;
 }
 
-void ed_song_event_position(Editor *e) {
+/* With a field column width, the beat field and Use playhead fill the column and the label
+   follows in the label column; otherwise the label sits beside the field. */
+void ed_song_event_position(Editor *e, float column) {
     float beat = (float)(e->event_beat + 1);
+    bool fill = column > 0;
 
-    if (ui_float(DM_TEXT_BEAT, &beat, 1, 1000001)) {
+    if (fill) {
+        float button = ui_button_row_width((const char *const[]){DM_TEXT_USE_PLAYHEAD}, 1);
+        ui_width(column - button - ui_item_spacing_x());
+    }
+
+    if (ui_float(fill ? "##" DM_TEXT_BEAT : DM_TEXT_BEAT, &beat, 1, 1000001)) {
         e->event_beat = beat - 1;
     }
 
@@ -334,9 +332,31 @@ void ed_song_event_position(Editor *e) {
                             : e->cursor_beat[0];
     }
 
+    if (fill) {
+        ui_same_label();
+        ui_align_frame();
+        ui_text(DM_TEXT_BEAT);
+    }
+
     if (e->song_event_add && isfinite(e->event_beat) && e->event_beat >= 0) {
         e->song_event_anchor = e->event_beat;
     }
+}
+
+/* Add lays its fields out like the other windows: one field column across the window, with
+   each label to its right in a column wide enough for the longest of them. */
+static float add_field_column(void) {
+    static const char *const labels[] = {
+        DM_TEXT_SONG_EVENT_MODE, DM_TEXT_BEAT,       DM_TEXT_TYPE,          DM_TEXT_EVENT_CHANNEL,
+        DM_TEXT_INSTRUMENT,      DM_TEXT_CONTROLLER, DM_TEXT_SAMPLE_SOURCE,
+    };
+    float label = 0;
+
+    for (size_t i = 0; i < sizeof(labels) / sizeof(*labels); ++i) {
+        label = fmaxf(label, ui_text_width(labels[i]));
+    }
+
+    return fmaxf(160, ui_available().x - label - ui_item_spacing_x());
 }
 
 void ed_song_event_dialog(Editor *e) {
@@ -344,8 +364,12 @@ void ed_song_event_dialog(Editor *e) {
         return;
     }
 
-    /* Add fits its fields; Edit's panels take the spare height, first 60% of the window. */
-    float height = ui_display().y * .6f;
+    /* Add fits its fields in a compact window. Edit opens at about a quarter of the display in
+       each direction, within limits that keep both panels usable on small and large screens;
+       its panels take the spare height. */
+    UiPoint display = ui_display();
+    float height = ed_clampf(display.y * .26f, 420, 600);
+    float width = e->song_event_add ? 460 : ed_clampf(display.x * .25f, 760, 1000);
 
     char title[192];
     const char *name = DM_TEXT_SONG_EVENT;
@@ -361,11 +385,12 @@ void ed_song_event_dialog(Editor *e) {
     }
 
     if (ui_dialog(name, &e->song_event,
-                  (UiDialog){.width = 1000,
+                  (UiDialog){.width = width,
                              .height = height,
                              .size = UI_FLEXIBLE,
                              .layout = e->song_event_add})) {
-        ui_width(140);
+        float column = e->song_event_add ? add_field_column() : 0;
+        ui_width(column > 0 ? column : 140);
 
         if (ui_combo(DM_TEXT_SONG_EVENT_MODE,
                      e->song_event_add ? DM_TEXT_SONG_EVENT_ADD : DM_TEXT_EDIT)) {
@@ -387,7 +412,7 @@ void ed_song_event_dialog(Editor *e) {
         double start, end;
         double bar = ed_song_event_bar(e, e->song_event_anchor, &start, &end);
 
-        if (e->song_event_bound || !e->song_event_add) {
+        if (!e->song_event_add) {
             char label[48];
             snprintf(label, sizeof(label), DM_TEXT_SONG_EVENT_BAR, bar);
             ui_same();
@@ -395,12 +420,12 @@ void ed_song_event_dialog(Editor *e) {
         }
 
         if (e->song_event_add) {
-            ed_song_event_position(e);
-            ui_width(240);
+            ed_song_event_position(e, column);
+            ui_push_width(column);
 
             if (ui_combo(DM_TEXT_TYPE, song_event_types[e->song_event_kind].name)) {
                 for (int i = 0; i < SONG_KIND_COUNT; ++i) {
-                    if (song_event_types[i].channel != (e->song_event_channel >= 0)) {
+                    if (e->song_event_channel >= 0 && !song_event_types[i].channel) {
                         continue;
                     }
 
@@ -413,12 +438,13 @@ void ed_song_event_dialog(Editor *e) {
             }
 
             ed_midi_event_fields(e);
+            ui_pop_width();
 
             if (*e->midi_error) {
                 ui_text(e->midi_error);
             }
 
-            if (ui_button(DM_TEXT_ADD_EVENT, 120, 0)) {
+            if (ui_button(DM_TEXT_ADD_EVENT, ui_available().x, 0)) {
                 ed_song_event_add(e);
             }
         } else {
@@ -428,8 +454,4 @@ void ed_song_event_dialog(Editor *e) {
     }
 
     ui_dialog_end();
-
-    if (!e->song_event) {
-        e->song_event_channel = -1;
-    }
 }

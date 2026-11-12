@@ -49,7 +49,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->channel_selected = true;
     e->midi_event_index = -1;
     e->song_event_channel = -1;
-    e->midi_split = 0; /* Centered when the MIDI Events window first opens. */
+    e->midi_split = 0; /* List and details share the MIDI Events window evenly at first. */
     e->ui_size = 1;
     e->status_time = 0;
     e->context_point = -1;

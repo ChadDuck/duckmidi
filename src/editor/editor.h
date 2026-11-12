@@ -185,6 +185,7 @@ typedef struct {
     uint64_t revision;
     double left, right;
     size_t events, automation;
+    unsigned expanded;
 } SongEventCache;
 
 typedef struct {
@@ -261,7 +262,7 @@ typedef struct {
     bool preview_override, channel_selected, event_marquee, midi_events;
     int midi_event_kind, midi_event_index;
     uint64_t midi_selection_revision;
-    float midi_split, song_event_split;
+    float midi_split, song_event_split; /* The event list's share of the panels' width. */
     double event_beat, song_event_anchor;
     int song_event_kind, song_event_channel;
     bool song_event_add, song_event_bound;

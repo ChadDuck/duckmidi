@@ -486,6 +486,25 @@ static bool midi_input_preferences(Editor *e, const char *key, const char *s) {
     return true;
 }
 
+/* Saved names of binding source kinds, indexed by DmMidiInputSource. */
+static const char *const binding_source_names[] = {
+    [DM_MIDI_SOURCE_CC] = "cc",
+    [DM_MIDI_SOURCE_NOTE] = "note",
+    [DM_MIDI_SOURCE_BEND] = "bend",
+    [DM_MIDI_SOURCE_PRESSURE] = "pressure",
+};
+
+static bool binding_source_kind(const char *name, DmMidiInputSource *kind) {
+    for (unsigned i = 0; i < SDL_arraysize(binding_source_names); ++i) {
+        if (!strcmp(name, binding_source_names[i])) {
+            *kind = (DmMidiInputSource)i;
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static bool midi_binding(Ini *ini, const char *key, const char *s) {
     EdMidiBinding binding = {0};
 
@@ -546,15 +565,11 @@ static bool midi_binding(Ini *ini, const char *key, const char *s) {
     bool continuous = ed_midi_target_continuous(binding.target);
     const char *kind = trim(fields[1]), *mode = trim(fields[3]);
 
-    if (!strcmp(kind, "cc")) {
-        binding.source.kind = DM_MIDI_SOURCE_CC;
-    } else if (ed_midi_target_event(binding.target) && !strcmp(kind, "bend")) {
-        binding.source.kind = DM_MIDI_SOURCE_BEND;
-    } else if (ed_midi_target_event(binding.target) && !strcmp(kind, "pressure")) {
-        binding.source.kind = DM_MIDI_SOURCE_PRESSURE;
-    } else if (!continuous && !strcmp(kind, "note")) {
-        binding.source.kind = DM_MIDI_SOURCE_NOTE;
-    } else {
+    if (!binding_source_kind(kind, &binding.source.kind) ||
+        (binding.source.kind == DM_MIDI_SOURCE_NOTE && continuous) ||
+        ((binding.source.kind == DM_MIDI_SOURCE_BEND ||
+          binding.source.kind == DM_MIDI_SOURCE_PRESSURE) &&
+         !ed_midi_target_event(binding.target))) {
         return false;
     }
 
@@ -1029,10 +1044,7 @@ static bool midi_binding_fields(DmBytes *b, const Editor *e) {
         char id[48], tail[48];
         ed_midi_target_id(binding->target, id, sizeof(id));
         snprintf(tail, sizeof(tail), ",%u,%s,%u,%s\n", binding->source.channel + 1u,
-                 binding->source.kind == DM_MIDI_SOURCE_CC         ? "cc"
-                 : binding->source.kind == DM_MIDI_SOURCE_BEND     ? "bend"
-                 : binding->source.kind == DM_MIDI_SOURCE_PRESSURE ? "pressure"
-                                                                   : "note",
+                 binding_source_names[binding->source.kind],
                  (unsigned)binding->source.number, binding->toggle ? "toggle" : "momentary");
         ok = text(b, id) && text(b, "=") && quoted_text(b, binding->source.device) && text(b, tail);
     }

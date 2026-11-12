@@ -230,7 +230,6 @@ static void reset_regions(Editor *e) {
     ++e->project_session;
     ed_export_reset_results(e);
     e->song_event = e->midi_events = false;
-    e->song_event_channel = -1;
     e->event_ruler_drag = false;
     e->midi_error[0] = 0;
     e->midi_event_index = -1;

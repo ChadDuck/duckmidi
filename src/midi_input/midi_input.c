@@ -7,6 +7,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Bound-source bitmap per device and channel: four words of controller bits, four of note bits,
+   then one word for pitch bend (bit 0) and channel pressure (bit 1). */
+enum { BIND_CC_WORD = 0, BIND_NOTE_WORD = 4, BIND_CHANNEL_WORD = 8, BIND_WORDS };
+
+static void bind_position(DmMidiInputSource kind, unsigned number, unsigned *word, unsigned *bit) {
+    if (kind == DM_MIDI_SOURCE_BEND || kind == DM_MIDI_SOURCE_PRESSURE) {
+        *word = BIND_CHANNEL_WORD;
+        *bit = kind == DM_MIDI_SOURCE_PRESSURE;
+    } else {
+        *word = (kind == DM_MIDI_SOURCE_NOTE ? BIND_NOTE_WORD : BIND_CC_WORD) + number / 32;
+        *bit = number % 32;
+    }
+}
+
 typedef struct {
     struct DmMidiInput *owner;
     unsigned index;
@@ -34,7 +48,7 @@ struct DmMidiInput {
     atomic_uint open, ready[2], options, learning;
     DmMidiBindingSource *sources; /* Protected by lock. */
     size_t source_count;
-    atomic_uint bound[DM_MIDI_INPUTS][MIDI_CHANNELS][9]; /* CC, notes, then bend/pressure bits. */
+    atomic_uint bound[DM_MIDI_INPUTS][MIDI_CHANNELS][BIND_WORDS];
     atomic_bool overflow[2];
     char ports[DM_MIDI_PORTS][DM_MIDI_NAME];
     int port_count;
@@ -239,24 +253,20 @@ static void release_notes(InputSlot *slot, int channel, DmMidiInputEvent event, 
 }
 
 static void bind_slot(DmMidiInput *input, unsigned slot, const char *name) {
-    unsigned words[MIDI_CHANNELS][9] = {0};
+    unsigned words[MIDI_CHANNELS][BIND_WORDS] = {0};
 
     for (size_t i = 0; i < input->source_count; ++i) {
         const DmMidiBindingSource *source = &input->sources[i];
 
         if (!*source->device || !strcmp(source->device, name)) {
-            unsigned word =
-                source->kind >= DM_MIDI_SOURCE_BEND
-                    ? 8
-                    : source->number / 32 + (source->kind == DM_MIDI_SOURCE_NOTE ? 4 : 0);
-            unsigned bit = source->kind >= DM_MIDI_SOURCE_BEND ? source->kind - DM_MIDI_SOURCE_BEND
-                                                               : source->number % 32;
+            unsigned word, bit;
+            bind_position(source->kind, source->number, &word, &bit);
             words[source->channel][word] |= 1u << bit;
         }
     }
 
     for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
-        for (unsigned w = 0; w < 9; ++w) {
+        for (unsigned w = 0; w < BIND_WORDS; ++w) {
             atomic_store_explicit(&input->bound[slot][c][w], words[c][w], memory_order_relaxed);
         }
     }
@@ -273,16 +283,17 @@ static bool source_learn(const DmMidiInput *input, DmMidiInputEvent event) {
 }
 
 static bool source_bound(const DmMidiInput *input, DmMidiInputEvent event) {
-    unsigned type = event.status & MIDI_STATUS_MASK;
+    unsigned type = event.status & MIDI_STATUS_MASK, word, bit;
+    DmMidiInputSource kind = type == MIDI_CONTROL                            ? DM_MIDI_SOURCE_CC
+                             : type == MIDI_NOTE_ON || type == MIDI_NOTE_OFF ? DM_MIDI_SOURCE_NOTE
+                             : type == MIDI_PITCH_BEND                       ? DM_MIDI_SOURCE_BEND
+                                                                             : DM_MIDI_SOURCE_PRESSURE;
 
-    if (type != MIDI_CONTROL && type != MIDI_NOTE_ON && type != MIDI_NOTE_OFF &&
-        type != MIDI_PITCH_BEND && type != MIDI_CHANNEL_PRESSURE) {
+    if (kind == DM_MIDI_SOURCE_PRESSURE && type != MIDI_CHANNEL_PRESSURE) {
         return false;
     }
 
-    bool special = type == MIDI_PITCH_BEND || type == MIDI_CHANNEL_PRESSURE;
-    unsigned word = special ? 8 : event.a / 32 + (type == MIDI_CONTROL ? 0 : 4);
-    unsigned bit = special ? (type == MIDI_CHANNEL_PRESSURE) : event.a % 32;
+    bind_position(kind, event.a, &word, &bit);
     unsigned channel = event.status & MIDI_CHANNEL_MASK;
     unsigned bits =
         atomic_load_explicit(&input->bound[event.device][channel][word], memory_order_relaxed);
@@ -617,7 +628,7 @@ DmMidiInput *dm_midi_input_create(const DmMidiInputBackend *backend) {
         dm_midi_held_init(&slot->held);
 
         for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
-            for (unsigned w = 0; w < 9; ++w) {
+            for (unsigned w = 0; w < BIND_WORDS; ++w) {
                 atomic_init(&input->bound[i][c][w], 0);
             }
         }
