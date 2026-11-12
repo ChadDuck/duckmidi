@@ -19,19 +19,19 @@ If you have any thoughts, submit an issue. Feedback is appreciated.
 
 1. Codebase refactor & cleanup.
     - Dead code removal, dangling functions, tests with no purpose, etc.
-1. Shortcut window updated.
-4. Window fit-to-content system updated.
-8. SM64 mappings list was missing a few key instruments, tabla riffs, sleigh bells and the higher French horn. This has been fixed.
-9. Default SM64 instruments were reviewed against how the original songs use each sample and community resources. 'Similar instruments' and the review's recommended substitutes now also come from a hand-picked list of alternates.
-9. Added a 'Reset' button for instrument-specific changes in mappings.
-13. Expanded channels have a separate 'Events' row for channel-specific events.
+2. Shortcut window updated.
+3. Window fit-to-content system updated.
+4. SM64 mappings list was missing a few key instruments, tabla riffs, sleigh bells and the higher French horn. This has been fixed.
+5. Default SM64 instruments were reviewed against how the original songs use each sample and community resources. 'Similar instruments' and the review's recommended substitutes now also come from a hand-picked list of alternates.
+6. Added a 'Reset' button for instrument-specific changes in mappings.
+7. Expanded channels have a separate 'Events' row for channel-specific events.
     - Collapsed channels show their events in Song Events, which also lets you add program changes, Volume and Pan for a chosen channel.
-15. 'Make unique' on a sliced note or point-automation placement now copies its visible contents into a fitted pattern.
-16. Move the selected playlist channel up or down with rebindable Alt+Up and Alt+Down shortcuts, keeping its instruments, events and mixer settings together.
-19. Further modified recording logic.
-20. Further modified selection logic.
-20. Added a default label for automation rows.
-22. Added separation lines between rows, thicker between channels.
+8. 'Make unique' on a sliced note or point-automation placement now copies its visible contents into a fitted pattern.
+9. Move the selected playlist channel up or down with rebindable Alt+Up and Alt+Down shortcuts, keeping its instruments, events and mixer settings together.
+10. Further modified recording logic.
+11. Further modified selection logic.
+12. Added a default label for automation rows.
+13. Added separation lines between rows, thicker between channels.
 
 # 0.12.5
 
