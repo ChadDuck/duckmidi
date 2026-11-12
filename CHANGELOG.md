@@ -17,6 +17,8 @@ If you have any thoughts, submit an issue. Feedback is appreciated.
 
 ## Changes:
 
+1. Codebase refactor & cleanup.
+    - Dead code removal, dangling functions, tests with no purpose, etc.
 1. Shortcut window updated.
 4. Window fit-to-content system updated.
 8. SM64 mappings list was missing a few key instruments, tabla riffs, sleigh bells and the higher French horn. This has been fixed.
