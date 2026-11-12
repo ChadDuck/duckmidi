@@ -199,7 +199,7 @@ void ed_toolbar(Editor *e) {
             ed_recording_finished(e);
         }
 
-        if (ui_mouse().shift) {
+        if (ed_gesture_held(e, GESTURE_PANIC, ui_mouse())) {
             ed_stop_edit_feedback(e);
             dm_audio_panic(e->audio);
             ed_message(e, DM_TEXT_MIDI_PANIC_SENT);
@@ -363,15 +363,15 @@ static void edit_menu(Editor *e) {
         ui_separator();
 
         if (ui_menu_item(DM_TEXT_CUT, DM_TEXT_CTRL_X, e->active)) {
-            ed_clipboard(e, 1);
+            ed_clipboard(e, CLIPBOARD_CUT);
         }
 
         if (ui_menu_item(DM_TEXT_COPY, DM_TEXT_CTRL_C, e->active)) {
-            ed_clipboard(e, 0);
+            ed_clipboard(e, CLIPBOARD_COPY);
         }
 
         if (ui_menu_item(DM_TEXT_PASTE, DM_TEXT_CTRL_V, e->clipboard.size > 0)) {
-            ed_clipboard(e, 2);
+            ed_clipboard(e, CLIPBOARD_PASTE);
         }
 
         ui_separator();
@@ -392,6 +392,7 @@ static void edit_menu(Editor *e) {
         if (ui_menu_item(DM_TEXT_MIDI_EVENTS, NULL, e->active)) {
             e->midi_events = true;
             e->song_event = false;
+            e->song_event_channel = -1;
             e->midi_event_index = -1;
         }
 

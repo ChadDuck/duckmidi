@@ -486,9 +486,20 @@ static bool fit_sequence(Compile *c) {
     return ok;
 }
 
+const M64Instrument *stock_preset(bool drum, uint32_t index) {
+    if (index < 128) {
+        return drum ? &gm_drums[index] : &gm_programs[index];
+    }
+
+    index -= 128;
+    return index >= M64_STOCK_SAMPLES ? NULL
+           : drum                     ? &stock_drum_samples[index]
+                                      : &stock_samples[index];
+}
+
 const M64Instrument *program_definition(const Compile *c, uint32_t p) {
     if (p >= M64_CUSTOM_STOCK_BASE) {
-        return &gm_programs[(p - M64_CUSTOM_STOCK_BASE) >> 8];
+        return stock_preset(false, (p - M64_CUSTOM_STOCK_BASE) >> 8);
     }
 
     if (p >= 4096) {
@@ -513,7 +524,7 @@ bool m64_range_origin(const M64Result *result, uint64_t index, uint64_t *out) {
 
 const M64Instrument *drum_definition(const Compile *c, uint32_t p) {
     if (p >= 256) {
-        return &gm_drums[p - 256];
+        return stock_preset(true, p - 256);
     }
 
     if (p >= 128) {
@@ -590,7 +601,7 @@ int32_t m64_compile_custom(const M64Request *q, const M64Hooks *h, const M64Cust
         return r->status;
     }
 
-    for (unsigned i = 0; i < 384; i++) {
+    for (unsigned i = 0; i < M64_DRUM_SLOTS; i++) {
         c.drums[i] = -1;
 
         if (i < 128 && (!instrument_valid(program_definition(&c, i)) ||
@@ -620,7 +631,7 @@ int32_t m64_compile_custom(const M64Request *q, const M64Hooks *h, const M64Cust
         return r->status;
     }
 
-    size_t slots = custom ? M64_CUSTOM_STOCK_BASE + 128 * 256 : 4096;
+    size_t slots = custom ? M64_CUSTOM_STOCK_BASE + M64_STOCK_PRESETS * 256 : 4096;
     c.slots = malloc(slots * sizeof(*c.slots));
 
     if (!c.slots) {
@@ -725,11 +736,11 @@ static void M64_CALL result_free(M64Result *r) {
 }
 
 static const M64Instrument *M64_CALL default_program(uint32_t i) {
-    return i < 128 ? &gm_programs[i] : NULL;
+    return stock_preset(false, i);
 }
 
 static const M64Instrument *M64_CALL default_drum(uint32_t i) {
-    return i < 128 ? &gm_drums[i] : NULL;
+    return stock_preset(true, i);
 }
 
 static uint64_t M64_CALL range_count(const M64Result *r) {
@@ -746,12 +757,12 @@ static int32_t M64_CALL range_at(const M64Result *r, uint64_t i, M64RangeIssue *
 }
 
 static int32_t M64_CALL preset_supported(const M64RangeIssue *issue, uint32_t preset) {
-    if (!issue || preset >= 128 || issue->percussion > 1 || !isfinite(issue->demand) ||
-        issue->demand <= 0) {
+    const M64Instrument *d = issue ? stock_preset(issue->percussion != 0, preset) : NULL;
+
+    if (!d || issue->percussion > 1 || !isfinite(issue->demand) || issue->demand <= 0) {
         return 0;
     }
 
-    const M64Instrument *d = issue->percussion ? &gm_drums[preset] : &gm_programs[preset];
     double tuning = d->tuning;
 
     if (!issue->percussion) {
@@ -771,9 +782,22 @@ static int32_t M64_CALL preset_supported(const M64RangeIssue *issue, uint32_t pr
     return tuning * issue->demand <= 4.00002;
 }
 
-static const M64Api api = {compile_request, diagnostic_count, diagnostic_at,   artifact_count,
-                           artifact_at,     result_free,      default_program, default_drum,
-                           analyze,         range_count,      range_at,        preset_supported};
+static uint32_t M64_CALL program_alternates(uint32_t program, uint32_t *out, uint32_t capacity) {
+    uint32_t count = 0;
+
+    for (unsigned i = 0; program < 128 && out && i < M64_ALTERNATES && count < capacity; i++) {
+        if (gm_alternates[program][i] >= 0) {
+            out[count++] = (uint32_t)gm_alternates[program][i];
+        }
+    }
+
+    return count;
+}
+
+static const M64Api api = {compile_request,   diagnostic_count, diagnostic_at,   artifact_count,
+                           artifact_at,       result_free,      default_program, default_drum,
+                           analyze,           range_count,      range_at,        preset_supported,
+                           program_alternates};
 
 M64_PUBLIC const M64Api *M64_CALL m64_get_api_3(void) {
     return &api;

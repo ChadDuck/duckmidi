@@ -1,5 +1,5 @@
 {
-  "description": "Reviewed initial GM to stock SM64 instruments-bank approximations. Program numbers are zero-based. Samples are names and AIFF COMM rates only, with no audio. Tuning references MIDI C4; the compiler compensates its pitch origin. Default GM variants and effects with no counterpart use approximate timbres.",
+  "description": "Reviewed GM to stock SM64 instruments-bank mappings. Program numbers are zero-based. Samples are names and AIFF COMM rates only, with no audio. Tuning references MIDI C4; the compiler compensates its pitch origin. Program defaults follow how vanilla songs use each sample (the community's per-bank instrument names); each program's alternates are ordered, best first, and name another program's preset or a stock sample.",
   "samples": {
     "00_banjo_D2": 57017.53616333008,
     "01_banjo_A2": 38054.622650146484,
@@ -78,585 +78,1545 @@
   "programs": [
     {
       "sample": "44_grand_piano_F#5",
-      "release_rate": 19
+      "release_rate": 19,
+      "alternates": [
+        1,
+        4,
+        6,
+        11,
+        24,
+        10
+      ]
     },
     {
       "sample": "04_bright_piano_G#3",
-      "release_rate": 19
-    },
-    {
-      "sample": "27_harpsichord_F3",
-      "release_rate": 19
+      "release_rate": 19,
+      "alternates": [
+        0,
+        4,
+        6,
+        24,
+        7,
+        11
+      ]
     },
     {
       "sample": "44_grand_piano_F#5",
-      "release_rate": 19
+      "release_rate": 19,
+      "alternates": [
+        4,
+        1,
+        6,
+        11,
+        24,
+        7
+      ]
+    },
+    {
+      "sample": "44_grand_piano_F#5",
+      "release_rate": 19,
+      "alternates": [
+        1,
+        6,
+        4,
+        7,
+        24,
+        11
+      ]
     },
     {
       "sample": "26_crystal_rhodes_C4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        0,
+        11,
+        1,
+        10,
+        89,
+        88
+      ]
     },
     {
       "sample": "26_crystal_rhodes_C4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        11,
+        0,
+        1,
+        10,
+        89
+      ]
     },
     {
       "sample": "27_harpsichord_F3",
-      "release_rate": 19
+      "release_rate": 19,
+      "alternates": [
+        7,
+        24,
+        1,
+        46,
+        105,
+        0
+      ]
     },
     {
-      "sample": "27_harpsichord_F3",
-      "release_rate": 19
-    },
-    {
-      "sample": "3A_music_box_C5",
-      "release_rate": 30,
-      "decay": 180,
-      "sustain": 0
-    },
-    {
-      "sample": "3F_small_gamelan",
-      "release_rate": 30,
-      "decay": 180,
-      "sustain": 0
-    },
-    {
-      "sample": "3A_music_box_C5",
-      "release_rate": 30,
-      "decay": 180,
-      "sustain": 0
+      "sample": "1C_les_paul_guitar_E2",
+      "alternates": [
+        6,
+        25,
+        24,
+        105,
+        4
+      ]
     },
     {
       "sample": "42_vibraphone_F#4",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        10,
+        14,
+        12,
+        4,
+        114,
+        1
+      ]
+    },
+    {
+      "sample": "3A_music_box_C5",
+      "release_rate": 30,
+      "decay": 180,
+      "sustain": 0,
+      "alternates": [
+        8,
+        14,
+        12,
+        4,
+        114,
+        1
+      ]
+    },
+    {
+      "sample": "3A_music_box_C5",
+      "release_rate": 30,
+      "decay": 180,
+      "sustain": 0,
+      "alternates": [
+        8,
+        12,
+        14,
+        4,
+        114,
+        1
+      ]
+    },
+    {
+      "sample": "42_vibraphone_F#4",
+      "release_rate": 30,
+      "decay": 180,
+      "sustain": 0,
+      "alternates": [
+        10,
+        12,
+        4,
+        14,
+        88
+      ]
     },
     {
       "sample": "3F_small_gamelan",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        11,
+        10,
+        117,
+        114,
+        14,
+        4
+      ]
     },
     {
-      "sample": "3F_small_gamelan",
+      "sample": "3A_music_box_C5",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        12,
+        11,
+        114,
+        117,
+        14,
+        4
+      ]
     },
     {
       "sample": "40_fu_yin_gong_C4",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        8,
+        10,
+        12,
+        "2F_sleigh_bells",
+        4
+      ]
     },
     {
       "sample": "27_harpsichord_F3",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        6,
+        24,
+        105,
+        7,
+        25
+      ]
     },
     {
       "sample": "35_gospel_organ_F4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        21,
+        22,
+        52,
+        61,
+        4
+      ]
     },
     {
       "sample": "35_gospel_organ_F4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        21,
+        4,
+        22,
+        52,
+        7,
+        61
+      ]
     },
     {
       "sample": "35_gospel_organ_F4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        21,
+        29,
+        22,
+        7,
+        61,
+        81
+      ]
     },
     {
       "sample": "35_gospel_organ_F4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        52,
+        21,
+        48,
+        22,
+        61,
+        89
+      ]
     },
     {
       "sample": "35_gospel_organ_F4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        21,
+        22,
+        52,
+        48,
+        61
+      ]
     },
     {
       "sample": "2E_accordion_C4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        22,
+        16,
+        109,
+        52,
+        48
+      ]
     },
     {
       "sample": "43_harmonica_C4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        21,
+        68,
+        16,
+        73,
+        80
+      ]
     },
     {
       "sample": "2E_accordion_C4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        22,
+        16,
+        109,
+        52,
+        73,
+        61
+      ]
     },
     {
       "sample": "3C_acoustic_guitar_E3",
-      "release_rate": 19
+      "release_rate": 19,
+      "alternates": [
+        46,
+        25,
+        105,
+        6,
+        7,
+        45
+      ]
+    },
+    {
+      "sample": "04_bright_piano_G#3",
+      "release_rate": 19,
+      "alternates": [
+        24,
+        105,
+        6,
+        7,
+        46
+      ]
     },
     {
       "sample": "3C_acoustic_guitar_E3",
-      "release_rate": 19
+      "release_rate": 19,
+      "alternates": [
+        25,
+        7,
+        4,
+        6,
+        46,
+        11
+      ]
+    },
+    {
+      "sample": "04_bright_piano_G#3",
+      "release_rate": 19,
+      "alternates": [
+        24,
+        7,
+        4,
+        6,
+        11,
+        46
+      ]
     },
     {
       "sample": "1C_les_paul_guitar_E2",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        24,
+        6,
+        25,
+        105,
+        45,
+        36
+      ]
     },
     {
-      "sample": "1C_les_paul_guitar_E2",
-      "release_rate": 128
+      "sample": "31_rarefaction-convolution_Eb2",
+      "alternates": [
+        7,
+        84,
+        81,
+        80,
+        61,
+        25
+      ]
     },
     {
-      "sample": "1C_les_paul_guitar_E2",
-      "release_rate": 128
+      "sample": "31_rarefaction-convolution_Eb2",
+      "alternates": [
+        7,
+        81,
+        84,
+        80,
+        61,
+        25
+      ]
     },
     {
-      "sample": "1C_les_paul_guitar_E2",
-      "release_rate": 128
-    },
-    {
-      "sample": "1C_les_paul_guitar_E2",
-      "release_rate": 128
-    },
-    {
-      "sample": "1C_les_paul_guitar_E2",
-      "release_rate": 128
+      "sample": "04_bright_piano_G#3",
+      "release_rate": 19,
+      "alternates": [
+        11,
+        24,
+        10,
+        46,
+        4
+      ]
     },
     {
       "sample": "05_acoustic_bass_A1",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        33,
+        36,
+        38,
+        42,
+        57
+      ]
+    },
+    {
+      "sample": "21_sine_bass_Bb2",
+      "alternates": [
+        32,
+        36,
+        38,
+        42,
+        57,
+        4
+      ]
     },
     {
       "sample": "1A_slap_bass_G#2",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        33,
+        32,
+        38,
+        42,
+        57
+      ]
+    },
+    {
+      "sample": "21_sine_bass_Bb2",
+      "alternates": [
+        32,
+        36,
+        38,
+        42,
+        57
+      ]
     },
     {
       "sample": "1A_slap_bass_G#2",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        33,
+        32,
+        38,
+        42,
+        57,
+        7
+      ]
     },
     {
       "sample": "1A_slap_bass_G#2",
-      "release_rate": 128
-    },
-    {
-      "sample": "1A_slap_bass_G#2",
-      "release_rate": 128
-    },
-    {
-      "sample": "1A_slap_bass_G#2",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        33,
+        32,
+        38,
+        42,
+        57,
+        7
+      ]
     },
     {
       "sample": "36_sawtooth_synth_Eb1",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        33,
+        36,
+        80,
+        32,
+        42
+      ]
     },
     {
-      "sample": "36_sawtooth_synth_Eb1",
-      "release_rate": 128
+      "sample": "21_sine_bass_Bb2",
+      "alternates": [
+        38,
+        36,
+        32,
+        42,
+        80
+      ]
     },
     {
       "sample": "02_violin_B2",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        48,
+        49,
+        57,
+        44,
+        73,
+        60
+      ]
     },
     {
       "sample": "02_violin_B2",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        48,
+        49,
+        42,
+        57,
+        60,
+        73
+      ]
     },
     {
       "sample": "23_strings_Eb2",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        57,
+        48,
+        49,
+        43,
+        60,
+        33
+      ]
     },
     {
       "sample": "05_acoustic_bass_A1",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        42,
+        57,
+        33,
+        36,
+        60
+      ]
     },
     {
       "sample": "23_strings_Eb2",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        48,
+        49,
+        40,
+        57,
+        89
+      ]
     },
     {
       "sample": "46_pizzicato_strings_Bb2",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        24,
+        6,
+        105,
+        104,
+        46,
+        11
+      ]
     },
     {
-      "sample": "3C_acoustic_guitar_E3",
-      "release_rate": 19
+      "sample": "27_harpsichord_F3",
+      "release_rate": 30,
+      "decay": 180,
+      "sustain": 0,
+      "alternates": [
+        24,
+        45,
+        11,
+        6,
+        105
+      ]
     },
     {
       "sample": "18_timpani",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        117,
+        55,
+        116,
+        58,
+        61,
+        "33_kick_drum_2"
+      ]
     },
     {
       "sample": "25_strings_F#3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        49,
+        44,
+        40,
+        52,
+        89,
+        60
+      ]
+    },
+    {
+      "sample": "15_strings_B3",
+      "alternates": [
+        48,
+        44,
+        40,
+        52,
+        89,
+        60
+      ]
     },
     {
       "sample": "25_strings_F#3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        49,
+        89,
+        4,
+        52,
+        90
+      ]
     },
     {
-      "sample": "25_strings_F#3",
-      "release_rate": 128
-    },
-    {
-      "sample": "25_strings_F#3",
-      "release_rate": 128
+      "sample": "15_strings_B3",
+      "alternates": [
+        48,
+        89,
+        4,
+        52,
+        90
+      ]
     },
     {
       "sample": "22_boys_choir_Bb4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        "3E_monk_choir_B2",
+        54,
+        48,
+        89,
+        19,
+        61
+      ]
     },
     {
-      "sample": "3E_monk_choir_B2",
-      "release_rate": 128
+      "sample": "22_boys_choir_Bb4",
+      "alternates": [
+        "3E_monk_choir_B2",
+        54,
+        48,
+        89,
+        19,
+        61
+      ]
     },
     {
-      "sample": "3E_monk_choir_B2",
-      "release_rate": 128
+      "sample": "1B_percussive_synth_Eb3",
+      "alternates": [
+        52,
+        "3E_monk_choir_B2",
+        89,
+        80,
+        88,
+        48
+      ]
     },
     {
       "sample": "29_orchestra_hit_C3",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        61,
+        47,
+        29,
+        56,
+        60,
+        116
+      ]
     },
     {
       "sample": "17_trumpet_C#3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        61,
+        60,
+        57,
+        22,
+        80,
+        73
+      ]
     },
     {
       "sample": "2D_trombone_Bb2",
-      "release_rate": 128
-    },
-    {
-      "sample": "16_french_horns_C3",
-      "release_rate": 128
-    },
-    {
-      "sample": "19_brass_Eb3",
-      "release_rate": 128
-    },
-    {
-      "sample": "16_french_horns_C3",
-      "release_rate": 128
-    },
-    {
-      "sample": "19_brass_Eb3",
-      "release_rate": 128
-    },
-    {
-      "sample": "19_brass_Eb3",
-      "release_rate": 128
-    },
-    {
-      "sample": "19_brass_Eb3",
-      "release_rate": 128
-    },
-    {
-      "sample": "43_harmonica_C4",
-      "release_rate": 128
-    },
-    {
-      "sample": "43_harmonica_C4",
-      "release_rate": 128
-    },
-    {
-      "sample": "43_harmonica_C4",
-      "release_rate": 128
-    },
-    {
-      "sample": "43_harmonica_C4",
-      "release_rate": 128
-    },
-    {
-      "sample": "43_harmonica_C4",
-      "release_rate": 128
-    },
-    {
-      "sample": "43_harmonica_C4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        60,
+        61,
+        56,
+        42,
+        43,
+        22
+      ]
     },
     {
       "sample": "2D_trombone_Bb2",
-      "release_rate": 128
+      "alternates": [
+        60,
+        61,
+        43,
+        42,
+        38
+      ]
+    },
+    {
+      "sample": "17_trumpet_C#3",
+      "alternates": [
+        61,
+        60,
+        22,
+        57,
+        68,
+        80
+      ]
+    },
+    {
+      "sample": "16_french_horns_C3",
+      "release_rate": 128,
+      "alternates": [
+        57,
+        61,
+        56,
+        42,
+        48,
+        52
+      ]
+    },
+    {
+      "sample": "19_brass_Eb3",
+      "release_rate": 128,
+      "alternates": [
+        56,
+        60,
+        57,
+        48,
+        90,
+        55
+      ]
+    },
+    {
+      "sample": "19_brass_Eb3",
+      "release_rate": 128,
+      "alternates": [
+        56,
+        81,
+        80,
+        60,
+        90
+      ]
+    },
+    {
+      "sample": "19_brass_Eb3",
+      "release_rate": 128,
+      "alternates": [
+        56,
+        81,
+        80,
+        60,
+        90
+      ]
+    },
+    {
+      "sample": "43_harmonica_C4",
+      "release_rate": 128,
+      "alternates": [
+        68,
+        56,
+        73,
+        57,
+        80
+      ]
+    },
+    {
+      "sample": "43_harmonica_C4",
+      "release_rate": 128,
+      "alternates": [
+        68,
+        57,
+        56,
+        73,
+        60,
+        80
+      ]
+    },
+    {
+      "sample": "2D_trombone_Bb2",
+      "alternates": [
+        65,
+        68,
+        60,
+        56,
+        42,
+        73
+      ]
+    },
+    {
+      "sample": "2D_trombone_Bb2",
+      "alternates": [
+        65,
+        60,
+        43,
+        68,
+        42
+      ]
+    },
+    {
+      "sample": "30_rarefaction-lahna_E4",
+      "alternates": [
+        22,
+        73,
+        75,
+        56,
+        57,
+        78
+      ]
+    },
+    {
+      "sample": "30_rarefaction-lahna_E4",
+      "alternates": [
+        22,
+        73,
+        57,
+        75,
+        60,
+        56
+      ]
+    },
+    {
+      "sample": "2D_trombone_Bb2",
+      "release_rate": 128,
+      "alternates": [
+        68,
+        60,
+        42,
+        22,
+        73,
+        56
+      ]
     },
     {
       "sample": "34_alto_flute_A4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        68,
+        22,
+        75,
+        78,
+        56,
+        60
+      ]
     },
     {
       "sample": "34_alto_flute_A4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        75,
+        78,
+        80,
+        68,
+        8,
+        10
+      ]
     },
     {
       "sample": "34_alto_flute_A4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        75,
+        78,
+        68,
+        22,
+        80,
+        8
+      ]
     },
     {
       "sample": "34_alto_flute_A4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        75,
+        78,
+        80,
+        68,
+        22,
+        8
+      ]
     },
     {
       "sample": "41_pan_flute_C3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        73,
+        78,
+        68,
+        80,
+        22,
+        52
+      ]
     },
     {
       "sample": "41_pan_flute_C3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        73,
+        78,
+        68,
+        80,
+        22,
+        52
+      ]
     },
     {
       "sample": "41_pan_flute_C3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        73,
+        68,
+        78,
+        80,
+        22,
+        52
+      ]
     },
     {
       "sample": "03_human_whistle_C3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        73,
+        75,
+        80,
+        68,
+        22,
+        52
+      ]
     },
     {
       "sample": "41_pan_flute_C3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        73,
+        78,
+        80,
+        68,
+        8,
+        22
+      ]
     },
     {
       "sample": "37_square_synth_C5",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        81,
+        84,
+        73,
+        29,
+        22,
+        78
+      ]
     },
     {
       "sample": "36_sawtooth_synth_Eb1",
-      "release_rate": 128
-    },
-    {
-      "sample": "1B_percussive_synth_Eb3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        80,
+        84,
+        29,
+        7,
+        61,
+        22
+      ]
     },
     {
       "sample": "34_alto_flute_A4",
-      "release_rate": 128
+      "alternates": [
+        75,
+        80,
+        78,
+        68,
+        22,
+        8
+      ]
     },
     {
-      "sample": "31_rarefaction-convolution_Eb2",
-      "release_rate": 128
+      "sample": "34_alto_flute_A4",
+      "release_rate": 128,
+      "alternates": [
+        75,
+        80,
+        78,
+        68,
+        22,
+        8
+      ]
+    },
+    {
+      "sample": "30_rarefaction-lahna_E4",
+      "alternates": [
+        29,
+        81,
+        80,
+        22,
+        7
+      ]
     },
     {
       "sample": "22_boys_choir_Bb4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        54,
+        "3E_monk_choir_B2",
+        80,
+        73,
+        68,
+        89
+      ]
     },
     {
       "sample": "36_sawtooth_synth_Eb1",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        80,
+        84,
+        29,
+        61,
+        90
+      ]
     },
     {
-      "sample": "21_sine_bass_Bb2",
-      "release_rate": 128
+      "sample": "36_sawtooth_synth_Eb1",
+      "alternates": [
+        80,
+        33,
+        84,
+        32,
+        29
+      ]
     },
     {
       "sample": "26_crystal_rhodes_C4",
       "release_rate": 128,
-      "attack": 24
+      "attack": 24,
+      "alternates": [
+        89,
+        11,
+        52,
+        54,
+        90
+      ]
     },
     {
       "sample": "22_boys_choir_Bb4",
       "release_rate": 128,
-      "attack": 24
+      "attack": 24,
+      "alternates": [
+        48,
+        54,
+        "3E_monk_choir_B2",
+        52,
+        92,
+        88
+      ]
     },
     {
       "sample": "19_brass_Eb3",
       "release_rate": 128,
-      "attack": 24
+      "attack": 24,
+      "alternates": [
+        81,
+        89,
+        48,
+        61,
+        80,
+        92
+      ]
     },
     {
       "sample": "22_boys_choir_Bb4",
       "release_rate": 128,
-      "attack": 24
+      "attack": 24,
+      "alternates": [
+        54,
+        "3E_monk_choir_B2",
+        48,
+        52,
+        92,
+        88
+      ]
+    },
+    {
+      "sample": "25_strings_F#3",
+      "release_rate": 128,
+      "attack": 24,
+      "alternates": [
+        89,
+        48,
+        54,
+        52,
+        90,
+        "3E_monk_choir_B2"
+      ]
+    },
+    {
+      "sample": "42_vibraphone_F#4",
+      "release_rate": 128,
+      "attack": 24,
+      "alternates": [
+        89,
+        11,
+        14,
+        88,
+        92
+      ]
     },
     {
       "sample": "22_boys_choir_Bb4",
       "release_rate": 128,
-      "attack": 24
+      "attack": 24,
+      "alternates": [
+        54,
+        "3E_monk_choir_B2",
+        92,
+        52,
+        88
+      ]
     },
     {
       "sample": "22_boys_choir_Bb4",
       "release_rate": 128,
-      "attack": 24
-    },
-    {
-      "sample": "22_boys_choir_Bb4",
-      "release_rate": 128,
-      "attack": 24
-    },
-    {
-      "sample": "22_boys_choir_Bb4",
-      "release_rate": 128,
-      "attack": 24
+      "attack": 24,
+      "alternates": [
+        92,
+        90,
+        54,
+        "3E_monk_choir_B2",
+        81
+      ]
     },
     {
       "sample": "20_cabasa",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        98,
+        11,
+        12,
+        14,
+        10,
+        "2F_sleigh_bells"
+      ]
     },
     {
       "sample": "42_vibraphone_F#4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        89,
+        4,
+        11,
+        88,
+        92,
+        52
+      ]
     },
     {
       "sample": "26_crystal_rhodes_C4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        11,
+        10,
+        14,
+        12,
+        114,
+        1
+      ]
     },
     {
       "sample": "3C_acoustic_guitar_E3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        4,
+        89,
+        24,
+        11,
+        88,
+        46
+      ]
     },
     {
       "sample": "26_crystal_rhodes_C4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        11,
+        89,
+        88,
+        10,
+        14,
+        54
+      ]
     },
     {
-      "sample": "31_rarefaction-convolution_Eb2",
-      "release_rate": 128
+      "sample": "3E_monk_choir_B2",
+      "alternates": [
+        54,
+        29,
+        84,
+        122,
+        52,
+        81
+      ]
     },
     {
       "sample": "22_boys_choir_Bb4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        4,
+        89,
+        11,
+        54,
+        88
+      ]
     },
     {
       "sample": "30_rarefaction-lahna_E4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        "3E_monk_choir_B2",
+        81,
+        54,
+        29,
+        80
+      ]
     },
     {
-      "sample": "28_sitar_1_A2",
+      "sample": "39_sitar_2_C#3",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        "28_sitar_1_A2",
+        105,
+        24,
+        107,
+        6,
+        45
+      ]
     },
     {
       "sample": "00_banjo_D2",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        24,
+        25,
+        107,
+        6,
+        45,
+        104
+      ]
     },
     {
       "sample": "00_banjo_D2",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        107,
+        104,
+        24,
+        25,
+        6,
+        45
+      ]
     },
     {
-      "sample": "01_banjo_A2",
+      "sample": "27_harpsichord_F3",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        105,
+        24,
+        104,
+        6,
+        45
+      ]
     },
     {
       "sample": "3F_small_gamelan",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        11,
+        10,
+        114,
+        14,
+        4,
+        1
+      ]
     },
     {
-      "sample": "2E_accordion_C4",
-      "release_rate": 128
+      "sample": "30_rarefaction-lahna_E4",
+      "alternates": [
+        21,
+        22,
+        16,
+        73,
+        80,
+        56
+      ]
     },
     {
       "sample": "02_violin_B2",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        48,
+        49,
+        44,
+        57,
+        73
+      ]
     },
     {
-      "sample": "43_harmonica_C4",
-      "release_rate": 128
+      "sample": "30_rarefaction-lahna_E4",
+      "alternates": [
+        22,
+        73,
+        75,
+        21,
+        56
+      ]
     },
     {
       "sample": "40_fu_yin_gong_C4",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        8,
+        10,
+        "2F_sleigh_bells",
+        12,
+        114,
+        4
+      ]
     },
     {
-      "sample": "20_cabasa",
+      "sample": "3F_small_gamelan",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        112,
+        115,
+        117,
+        114,
+        "2F_sleigh_bells"
+      ]
     },
     {
       "sample": "48_steel_drum_C#3",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        12,
+        11,
+        10,
+        112,
+        117,
+        4
+      ]
     },
     {
       "sample": "0D_clave",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        113,
+        117,
+        116,
+        127,
+        47
+      ]
     },
     {
       "sample": "09",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        117,
+        47,
+        55,
+        "33_kick_drum_2",
+        "38_electric_kick_drum"
+      ]
+    },
+    {
+      "sample": "1D",
+      "release_rate": 30,
+      "decay": 180,
+      "sustain": 0,
+      "alternates": [
+        116,
+        47,
+        12,
+        "33_kick_drum_2",
+        114,
+        55
+      ]
     },
     {
       "sample": "09",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
-    },
-    {
-      "sample": "09",
-      "release_rate": 30,
-      "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        117,
+        47,
+        "38_electric_kick_drum",
+        55,
+        81
+      ]
     },
     {
       "sample": "11_splash_cymbal",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        122,
+        14,
+        55,
+        "2F_sleigh_bells",
+        127
+      ]
     },
     {
       "sample": "1C_les_paul_guitar_E2",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        24,
+        7,
+        6,
+        25,
+        105,
+        45
+      ]
     },
     {
       "sample": "34_alto_flute_A4",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        75,
+        78,
+        122,
+        "3E_monk_choir_B2",
+        52,
+        89
+      ]
     },
     {
       "sample": "20_cabasa",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        "3E_monk_choir_B2",
+        119,
+        121,
+        "2F_sleigh_bells",
+        116
+      ]
     },
     {
       "sample": "03_human_whistle_C3",
-      "release_rate": 128
+      "release_rate": 128,
+      "alternates": [
+        72,
+        75,
+        80,
+        10,
+        8,
+        112
+      ]
     },
     {
       "sample": "40_fu_yin_gong_C4",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        80,
+        8,
+        10,
+        12,
+        114,
+        4
+      ]
     },
     {
       "sample": "20_cabasa",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        "3E_monk_choir_B2",
+        119,
+        116,
+        "2F_sleigh_bells",
+        47,
+        55
+      ]
     },
     {
       "sample": "20_cabasa",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        119,
+        "2F_sleigh_bells",
+        116,
+        "3E_monk_choir_B2",
+        55,
+        47
+      ]
     },
     {
       "sample": "32_metal_rimshot",
       "release_rate": 30,
       "decay": 180,
-      "sustain": 0
+      "sustain": 0,
+      "alternates": [
+        119,
+        116,
+        55,
+        47,
+        "33_kick_drum_2",
+        "38_electric_kick_drum"
+      ]
     }
   ],
   "drums": [

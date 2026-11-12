@@ -201,11 +201,11 @@ static M64Event *prepare(ExportJob *j, const DmeContext *c, const DmeHost *host,
     j->source_programs = malloc(((size_t)c->event_count + 1) * sizeof(*j->source_programs));
     free(j->stock_values);
     j->stock_values = malloc(((size_t)c->event_count + 1) * sizeof(*j->stock_values));
-    M64PortLayout *layout = calloc(1, sizeof(*layout));
+    EsPortLayout *layout = calloc(1, sizeof(*layout));
 
     if (!events || !j->source_programs || !j->stock_values || !layout ||
         !es_mapping_job_values(j->custom, target, c, j->stock_values, error, (size_t)cap) ||
-        !m64_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
+        !es_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
         snprintf(error, (size_t)cap, "Cannot allocate SM64 timeline.");
         *status = DME_NOMEM;
         free(events);
@@ -218,7 +218,7 @@ static M64Event *prepare(ExportJob *j, const DmeContext *c, const DmeHost *host,
         const DmeEvent *e = &c->events[i];
         uint32_t status = e->status;
 
-        if (status >= MIDI_STATUS && status < MIDI_SYSTEM && e->port < M64_PORTS) {
+        if (status >= MIDI_STATUS && status < MIDI_SYSTEM && e->port < ES_PORTS) {
             status = (status & MIDI_STATUS_MASK) | layout->out[status & MIDI_CHANNEL_MASK][e->port];
         }
 
@@ -244,16 +244,9 @@ static M64Event *prepare(ExportJob *j, const DmeContext *c, const DmeHost *host,
 
     /* Loop points override whole-song looping. A missing end repeats to the song end. */
     if (j->loop_points && c->loop_points) {
-        uint64_t start = c->loop_points & DME_LOOP_START ? c->loop_start : 0;
-        uint64_t end = c->loop_points & DME_LOOP_END ? c->loop_end : 0;
+        uint64_t start, end;
 
-        if (end >= c->duration) {
-            end = 0;
-        }
-
-        if (start >= (end ? end : c->duration)) {
-            snprintf(error, (size_t)cap,
-                     "M64 - Loop Start must come before M64 - Loop End and the end of the song.");
+        if (!es_loop_region(c, &start, &end, error, (size_t)cap)) {
             free(events);
             j->request.events = NULL;
             return NULL;
@@ -364,8 +357,7 @@ static void report(const ExportJob *j, const DmeHost *host, const M64Result *res
     }
 }
 
-/* The manifest records the temporary sequence memory the song needs. */
-static uint64_t required_memory(const M64Result *result) {
+uint64_t m64_required_memory(const M64Result *result) {
     M64ArtifactView manifest;
     const char *key = "\"minimum_temporary_sequence_pool_bytes\": ";
 
@@ -559,7 +551,7 @@ static int32_t DME_CALL run(void *job, const DmeContext *c, const DmeHost *host,
 
     /* When the song needs source edits for its sequence memory, the package explains them for
        the chosen memory option. */
-    uint64_t required = ok ? required_memory(result) : 0;
+    uint64_t required = ok ? m64_required_memory(result) : 0;
     M64MemoryPlan plan = m64_memory_plan(required);
     bool hacker = j->target == M64_GAME_HACKERSM64;
 

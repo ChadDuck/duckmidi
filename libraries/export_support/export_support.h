@@ -154,6 +154,10 @@ DES_API bool es_repository_baseline(EsRepository *, const char *path, EsFile *, 
 /* Whether a path existed at initialization, without reading its content. */
 DES_API bool es_repository_baseline_exists(EsRepository *, const char *path, bool *exists, char *,
                                            size_t);
+/* Whether a path exists in the state a plan describes (its own files, then the baseline), without
+   reading its content. A NULL plan asks the baseline. */
+DES_API bool es_plan_exists(EsRepository *, const EsPlan *, const char *path, bool *exists, char *,
+                            size_t);
 /* Current checkout content. */
 DES_API bool es_repository_read(EsRepository *, const char *path, EsFile *, char *, size_t);
 DES_API const char *es_repository_identity(const EsRepository *);

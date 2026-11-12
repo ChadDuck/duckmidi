@@ -1,4 +1,4 @@
-/* Loads generated schema-9 through schema-17 projects and checks their conversion to the current
+/* Loads generated schema-9 through schema-18 projects and checks their conversion to the current
    schema. The writers below follow those layouts field by field; they exist only to produce these
    fixtures. */
 #include "core/duck.h"
@@ -6,17 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static int checks;
-
-static void check(bool ok, const char *text) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL project compat: %s\n", text);
-        exit(1);
-    }
-}
+#define TEST_NAME "project compat"
+#include "test_common.h"
 
 static void u32(DmBytes *b, uint32_t n) {
     uint8_t v[4] = {(uint8_t)n, (uint8_t)(n >> 8), (uint8_t)(n >> 16), (uint8_t)(n >> 24)};
@@ -198,11 +189,15 @@ static void point10(DmBytes *b, uint32_t schema, double beat, double previous, i
 
     if (schema >= 17) {
         v10(b, type == MIDI_PITCH_BEND && curve > 0); /* Fixed pitch reference. */
-        v10(b, 0);                                 /* Detached. */
+        v10(b, 0);                                    /* Detached. */
+    }
+
+    if (schema >= 18) {
+        v10(b, 0); /* Bend root units. */
     }
 }
 
-/* One pattern with one note, one placement and modulation data, saved as schema 10 through 17.
+/* One pattern with one note, one placement and modulation data, saved as schema 10 through 18.
    The schema-15 fixture has a Graph resolution, discrete bars and a percussion mapping. */
 static DmBytes line_project(uint32_t schema) {
     DmBytes body = {0}, stored = {0}, file = {0};
@@ -211,12 +206,12 @@ static DmBytes line_project(uint32_t schema) {
     r10(&body, 120);
     v10(&body, 4);
     v10(&body, 4);
-    v10(&body, 0); /* Source port. */
-    v10(&body, 0); /* Sequence. */
-    v10(&body, 1); /* Source format. */
-    v10(&body, 1); /* Sequence count. */
-    v10(&body, 1); /* Port count. */
-    v10(&body, 0); /* Ports. */
+    v10(&body, 0);            /* Source port. */
+    v10(&body, 0);            /* Sequence. */
+    v10(&body, 1);            /* Source format. */
+    v10(&body, 1);            /* Sequence count. */
+    v10(&body, 1);            /* Port count. */
+    v10(&body, 0);            /* Ports. */
     v10(&body, schema >= 15); /* Percussion override. */
 
     for (int i = 0; i < 128; ++i) {
@@ -321,11 +316,11 @@ static DmBytes line_project(uint32_t schema) {
         v10(&body, 2); /* Patch replacements. */
 
         for (unsigned i = 0; i < 2; ++i) {
-            v10(&body, i);          /* Port. */
-            v10(&body, 0);          /* Channel. */
-            v10(&body, 130);        /* Bank. */
-            v10(&body, 6);          /* Program. */
-            v10(&body, 0);          /* Drums. */
+            v10(&body, i);   /* Port. */
+            v10(&body, 0);   /* Channel. */
+            v10(&body, 130); /* Bank. */
+            v10(&body, 6);   /* Program. */
+            v10(&body, 0);   /* Drums. */
             /* Schema 13 stored a sample revision; schema 14 marks a current reference. */
             v10(&body, i ? 0 : schema >= 14 ? 1 : 73);
             t10(&body, i ? "" : "generated/library");
@@ -550,16 +545,15 @@ static void check_legacy_graph(void) {
     DmBytes old = line_project(15);
     check(dm_unpack(&p, old.data, old.size, error, sizeof(error)), error);
     check(p.pattern_count == 1 && p.automation_count == 4 && p.percussion_midi[36] == 61 &&
-              dm_graph_resolution(&p.patterns[0], -2) == 32 &&
+              dm_graph_resolution(&p.patterns[0], DM_EVENT_BEND) == 32 &&
               dm_graph_resolution(&p.patterns[0], MIDI_CC_MODULATION) == 32 &&
               dm_graph_resolution(&p.patterns[0], MIDI_CC_EXPRESSION) == 32 &&
               !dm_graph_resolution(&p.patterns[0], MIDI_CC_SUSTAIN),
           "schema-15 Graph patterns retain their resolution on all eligible event types");
     DmBytes midi = old_metadata_midi(&p, &old);
     check(dm_import(&q, midi.data, midi.size, -1, 0, error, sizeof(error)), error);
-    check(q.pattern_count == 1 &&
-              !memcmp(q.patterns[0].graph_lanes, p.patterns[0].graph_lanes,
-                      sizeof(p.patterns[0].graph_lanes)),
+    check(q.pattern_count == 1 && !memcmp(q.patterns[0].graph_lanes, p.patterns[0].graph_lanes,
+                                          sizeof(p.patterns[0].graph_lanes)),
           "embedded schema-15 Graph settings also convert");
     dm_bytes_free(&midi);
     dm_bytes_free(&old);
@@ -610,7 +604,48 @@ static void check_legacy_pitch_units(void) {
     dm_project_free(&p);
 }
 
+static void parallel_note_rows(void) {
+    DmProject p, loaded;
+    dm_project_init(&p);
+    dm_project_init(&loaded);
+    char error[256] = {0};
+    DmBytes old = line_project(18), saved = {0};
+    check(dm_unpack(&p, old.data, old.size, error, sizeof(error)), error);
+
+    for (int c = 0; c < 16; ++c) {
+        check(p.note_rows[c] == 1, "schema-18 channels start with one note row");
+    }
+
+    check(p.clip_count == 1 && p.clips[0].row == 0,
+          "schema-18 placements start on the first note row");
+    p.note_rows[0] = 3;
+    p.clips[0].row = 2;
+    check(dm_pack(&p, &saved) && dm_unpack(&loaded, saved.data, saved.size, error, sizeof(error)),
+          error);
+    check(loaded.note_rows[0] == 3 && loaded.clips[0].row == 2,
+          "schema-19 round trip preserves parallel note rows");
+    dm_bytes_free(&saved);
+
+    p.clips[0].row = 3;
+    check(dm_pack(&p, &saved) && !dm_unpack(&loaded, saved.data, saved.size, error, sizeof(error)),
+          "loading rejects a placement outside its channel's note rows");
+    dm_bytes_free(&saved);
+    p.clips[0].row = 0;
+    p.note_rows[0] = 0;
+    check(dm_pack(&p, &saved) && !dm_unpack(&loaded, saved.data, saved.size, error, sizeof(error)),
+          "loading rejects zero note rows");
+    dm_bytes_free(&saved);
+    p.note_rows[0] = DM_NOTE_ROWS + 1;
+    check(dm_pack(&p, &saved) && !dm_unpack(&loaded, saved.data, saved.size, error, sizeof(error)),
+          "loading rejects excessive note rows");
+    dm_bytes_free(&saved);
+    dm_bytes_free(&old);
+    dm_project_free(&p);
+    dm_project_free(&loaded);
+}
+
 int main(void) {
+    parallel_note_rows();
     check_legacy_pitch_units();
     check_legacy_bends();
     check_patch_replacements();

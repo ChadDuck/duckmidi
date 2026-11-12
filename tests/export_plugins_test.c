@@ -296,6 +296,7 @@ static void repository_round_trip(Editor *e, size_t m64) {
 
 void test_export_dropdown(Editor *e, int target);
 void test_export_mapping_row(Editor *e, int field_index, int row);
+void test_export_mapping_reset(Editor *e, int field_index);
 void test_export_warning(Editor *e);
 void test_m64_sequence_dropdown(Editor *e, int target);
 void test_export_custom_panel(Editor *e);
@@ -441,6 +442,17 @@ static void set_int(Editor *e, size_t i, const char *id, int kind, int value) {
     assert(ed_export_set(e, i, id, (DmeValue){(uint32_t)kind, value, NULL}));
 }
 
+/* The value of the mapping choice whose label names the sample, or -1 when none lists it. */
+static int choice_for(const DmeField *mapping, const char *sample) {
+    for (uint32_t i = 0; i < mapping->choice_count; i++) {
+        if (!strncmp(mapping->choices[i].label, sample, strlen(sample))) {
+            return mapping->choices[i].value;
+        }
+    }
+
+    return -1;
+}
+
 static void capture(Editor *e, const char *name) {
     ui_frame();
     editor_frame(e, 1000, 1000);
@@ -560,22 +572,6 @@ int main(void) {
     const DmeField *mapped = field(ui, "mapping");
     assert(mapped->row_count == 2);
     assert(mapped->rows[0].custom && mapped->rows[0].custom->catalog->set_count == 1);
-    if (getenv("DUCKMIDI_TEST_HISTORY_ONLY")) {
-        make_checkout();
-        ed_export_set_repository(e, m64, fixture_path(SANDBOX "/sm64"));
-        assert(ed_export_repository_action(e, DME_REPOSITORY_INSPECT, 0, NULL));
-        wait_work(e);
-        test_export_history_panel(e);
-        ed_export_free(e);
-        dm_project_free(&e->project);
-        free(e);
-        ui_shutdown();
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 0;
-    }
-
     test_export_catalog_refresh(e, fixture);
     test_export_custom_panel(e);
     ed_export_start(e, m64, "agents/reports/export-plugins/worker/saved-custom.zip");
@@ -744,15 +740,23 @@ int main(void) {
     mapped = field(settings(e, m64), "mapping");
     assert(!strcmp(mapped->rows[0].id, "melodic.0.0") &&
            !strcmp(mapped->rows[1].id, "melodic.1.0"));
+    /* Similar instruments follow the catalog's curated alternates: the bright piano first for
+       the grand piano. */
+    assert(mapped->rows[0].similar_count && mapped->rows[0].similar[0].value == 1);
     assert(!ed_export_set(e, m64, "voices", (DmeValue){DME_INT, 64, NULL}));
     assert(!ed_export_set(e, m64, "melodic.7.12", (DmeValue){DME_CHOICE, 40, NULL}));
     set_text(e, m64, "sequence_name", "03_custom_worker");
     set_text(e, m64, "bank_name", "26_custom_worker");
-    set_int(e, m64, "melodic.1.0", DME_CHOICE, 40);
+    /* Every stock instruments-bank sample is a mapping choice, including samples no GM program
+       or drum note uses, such as the second French horn register and the sleigh bells. */
+    int horns = choice_for(field(settings(e, m64), "mapping"), "45_french_horns_C4");
+    assert(horns >= 128);
+    set_int(e, m64, "melodic.1.0", DME_CHOICE, horns);
     set_int(e, m64, "percussion", DME_BOOL, 1);
     ui = settings(e, m64);
     mapped = field(ui, "mapping");
     assert(mapped->row_count == 1 && !strcmp(mapped->rows[0].id, "drum.36"));
+    assert(choice_for(mapped, "2F_sleigh_bells") >= 128 && choice_for(mapped, "02_violin_B2") >= 0);
     set_int(e, m64, "drum.36", DME_CHOICE, 38);
     set_int(e, m64, "percussion", DME_BOOL, 0);
     DmBytes before = {0}, after = {0};
@@ -770,7 +774,7 @@ int main(void) {
     char error[512];
     assert(
         dm_read("agents/reports/export-plugins/worker/mapped.zip", &archive, error, sizeof(error)));
-    assert(contains(archive, "44_grand_piano") && contains(archive, "02_violin") &&
+    assert(contains(archive, "44_grand_piano") && contains(archive, "45_french_horns_C4") &&
            contains(archive, "12_snare"));
     dm_bytes_free(&archive);
     test_export_dropdown(e, (int)fixture + 1);
@@ -783,6 +787,11 @@ int main(void) {
     }
 
     test_export_mapping_row(e, mapping_index, 1);
+    test_export_mapping_reset(e, mapping_index);
+    mapped = field(settings(e, m64), "mapping");
+    assert(mapped->rows[1].value == mapped->rows[1].default_value &&
+           mapped->rows[0].value == mapped->rows[0].default_value);
+    set_int(e, m64, "melodic.1.0", DME_CHOICE, horns);
     capture(e, "agents/reports/export-plugins/m64-options.bmp");
     set_int(e, m64, "percussion", DME_BOOL, 1);
     settings(e, m64);
@@ -944,9 +953,9 @@ int main(void) {
     assert(SDL_GetPathInfo("agents/reports/export-plugins/worker/remembered.zip", NULL));
     snprintf(e->settings_path, DM_PATH,
              "agents/reports/export-plugins/worker/export-preferences.ini");
-    assert(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names));
+    assert(dm_preferences_save(e));
     e->export_folder[0] = 0;
-    assert(dm_preferences_load(e, ed_shortcut_schema()));
+    assert(dm_preferences_load(e));
     assert(!strcmp(e->export_folder, "agents/reports/export-plugins/worker/"));
     repository_round_trip(e, m64);
     test_export_history_panel(e);

@@ -71,7 +71,7 @@ static void buttons(Editor *e) {
 
 static void mixer(Editor *e) {
     ed_new_project(e);
-    e->context = 0;
+    e->edit_focus = FOCUS_NONE;
     assert(e->project.channels[0].enabled);
     test_midi_mixer_learn(e);
     assert(ed_midi_binding_learning(e, volume));
@@ -147,7 +147,7 @@ static void mixer(Editor *e) {
 }
 
 static void recording(Editor *e) {
-    e->context = 2;
+    ed_focus_timeline(e, CONTEXT_ROLL);
     e->pattern_mode = true;
     e->wait_input = false;
     e->overwrite = true;
@@ -165,7 +165,7 @@ static void recording(Editor *e) {
     assert(e->project.automation_count == 1);
     DmAutomation recorded = e->project.automation[0];
     assert(recorded.type == MIDI_CONTROL && recorded.a == 74 && recorded.b == 52);
-    assert(dm_graph_resolution(ed_pattern(e), 74) == 16);
+    assert(dm_graph_resolution(ed_pattern(e), 74) == DM_GRAPH_MAX);
 
     /* A transport binding can finish a take during the drain without entering it again. */
     bind(e, (EdMidiTarget){.kind = ED_MIDI_STOP}, false, MIDI_CONTROL, 116, 0);
@@ -198,6 +198,28 @@ static void recording(Editor *e) {
     ed_toggle_record(e);
 }
 
+static void event_bindings(Editor *e) {
+    fixture_drain(e->midi_input, 0, NULL);
+    EdMidiTarget modulation = {.kind = ED_MIDI_EVENT_MODULATION};
+    EdMidiTarget bend = {.kind = ED_MIDI_EVENT_BEND};
+    test_midi_binding_controls(e, modulation);
+    assert(ed_midi_binding_learning(e, modulation));
+    emit(e, 0, MIDI_CONTROL | 2, 21, 0);
+    assert(ed_midi_binding_find(e, modulation));
+    ed_midi_binding_clear(e, modulation);
+    assert(!ed_midi_binding_find(e, modulation));
+    bind(e, modulation, true, MIDI_PITCH_BEND | 2, 0, 64);
+    EdMidiBinding *binding = ed_midi_binding_find(e, modulation);
+    assert(binding->source.kind == DM_MIDI_SOURCE_BEND && !binding->source.number);
+    emit(e, 0, MIDI_PITCH_BEND | 2, 127, 127);
+    assert(!fixture_drain(e->midi_input, 0, NULL));
+    bind(e, bend, false, MIDI_CHANNEL_PRESSURE | 3, 40, 0);
+    binding = ed_midi_binding_find(e, bend);
+    assert(binding->source.kind == DM_MIDI_SOURCE_PRESSURE && !binding->source.number);
+    emit(e, 0, MIDI_CHANNEL_PRESSURE | 3, 127, 0);
+    assert(!fixture_drain(e->midi_input, 0, NULL));
+}
+
 static void preferences(Editor *e) {
     snprintf(e->settings_path, sizeof(e->settings_path),
              "agents/reports/midi-bindings-fixture.ini");
@@ -205,13 +227,20 @@ static void preferences(Editor *e) {
     snprintf(source->device, sizeof(source->device), "Knob, \"quoted\" name");
     ed_midi_binding_find(e, (EdMidiTarget){.kind = ED_MIDI_CHANNEL_NEXT})->toggle = true;
     size_t count = ed_midi_binding_count(e);
-    assert(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names));
+    assert(dm_preferences_save(e));
     ed_midi_bindings_clear_all(e);
     assert(!ed_midi_binding_count(e));
-    assert(dm_preferences_load(e, ed_shortcut_schema()) && ed_midi_binding_count(e) == count);
+    assert(dm_preferences_load(e) && ed_midi_binding_count(e) == count);
     assert(!strcmp(ed_midi_binding_find(e, pan)->source.device, "Knob, \"quoted\" name"));
     EdMidiBinding *next = ed_midi_binding_find(e, (EdMidiTarget){.kind = ED_MIDI_CHANNEL_NEXT});
     assert(next && next->toggle && !*next->source.device);
+    EdMidiBinding *event =
+        ed_midi_binding_find(e, (EdMidiTarget){.kind = ED_MIDI_EVENT_MODULATION});
+    assert(event && event->source.kind == DM_MIDI_SOURCE_BEND && event->source.channel == 2 &&
+           !event->source.number && !*event->source.device && !event->toggle);
+    event = ed_midi_binding_find(e, (EdMidiTarget){.kind = ED_MIDI_EVENT_BEND});
+    assert(event && event->source.kind == DM_MIDI_SOURCE_PRESSURE && event->source.channel == 3 &&
+           !strcmp(event->source.device, "Fixture 0") && !event->toggle);
     SDL_RemovePath(e->settings_path);
     snprintf(e->settings_path, sizeof(e->settings_path),
              "agents/reports/midi-invalid-bindings-fixture.ini");
@@ -219,7 +248,7 @@ static void preferences(Editor *e) {
                                   "action.play=\"\",16,cc,75,momentary\n"
                                   "action.stop=\"Fixture 0\",16,cc,75,toggle\n";
     assert(SDL_SaveFile(e->settings_path, invalid, sizeof(invalid) - 1));
-    assert(!dm_preferences_load(e, ed_shortcut_schema()) && ed_midi_binding_count(e) == count);
+    assert(!dm_preferences_load(e) && ed_midi_binding_count(e) == count);
     SDL_RemovePath(e->settings_path);
 }
 
@@ -271,6 +300,7 @@ int main(void) {
     buttons(e);
     mixer(e);
     recording(e);
+    event_bindings(e);
     preferences(e);
     reconnect(e);
     test_midi_binding_clear_all(e);

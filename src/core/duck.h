@@ -9,14 +9,13 @@
 
 #define DM_PORT_COMBINED 256 /* Virtual source view; exported channel messages use port 0. */
 #define DM_LANES 32
+#define DM_NOTE_ROWS 16
 #define DM_PPQ 960
 #define DM_PIANO_KEYS 37
-#define DM_PROJECT_SCHEMA 18
-#define DM_PROJECT_SCHEMA_PREVIOUS 17 /* Still loaded through src/core/project_compat.c. */
+#define DM_PROJECT_SCHEMA 19
 #define DM_PROJECT_SCHEMA_OLDEST 9    /* Schema 9 (0.10.1) also loads, converted through 10. */
 #define DM_NOTE_PORTS 128
 #define DM_PATTERN_COLORS 16
-#define DM_DRUM_CHANNEL 9 /* General MIDI channel 10. */
 /* Loop points for exporters, stored as marker meta events so they survive MIDI files. */
 #define DM_LOOP_START_MARKER "loopStart"
 #define DM_LOOP_END_MARKER "loopEnd"
@@ -47,7 +46,13 @@ typedef struct {
 } DmNote;
 
 /* DM_GRAPH_DEFAULT is the bar resolution a lane gets when it first becomes a Graph (1/16). */
-enum { DM_GRAPH_POINT = 1, DM_GRAPH_DEFAULT = 16, DM_GRAPH_PITCH_LANE = 128, DM_GRAPH_LANES };
+enum {
+    DM_GRAPH_POINT = 1,
+    DM_GRAPH_DEFAULT = 16,
+    DM_GRAPH_MAX = 256,
+    DM_GRAPH_PITCH_LANE = 128,
+    DM_GRAPH_LANES
+};
 
 typedef struct {
     char name[64];
@@ -76,6 +81,7 @@ typedef struct {
     uint8_t selected;
     double length; /* 0 uses the pattern duration; automation placements may override it. */
     int lane;      /* 0 note row, 1..DM_LANES automation subrow. */
+    int row;       /* Note row within the channel; automation placements use 0. */
     double offset; /* Pattern beat shown at the placement start; slices share one pattern. */
 } DmClip;
 
@@ -103,7 +109,17 @@ DmPitchState dm_pitch_state(const DmAutomation *items, size_t count, int pattern
                             unsigned port);
 double dm_pitch_range(const DmAutomation *items, size_t count, DmAutomation point);
 
-/* Graph-capable event types and their stored lanes. Pitch bend uses event type -2. */
+/* The event type of an event lane or automation pattern (DmPattern.event): a controller number,
+   or one of these. Saved in projects. */
+enum {
+    DM_EVENT_PROGRAM = -1,
+    DM_EVENT_BEND = -2,
+    DM_EVENT_VELOCITY = -3, /* Editor only: note velocities shown as a lane. */
+    DM_EVENT_CHANNEL_PRESSURE = -4,
+    DM_EVENT_KEY_PRESSURE = -5
+};
+
+/* Graph-capable event types and their stored lanes. */
 int dm_graph_lane(int event);
 int dm_automation_graph_lane(DmAutomation point);
 int dm_graph_resolution(const DmPattern *pattern, int event);
@@ -165,6 +181,7 @@ typedef struct {
     uint8_t percussion_keys[128]; /* 0 unassigned; otherwise PC piano-key index + 1. */
     uint8_t percussion_midi[128]; /* 0 unassigned; otherwise incoming MIDI note + 1. */
     int lane_count[16];
+    int note_rows[16];
     char lane_names[16][DM_LANES][64];
     DmPattern *patterns;
     size_t pattern_count, pattern_capacity;
@@ -222,6 +239,8 @@ void dm_patch_replacement_clear(DmProject *project, DmPatchKey key);
 void dm_channel_ports(const DmProject *project, int channel, bool used[DM_NOTE_PORTS]);
 int dm_pattern_add(DmProject *p, const char *name);
 int dm_pattern_copy(DmProject *p, int source);
+/* Full-copy LFOs and unsliced placements; otherwise fit a copy of the visible contents. */
+int dm_clip_make_unique(DmProject *p, size_t index);
 void dm_pattern_remove(DmProject *p, int pattern);
 /* Moves pattern "from" in front of the pattern at "before" (pattern_count moves it to the end),
    updating placements and event points. Returns its new index. */
@@ -300,6 +319,8 @@ void dm_project_upgrade(DmProject *p, uint32_t schema);
 /* An unused channel's settings; only channel 10 starts as a percussion part. */
 DmChannel dm_channel_default(int channel);
 bool dm_channel_drums(const DmProject *p, int channel);
+/* Exchanges the two MIDI channel numbers and all data owned by them in the active view. */
+bool dm_channel_swap(DmProject *p, int a, int b);
 bool dm_view_switch(DmProject *p, int port, int sequence, char *error, size_t cap);
 bool dm_read(const char *path, DmBytes *out, char *error, size_t cap);
 bool dm_write(const char *path, const void *data, size_t size, char *error, size_t cap);
@@ -316,6 +337,9 @@ bool dm_output_write(DmOutput *out, const void *data, size_t size, char *error, 
 bool dm_output_finish(DmOutput *out, bool commit, char *error, size_t cap);
 bool dm_schedule(const DmProject *p, DmSchedule *s);
 void dm_schedule_free(DmSchedule *s);
+/* Microseconds per quarter note of a tempo meta event (FF 51 03 tt tt tt), or 0 when the
+   message is not a well-formed tempo with a non-zero value. */
+uint32_t dm_tempo_microseconds(const uint8_t *message, size_t size);
 double dm_beat_seconds(const DmProject *p, double beat);
 double dm_seconds_beat(const DmProject *p, double seconds);
 double dm_playback_bpm(const DmProject *p, double seconds);

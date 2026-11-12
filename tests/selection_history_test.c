@@ -1,15 +1,7 @@
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool ok, const char *text) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL selection_history: %s\n", text);
-        exit(1);
-    }
-}
-
+#define TEST_NAME "selection_history"
+#include "test_common.h"
+extern void test_selection_clicks_ui(Editor *, void (*)(bool, const char *));
 void test_selection_history_ui(Editor *e, void (*check)(bool, const char *));
 
 static void editing_focus(Editor *e) {
@@ -182,12 +174,7 @@ static void copy_seeking(Editor *e) {
 }
 
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("selection_history checks", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "hidden renderer");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", "", true);
+    Editor *e = test_editor_open("selection_history checks", (TestDesktop){0});
     editing_focus(e);
     history(e);
     pattern_note_selection(e);
@@ -195,11 +182,11 @@ int main(void) {
     copy_seeking(e);
     editor_smoke(e);
     test_selection_history_ui(e, check);
+    ed_new_project(e);
+    e->selected_pattern = 0;
+    e->selected_channel = e->pattern_channel = 0;
+    e->selected_clip = e->playlist_context_clip = -1;
+    test_selection_clicks_ui(e, check);
     printf("PASS selection_history: %d focused checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

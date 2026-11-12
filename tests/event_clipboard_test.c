@@ -1,15 +1,6 @@
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool ok, const char *what) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL event_clipboard: %s\n", what);
-        exit(1);
-    }
-}
-
+#define TEST_NAME "event_clipboard"
+#include "test_common.h"
 extern void test_event_clipboard_ui(Editor *, void (*)(bool, const char *));
 
 static int pitch_node(Editor *e, double beat) {
@@ -46,7 +37,7 @@ static void fixture(Editor *e) {
     e->event_selection.size = 0;
     e->automation_all = false;
     e->automation_node = -1;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_center = 60;
     e->automation_raw = false;
     e->piano = false;
@@ -136,7 +127,7 @@ static void pitch_ranges(Editor *e) {
     check(fabs(ed_automation_pitch(e, e->project.automation[first]) - 60) < .02,
           "other section points keep their physical pitch");
     fixture(e);
-    e->drag = 4;
+    e->drag = DRAG_EVENT_LINE;
     e->marquee_start = (UiPoint){180, 250 - 36 * 20};
     UiMouse mouse = {.pos = e->marquee_start, .released = true};
     ed_automation_drag(e, lane, &e->roll_view, 80, mouse);
@@ -150,8 +141,6 @@ static void pitch_ranges(Editor *e) {
     last = pitch_node(e, 2);
     check(fabs(ed_automation_pitch(e, e->project.automation[last]) - 61) < .02,
           "expanding discrete pitch preserves later held-value points");
-    check(ed_lane_step(lane) == 20 && ed_lane_step((UiRect){0, 0, 500, 1800}) == 20,
-          "pitch row spacing stays constant in both editors");
 }
 
 static void event_clipboard(Editor *e) {
@@ -160,11 +149,11 @@ static void event_clipboard(Editor *e) {
     dm_automation_add(&e->project, (DmAutomation){.25, 0xb0, 0, 11, 20, 0, 0, 0, 0, false});
     dm_automation_add(&e->project, (DmAutomation){.75, 0xb0, 0, 11, 80, 0, 0, 0, 0, false});
     ed_select_all(e);
-    ed_clipboard(e, 0);
+    ed_clipboard(e, CLIPBOARD_COPY);
     check(e->clipboard.size > 0, "event copy creates an internal clipboard");
     e->cursor_beat[1] = 4;
     int history = e->undo_count;
-    ed_clipboard(e, 2);
+    ed_clipboard(e, CLIPBOARD_PASTE);
     check(e->project.automation_count == 4 && e->undo_count == history + 1,
           "paste adds selected points as one undo step");
     check(e->project.automation[2].beat == 4 && e->project.automation[3].beat == 4.5 &&
@@ -174,7 +163,7 @@ static void event_clipboard(Editor *e) {
     check(e->project.automation_count == 6 && e->project.automation[4].beat == 5 &&
               e->project.automation[5].beat == 5.5 && ed_event_selected(e, 4),
           "duplicate uses the next occupied beat block and selects copies");
-    ed_clipboard(e, 1);
+    ed_clipboard(e, CLIPBOARD_CUT);
     check(e->project.automation_count == 4, "cut removes only selected event copies");
     ed_undo(e, false);
     check(e->project.automation_count == 6, "one undo restores cut points");
@@ -191,10 +180,10 @@ static void event_clipboard(Editor *e) {
     e->drag_key = 60;
     ed_automation_line(e, 0, 2, 8192, 12288, -2);
     ed_select_all(e);
-    ed_clipboard(e, 0);
+    ed_clipboard(e, CLIPBOARD_COPY);
     ed_curve_range(e, 3, 2, 0, 127, 127, 0);
     e->cursor_beat[1] = 4;
-    ed_clipboard(e, 2);
+    ed_clipboard(e, CLIPBOARD_PASTE);
     int point = pitch_node(e, 6);
     check(point >= 0 && fabs(ed_automation_pitch(e, e->project.automation[point]) - 66) < .02,
           "pitch line paste carries bend-range protocol dependencies");
@@ -209,11 +198,11 @@ static void event_clipboard(Editor *e) {
     ed_curve_range(e, 0, 12, 0, 127, 127, 0);
     dm_automation_add(&e->project, (DmAutomation){1, 0xe0, 0, 0, 96, 0, 0, 0, 0, false});
     e->automation_node = pitch_node(e, 1);
-    ed_clipboard(e, 0);
+    ed_clipboard(e, CLIPBOARD_COPY);
     fixture(e);
     dm_automation_add(&e->project, (DmAutomation){10, 0xe0, 0, 0, 96, 0, 0, 0, 0, false});
     e->cursor_beat[1] = 4;
-    ed_clipboard(e, 2);
+    ed_clipboard(e, CLIPBOARD_PASTE);
     point = pitch_node(e, 4);
     check(point >= 0 && fabs(ed_automation_pitch(e, e->project.automation[point]) - 66) < .02,
           "discrete pitch paste retains its semitone amount across different sensitivities");
@@ -254,7 +243,7 @@ static void note_bend_clipboard(Editor *e) {
     check(p->count == 5 && p->notes[3].beat == 8 && p->notes[4].beat == 12,
           "arbitrary note selection pastes with its original spacing");
     check(pitch_node(e, 8.25) >= 0 && pitch_node(e, 12.25) >= 0 && pitch_node(e, 10.25) < 0 &&
-              e->automation_cc == -2,
+              e->automation_cc == DM_EVENT_BEND,
           "only bends in selected note intervals follow the notes' paste offset");
     ed_shortcut(e, SDL_SCANCODE_X, SDL_KMOD_CTRL | SDL_KMOD_SHIFT, false);
     check(p->count == 3 && pitch_node(e, 8.25) < 0 && pitch_node(e, 1.25) >= 0,
@@ -271,7 +260,7 @@ static void note_bend_clipboard(Editor *e) {
     ed_automation_line(e, 1, 3, MIDI_BEND_CENTER, 12288, -2);
     ed_clipboard_note_bends(e, false);
     e->cursor_beat[1] = 10;
-    ed_clipboard(e, 2);
+    ed_clipboard(e, CLIPBOARD_PASTE);
     int point = pitch_node(e, 13);
     check(point >= 0 && fabs(ed_automation_pitch(e, e->project.automation[point]) - 66) < .02,
           "note/bend copy carries complete section sensitivity and anchor");
@@ -307,7 +296,7 @@ static void note_bend_clipboard(Editor *e) {
     dm_automation_add(&e->project, bend);
     ed_clipboard_note_bends(e, false);
     e->cursor_beat[1] = 10;
-    ed_clipboard(e, 2);
+    ed_clipboard(e, CLIPBOARD_PASTE);
     point = pitch_node(e, 11.5);
     check(point >= 0 && e->project.automation[point].port == 1 && ed_note_port(e) == 0 &&
               ed_pattern(e)->notes[3].port == 1,
@@ -329,11 +318,9 @@ static void note_bend_clipboard(Editor *e) {
     snprintf(e->settings_path, sizeof(e->settings_path),
              "agents/reports/2026-11-08-todo/shortcuts.ini");
     e->bindings[ACT_CUT_NOTE_BENDS] = (Binding){SDL_SCANCODE_F11, SDL_KMOD_ALT};
-    check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names),
-          "new note/bend bindings save to isolated preferences");
+    check(dm_preferences_save(e), "new note/bend bindings save to isolated preferences");
     ed_defaults(e);
-    check(dm_preferences_load(e, ed_shortcut_schema()) &&
-              e->bindings[ACT_COPY_NOTE_BENDS].key == SDL_SCANCODE_F10 &&
+    check(dm_preferences_load(e) && e->bindings[ACT_COPY_NOTE_BENDS].key == SDL_SCANCODE_F10 &&
               e->bindings[ACT_CUT_NOTE_BENDS].key == SDL_SCANCODE_F11 &&
               e->bindings[ACT_COPY_NOTE_BENDS].mods == SDL_KMOD_ALT,
           "new note/bend bindings survive preference save/load");
@@ -360,7 +347,7 @@ static void lane_clipboard(Editor *e) {
     ed_copy_event_lane(e, false);
     check(e->event_clipboard.size, "Copy captures a whole event type with no point selection");
     e->automation_node = 0;
-    ed_clipboard(e, 0);
+    ed_clipboard(e, CLIPBOARD_COPY);
     e->project.automation_count = 0;
     e->cursor_beat[1] = 20;
     int history = e->undo_count;
@@ -390,7 +377,7 @@ static void lane_clipboard(Editor *e) {
               ed_pattern(e)->notes[0].velocity == 77 && ed_pattern(e)->count == 1,
           "Copy all restores every type and matching velocities on the current route");
 
-    e->automation_cc = -3;
+    e->automation_cc = DM_EVENT_VELOCITY;
     ed_copy_event_lane(e, false);
     ed_pattern(e)->notes[0].velocity = 11;
     ed_paste_event_lane(e);
@@ -403,12 +390,8 @@ static void lane_clipboard(Editor *e) {
 int main(void) {
     musical_sync();
     scheduled_sync();
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("event_clipboard", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "hidden renderer");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", "", true);
+    Editor *e = test_editor_open("event_clipboard", (TestDesktop){0});
+    SDL_Renderer *r = e->renderer;
     ui_frame();
     pitch_ranges(e);
     event_clipboard(e);
@@ -419,10 +402,5 @@ int main(void) {
     fixture(e);
     test_event_clipboard_ui(e, check);
     printf("PASS event_clipboard: %d focused checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

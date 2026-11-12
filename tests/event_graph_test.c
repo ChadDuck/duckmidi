@@ -1,15 +1,6 @@
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool ok, const char *what) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL event graph: %s\n", what);
-        exit(1);
-    }
-}
-
+#define TEST_NAME "event graph"
+#include "test_common.h"
 static const UiRect lane = {100, 200, 800, 200};
 static View view = {.zoom = 1};
 static const float scale = 80;
@@ -141,7 +132,7 @@ static void converter(Editor *e) {
     check(ed_graph_resolution(e) == 16 && !ed_pattern(e)->mode && e->undo_count == history + 1,
           "Graph mode is one undo step at 1/16");
     check(!only_discrete(e, 0) && !dm_graph_resolution(ed_pattern(e), MIDI_CC_EXPRESSION) &&
-              !dm_graph_resolution(ed_pattern(e), -2),
+              !dm_graph_resolution(ed_pattern(e), DM_EVENT_BEND),
           "converting modulation leaves the expression ramp and pitch bend in Point");
     check(dm_schedule(&e->project, &after), "schedule the mixed Point and Graph lanes");
 
@@ -159,7 +150,7 @@ static void converter(Editor *e) {
     dm_schedule_free(&after);
     e->automation_cc = MIDI_CC_EXPRESSION;
     ed_graph_mode(e, 0, 32);
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     ed_graph_mode(e, 0, 16);
     e->automation_cc = MIDI_CC_MODULATION;
     check(ed_graph_resolution(e) == 16 && only_discrete(e, 0),
@@ -219,16 +210,16 @@ static void modes(Editor *e) {
     check(ed_pattern(e)->mode == 1 && !ed_graph_resolution(e), "LFO hides the Graph lanes");
     ed_graph_mode(e, 0, 32);
 
-    for (int cc = -5; cc <= 127; ++cc) {
+    for (int cc = DM_EVENT_KEY_PRESSURE; cc <= 127; ++cc) {
         e->automation_cc = cc;
 
-        if (cc == -3 || ed_point_only_event(cc)) {
+        if (cc == DM_EVENT_VELOCITY || ed_point_only_event(cc)) {
             check(dm_graph_lane(cc) < 0 && !ed_graph_resolution(e),
                   "velocity and point-only events never show a graph");
         }
     }
 
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     check(!ed_graph_resolution(e) && !ed_automation_raw(e), "pitch bend still opens in Point");
     add(e, bend_point(0, 8000, 0));
     ed_graph_mode_request(e, 0, 64);
@@ -242,7 +233,7 @@ static void modes(Editor *e) {
     ed_graph_mode_request(e, 0, 0);
     check(!e->graph_switch && !ed_graph_resolution(e),
           "an empty lane returns to Point without a warning");
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     ed_graph_mode(e, 0, 64);
     ed_graph_mode_request(e, 0, 0);
     check(e->graph_switch && !e->graph_switch_graph && ed_graph_resolution(e) == 64,
@@ -255,7 +246,7 @@ static void modes(Editor *e) {
     dm_project_init(&loaded);
     check(dm_pack(&e->project, &saved) &&
               dm_unpack(&loaded, saved.data, saved.size, e->status, sizeof(e->status)) &&
-              dm_graph_resolution(&loaded.patterns[0], -2) == 64 &&
+              dm_graph_resolution(&loaded.patterns[0], DM_EVENT_BEND) == 64 &&
               dm_graph_resolution(&loaded.patterns[0], MIDI_CC_MODULATION) == 32 &&
               !dm_graph_resolution(&loaded.patterns[0], MIDI_CC_EXPRESSION),
           "each event type's mode and resolution are saved and reloaded");
@@ -354,7 +345,7 @@ static void snapping(Editor *e) {
               ed_lane_value(e, lane, value_y(41), cc_point(0, MIDI_CC_MODULATION, 0, 0), true) ==
                   41,
           "drawn values snap to rows unless Alt is held");
-    e->automation_cc = -1;
+    e->automation_cc = DM_EVENT_PROGRAM;
     check(!ed_value_step(e, lane.h), "program changes have no value rows");
 }
 
@@ -408,7 +399,7 @@ static void mixed_clipboard(Editor *e) {
     ed_paste_event_lane(e);
     check(lane_points(e) == 9 && lane_point(e, .5, 64),
           "Paste all samples the modulation line at the destination's Graph resolution");
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     check(!ed_graph_resolution(e) && lane_points(e) == 2 && !only_discrete(e, 1),
           "Paste all keeps the pitch bend line in the destination's Point lane");
 }
@@ -493,7 +484,7 @@ static void drawing(Editor *e) {
     mouse.pos.y = value_y(127);
     check(ed_automation_plot(e, lane, &view, scale, mouse) < 0, "above the bar misses it");
 
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     ed_graph_paint(e, lane, &view, scale, (UiPoint){beat_x(4), lane.y + 20},
                    (UiPoint){beat_x(8), lane.y + lane.h - 20}, false);
 
@@ -511,13 +502,7 @@ static void drawing(Editor *e) {
 }
 
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("Event graph", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "software");
-    check(w && r && ui_init(w, r, NULL), "renderer");
-    Editor *e = calloc(1, sizeof(*e));
-    check(e != NULL, "editor allocation");
-    editor_init(e, w, r, NULL, "", "", true);
+    Editor *e = test_editor_open("Event graph", (TestDesktop){.renderer = "software"});
     converter(e);
     modes(e);
     painting(e);
@@ -529,11 +514,6 @@ int main(void) {
     gestures(e);
     drawing(e);
     printf("PASS event graph: %d checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
     return 0;
 }

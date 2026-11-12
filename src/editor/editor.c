@@ -23,6 +23,8 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->pattern_drag = e->rename_pattern = e->pattern_color_target = -1;
     e->automation_node = -1;
     e->graph_switch = false;
+    e->remove_note_row = false;
+    e->remove_note_row_channel = -1;
     e->graph_switch_uid = 0;
     e->graph_switch_event = e->graph_switch_graph = 0;
     e->event_lane_height = 0;
@@ -31,14 +33,13 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->selected_pattern = -1;
     e->instrument_channel = -1;
     e->instrument_preview = false;
-    e->preferences_raise = false;
     e->selected_clip = -1;
     e->context_note = -1;
     e->capture = -1;
     e->gesture_capture = -1;
     e->copy_button = -1;
     e->drag_index = -1;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->bend_range = 12;
     e->roll_view.zoom = e->playlist_view.zoom = 1;
     e->roll_view.scroll_y = 36 * 20;
@@ -47,6 +48,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->preview_source_channel = -1;
     e->channel_selected = true;
     e->midi_event_index = -1;
+    e->song_event_channel = -1;
     e->midi_split = 0; /* Centered when the MIDI Events window first opens. */
     e->ui_size = 1;
     e->status_time = 0;
@@ -167,7 +169,11 @@ void editor_free(Editor *e) {
     dm_bytes_free(&e->event_marquee_selection);
     dm_bytes_free(&e->record_original);
     dm_bytes_free(&e->midi_rows);
-    dm_bytes_free(&e->song_event_groups);
+
+    for (int i = 0; i < ED_SONG_EVENT_ROWS; ++i) {
+        dm_bytes_free(&e->song_event_groups[i].groups);
+    }
+
     dm_bytes_free(&e->midi_draft);
     dm_bytes_free(&e->midi_text);
     dm_bytes_free(&e->event_drag);
@@ -242,8 +248,7 @@ void editor_background(Editor *e) {
     }
 }
 
-void ed_welcome(Editor *e, float width, float body) {
-    (void)width;
+static void ed_welcome(Editor *e, float body) {
     ui_child(DM_TEXT_WELCOME, 0, body, false);
     UiPoint p = ui_cursor(), available = ui_available();
     float card_width = fminf(540, available.x), card_height = fminf(260, available.y);
@@ -276,17 +281,17 @@ static void editor_pointer_state(Editor *e) {
     UiMouse pointer = ui_mouse();
 
     if (!pointer.middle) {
-        e->pan_context = 0;
+        e->pan_context = CONTEXT_NONE;
     }
 
-    if (!pointer.right || pointer.shift) {
+    if (!pointer.right || ed_gesture_held(e, GESTURE_MENU, pointer)) {
         e->erase_active = false;
     }
 }
 
 /* roll_height is the piano roll alone. An open events section adds its own height above it, so
    the pattern editor grows upward over the playlist and the piano roll keeps its size. */
-float ed_events_section_height(Editor *e) {
+static float ed_events_section_height(Editor *e) {
     bool notes = !ed_pattern(e) || !ed_pattern(e)->kind;
     return notes && e->automation_open ? e->automation_height + 24 : 0;
 }
@@ -348,7 +353,7 @@ void editor_frame(Editor *e, float width, float height) {
     e->sidebar = ed_clampf(e->sidebar, 235, width * .45f);
 
     if (!e->active) {
-        ed_welcome(e, width, body);
+        ed_welcome(e, body);
     } else {
         ed_follow_preview_frame(e);
         UiPoint start = origin;

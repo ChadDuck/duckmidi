@@ -18,8 +18,8 @@ struct M64ReviewUi {
     unsigned count;
     ReviewItem *items;
     DmeReviewRow *rows;
-    DmeChoice melodic[128], drums[128];
-    char melodic_labels[128][220], drum_labels[128][220];
+    DmeChoice melodic[M64_CHOICE_LIMIT], drums[M64_CHOICE_LIMIT];
+    char melodic_labels[M64_CHOICE_LIMIT][220], drum_labels[M64_CHOICE_LIMIT][220];
     unsigned melodic_count, drum_count;
 };
 
@@ -68,6 +68,31 @@ static int score(int original, int preset, bool percussion) {
     return value;
 }
 
+/* Adds preset to out when it plays the issue's notes, is listed, and is not the current mapping or
+   already added. Presets sharing a sample and its settings are one choice. */
+static void add_similar(const M64RangeIssue *issue, int preset, int current,
+                        const DmeChoice *choices, unsigned count, DmeChoice *out, unsigned *found) {
+    bool percussion = issue->percussion != 0;
+
+    if (!m64_get_api_3()->preset_supported(issue, (uint32_t)preset)) {
+        return;
+    }
+
+    int canonical = m64_canonical_preset(percussion, preset);
+    bool skip = canonical == current;
+
+    for (unsigned n = 0; n < *found; n++) {
+        skip |= out[n].value == canonical;
+    }
+
+    for (unsigned c = 0; !skip && c < count; c++) {
+        if (choices[c].value == canonical) {
+            out[(*found)++] = choices[c];
+            break;
+        }
+    }
+}
+
 unsigned m64_similar(const M64RangeIssue *issue, int original, const DmeChoice *choices,
                      unsigned count, DmeChoice *out, unsigned capacity) {
     const M64Api *api = m64_get_api_3();
@@ -75,7 +100,21 @@ unsigned m64_similar(const M64RangeIssue *issue, int original, const DmeChoice *
     int current = m64_canonical_preset(percussion, original);
     unsigned found = 0;
 
-    for (unsigned pass = 0; pass < 128 && found < capacity; pass++) {
+    /* A melodic source offers its program's default and the catalog's curated alternates. */
+    if (!percussion && issue->program < 128) {
+        uint32_t list[8] = {issue->program};
+        uint32_t listed = 1 + api->program_alternates(issue->program, list + 1, 7);
+
+        for (uint32_t i = 0; i < listed && found < capacity; i++) {
+            add_similar(issue, (int)list[i], current, choices, count, out, &found);
+        }
+    }
+
+    /* Drums, and a melodic source none of whose curated presets reach its notes, fall back to
+       the nearest supported presets by GM number. */
+    bool nearest = percussion || !found;
+
+    for (unsigned pass = 0; nearest && pass < 128 && found < capacity; pass++) {
         int best = -1, best_score = INT_MAX;
 
         for (int candidate = 0; candidate < 128; candidate++) {
@@ -97,21 +136,7 @@ unsigned m64_similar(const M64RangeIssue *issue, int original, const DmeChoice *
         }
 
         visited[best] = true;
-
-        /* Presets sharing a sample and its settings are one choice. */
-        int canonical = m64_canonical_preset(percussion, best);
-        bool skip = canonical == current;
-
-        for (unsigned n = 0; n < found; n++) {
-            skip |= out[n].value == canonical;
-        }
-
-        for (unsigned c = 0; !skip && c < count; c++) {
-            if (choices[c].value == canonical) {
-                out[found++] = choices[c];
-                break;
-            }
-        }
+        add_similar(issue, best, current, choices, count, out, &found);
     }
 
     return found;
@@ -150,7 +175,7 @@ bool m64_review_build(M64PluginJob *job, const DmeContext *context, const M64Res
         return true;
     }
 
-    if (count > 2048) {
+    if (count > DME_ROW_LIMIT) {
         return false;
     }
 
@@ -250,9 +275,10 @@ int32_t DME_CALL m64_review_set(void *user, const char *id, int32_t value, char 
     M64PluginJob *job = user;
     M64ReviewUi *ui = job->review_ui;
 
-    if (ui && id && value >= 0 && value < 128) {
+    if (ui && id) {
         for (unsigned i = 0; i < ui->count; i++) {
-            if (!strcmp(id, ui->items[i].id)) {
+            if (!strcmp(id, ui->items[i].id) &&
+                m64_preset_valid(ui->items[i].issue.percussion != 0, value)) {
                 ui->items[i].selected = value;
                 return DME_OK;
             }

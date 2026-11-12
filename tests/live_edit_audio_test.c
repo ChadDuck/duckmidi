@@ -1,15 +1,7 @@
-#include "../src/audio/audio.c"
+#include "audio_engine.h"
 #include "../shared/sample/library.h"
-static int checks;
-
-static void check(bool value, const char *what) {
-    ++checks;
-
-    if (!value) {
-        fprintf(stderr, "FAIL live edit: %s\n", what);
-        exit(1);
-    }
-}
+#define TEST_NAME "live edit"
+#include "test_common.h"
 
 static unsigned voice_id(Synth *s, int channel, int key, bool held) {
     fluid_voice_t *voices[512] = {0};
@@ -57,8 +49,6 @@ static void await_font(DmAudio *a) {
 
         SDL_Delay(5);
     }
-
-    check(true, "SoundFont finishes before timeout");
 }
 
 static void update(DmAudio *a, DmProject *p) {
@@ -291,7 +281,7 @@ static void routed_samples(DmAudio *a) {
           "routed keyboard and edit feedback use separate custom voices");
     dm_audio_panic(a);
     process(a, RATE / 2);
-    collect_sample_banks(a);
+    dm_audio_collect_sample_banks(a);
     check(!a->sample_banks[old], "earlier bank is collected after synth quiescence");
 
     assignment.generation = 99;
@@ -306,8 +296,7 @@ static void routed_samples(DmAudio *a) {
           "missing preset falls back to SoundFont");
     strcpy(preset.id, "missing");
     set.generation = 99;
-    check(dm_sample_library_publish(root, &set, &sample, NULL, error, sizeof(error)),
-          error);
+    check(dm_sample_library_publish(root, &set, &sample, NULL, error, sizeof(error)), error);
     dm_audio_reload_samples(a);
     check(dm_audio_publish(a, &p, 0, true, error, sizeof(error)), error);
     process(a, BLOCK);
@@ -318,7 +307,7 @@ static void routed_samples(DmAudio *a) {
     check(dm_patch_replacement_set(&p, &assignment), "reassign a muted sample");
     update(a, &p);
     process(a, RATE / 2);
-    collect_sample_banks(a);
+    dm_audio_collect_sample_banks(a);
     check(!a->sample_banks[restored], "muted monitoring drains retired custom voices");
     dm_audio_monitor(a, true);
     dm_audio_panic(a);
@@ -495,13 +484,15 @@ static void live_patch_reset(DmAudio *a) {
     const double positions[] = {0, 1.25};
 
     for (size_t i = 0; i < SDL_arraysize(positions); ++i) {
-        check(dm_audio_publish(a, &p, dm_beat_seconds(&p, positions[i]), true, error, sizeof(error)),
-              error);
+        check(
+            dm_audio_publish(a, &p, dm_beat_seconds(&p, positions[i]), true, error, sizeof(error)),
+            error);
         process(a, i == 0 ? (int)(dm_beat_seconds(&p, 1.25) * RATE) : BLOCK);
         fluid_preset_t *preset = fluid_synth_get_channel_preset(a->live.synth, 0);
         check(preset && fluid_preset_get_num(preset) == 40 &&
                   voice_id(&a->live, 0, 60, true) != UINT32_MAX,
-              i == 0 ? "post-reset patch plays from the start" : "seek restores the post-reset patch");
+              i == 0 ? "post-reset patch plays from the start"
+                     : "seek restores the post-reset patch");
     }
 
     dm_audio_transport(a, false);

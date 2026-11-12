@@ -34,7 +34,7 @@ struct DmMidiInput {
     atomic_uint open, ready[2], options, learning;
     DmMidiBindingSource *sources; /* Protected by lock. */
     size_t source_count;
-    atomic_uint bound[DM_MIDI_INPUTS][MIDI_CHANNELS][8]; /* Four words each for CC and notes. */
+    atomic_uint bound[DM_MIDI_INPUTS][MIDI_CHANNELS][9]; /* CC, notes, then bend/pressure bits. */
     atomic_bool overflow[2];
     char ports[DM_MIDI_PORTS][DM_MIDI_NAME];
     int port_count;
@@ -239,19 +239,24 @@ static void release_notes(InputSlot *slot, int channel, DmMidiInputEvent event, 
 }
 
 static void bind_slot(DmMidiInput *input, unsigned slot, const char *name) {
-    unsigned words[MIDI_CHANNELS][8] = {0};
+    unsigned words[MIDI_CHANNELS][9] = {0};
 
     for (size_t i = 0; i < input->source_count; ++i) {
         const DmMidiBindingSource *source = &input->sources[i];
 
         if (!*source->device || !strcmp(source->device, name)) {
-            unsigned word = source->number / 32 + (source->kind == DM_MIDI_SOURCE_NOTE ? 4 : 0);
-            words[source->channel][word] |= 1u << (source->number % 32);
+            unsigned word =
+                source->kind >= DM_MIDI_SOURCE_BEND
+                    ? 8
+                    : source->number / 32 + (source->kind == DM_MIDI_SOURCE_NOTE ? 4 : 0);
+            unsigned bit = source->kind >= DM_MIDI_SOURCE_BEND ? source->kind - DM_MIDI_SOURCE_BEND
+                                                               : source->number % 32;
+            words[source->channel][word] |= 1u << bit;
         }
     }
 
     for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
-        for (unsigned w = 0; w < 8; ++w) {
+        for (unsigned w = 0; w < 9; ++w) {
             atomic_store_explicit(&input->bound[slot][c][w], words[c][w], memory_order_relaxed);
         }
     }
@@ -262,21 +267,26 @@ static bool source_learn(const DmMidiInput *input, DmMidiInputEvent event) {
     unsigned type = event.status & MIDI_STATUS_MASK;
     return mode != DM_MIDI_LEARN_OFF &&
            ((type == MIDI_CONTROL && dm_midi_source_bindable(DM_MIDI_SOURCE_CC, event.a)) ||
-            (mode == DM_MIDI_LEARN_BUTTON && type == MIDI_NOTE_ON));
+            (mode == DM_MIDI_LEARN_BUTTON && type == MIDI_NOTE_ON) ||
+            (mode == DM_MIDI_LEARN_EVENT &&
+             (type == MIDI_PITCH_BEND || type == MIDI_CHANNEL_PRESSURE)));
 }
 
 static bool source_bound(const DmMidiInput *input, DmMidiInputEvent event) {
     unsigned type = event.status & MIDI_STATUS_MASK;
 
-    if (type != MIDI_CONTROL && type != MIDI_NOTE_ON && type != MIDI_NOTE_OFF) {
+    if (type != MIDI_CONTROL && type != MIDI_NOTE_ON && type != MIDI_NOTE_OFF &&
+        type != MIDI_PITCH_BEND && type != MIDI_CHANNEL_PRESSURE) {
         return false;
     }
 
-    unsigned word = event.a / 32 + (type == MIDI_CONTROL ? 0 : 4);
+    bool special = type == MIDI_PITCH_BEND || type == MIDI_CHANNEL_PRESSURE;
+    unsigned word = special ? 8 : event.a / 32 + (type == MIDI_CONTROL ? 0 : 4);
+    unsigned bit = special ? (type == MIDI_CHANNEL_PRESSURE) : event.a % 32;
     unsigned channel = event.status & MIDI_CHANNEL_MASK;
     unsigned bits =
         atomic_load_explicit(&input->bound[event.device][channel][word], memory_order_relaxed);
-    return (bits & (1u << (event.a % 32))) != 0;
+    return (bits & (1u << bit)) != 0;
 }
 
 static int pedal_index(DmMidiInputEvent event) {
@@ -607,7 +617,7 @@ DmMidiInput *dm_midi_input_create(const DmMidiInputBackend *backend) {
         dm_midi_held_init(&slot->held);
 
         for (unsigned c = 0; c < MIDI_CHANNELS; ++c) {
-            for (unsigned w = 0; w < 8; ++w) {
+            for (unsigned w = 0; w < 9; ++w) {
                 atomic_init(&input->bound[i][c][w], 0);
             }
         }
@@ -776,7 +786,8 @@ bool dm_midi_source_bindable(DmMidiInputSource kind, unsigned number) {
         return false;
     }
 
-    return kind == DM_MIDI_SOURCE_NOTE ||
+    return ((kind == DM_MIDI_SOURCE_BEND || kind == DM_MIDI_SOURCE_PRESSURE) && !number) ||
+           kind == DM_MIDI_SOURCE_NOTE ||
            (kind == DM_MIDI_SOURCE_CC && number < MIDI_CC_SOUND_OFF && number != MIDI_CC_BANK &&
             number != MIDI_CC_BANK_LSB && number != MIDI_CC_DATA && number != MIDI_CC_DATA_LSB &&
             (number < MIDI_CC_INCREMENT || number > MIDI_CC_RPN_MSB));

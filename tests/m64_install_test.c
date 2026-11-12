@@ -283,13 +283,13 @@ int main(void) {
                          {0, 3, 0x99, 36, 100, 0}, {0, 4, 0x99, 38, 100, 1},
                          {10, 5, 0xE9, 0, 64, 0},  {10, 6, 0xE9, 0, 64, 1},
                          {20, 7, 0xB9, 7, 100, 0}, {20, 8, 0xB9, 7, 90, 1}};
-    M64PortLayout layout;
-    assert(m64_port_layout(ported, 8, 1u << MIDI_DRUM_CHANNEL, &layout));
+    EsPortLayout layout;
+    assert(es_port_layout(ported, 8, 1u << MIDI_DRUM_CHANNEL, &layout));
     assert(layout.out[0][0] == 0 && layout.out[1][2] == 1 && layout.out[9][1] == 9);
     assert(layout.merged && layout.interference && layout.conflict_count == 1 &&
            strstr(layout.notice, "controller 7") && !strstr(layout.notice, "pitch bend"));
     DmeEvent moved[] = {{0, 1, 0x90, 60, 100, 0}, {0, 2, 0x90, 64, 100, 1}};
-    assert(m64_port_layout(moved, 2, 1u << MIDI_DRUM_CHANNEL, &layout) && !layout.merged &&
+    assert(es_port_layout(moved, 2, 1u << MIDI_DRUM_CHANNEL, &layout) && !layout.merged &&
            layout.out[0][1] == 1 &&
            strstr(layout.notice, "Port 1 of channel 1 plays on channel 2."));
 
@@ -300,9 +300,9 @@ int main(void) {
                        {0, 3, 0x99, 36, 100, 0},
                        {0, 4, 0x9A, 38, 100, 0}};
     uint32_t percussion = 1u << MIDI_DRUM_CHANNEL | 1u << 10;
-    assert(m64_port_layout(kits, 4, percussion, &layout) && layout.out[10][0] == 9 &&
+    assert(es_port_layout(kits, 4, percussion, &layout) && layout.out[10][0] == 9 &&
            layout.out[9][0] == 9 && !layout.interference && !layout.merged && !*layout.notice);
-    assert(m64_port_layout(kits, 4, 1u << 10, &layout) && layout.out[10][0] == 9 &&
+    assert(es_port_layout(kits, 4, 1u << 10, &layout) && layout.out[10][0] == 9 &&
            layout.out[9][0] == 0 &&
            strstr(layout.notice, "Port 0 of channel 10 plays on channel 1."));
 

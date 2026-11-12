@@ -1,4 +1,4 @@
-#include "../src/audio/audio.c"
+#include "audio_engine.h"
 #include "midi_input_fixture.h"
 
 static void block(DmAudio *a) {
@@ -34,7 +34,7 @@ int main(void) {
     fixture_wait(input, 0, DM_MIDI_OPEN);
     a->monitor = true;
     assert(fluid_synth_sfload(a->keyboard.synth, "agents/reports/generated-sine.sf2", 1) >= 0);
-    keyboard_configure(a);
+    dm_audio_keyboard_configure(a);
     a->keyboard_parts[4] = 4;
     fixture_emit(&f, 0, MIDI_NOTE_ON | 9, 60, 97, SDL_GetTicksNS());
     fixture_emit(&f, 0, MIDI_CONTROL | 9, MIDI_CC_MODULATION, 70, SDL_GetTicksNS());
@@ -97,7 +97,7 @@ int main(void) {
     fixture_emit(&f, 0, MIDI_CONTROL | 9, MIDI_CC_EXPRESSION, 55, SDL_GetTicksNS());
     block(a);
     Command cmd;
-    assert(queue_get(&a->midi, &cmd, NULL));
+    assert(dm_audio_queue_get(&a->midi, &cmd, NULL));
     assert(cmd.status == (MIDI_CONTROL | 4) && cmd.a == MIDI_CC_EXPRESSION && cmd.b == 55);
     dm_midi_echo_write(dm_midi_input_echo(input), cmd.status, cmd.a, cmd.b, SDL_GetTicksNS());
     fixture_emit(&f, 0, cmd.status, cmd.a, cmd.b, SDL_GetTicksNS());
@@ -107,24 +107,24 @@ int main(void) {
     fixture_emit(&f, 0, MIDI_NOTE_ON | 9, 61, 82, SDL_GetTicksNS());
     fixture_emit(&f, 0, MIDI_CONTROL | 9, MIDI_CC_SUSTAIN, 127, SDL_GetTicksNS());
     block(a);
-    assert(queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_NOTE_ON | 4) && cmd.a == 61);
-    assert(queue_get(&a->midi, &cmd, NULL) && cmd.a == MIDI_CC_SUSTAIN && cmd.b == 127);
+    assert(dm_audio_queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_NOTE_ON | 4) && cmd.a == 61);
+    assert(dm_audio_queue_get(&a->midi, &cmd, NULL) && cmd.a == MIDI_CC_SUSTAIN && cmd.b == 127);
     dm_audio_input_thru(a, input, false);
-    assert(queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_CONTROL | 4) &&
+    assert(dm_audio_queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_CONTROL | 4) &&
            cmd.a == MIDI_CC_SUSTAIN && cmd.b == 0);
-    assert(queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_NOTE_OFF | 4) && cmd.a == 61);
+    assert(dm_audio_queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_NOTE_OFF | 4) && cmd.a == 61);
     assert(a->input_notes[4][61] == 1);
     dm_audio_preview(a, 4, 61, 100, true);
     block(a);
-    assert(queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_NOTE_ON | 4) && cmd.a == 61);
+    assert(dm_audio_queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_NOTE_ON | 4) && cmd.a == 61);
     dm_audio_preview(a, 4, 61, 0, false);
     block(a);
-    assert(queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_NOTE_OFF | 4) && cmd.a == 61);
+    assert(dm_audio_queue_get(&a->midi, &cmd, NULL) && cmd.status == (MIDI_NOTE_OFF | 4) && cmd.a == 61);
     fixture_emit(&f, 0, MIDI_NOTE_OFF | 9, 61, 44, SDL_GetTicksNS());
     fixture_emit(&f, 0, MIDI_CONTROL | 9, MIDI_CC_SUSTAIN, 0, SDL_GetTicksNS());
     fixture_emit(&f, 0, MIDI_CONTROL, MIDI_CC_MODULATION, 20, SDL_GetTicksNS());
     block(a);
-    assert(!queue_get(&a->midi, &cmd, NULL));
+    assert(!dm_audio_queue_get(&a->midi, &cmd, NULL));
     dm_audio_input_offset(a, .01);
     a->position = 10;
     a->playing = true;
@@ -142,7 +142,7 @@ int main(void) {
            value.latency == dm_audio_buffer_ms(a) / 1000);
     a->keyboard_parts[4] = 20;
     a->port_live[1] = calloc(1, sizeof(Synth));
-    assert(synth_create(a->port_live[1], NULL));
+    assert(dm_audio_synth_create(a->port_live[1], NULL));
     dm_audio_input_controllers(a, DM_INPUT_CONTROLLERS_SONG);
     fixture_emit(&f, 0, MIDI_CONTROL, MIDI_CC_PAN, 27, SDL_GetTicksNS());
     block(a);

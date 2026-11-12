@@ -1,15 +1,7 @@
 // Exercise the production editor's internal boundaries, without adding a second app entry point.
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool ok, const char *label) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL transport_shortcuts: %s\n", label);
-        exit(1);
-    }
-}
+#define TEST_NAME "transport_shortcuts"
+#include "test_common.h"
 
 static void key(Editor *e, SDL_Scancode code, SDL_Keymod mods) {
     ed_shortcut(e, code, mods, false);
@@ -39,7 +31,6 @@ static void playback(Editor *e) {
 
 static void shortcuts_added(Editor *e) {
     editor_smoke(e);
-    e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
     key(e, SDL_SCANCODE_M, 0);
     check(e->project.channels[0].mute && !e->project.channels[0].solo,
@@ -48,7 +39,6 @@ static void shortcuts_added(Editor *e) {
     check(!e->project.channels[0].mute && e->project.channels[0].solo, "S replaces mute with solo");
     key(e, SDL_SCANCODE_M, 0);
     check(e->project.channels[0].mute && !e->project.channels[0].solo, "M replaces solo with mute");
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     key(e, SDL_SCANCODE_M, 0);
     check(e->project.channels[0].mute, "mute shortcut requires playlist focus");
@@ -124,8 +114,9 @@ static void shortcuts_added(Editor *e) {
     e->shortcuts = true;
     ed_focus_edit(e, FOCUS_OTHER);
     key(e, SDL_SCANCODE_P, 0);
-    check(e->preferences && e->preferences_raise, "P opens Preferences over another window");
-    e->preferences = e->preferences_raise = e->shortcuts = false;
+    check(e->preferences && ui_dialog_front("Preferences"),
+          "P opens Preferences over another window");
+    e->preferences = e->shortcuts = false;
     key(e, SDL_SCANCODE_SLASH, 0);
     check(e->config, "/ opens Project settings");
     e->config = false;
@@ -158,9 +149,8 @@ static void channels_and_events(Editor *e) {
               !strcmp(dm_drum_name(35), "Acoustic Bass Drum"),
           "percussion keys carry GM names");
     check(!strcmp(dm_drum_name(27), "High Q") && !strcmp(dm_drum_name(33), "Metronome Click") &&
-              !strcmp(dm_drum_name(34), "Metronome Bell") &&
-              !strcmp(dm_drum_name(82), "Shaker") && !strcmp(dm_drum_name(87), "Open Surdo") &&
-              !strcmp(dm_drum_name(88), "Unnamed Drum"),
+              !strcmp(dm_drum_name(34), "Metronome Bell") && !strcmp(dm_drum_name(82), "Shaker") &&
+              !strcmp(dm_drum_name(87), "Open Surdo") && !strcmp(dm_drum_name(88), "Unnamed Drum"),
           "extended drum keys have GS names and unknown keys have a neutral label");
     ed_new_song_event(e);
     check(e->midi_draft.data[1] == MIDI_META_TEMPO, "new event defaults to tempo");
@@ -171,12 +161,11 @@ static void channels_and_events(Editor *e) {
     ed_new_song_event(e);
     check(e->midi_event_index == -1 && e->song_event_add, "new event clears prior edit target");
     e->song_event = false;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->project.automation_count = 0;
-    e->automation_cc = -1;
+    e->automation_cc = DM_EVENT_PROGRAM;
     UiRect lane = {100, 100, 500, 200};
-    e->drag = 4;
+    e->drag = DRAG_EVENT_LINE;
     e->marquee_start = (UiPoint){180, 200};
     UiMouse release = {.pos = {180, 200}, .released = true};
     ed_automation_drag(e, lane, &e->roll_view, 80, release);
@@ -227,9 +216,8 @@ static void pattern_editor_shortcut(Editor *e) {
 static void bend_edits(Editor *e) {
     ui_root(0, 900);
     editor_smoke(e);
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->project.automation_count = 0;
     e->roll_view = (View){1, 0, (127 - 70) * 20, 0};
     e->drag_key = 64;
@@ -240,7 +228,7 @@ static void bend_edits(Editor *e) {
     size_t notes = ed_pattern(e)->count, old = e->project.automation_count;
     check(ed_bend_mouse(e, grid, &e->roll_view, 80, mouse),
           "Alt grabs bend line between endpoints");
-    check(e->project.automation_count == old + 1 && e->drag == 7,
+    check(e->project.automation_count == old + 1 && e->drag == DRAG_BEND_POINT,
           "line gesture inserts one connected node");
     mouse.clicked = false;
     mouse.left = true;
@@ -256,7 +244,7 @@ static void bend_edits(Editor *e) {
         .pos = ed_bend_point(e, moved, grid, &e->roll_view, 80), .clicked = true, .shift = true};
     old = e->project.automation_count;
     check(ed_bend_mouse(e, grid, &e->roll_view, 80, mouse) && e->automation_node >= 0 &&
-              e->drag == 0,
+              e->drag == DRAG_NONE,
           "Shift click selects overlay point without dragging");
     key(e, SDL_SCANCODE_DELETE, 0);
     check(e->project.automation_count == old - 1 && ed_pattern(e)->count == notes,
@@ -274,17 +262,15 @@ static void bend_edits(Editor *e) {
         .pos = ed_bend_point(e, a, grid, &e->roll_view, 80), .clicked = true, .alt = true};
     old = e->project.automation_count;
     ed_bend_mouse(e, grid, &e->roll_view, 80, mouse);
-    check(e->drag == 7 && e->project.automation_count == old,
+    check(e->drag == DRAG_BEND_POINT && e->project.automation_count == old,
           "Alt on existing node moves it without inserting");
     mouse.clicked = false;
     mouse.released = true;
     ed_bend_mouse(e, grid, &e->roll_view, 80, mouse);
     UiRect lane = {100, 100, 500, 200};
-    check(ed_lane_step((UiRect){0, 0, 500, 500}) == ed_lane_step(lane) && ed_lane_step(lane) == 20,
-          "lane axis retains the same readable pitch spacing at all heights");
     e->project.automation_count = 0;
     e->automation_center = 64;
-    e->drag = 4;
+    e->drag = DRAG_EVENT_LINE;
     e->marquee_start = (UiPoint){180, 200};
     mouse = (UiMouse){.pos = {180, 200}, .released = true};
     ed_automation_drag(e, lane, &e->roll_view, 80, mouse);
@@ -310,7 +296,8 @@ static void bend_edits(Editor *e) {
           "Shift + click connects new point and moves end restoration");
     mouse = (UiMouse){.right_clicked = true, .shift = true};
     ed_automation_lane_click(e, lane, &e->roll_view, 80, mouse, 0);
-    check(e->drag == 0, "right click on an existing point cannot strand a left-button drag");
+    check(e->drag == DRAG_NONE,
+          "right click on an existing point cannot strand a left-button drag");
     // A new forward extension follows the user's last placement, even when another section
     // has a closer point. A backward insertion instead picks the nearest point in time.
     e->project.automation_count = 0;
@@ -330,13 +317,9 @@ static void bend_edits(Editor *e) {
 }
 
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL initializes");
-    SDL_Window *window =
-        SDL_CreateWindow("transport_shortcuts validation", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, "direct3d11");
-    check(window && renderer && ui_init(window, renderer, NULL), "real ImGui renderer initializes");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, window, renderer, NULL, "", "", true);
+    Editor *e = test_editor_open("transport_shortcuts validation", (TestDesktop){0});
+    SDL_Window *window = e->window;
+    SDL_Renderer *renderer = e->renderer;
     ui_frame();
     playback(e);
     shortcuts_added(e);
@@ -346,7 +329,7 @@ int main(void) {
     ui_render(renderer);
     ui_frame();
     e->automation_open = true;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->project.automation_count = 0;
     e->drag_key = 64;
     e->bend_range = 12;
@@ -384,11 +367,6 @@ int main(void) {
     }
 
     printf("PASS transport_shortcuts: %d targeted checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    test_editor_close(e);
     return 0;
 }

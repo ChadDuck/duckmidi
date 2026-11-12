@@ -18,6 +18,13 @@ extern "C" {
 #define DME_PUBLIC __attribute__((visibility("default")))
 #endif
 #define DME_ABI 11u
+/* Limits the host checks on what a plugin returns and plugins check on what the host passes; both
+   sides size their tables by them. */
+#define DME_PATH_LIMIT 8192   /* bytes in a path, locator or other long string */
+#define DME_ROW_LIMIT 2048    /* rows in one review or mapping table */
+#define DME_LABEL_LIMIT 512   /* bytes in a label or name */
+#define DME_CHOICE_LIMIT 512  /* choices offered for one field or row */
+#define DME_PRESET_LIMIT 8192 /* sample presets in one context */
 #define DME_SAMPLES_TOOL_ID "org.duckmidi.samples"
 
 enum { DME_OK, DME_INVALID, DME_CANCELLED, DME_FAILED, DME_NOMEM, DME_UNAVAILABLE };
@@ -37,10 +44,10 @@ enum { DME_LOOP_START = 1u, DME_LOOP_END = 2u }; /* DmeContext.loop_points */
 
 typedef struct {
     uint32_t custom_tracking;
-    double coarse, fine, tracking; /* Semitones, cents, cents per MIDI key. */
+    double coarse, fine, tracking;          /* Semitones, cents, cents per MIDI key. */
     double cutoff, resonance, filter_depth; /* Hz (zero uses the default), dB, cents. */
-    double vibrato_rate, vibrato_depth; /* Hz and cents. */
-    double chorus, reverb; /* Linear send amounts, zero to one. */
+    double vibrato_rate, vibrato_depth;     /* Hz and cents. */
+    double chorus, reverb;                  /* Linear send amounts, zero to one. */
 } DmeSampleToneParams;
 
 typedef struct {

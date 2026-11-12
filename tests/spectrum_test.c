@@ -4,17 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-
-static int checks;
-
-static void check(int ok, const char *label) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL spectrum: %s\n", label);
-        exit(1);
-    }
-}
+#define TEST_NAME "spectrum"
+#include "test_common.h"
 
 int main(void) {
     float stereo[DM_SPECTRUM_FRAMES * 2] = {0}, bands[DM_SPECTRUM_BANDS], content;

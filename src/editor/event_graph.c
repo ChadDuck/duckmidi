@@ -6,7 +6,7 @@
 #include "editor/internal.h"
 #include "text/en.h"
 
-static const int graph_resolutions[] = {8, 16, 32, 64, 128, 256};
+static const int graph_resolutions[] = {8, 16, 32, 64, 128, DM_GRAPH_MAX};
 
 int ed_graph_resolution(Editor *e) {
     return dm_graph_resolution(ed_pattern(e), e->automation_cc);
@@ -304,31 +304,22 @@ void ed_graph_mode_request(Editor *e, int mode, int graph) {
 }
 
 void ed_graph_mode_dialog(Editor *e) {
-    if (!ui_modal(DM_TEXT_GRAPH_SWITCH_TITLE, &e->graph_switch, 420, 150)) {
+    static const char *const buttons[] = {DM_TEXT_CANCEL, DM_TEXT_GRAPH_SWITCH_CONFIRM};
+
+    if (!e->graph_switch) {
         return;
     }
 
-    ui_wrap(e->graph_switch_graph ? DM_TEXT_GRAPH_SWITCH_TO_GRAPH : DM_TEXT_GRAPH_SWITCH_TO_POINT);
+    int choice = ui_confirm(DM_TEXT_GRAPH_SWITCH_TITLE, &e->graph_switch,
+                            e->graph_switch_graph ? DM_TEXT_GRAPH_SWITCH_TO_GRAPH
+                                                  : DM_TEXT_GRAPH_SWITCH_TO_POINT,
+                            buttons, 2);
+    DmPattern *p = ed_pattern(e);
 
-    if (ui_button(DM_TEXT_CANCEL, 110, 0)) {
-        e->graph_switch = false;
-        ui_close_popup();
+    if (choice == 1 && p && p->uid == e->graph_switch_uid &&
+        e->automation_cc == e->graph_switch_event) {
+        ed_graph_mode(e, 0, e->graph_switch_graph);
     }
-
-    ui_same();
-
-    if (ui_button(DM_TEXT_GRAPH_SWITCH_CONFIRM, 110, 0)) {
-        DmPattern *p = ed_pattern(e);
-
-        if (p && p->uid == e->graph_switch_uid && e->automation_cc == e->graph_switch_event) {
-            ed_graph_mode(e, 0, e->graph_switch_graph);
-        }
-
-        e->graph_switch = false;
-        ui_close_popup();
-    }
-
-    ui_popup_end();
 }
 
 static bool snap_target(Editor *e, size_t index, bool selection) {
@@ -436,7 +427,8 @@ static bool any_in_range(Editor *e, double from, double to) {
 
 static void place_bar(Editor *e, UiRect lane, double beat, double from, double to, float y,
                       bool free) {
-    int anchor = e->automation_cc == -2 ? ed_nearest_note(e, beat) : ed_curve_anchor(e, beat);
+    int anchor =
+        e->automation_cc == DM_EVENT_BEND ? ed_nearest_note(e, beat) : ed_curve_anchor(e, beat);
     DmAutomation point = ed_curve_node(e, beat, 0, e->automation_cc, 0, anchor);
     ed_set_event_value(&point, ed_lane_value(e, lane, y, point, free));
     remove_range(e, from, to);
@@ -490,11 +482,7 @@ bool ed_graph_erase(Editor *e, UiRect lane, View *v, float scale, UiPoint from, 
         return false;
     }
 
-    if (!e->erase_active) {
-        ed_checkpoint(e);
-    }
-
-    e->erase_active = true;
+    ed_erase_step(e);
     remove_range(e, low, high);
     return true;
 }
@@ -503,11 +491,12 @@ bool ed_graph_erase(Editor *e, UiRect lane, View *v, float scale, UiPoint from, 
 static float bar_base(Editor *e, UiRect lane, View *v, float scale) {
     int cc = e->automation_cc;
 
-    if (cc != -2 && cc != MIDI_CC_PAN) {
+    if (cc != DM_EVENT_BEND && cc != MIDI_CC_PAN) {
         return lane.y + lane.h - 8;
     }
 
-    DmAutomation center = ed_curve_node(e, 0, cc == -2 ? MIDI_BEND_CENTER : 64, cc, 0, 0);
+    DmAutomation center =
+        ed_curve_node(e, 0, cc == DM_EVENT_BEND ? MIDI_BEND_CENTER : 64, cc, 0, 0);
     return ed_automation_point(e, center, lane, v, scale).y;
 }
 
@@ -577,7 +566,7 @@ static void draw_bar(Editor *e, UiRect lane, View *v, float scale, size_t index,
 int ed_graph_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse) {
     int cc = e->automation_cc, hit = -1;
 
-    if (cc == -2 || cc == MIDI_CC_PAN) {
+    if (cc == DM_EVENT_BEND || cc == MIDI_CC_PAN) {
         float y = bar_base(e, lane, v, scale);
         ui_line((UiPoint){lane.x, y}, (UiPoint){lane.x + lane.w, y}, DIM, 1);
     }

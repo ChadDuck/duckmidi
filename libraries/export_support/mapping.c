@@ -58,7 +58,8 @@ static DmeString copy_string(DmeString value) {
         return result;
     }
 
-    if (value.length > 8192 || !value.data || memchr(value.data, 0, (size_t)value.length)) {
+    if (value.length > DME_PATH_LIMIT || !value.data ||
+        memchr(value.data, 0, (size_t)value.length)) {
         return result;
     }
 
@@ -129,7 +130,7 @@ static bool catalog_copy(DmeSampleCatalog *out, const DmeSampleCatalog *source) 
     }
 
     if (source->size != sizeof(*source) || source->set_count > 1024 ||
-        source->preset_count > 8192 || source->zone_count > 32768 ||
+        source->preset_count > DME_PRESET_LIMIT || source->zone_count > 32768 ||
         (source->set_count && !source->sets) || (source->preset_count && !source->presets) ||
         (source->zone_count && !source->zones)) {
         return false;
@@ -333,7 +334,7 @@ bool es_mappings_inspect(EsMappings *s, const DmeContext *context, const uint8_t
             continue;
         }
 
-        if (s->count == 2048 ||
+        if (s->count == DME_ROW_LIMIT ||
             !es_reserve((void **)&s->rows, &s->capacity, s->count + 1, sizeof(*s->rows))) {
             return es_fail(
                 error, cap,

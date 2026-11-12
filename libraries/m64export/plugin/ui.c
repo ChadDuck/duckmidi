@@ -202,14 +202,13 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
         }
     }
 
-    M64PortLayout *layout = calloc(1, sizeof(*layout));
+    EsPortLayout *layout = calloc(1, sizeof(*layout));
 
-    if (!layout || !m64_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
+    if (!layout || !es_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
         free(layout);
         return DME_NOMEM;
     }
 
-    s->port_interference = layout->interference;
     unsigned program[16] = {0};
 
     for (uint64_t i = 0; i < c->event_count; i++) {
@@ -220,8 +219,8 @@ int32_t DME_CALL m64_ui_inspect(void *instance, const DmeContext *c, char *error
         }
 
         unsigned type = e->status & MIDI_STATUS_MASK;
-        unsigned ch = e->port < M64_PORTS ? layout->out[e->status & MIDI_CHANNEL_MASK][e->port]
-                                          : e->status & MIDI_CHANNEL_MASK;
+        unsigned ch = e->port < ES_PORTS ? layout->out[e->status & MIDI_CHANNEL_MASK][e->port]
+                                         : e->status & MIDI_CHANNEL_MASK;
 
         if (type == MIDI_PROGRAM) {
             program[ch] = e->a;
@@ -268,7 +267,7 @@ int32_t DME_CALL m64_ui_describe(void *instance, DmeUi *ui) {
         const EsSourceRow *source = es_mappings_source(s->custom, source_index);
         bool is_drum = (source->source.flags & DME_SAMPLE_PERCUSSION) != 0;
 
-        if (is_drum != drums || count >= 2048) {
+        if (is_drum != drums || count >= DME_ROW_LIMIT) {
             continue;
         }
 
@@ -384,7 +383,8 @@ int32_t DME_CALL m64_ui_set(void *instance, const char *id, const DmeValue *v, c
     char stock_id[64];
 
     if (id && es_mappings_stock_id(s->custom, id, stock_id)) {
-        if (v && v->type == DME_CHOICE && v->integer >= 0 && v->integer < 128 &&
+        if (v && v->type == DME_CHOICE &&
+            m64_preset_valid(!strncmp(stock_id, "drum.", 5), v->integer) &&
             es_mappings_set_stock(s->custom, (uint32_t)s->target, id, (int32_t)v->integer)) {
             s->similar_stale = true;
             return DME_OK;
@@ -466,14 +466,16 @@ int32_t DME_CALL m64_ui_set(void *instance, const char *id, const DmeValue *v, c
         }
     }
 
-    if (v->type == DME_CHOICE && v->integer >= 0 && v->integer < 128) {
+    if (v->type == DME_CHOICE) {
         if (sscanf(id, "melodic.%u.%u%c", &ch, &p, &tail) == 2 && ch < 16 &&
-            ch != MIDI_DRUM_CHANNEL && p < 128 && s->used[ch][p]) {
+            ch != MIDI_DRUM_CHANNEL && p < 128 && s->used[ch][p] &&
+            m64_preset_valid(false, v->integer)) {
             s->melodic[ch][p] = v->integer;
             return DME_OK;
         }
 
-        if (sscanf(id, "drum.%u%c", &p, &tail) == 1 && p < 128 && s->used_drums[p]) {
+        if (sscanf(id, "drum.%u%c", &p, &tail) == 1 && p < 128 && s->used_drums[p] &&
+            m64_preset_valid(true, v->integer)) {
             s->drums[p] = v->integer;
             return DME_OK;
         }

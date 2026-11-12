@@ -1,28 +1,34 @@
-build/
-/build-menu.bat
-agents/
-vendor/*.zip
-vendor/*.tar.gz
 *.duck-tmp
 *.duck-tmp-*
+
+# duckmidi test builds
+build/
+
+# Vendor sources
+vendor/*.zip
+vendor/*.tar.gz
+
+# Python
 tools/python/
 tools/packages/
-# Local validation scripts; keep build and asset-maintenance tools included.
-tools/test-*.ps1
-tools/test-*.py
-tools/compare-midi-*.py
-tools/generate_test_soundfont.py
-# Generated Python caches.
 __pycache__/
 *.py[cod]
 *.keys
+
+# Local tools/files
+/build-menu.bat
 duckmidi.ini
 samples/
-AGENTS.md
 todo.md
 todo-future.md
-CLAUDE.md
 docs/release.md
-maybe.md
-check.md
 pd/
+.mcp.json
+
+# Agents
+agents/
+AGENTS.md
+CLAUDE.md
+tools/agents/
+tools/mcp/
+tools/generate_test_soundfont.py

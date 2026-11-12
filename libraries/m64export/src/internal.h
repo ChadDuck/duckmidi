@@ -14,6 +14,17 @@
 /* Vibrato rate byte every channel script sets at its start. */
 #define M64_CHANNEL_VIBRATO_RATE 8
 
+/* Stock presets: the 128 GM programs or drum notes, then one plain preset for each sample of
+   the stock instruments bank (catalog.json), so that every stock sample can be mapped. */
+#define M64_STOCK_SAMPLES 73
+#define M64_STOCK_PRESETS (128 + M64_STOCK_SAMPLES)
+
+/* Drum keys: source notes, then custom drum regions from 128, then stock presets from 256. */
+#define M64_DRUM_SLOTS (256 + M64_STOCK_PRESETS)
+
+/* Curated alternates per GM program (catalog.json), best first. */
+#define M64_ALTERNATES 6
+
 typedef struct {
     uint8_t *data;
     size_t size, capacity;
@@ -96,7 +107,7 @@ typedef struct {
     Note *notes;
     size_t count, capacity;
     Channel channels[16];
-    int *slots, drums[384];
+    int *slots, drums[M64_DRUM_SLOTS];
     M64Instrument custom_drums[128];
     unsigned custom_drum_regions[128], custom_drum_keys[128], custom_drum_count;
     uint32_t programs[127], percussion[128], program_count, drum_count;
@@ -117,7 +128,7 @@ typedef struct {
     uint32_t emit_section;         /* Section being written by sequence() and emit_layers(). */
     /* sm64coopdx: bank 0x2A instruments per program slot and drum note; see coopdx.c. */
     bool coopdx;
-    int fixed[127], fixed_layer[127], drum_instrument[384], drum_pitch[384];
+    int fixed[127], fixed_layer[127], drum_instrument[M64_DRUM_SLOTS], drum_pitch[M64_DRUM_SLOTS];
     int channel_instrument[16], layer_instrument[16];
     bool switches[16];
 } Compile;
@@ -137,6 +148,9 @@ uint64_t sequence_load_bytes(const Compile *c);
 const M64Instrument *program_definition(const Compile *c, uint32_t program);
 const M64Instrument *drum_definition(const Compile *c, uint32_t key);
 extern const M64Instrument gm_programs[128], gm_drums[128];
+extern const M64Instrument stock_samples[M64_STOCK_SAMPLES], stock_drum_samples[M64_STOCK_SAMPLES];
+const M64Instrument *stock_preset(bool drum, uint32_t index);
+extern const int16_t gm_alternates[128][M64_ALTERNATES];
 extern const StockRegister stock_registers[];
 extern const size_t stock_register_count;
 bool select_registers(Compile *c);

@@ -165,6 +165,17 @@ static void upgrade_17_to_18(DmProject *p) {
     }
 }
 
+/* Schema 19 adds parallel note rows. Every older placement belongs to the first row. */
+static void upgrade_18_to_19(DmProject *p) {
+    for (int c = 0; c < 16; ++c) {
+        p->note_rows[c] = 1;
+    }
+
+    for (size_t i = 0; i < p->clip_count; ++i) {
+        p->clips[i].row = 0;
+    }
+}
+
 void dm_project_upgrade(DmProject *p, uint32_t schema) {
     if (schema <= 9) {
         upgrade_9_to_10(p);
@@ -200,5 +211,9 @@ void dm_project_upgrade(DmProject *p, uint32_t schema) {
 
     if (schema <= 17) {
         upgrade_17_to_18(p);
+    }
+
+    if (schema <= 18) {
+        upgrade_18_to_19(p);
     }
 }

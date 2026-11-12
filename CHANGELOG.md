@@ -3,6 +3,27 @@
 # 0.12.6
 
 1. Mute and solo presses from a MIDI controller are now undone one at a time, instead of grouping quick presses together.
+2. Keyboard Shortcuts lists every shortcut under its own group; newer shortcuts no longer all sit under 'Windows & Tools'.
+3. The 'Unsaved project' and 'Combine ports' questions now block the editor until answered, and every question window fits its text.
+4. The About, Automation lane and Generate Patterns windows fit their contents, and windows open centered at their final size.
+5. Escape now also closes the Updates window, 'Combine ports' and the other question windows.
+6. Dragging a loop region with the right button no longer erases notes or events the pointer passes over.
+7. OoT 'Export to Repository' names the repository file it could not find instead of failing without a message.
+8. SM64 mappings now list every sample of the stock instruments bank, including the 15 that no GM program or drum note used, such as the tabla riffs, sleigh bells and the higher French horn.
+    - Default SM64 instruments were reviewed against how the original songs use each sample: electric guitars no longer default to the Les Paul guitar (now Clavinet and Muted Guitar), overdriven and distortion guitars use the game's overdriven guitar, and double reeds, synth voice, sitar, celesta and others moved to closer samples.
+    - 'Similar instruments' and the review's recommended substitutes now come from a hand-picked list of alternates for each GM instrument instead of the nearest GM program numbers.
+9. Export mappings have a 'Reset' button beside 'Custom' that restores only the selected source's default mapping and turns off its custom sample.
+10. OoT export options now list 'Sequence memory' before 'Sequence volume'.
+11. 'Copy' and 'Paste' in the Piano Roll's 'Events' section now sit at its right edge, beside 'Transfer Automation'.
+12. Playlist channels can have multiple note rows for arranging patterns in parallel, with Add and Remove buttons on a shared channel label.
+
+13. Expanded playlist channels have a Channel Events row for program changes and lasting Volume and Pan values that resume after pattern automation ends.
+14. Program changes now appear in Channel Events instead of the song Events row.
+15. 'Make unique' on a sliced note or point-automation placement now copies its visible contents into a fitted pattern.
+16. Move the selected playlist channel up or down with rebindable Alt+Up and Alt+Down shortcuts, keeping its instruments, events and mixer settings together.
+
+17. Preferences groups MIDI Input, Controls and Events under a MIDI section, with learnable event bindings that follow the pattern being edited.
+18. MIDI controller recordings use the finest Graph resolution for new lanes and can record matching events into Point automation patterns.
 
 # 0.12.5
 

@@ -115,6 +115,7 @@ static void source_settings(Editor *e) {
             e->midi_events = false;
             e->midi_event_index = -1;
             e->song_event = false;
+            e->song_event_channel = -1;
             ed_release_piano(e);
             ed_checkpoint(e);
             dm_audio_transport(e->audio, false);
@@ -126,7 +127,7 @@ static void source_settings(Editor *e) {
                 ed_close_instrument(e);
                 e->last_note_pattern_uid = 0;
                 e->selected_pattern = e->project.pattern_count ? 0 : -1;
-                e->drag = 0;
+                e->drag = DRAG_NONE;
                 e->marquee = false;
 
                 if (e->project.clip_count) {
@@ -219,8 +220,8 @@ void ed_settings(Editor *e) {
         return;
     }
 
-    bool show = ui_content_dialog(e->new_mode ? DM_TEXT_NEW_PROJECT : DM_TEXT_PROJECT_SETTINGS,
-                                  &e->config, 570);
+    bool show = ui_dialog(e->new_mode ? DM_TEXT_NEW_PROJECT : DM_TEXT_PROJECT_SETTINGS, &e->config,
+                          (UiDialog){.width = 570});
 
     if (show) {
         ui_text(e->new_mode ? DM_TEXT_START_SOMETHING_NEW : DM_TEXT_PROJECT_MIDI_IMPORT);
@@ -246,13 +247,13 @@ void ed_settings(Editor *e) {
             source_settings(e);
             combine_controls(e);
 
-            if (ui_button("Apply", ui_available().x, 0) || ui_dialog_enter()) {
+            if (ui_button(DM_TEXT_APPLY, ui_available().x, 0) || ui_dialog_enter()) {
                 e->config = false;
             }
         }
     }
 
-    ui_end();
+    ui_dialog_end();
 
     if (!e->config) {
         e->new_mode = 0;
@@ -285,7 +286,7 @@ void ed_close_instrument(Editor *e) {
     }
 
     e->instrument_channel = -1;
-    e->instrument_new = e->instrument_preview = e->instrument_remove = e->instrument_raise = false;
+    e->instrument_new = e->instrument_preview = e->instrument_remove = false;
     e->instrument_source_dirty = false;
 }
 
@@ -363,7 +364,7 @@ void ed_open_instrument(Editor *e, int channel, bool preview) {
     e->instrument_preview = preview;
     e->instrument_drums = create ? c == MIDI_DRUM_CHANNEL : e->project.channels[c].drums;
     instrument_route(e, create ? 0 : e->note_ports[c]);
-    e->instrument_raise = true;
+    ui_dialog_raise(DM_TEXT_INSTRUMENT);
 }
 
 static void select_instrument(Editor *e, int program, bool drums) {
@@ -489,10 +490,12 @@ bool ed_remove_channel(Editor *e, int channel) {
     clear_channel_events(p, channel, true);
     p->channels[channel] = dm_channel_default(channel);
     p->lane_count[channel] = 0;
+    p->note_rows[channel] = 1;
     memset(p->lane_names[channel], 0, sizeof(p->lane_names[channel]));
     e->note_ports[channel] = 0;
     e->channel_expanded[channel] = false;
     e->song_event = e->midi_events = false;
+    e->song_event_channel = -1;
     e->midi_event_index = -1;
 
     if (e->lane_settings && e->lane_channel == channel) {
@@ -563,6 +566,7 @@ void ed_apply_instrument(Editor *e) {
             if (type_changed && !create) {
                 clear_channel_events(&e->project, c, false);
                 e->song_event = e->midi_events = false;
+                e->song_event_channel = -1;
                 e->midi_event_index = -1;
             }
 
@@ -729,14 +733,9 @@ void ed_instrument(Editor *e) {
         return;
     }
 
-    if (e->instrument_raise) {
-        ui_raise_next();
-        e->instrument_raise = false;
-    }
-
     bool open = true;
 
-    if (ui_fitted_dialog(DM_TEXT_INSTRUMENT, &open, 460)) {
+    if (ui_dialog(DM_TEXT_INSTRUMENT, &open, (UiDialog){.width = 460})) {
         if (e->instrument_remove) {
             char text[160];
             snprintf(text, sizeof(text), DM_TEXT_REMOVE_CHANNEL_WARNING, e->instrument_channel + 1);
@@ -778,7 +777,7 @@ void ed_instrument(Editor *e) {
         }
     }
 
-    ui_end();
+    ui_dialog_end();
 
     if (!open) {
         ed_close_instrument(e);
@@ -1167,7 +1166,7 @@ static void midi_controls(Editor *e) {
         ui_dim(DM_TEXT_MIDI_BIND_WAIT);
     }
 
-    for (unsigned kind = ED_MIDI_PLAY; kind < ED_MIDI_TARGETS; ++kind) {
+    for (unsigned kind = ED_MIDI_PLAY; kind < ED_MIDI_EVENT_BEND; ++kind) {
         EdMidiTarget target = {.kind = kind};
         midi_binding_row(e, target, ed_midi_binding_find(e, target), true);
     }
@@ -1191,26 +1190,12 @@ static void midi_controls(Editor *e) {
 }
 
 static void midi_clear_confirmation(Editor *e) {
-    if (!ui_modal(DM_TEXT_MIDI_BIND_CLEAR_TITLE, &e->midi_clear_bindings, 390, 135)) {
-        return;
-    }
+    static const char *const buttons[] = {DM_TEXT_CANCEL, DM_TEXT_MIDI_BIND_CLEAR_ALL};
 
-    ui_wrap(DM_TEXT_MIDI_BIND_CLEAR_QUESTION);
-
-    if (ui_button(DM_TEXT_CANCEL, 110, 0)) {
-        e->midi_clear_bindings = false;
-        ui_close_popup();
-    }
-
-    ui_same();
-
-    if (ui_button(DM_TEXT_MIDI_BIND_CLEAR_ALL, 110, 0)) {
+    if (e->midi_clear_bindings && ui_confirm(DM_TEXT_MIDI_BIND_CLEAR_TITLE, &e->midi_clear_bindings,
+                                             DM_TEXT_MIDI_BIND_CLEAR_QUESTION, buttons, 2) == 1) {
         ed_midi_bindings_clear_all(e);
-        e->midi_clear_bindings = false;
-        ui_close_popup();
     }
-
-    ui_popup_end();
 }
 
 static void midi_input_preferences(Editor *e) {
@@ -1234,7 +1219,44 @@ static void midi_input_preferences(Editor *e) {
     ui_separator();
     ui_text(DM_TEXT_MIDI_INPUT_ACTIVITY);
     midi_input_activity(e);
+}
+
+static void midi_event_rows(Editor *e, EdMidiTargetKind first, EdMidiTargetKind end) {
+    for (EdMidiTargetKind kind = first; kind < end; ++kind) {
+        EdMidiTarget target = {.kind = kind};
+        midi_binding_row(e, target, ed_midi_binding_find(e, target), true);
+    }
+}
+
+static void midi_event_preferences(Editor *e) {
+    if (!ui_section(DM_TEXT_MIDI_BIND_EVENTS)) {
+        return;
+    }
+
+    midi_event_rows(e, ED_MIDI_EVENT_BEND, ED_MIDI_EVENT_BRIGHTNESS);
+    ui_indent(12);
+    ui_section_default(false);
+
+    if (ui_section(DM_TEXT_MIDI_BIND_LIMITED)) {
+        midi_event_rows(e, ED_MIDI_EVENT_BRIGHTNESS, ED_MIDI_TARGETS);
+    }
+
+    ui_unindent(12);
+}
+
+static void midi_configuration(Editor *e) {
+    ui_section_default(false);
+
+    if (!ui_section(DM_TEXT_MIDI_CONFIGURATION)) {
+        e->input_preferences_open = false;
+        return;
+    }
+
+    ui_indent(12);
+    midi_input_preferences(e);
     midi_controls(e);
+    midi_event_preferences(e);
+    ui_unindent(12);
 }
 
 /* Every exporter with Export to Repository gets a folder row; the picker sets it too. */
@@ -1292,12 +1314,8 @@ void ed_preferences(Editor *e) {
         return;
     }
 
-    if (e->preferences_raise) {
-        ui_raise_next();
-        e->preferences_raise = false;
-    }
-
-    bool show = ui_growing_dialog(DM_TEXT_PREFERENCES, &e->preferences, 730, 540);
+    bool show = ui_dialog(DM_TEXT_PREFERENCES, &e->preferences,
+                          (UiDialog){.width = 730, .height = 540, .size = UI_FLEXIBLE});
     e->preferences_rect = ui_window_rect();
 
     if (show) {
@@ -1349,7 +1367,7 @@ void ed_preferences(Editor *e) {
             }
         }
 
-        midi_input_preferences(e);
+        midi_configuration(e);
         midi_clear_confirmation(e);
         export_plugin_preferences(e);
         ui_separator();
@@ -1363,7 +1381,7 @@ void ed_preferences(Editor *e) {
         e->input_preferences_open = false;
     }
 
-    ui_end();
+    ui_dialog_end();
 }
 
 static void shortcut_row(Editor *e, int i) {
@@ -1376,7 +1394,7 @@ static void shortcut_row(Editor *e, int i) {
             : i == ACT_PREVIOUS            ? DM_TEXT_REMOVE_EMPTY_PATTERN
             : i == ACT_NEXT_AUTOMATION     ? DM_TEXT_CREATE_AUTOMATION
             : i == ACT_PREVIOUS_AUTOMATION ? DM_TEXT_REMOVE_EMPTY_AUTOMATION
-                                           : ed_action_names[i]);
+                                           : ed_actions[i].name);
     ui_same();
     UiPoint cursor = ui_cursor(), window = ui_window();
     ui_position(window.x + 360, cursor.y);
@@ -1394,7 +1412,7 @@ static void shortcut_row(Editor *e, int i) {
 
 static void gesture_row(Editor *e, int i) {
     ui_id(ACT_COUNT + i);
-    ui_text(i == GESTURE_COPY_PLACEMENTS ? DM_TEXT_COPY_PLACEMENTS_DRAG : DM_TEXT_COPY_NOTES_DRAG);
+    ui_text(ed_gestures[i].label);
     ui_same();
     UiPoint cursor = ui_cursor(), window = ui_window();
     ui_position(window.x + 360, cursor.y);
@@ -1416,7 +1434,8 @@ void ed_shortcuts(Editor *e) {
         return;
     }
 
-    bool show = ui_dialog(DM_TEXT_KEYBOARD_SHORTCUTS, &e->shortcuts, 640, 620);
+    bool show = ui_dialog(DM_TEXT_KEYBOARD_SHORTCUTS, &e->shortcuts,
+                          (UiDialog){.width = 640, .height = 620, .size = UI_RESIZABLE});
 
     if (show) {
         ui_align_frame();
@@ -1430,26 +1449,29 @@ void ed_shortcuts(Editor *e) {
 
         ui_child(DM_TEXT_SHORTCUT_LIST, 0, 0, true);
 
-        for (int i = 0; i < ACT_COUNT; ++i) {
-            static const char *categories[ACT_COUNT] = {[0] = DM_TEXT_TRANSPORT_INPUT,
-                                                        [3] = DM_TEXT_NAVIGATION,
-                                                        [11] = DM_TEXT_PATTERNS_SELECTION,
-                                                        [19] = DM_TEXT_ZOOM_KEYBOARD_PIANO,
-                                                        [22] = DM_TEXT_WINDOWS_TOOLS_KEYBOARD};
+        static const char *const groups[ACTION_GROUPS] = {
+            [ACTIONS_TRANSPORT] = DM_TEXT_TRANSPORT_INPUT,
+            [ACTIONS_NAVIGATION] = DM_TEXT_NAVIGATION,
+            [ACTIONS_PATTERNS] = DM_TEXT_PATTERNS_SELECTION,
+            [ACTIONS_ZOOM] = DM_TEXT_ZOOM_KEYBOARD_PIANO,
+            [ACTIONS_WINDOWS] = DM_TEXT_WINDOWS_TOOLS_KEYBOARD};
 
-            if (categories[i]) {
-                ui_separator();
-                ui_dim(categories[i]);
+        for (int group = 0; group < ACTION_GROUPS; ++group) {
+            ui_separator();
+            ui_dim(groups[group]);
+
+            for (int i = 0; i < ACT_COUNT; ++i) {
+                if (ed_actions[i].group == (ActionGroup)group) {
+                    shortcut_row(e, i);
+                }
             }
-
-            shortcut_row(e, i);
         }
 
         ui_separator();
         ui_dim(DM_TEXT_MOUSE_GESTURES);
         ed_gesture_capture(e, ui_mouse());
 
-        for (int i = 0; i < GESTURE_COUNT; ++i) {
+        for (int i = 0; i < GESTURE_REBINDABLE; ++i) {
             gesture_row(e, i);
         }
 
@@ -1464,7 +1486,7 @@ void ed_shortcuts(Editor *e) {
         ui_child_end();
     }
 
-    ui_end();
+    ui_dialog_end();
 
     if (!e->shortcuts) {
         e->capture = -1;

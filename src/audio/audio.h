@@ -1,6 +1,7 @@
 #ifndef DM_AUDIO_H
 #define DM_AUDIO_H
 #include "core/duck.h"
+#include "midi_input/types.h"
 #include "../../shared/spectrum.h"
 #include "../../shared/audio_export.h"
 #include "../../include/duckmidi_export_plugin.h"
@@ -15,6 +16,8 @@ typedef struct {
 
 void dm_audio_attach_midi_input(DmAudio *audio, DmMidiInput *input);
 void dm_audio_input_route(DmAudio *audio, int channel, bool enabled);
+/* Monitor a translated event through the existing input controller policy and MIDI thru. */
+void dm_audio_input_event(DmAudio *audio, int route, int part, DmMidiInputEvent event);
 void dm_audio_input_controllers(DmAudio *audio, DmInputControllerPolicy policy);
 void dm_audio_input_thru(DmAudio *audio, DmMidiInput *input, bool enabled);
 /* Incoming key to sounding key for monitored Note On and key pressure; NULL plays keys as they

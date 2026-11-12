@@ -247,8 +247,13 @@ int main(void) {
     assert(!strcmp(memory->label, "Sequence memory") && memory->choice_count == 2 &&
            !strcmp(memory->choices[0].label, "Enlarge") &&
            !strcmp(memory->choices[1].label, "Stock"));
+    /* Area, Sequence name, Sample Set, Sequence memory, then Sequence volume. */
+    assert(field_index(&ui, "song") + 1 == field_index(&ui, "name") &&
+           field_index(&ui, "name") + 1 == field_index(&ui, "soundfont") &&
+           field_index(&ui, "soundfont") + 1 == field_index(&ui, "memory") &&
+           field_index(&ui, "memory") + 1 == field_index(&ui, "volume"));
     assert(!strcmp(field(&ui, "loop")->label, "Loop song") &&
-           field_index(&ui, "memory") + 1 == field_index(&ui, "loop"));
+           field_index(&ui, "volume") + 1 == field_index(&ui, "loop"));
 
     /* The sequence name follows the project name, or the MIDI file's name when the project has
        none, until the user types one. */

@@ -133,6 +133,8 @@ void ui_event(const SDL_Event *e) {
     ImGui_ImplSDL3_ProcessEvent(&scaled);
 }
 
+static void dialogs_new_frame();
+
 void ui_frame() {
     gesture_cursor = -1;
     ImGui_ImplSDLRenderer3_NewFrame();
@@ -155,6 +157,7 @@ void ui_frame() {
     io.DisplayFramebufferScale.x *= interface_scale;
     io.DisplayFramebufferScale.y *= interface_scale;
     ImGui::NewFrame();
+    dialogs_new_frame();
 }
 
 void ui_render(SDL_Renderer *r) {
@@ -301,6 +304,14 @@ void ui_width(float width) {
 
 void ui_newline() {
     ImGui::NewLine();
+}
+
+void ui_indent(float width) {
+    ImGui::Indent(width);
+}
+
+void ui_unindent(float width) {
+    ImGui::Unindent(width);
 }
 
 void ui_group_begin() {
@@ -801,6 +812,10 @@ bool ui_input_submit(const char *label, char *value, size_t cap) {
                                 ImGuiInputTextFlags_EnterReturnsTrue);
 }
 
+void ui_section_default(bool open) {
+    ImGui::SetNextItemOpen(open, ImGuiCond_Once);
+}
+
 bool ui_section(const char *label) {
     return ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
 }
@@ -813,14 +828,6 @@ bool ui_dialog_enter() {
     return ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) && !ui_popup_open() &&
            (ImGui::IsKeyPressed(ImGuiKey_Enter, ImGuiInputFlags_None, ImGuiKeyOwner_Any) ||
             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, ImGuiInputFlags_None, ImGuiKeyOwner_Any));
-}
-
-bool ui_content_dialog(const char *title, bool *open, float width) {
-    ImGui::SetNextWindowSize({width, 0}, ImGuiCond_Always);
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
-    return ImGui::Begin(title, open,
-                        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                            ImGuiWindowFlags_AlwaysAutoResize);
 }
 
 bool ui_mixer_value(int *value, float width) {
@@ -847,7 +854,7 @@ bool ui_mixer_value(int *value, float width) {
         }
 
         ImGui::SetNextItemWidth(120);
-        bool submit = ImGui::InputInt("Volume", &draft, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue);
+        bool submit = ImGui::InputInt(DM_TEXT_VOLUME, &draft, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue);
         parent->StateStorage.SetInt(key, draft);
 
         if (draft < 0 || draft > 127) {
@@ -1251,36 +1258,6 @@ void ui_spectrum(const float *bands, int count, float height, uint32_t color) {
     draw->PopClipRect();
 }
 
-bool ui_fixed_dialog(const char *s, bool *open, float w, float h) {
-    ImGui::SetNextWindowSize({w, h}, ImGuiCond_Always);
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
-    return ImGui::Begin(s, open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize);
-}
-
-bool ui_fitted_dialog(const char *s, bool *open, float w) {
-    /* Fixed width; the height follows the contents every frame. */
-    /* The height is only known after the window has measured its contents, so it is centered
-       again for its first frames, then left where the user drags it. */
-    ImGuiWindow *existing = ImGui::FindWindowByName(s);
-    ImGuiStorage *storage = ImGui::GetStateStorage();
-    ImGuiID frames = ImGui::GetID(s);
-
-    if (!existing || !existing->WasActive) {
-        storage->SetInt(frames, 0);
-    }
-
-    if (storage->GetInt(frames, 0) < 4) {
-        storage->SetInt(frames, storage->GetInt(frames, 0) + 1);
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always,
-                                {.5f, .5f});
-    }
-
-    ImGui::SetNextWindowSizeConstraints({w, 0}, {w, FLT_MAX});
-    return ImGui::Begin(s, open,
-                        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                            ImGuiWindowFlags_AlwaysAutoResize);
-}
-
 void ui_center_row(float width) {
     float left = ImGui::GetCursorPosX();
     ImGui::SetCursorPosX(left + ImMax(0.0f, (ImGui::GetContentRegionAvail().x - width) * .5f));
@@ -1325,87 +1302,6 @@ int ui_welcome_content() {
     return action;
 }
 
-void ui_confirmation_message(const char *text) {
-    float height =
-        ImGui::GetFontSize() + ImGui::GetStyle().ItemSpacing.y * 2 + ImGui::GetFrameHeight();
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() +
-                         ImMax(0.0f, (ImGui::GetContentRegionAvail().y - height) * .5f));
-    ui_center_text(text);
-    ImGui::Dummy({0, 0});
-}
-
-bool ui_dialog(const char *s, bool *open, float w, float h) {
-    ImGui::SetNextWindowSize({w, h}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
-    return ImGui::Begin(s, open, ImGuiWindowFlags_NoCollapse);
-}
-
-bool ui_expanding_dialog(const char *title, bool *open, float width, float height, bool expanded) {
-    const ImVec2 work = ImGui::GetMainViewport()->WorkSize;
-    ImGuiWindow *existing = ImGui::FindWindowByName(title);
-    ImGuiID key = ImHashStr("##expanded-content");
-    bool previous = existing && existing->StateStorage.GetBool(key);
-    float w = ImMin(existing ? existing->SizeFull.x : width, work.x);
-
-    if (expanded) {
-        if (!previous) {
-            ImGui::SetNextWindowSize({w, ImMin(height, work.y)}, ImGuiCond_Always);
-        }
-
-        ImGui::SetNextWindowSizeConstraints({ImMin(320.0f, work.x), ImMin(220.0f, work.y)}, work);
-        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing,
-                                {.5f, .5f});
-        bool visible = ImGui::Begin(title, open, ImGuiWindowFlags_NoCollapse);
-        ImGui::GetCurrentWindow()->StateStorage.SetBool(key, true);
-        return visible;
-    }
-
-    w = ImMin(width, work.x);
-    ImGui::SetNextWindowSize({w, 0}, ImGuiCond_Always);
-    ImGui::SetNextWindowSizeConstraints({w, 0}, {w, work.y});
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
-    bool visible = ImGui::Begin(title, open,
-                                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize |
-                                    ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::GetCurrentWindow()->StateStorage.SetBool(key, false);
-    return visible;
-}
-
-static bool growing_dialog(const char *s, bool *open, float w, float h) {
-    /* The height follows last frame's contents, limited to the work area so the options and the
-       resize corner stay visible; the width stays the user's. */
-    ImGuiWindow *window = ImGui::FindWindowByName(s);
-    const ImGuiViewport *view = ImGui::GetMainViewport();
-    float max_width = view->WorkSize.x;
-    ImGui::SetNextWindowSizeConstraints({ImMin(32.0f, max_width), 32},
-                                        {max_width, view->WorkSize.y});
-
-    if (window && window->WasActive && !window->Appearing && !window->Collapsed) {
-        float fit = window->ContentSizeIdeal.y + window->WindowPadding.y * 2 +
-                    window->DecoOuterSizeY1 + window->DecoOuterSizeY2;
-        float height = ImMin(std::ceil(fit) + 2, view->WorkSize.y);
-
-        float top =
-            ImClamp(window->Pos.y, view->WorkPos.y, view->WorkPos.y + view->WorkSize.y - height);
-        ImGui::SetNextWindowSize({ImMin(window->SizeFull.x, max_width), height}, ImGuiCond_Always);
-
-        if (top != window->Pos.y) {
-            ImGui::SetNextWindowPos({window->Pos.x, top}, ImGuiCond_Always);
-        }
-    } else {
-        float width = window ? window->SizeFull.x : w;
-        ImGui::SetNextWindowSize({ImMin(width, max_width), ImMin(h, view->WorkSize.y)},
-                                 ImGuiCond_Always);
-        ImGui::SetNextWindowPos(view->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
-    }
-
-    return ImGui::Begin(s, open, ImGuiWindowFlags_NoCollapse);
-}
-
-bool ui_growing_dialog(const char *s, bool *open, float w, float h) {
-    return growing_dialog(s, open, w, h);
-}
-
 /* Flexible dialogs resize in both directions but never become shorter than their contents
    need. The window remembers how much extra height ui_flex gave out last frame, so its minimum
    is the contents at their smallest, and the spare height this frame goes back to ui_flex.
@@ -1421,7 +1317,8 @@ static const char *const flex_layout_key = "ui_flex_layout";
 static const char *const flex_rows_key = "ui_flex_rows";
 static const char *const flex_center_key = "ui_flex_center";
 
-bool ui_flexible_dialog(const char *s, bool *open, float w, float h, bool attached, int layout) {
+static bool flexible_dialog(const char *s, bool *open, float w, float h, bool attached,
+                            int layout) {
     ImGuiWindow *window = ImGui::FindWindowByName(s);
     const ImGuiViewport *view = ImGui::GetMainViewport();
     float max_width = view->WorkSize.x - (attached ? ImMin(180.0f, view->WorkSize.x * .45f) : 0);
@@ -1498,6 +1395,239 @@ bool ui_flexible_dialog(const char *s, bool *open, float w, float h, bool attach
     return visible;
 }
 
+/* Dialogs. Every floating window and modal opens through ui_dialog, which sizes and centers it
+   from its UiDialog and lists it for the frame, so Escape and "a window is open" need no table
+   of windows. */
+struct DialogEntry {
+    ImGuiID id;
+    bool escape_closes;
+};
+
+struct DialogFrame {
+    int kind; /* 0 nothing was begun, 1 a window, 2 a modal popup */
+    bool *open;
+};
+
+static ImVector<DialogEntry> dialogs, previous_dialogs; /* This frame's and the last frame's. */
+static ImVector<DialogFrame> dialog_frames;
+static ImGuiID dialog_close, dialog_raise;
+static const char *const dialog_layout_key = "ui_dialog_layout";
+static const char *const dialog_center_key = "ui_dialog_center";
+static const char *const dialog_x_key = "ui_dialog_x";
+static const char *const dialog_y_key = "ui_dialog_y";
+
+static void dialogs_new_frame() {
+    IM_ASSERT(dialog_frames.Size == 0); /* Every ui_dialog has its ui_dialog_end. */
+    previous_dialogs.swap(dialogs);
+    dialogs.resize(0);
+}
+
+static const DialogEntry *listed_dialog(ImGuiID id) {
+    for (const DialogEntry &entry : dialogs) {
+        if (entry.id == id) {
+            return &entry;
+        }
+    }
+
+    for (const DialogEntry &entry : previous_dialogs) {
+        if (entry.id == id) {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
+static const DialogEntry *front_dialog() {
+    const auto &windows = ImGui::GetCurrentContext()->Windows;
+
+    for (int w = windows.Size - 1; w >= 0; --w) {
+        const DialogEntry *entry = windows[w]->Active ? listed_dialog(windows[w]->ID) : nullptr;
+
+        if (entry) {
+            return entry;
+        }
+    }
+
+    return nullptr;
+}
+
+bool ui_dialog(const char *title, bool *open, UiDialog dialog) {
+    ImGuiID id = ImHashStr(title);
+
+    if (dialog_close == id) {
+        dialog_close = 0;
+        *open = false;
+    }
+
+    if (!*open && !dialog.modal) {
+        dialog_frames.push_back({0, open});
+        return false;
+    }
+
+    if (dialog.modal) {
+        if (*open && !ImGui::IsPopupOpen(title)) {
+            ImGui::OpenPopup(title);
+        }
+
+        if (!ImGui::IsPopupOpen(title)) {
+            dialog_frames.push_back({0, open});
+            return false;
+        }
+    }
+
+    if (!dialog.tool) {
+        dialogs.push_back({id, dialog.escape_closes});
+    }
+
+    if (dialog_raise == id) {
+        dialog_raise = 0;
+        ImGui::SetNextWindowFocus();
+    }
+
+    const ImGuiViewport *view = ImGui::GetMainViewport();
+    ImVec2 work = view->WorkSize;
+    float width = ImMin(dialog.width, work.x), height = ImMin(dialog.height, work.y);
+    ImGuiWindow *window = ImGui::FindWindowByName(title);
+    bool appearing = !window || !window->WasActive;
+    bool changed = window && window->StateStorage.GetInt(ImHashStr(dialog_layout_key),
+                                                         dialog.layout) != dialog.layout;
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse;
+    bool visible;
+
+    if (dialog.size == UI_FLEXIBLE) {
+        visible = flexible_dialog(title, open, width, height, dialog.drawer, dialog.layout);
+        dialog_frames.push_back({1, open});
+        return visible;
+    }
+
+    if (dialog.size == UI_FIT) {
+        /* The height is known once the contents have been laid out, so a window that opens is
+           hidden for that frame and centered on the next. */
+        flags |= ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize;
+        ImGui::SetNextWindowSizeConstraints({width, 0}, {width, work.y});
+        ImGuiStorage *state = window ? &window->StateStorage : nullptr;
+        /* Left alone when something placed the window while it was hidden. */
+        bool center = state && state->GetBool(ImHashStr(dialog_center_key), false) &&
+                      state->GetFloat(ImHashStr(dialog_x_key)) == window->Pos.x &&
+                      state->GetFloat(ImHashStr(dialog_y_key)) == window->Pos.y;
+        ImGui::SetNextWindowPos(view->GetCenter(), center ? ImGuiCond_Always : ImGuiCond_Appearing,
+                                {.5f, .5f});
+    } else {
+        if (dialog.size == UI_FIXED) {
+            flags |= ImGuiWindowFlags_NoResize;
+            ImGui::SetNextWindowSize({width, height}, ImGuiCond_Always);
+        } else {
+            ImGui::SetNextWindowSizeConstraints({ImMin(320.0f, work.x), ImMin(220.0f, work.y)},
+                                                work);
+            ImGui::SetNextWindowSize({width, height}, changed || (dialog.modal && appearing)
+                                                          ? ImGuiCond_Always
+                                                          : ImGuiCond_FirstUseEver);
+        }
+
+        ImGui::SetNextWindowPos(view->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
+    }
+
+    visible = dialog.modal ? ImGui::BeginPopupModal(title, open, flags)
+                           : ImGui::Begin(title, open, flags);
+
+    if (dialog.modal && !visible) {
+        /* BeginPopupModal has already ended a popup it does not show. */
+        dialog_frames.push_back({0, open});
+        return false;
+    }
+
+    ImGuiWindow *current = ImGui::GetCurrentWindow();
+    current->StateStorage.SetInt(ImHashStr(dialog_layout_key), dialog.layout);
+
+    if (dialog.size == UI_FIT) {
+        current->StateStorage.SetBool(ImHashStr(dialog_center_key), appearing);
+        current->StateStorage.SetFloat(ImHashStr(dialog_x_key), current->Pos.x);
+        current->StateStorage.SetFloat(ImHashStr(dialog_y_key), current->Pos.y);
+
+        if (appearing) {
+            current->Hidden = true;
+        }
+    }
+
+    dialog_frames.push_back({dialog.modal ? 2 : 1, open});
+    return visible;
+}
+
+void ui_dialog_end() {
+    DialogFrame frame = dialog_frames.back();
+    dialog_frames.pop_back();
+
+    if (frame.kind == 1) {
+        ImGui::End();
+    } else if (frame.kind == 2) {
+        if (!*frame.open) {
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+}
+
+bool ui_dialog_open() {
+    return dialogs.Size || previous_dialogs.Size;
+}
+
+bool ui_dialog_front(const char *title) {
+    ImGuiID id = ImHashStr(title);
+    const DialogEntry *front = front_dialog();
+    return dialog_raise == id || (front && front->id == id);
+}
+
+void ui_dialog_raise(const char *title) {
+    dialog_raise = ImHashStr(title);
+}
+
+bool ui_dialog_close_front(bool editing) {
+    const DialogEntry *front = front_dialog();
+
+    if (!front || (editing && !front->escape_closes)) {
+        return false;
+    }
+
+    dialog_close = front->id;
+    return true;
+}
+
+int ui_confirm(const char *title, bool *open, const char *text, const char *const *buttons,
+               int count) {
+    int pressed = -1;
+
+    UiDialog dialog = {};
+    dialog.width = 420;
+    dialog.modal = true;
+
+    if (ui_dialog(title, open, dialog)) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        ImGui::Spacing();
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float button = ImMin(120.0f, (ImGui::GetContentRegionAvail().x - spacing * (count - 1)) /
+                                         (float)count);
+        ui_center_row(button * count + spacing * (count - 1));
+
+        for (int i = 0; i < count; ++i) {
+            if (i) {
+                ImGui::SameLine();
+            }
+
+            if (ImGui::Button(buttons[i], {button, 0})) {
+                pressed = i;
+                *open = false;
+            }
+        }
+    }
+
+    ui_dialog_end();
+    return pressed;
+}
+
 float ui_flex(float minimum, float preferred) {
     ImGuiWindow *root = ImGui::GetCurrentWindow()->RootWindow;
     float slack = root->StateStorage.GetFloat(ImHashStr(flex_slack_key), 0);
@@ -1554,20 +1684,6 @@ bool ui_attached_drawer(const char *id, UiRect main, float width) {
     }
 
     return visible;
-}
-
-bool ui_modal(const char *title, bool *open, float width, float height) {
-    if (*open && !ImGui::IsPopupOpen(title)) {
-        ImGui::OpenPopup(title);
-    }
-
-    if (!ImGui::IsPopupOpen(title)) {
-        return false;
-    }
-
-    ImGui::SetNextWindowSize({width, height}, ImGuiCond_Appearing);
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
-    return ImGui::BeginPopupModal(title, open, ImGuiWindowFlags_NoCollapse);
 }
 
 void ui_close_popup() {
@@ -1629,24 +1745,6 @@ void ui_escape() {
     ImGui::SetWindowFocus(nullptr);
 }
 
-int ui_topmost(const char *const *titles, int count) {
-    auto &windows = ImGui::GetCurrentContext()->Windows;
-
-    for (int w = windows.Size - 1; w >= 0; --w) {
-        if (!windows[w]->Active) {
-            continue;
-        }
-
-        for (int i = 0; i < count; ++i) {
-            if (windows[w] == ImGui::FindWindowByName(titles[i])) {
-                return i;
-            }
-        }
-    }
-
-    return -1;
-}
-
 bool ui_window_front_at(const char *title, UiPoint at) {
     const auto *target = ImGui::FindWindowByName(title);
     /* The workspace can take keyboard focus without moving in front of floating windows. */
@@ -1696,10 +1794,6 @@ bool ui_popup_open() {
     return ImGui::GetCurrentContext()->OpenPopupStack.Size != 0;
 }
 
-void ui_raise_next() {
-    ImGui::SetNextWindowFocus();
-}
-
 void ui_focus_next() {
     ImGui::SetKeyboardFocusHere();
 }
@@ -1707,6 +1801,46 @@ void ui_focus_next() {
 void ui_canvas(const char *s, float w, float h) {
     ImGui::InvisibleButton(s, {w, h},
                            ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+}
+
+void ui_canvas_controls(const char *s, float w, float h) {
+    ImGui::InvisibleButton(s, {w, h},
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight |
+                               ImGuiButtonFlags_NoSetKeyOwner);
+    auto &g = *ImGui::GetCurrentContext();
+
+    /* The canvas keeps immediate hover and drag handling while embedded controls may take over. */
+    if (g.HoveredId == g.LastItemData.ID) {
+        g.HoveredIdAllowOverlap = true;
+    }
+
+    if (g.ActiveId == g.LastItemData.ID) {
+        g.ActiveIdAllowOverlap = true;
+    }
+}
+
+bool ui_canvas_button(const char *label, UiRect rect) {
+    auto &g = *ImGui::GetCurrentContext();
+    ImGuiID id = ImGui::GetCurrentWindow()->GetID(label);
+    ImRect bounds({rect.x, rect.y}, {rect.x + rect.w, rect.y + rect.h});
+    ImGuiLastItemData canvas = g.LastItemData;
+    bool pressed = false;
+
+    /* Embedded controls do not participate in layout or replace the canvas's drop target. */
+    if (ImGui::ItemAdd(bounds, id)) {
+        bool hovered, held;
+        pressed = ImGui::ButtonBehavior(bounds, id, &hovered, &held);
+        ImU32 color = ImGui::GetColorU32(held && hovered ? ImGuiCol_ButtonActive
+                                         : hovered       ? ImGuiCol_ButtonHovered
+                                                         : ImGuiCol_Button);
+        ImGui::RenderNavCursor(bounds, id);
+        ImGui::RenderFrame(bounds.Min, bounds.Max, color, true, 0);
+        ImGui::RenderTextClipped(bounds.Min, bounds.Max, label, nullptr, nullptr,
+                                 g.Style.ButtonTextAlign, &bounds);
+    }
+
+    g.LastItemData = canvas;
+    return pressed;
 }
 
 void ui_scroll_to(float y) {

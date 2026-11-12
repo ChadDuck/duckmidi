@@ -1,11 +1,11 @@
-#include "../src/audio/audio.c"
+#include "audio_probe.c"
 
 static atomic_ullong callback_ns, callback_max, callback_count, callback_late;
 
 static void SDLCALL measured_callback(void *context, SDL_AudioStream *stream, int needed,
                                       int total) {
     uint64_t start = SDL_GetTicksNS();
-    callback(context, stream, needed, total);
+    dm_audio_callback(context, stream, needed, total);
     uint64_t elapsed = SDL_GetTicksNS() - start;
     atomic_fetch_add(&callback_ns, elapsed);
     atomic_fetch_add(&callback_count, 1);

@@ -3,29 +3,17 @@
 #include "../src/oot.h"
 #include "../../export_support/mapping.h"
 #include "../../export_support/sample.h"
+#include "../../export_support/ports.h"
 #include <stdbool.h>
 #include <stddef.h>
 
-#define OOT_PORTS 128
 #define OOT_CUSTOM_CHOICE 1000 /* Soundfont choice value for a custom soundfont */
 #define OOT_NAME_CAPACITY 49
 
 typedef struct {
-    uint8_t out[MIDI_CHANNELS][OOT_PORTS];
-    bool merged, interference;
-    unsigned moved_count, conflict_count;
-    char notice[768];
-    char merges[768]; /* One "where: control" line per interfering merge. */
-} OotPortLayout;
-
-/* Where each colored port's channel messages play; see ports.c. */
-bool oot_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion,
-                     OotPortLayout *layout);
-
-typedef struct {
     int song; /* 0 adds a new song; n replaces oot_songs[n - 1]. */
     EsMappings *custom;
-    char checkout[8192], checkout_identity[96];
+    char checkout[DME_PATH_LIMIT], checkout_identity[96];
     int font; /* OOT_CUSTOM_CHOICE or a vanilla soundfont index */
     char name[OOT_NAME_CAPACITY];
     char project_name[OOT_NAME_CAPACITY]; /* Default sequence name from the project. */
@@ -42,10 +30,10 @@ typedef struct {
     DmeField fields[14];
     DmeChoice song_choices[80], font_choices[48], choices[128];
     char song_labels[80][80], font_labels[48][64], choice_labels[128][96];
-    DmeMappingRow rows[2048];
-    char row_ids[2048][40], row_labels[2048][180];
-    DmeChoice similar[2048][8];
-    unsigned similar_count[2048];
+    DmeMappingRow rows[DME_ROW_LIMIT];
+    char row_ids[DME_ROW_LIMIT][40], row_labels[DME_ROW_LIMIT][180];
+    DmeChoice similar[DME_ROW_LIMIT][8];
+    unsigned similar_count[DME_ROW_LIMIT];
 } OotPluginUi;
 
 typedef struct OotReviewUi OotReviewUi;
@@ -55,9 +43,9 @@ typedef struct {
     EsMappingJob *custom;
     EsNativeSamples samples;
     EsRepository *repository;
-    char checkout[8192], checkout_identity[96];
+    char checkout[DME_PATH_LIMIT], checkout_identity[96];
     char name[OOT_NAME_CAPACITY];
-    char sample_bank[8192];
+    char sample_bank[DME_PATH_LIMIT];
     const char *song; /* NA_BGM_* to replace, or NULL to add a song */
     bool loop_points, enlarge;
     bool keep_originals;

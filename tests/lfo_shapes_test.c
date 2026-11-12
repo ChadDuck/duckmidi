@@ -1,15 +1,6 @@
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool ok, const char *what) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL lfo_shapes: %s\n", what);
-        exit(1);
-    }
-}
-
+#define TEST_NAME "lfo_shapes"
+#include "test_common.h"
 extern void test_lfo_shapes_ui(Editor *, void (*)(bool, const char *));
 
 static void wave_shapes(void) {
@@ -68,7 +59,7 @@ static void wave_shapes(void) {
     lfo->center = 20;
     lfo->amount = 0;
     check(dm_lfo_value(lfo, .2) == 20, "controller offset reaches MIDI generation");
-    lfo->event = -2;
+    lfo->event = DM_EVENT_BEND;
     lfo->reference = 60;
     lfo->pitch_center = 72.25;
     lfo->inverted = false;
@@ -143,7 +134,7 @@ static void editor_units(Editor *e) {
     p->mode = 1;
     p->event = 11;
     ed_open_pattern(e, id, false);
-    e->context = 2;
+    ed_focus_timeline(e, CONTEXT_ROLL);
     e->roll_view.zoom = 1;
     ed_action_zoom(e, ACT_ZOOM_IN);
     check(e->roll_view.zoom == 1, "LFO keyboard zoom is disabled");
@@ -176,19 +167,9 @@ static void editor_units(Editor *e) {
 int main(void) {
     wave_shapes();
     midi_centers();
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("lfo_shapes", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "hidden renderer");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", "", true);
+    Editor *e = test_editor_open("lfo_shapes", (TestDesktop){0});
     editor_units(e);
     test_lfo_shapes_ui(e, check);
     printf("PASS lfo_shapes: %d focused checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

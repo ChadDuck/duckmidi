@@ -1,106 +1,98 @@
 #include "editor/internal.h"
 #include "text/en.h"
 
-const char *ed_action_names[ACT_COUNT] = {DM_TEXT_COMPUTER_KEYBOARD_PIANO,
-                                          DM_TEXT_QUANTIZE,
-                                          DM_TEXT_PLAY_PAUSE,
-                                          DM_TEXT_FORWARD_ONE_SECOND,
-                                          DM_TEXT_BACK_ONE_SECOND,
-                                          DM_TEXT_FORWARD_QUARTER_BAR,
-                                          DM_TEXT_BACK_QUARTER_BAR,
-                                          DM_TEXT_GO_BEGINNING,
-                                          DM_TEXT_GO_END,
-                                          DM_TEXT_SCROLL_TOP,
-                                          DM_TEXT_SCROLL_BOTTOM,
-                                          DM_TEXT_NEXT_CREATE_PATTERN,
-                                          DM_TEXT_PREVIOUS_PATTERN,
-                                          DM_TEXT_SCROLL_UP,
-                                          DM_TEXT_SCROLL_DOWN,
-                                          DM_TEXT_MOVE_SELECTION_UP,
-                                          DM_TEXT_MOVE_SELECTION_DOWN,
-                                          DM_TEXT_TRANSPOSE_OCTAVE_UP,
-                                          DM_TEXT_TRANSPOSE_OCTAVE_DOWN,
-                                          DM_TEXT_ZOOM,
-                                          DM_TEXT_ZOOM_OUT,
-                                          DM_TEXT_RESET_ZOOM,
-                                          DM_TEXT_KEYBOARD_SHORTCUTS,
-                                          DM_TEXT_PROJECT_SETTINGS,
-                                          DM_TEXT_TOGGLE_PIANO_ROLL,
-                                          DM_TEXT_SELECT_TOOL,
-                                          DM_TEXT_MARQUEE_TOOL,
-                                          DM_TEXT_SLICE_TOOL,
-                                          DM_TEXT_DELETE_TOOL,
-                                          DM_TEXT_BRUSH_TOOL,
-                                          DM_TEXT_KEYBOARD_OCTAVE_DOWN,
-                                          DM_TEXT_KEYBOARD_OCTAVE_UP,
-                                          DM_TEXT_PLAY_BEGINNING,
-                                          DM_TEXT_SONG_EVENTS,
-                                          DM_TEXT_MUTE_SELECTED_CHANNEL,
-                                          DM_TEXT_SOLO_SELECTED_CHANNEL,
-                                          DM_TEXT_RECORD_KEYBOARD_PIANO,
-                                          DM_TEXT_METRONOME,
-                                          DM_TEXT_WAIT_INPUT,
-                                          DM_TEXT_OVERLAPPING_NOTES,
-                                          DM_TEXT_RECORD,
-                                          DM_TEXT_DUPLICATE_SELECTION,
-                                          DM_TEXT_SONG_PATTERN_PLAYBACK,
-                                          DM_TEXT_COLOR_SELECTED_NOTES,
-                                          DM_TEXT_NEXT_CREATE_AUTOMATION,
-                                          DM_TEXT_PREVIOUS_AUTOMATION,
-                                          DM_TEXT_CHOOSE_CHANNEL_INSTRUMENT,
-                                          DM_TEXT_PREFERENCES,
-                                          DM_TEXT_COPY_NOTE_BENDS,
-                                          DM_TEXT_CUT_NOTE_BENDS};
-static const SDL_Scancode default_keys[ACT_COUNT] = {SDL_SCANCODE_F1,
-                                                     SDL_SCANCODE_Q,
-                                                     SDL_SCANCODE_SPACE,
-                                                     SDL_SCANCODE_RIGHT,
-                                                     SDL_SCANCODE_LEFT,
-                                                     SDL_SCANCODE_RIGHT,
-                                                     SDL_SCANCODE_LEFT,
-                                                     SDL_SCANCODE_HOME,
-                                                     SDL_SCANCODE_END,
-                                                     SDL_SCANCODE_PAGEUP,
-                                                     SDL_SCANCODE_PAGEDOWN,
-                                                     SDL_SCANCODE_KP_PLUS,
-                                                     SDL_SCANCODE_KP_MINUS,
-                                                     SDL_SCANCODE_UP,
-                                                     SDL_SCANCODE_DOWN,
-                                                     SDL_SCANCODE_UP,
-                                                     SDL_SCANCODE_DOWN,
-                                                     SDL_SCANCODE_UP,
-                                                     SDL_SCANCODE_DOWN,
-                                                     SDL_SCANCODE_LEFTBRACKET,
-                                                     SDL_SCANCODE_RIGHTBRACKET,
-                                                     SDL_SCANCODE_BACKSLASH,
-                                                     SDL_SCANCODE_K,
-                                                     SDL_SCANCODE_SLASH,
-                                                     SDL_SCANCODE_E,
-                                                     SDL_SCANCODE_1,
-                                                     SDL_SCANCODE_2,
-                                                     SDL_SCANCODE_3,
-                                                     SDL_SCANCODE_4,
-                                                     SDL_SCANCODE_5,
-                                                     SDL_SCANCODE_KP_1,
-                                                     SDL_SCANCODE_KP_2,
-                                                     SDL_SCANCODE_SPACE,
-                                                     SDL_SCANCODE_E,
-                                                     SDL_SCANCODE_M,
-                                                     SDL_SCANCODE_S,
-                                                     SDL_SCANCODE_R,
-                                                     SDL_SCANCODE_F2,
-                                                     SDL_SCANCODE_F3,
-                                                     SDL_SCANCODE_F4,
-                                                     SDL_SCANCODE_F5,
-                                                     SDL_SCANCODE_D,
-                                                     SDL_SCANCODE_GRAVE,
-                                                     SDL_SCANCODE_C,
-                                                     SDL_SCANCODE_KP_PLUS,
-                                                     SDL_SCANCODE_KP_MINUS,
-                                                     SDL_SCANCODE_I,
-                                                     SDL_SCANCODE_P,
-                                                     SDL_SCANCODE_C,
-                                                     SDL_SCANCODE_X};
+/* Every rebindable action: its name (also its key in the preferences file), default shortcut,
+   group in Keyboard Shortcuts and dispatch rules. */
+const ActionInfo ed_actions[ACT_COUNT] = {
+    [ACT_PIANO] = {DM_TEXT_COMPUTER_KEYBOARD_PIANO, SDL_SCANCODE_F1, 0, ACTIONS_TRANSPORT, 0},
+    [ACT_QUANTIZE] = {DM_TEXT_QUANTIZE, SDL_SCANCODE_Q, SDL_KMOD_CTRL, ACTIONS_PATTERNS,
+                      ACTION_WORKSPACE},
+    [ACT_PLAY] = {DM_TEXT_PLAY_PAUSE, SDL_SCANCODE_SPACE, 0, ACTIONS_TRANSPORT, 0},
+    [ACT_FORWARD] = {DM_TEXT_FORWARD_ONE_SECOND, SDL_SCANCODE_RIGHT, 0, ACTIONS_NAVIGATION,
+                     ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_BACK] = {DM_TEXT_BACK_ONE_SECOND, SDL_SCANCODE_LEFT, 0, ACTIONS_NAVIGATION,
+                  ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_FORWARD_BEAT] = {DM_TEXT_FORWARD_QUARTER_BAR, SDL_SCANCODE_RIGHT, SDL_KMOD_SHIFT,
+                          ACTIONS_NAVIGATION, ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_BACK_BEAT] = {DM_TEXT_BACK_QUARTER_BAR, SDL_SCANCODE_LEFT, SDL_KMOD_SHIFT,
+                       ACTIONS_NAVIGATION, ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_HOME] = {DM_TEXT_GO_BEGINNING, SDL_SCANCODE_HOME, 0, ACTIONS_NAVIGATION,
+                  ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_END] = {DM_TEXT_GO_END, SDL_SCANCODE_END, 0, ACTIONS_NAVIGATION,
+                 ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_TOP] = {DM_TEXT_SCROLL_TOP, SDL_SCANCODE_PAGEUP, 0, ACTIONS_NAVIGATION,
+                 ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_BOTTOM] = {DM_TEXT_SCROLL_BOTTOM, SDL_SCANCODE_PAGEDOWN, 0, ACTIONS_NAVIGATION,
+                    ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_NEXT] = {DM_TEXT_NEXT_CREATE_PATTERN, SDL_SCANCODE_KP_PLUS, 0, ACTIONS_PATTERNS,
+                  ACTION_REPEATS},
+    [ACT_PREVIOUS] = {DM_TEXT_PREVIOUS_PATTERN, SDL_SCANCODE_KP_MINUS, 0, ACTIONS_PATTERNS,
+                      ACTION_REPEATS},
+    [ACT_UP] = {DM_TEXT_SCROLL_UP, SDL_SCANCODE_UP, 0, ACTIONS_NAVIGATION,
+                ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_DOWN] = {DM_TEXT_SCROLL_DOWN, SDL_SCANCODE_DOWN, 0, ACTIONS_NAVIGATION,
+                  ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_ITEM_UP] = {DM_TEXT_MOVE_SELECTION_UP, SDL_SCANCODE_UP, SDL_KMOD_SHIFT, ACTIONS_PATTERNS,
+                     ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_ITEM_DOWN] = {DM_TEXT_MOVE_SELECTION_DOWN, SDL_SCANCODE_DOWN, SDL_KMOD_SHIFT,
+                       ACTIONS_PATTERNS, ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_OCTAVE_UP] = {DM_TEXT_TRANSPOSE_OCTAVE_UP, SDL_SCANCODE_UP, SDL_KMOD_CTRL,
+                       ACTIONS_PATTERNS, ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_OCTAVE_DOWN] = {DM_TEXT_TRANSPOSE_OCTAVE_DOWN, SDL_SCANCODE_DOWN, SDL_KMOD_CTRL,
+                         ACTIONS_PATTERNS, ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_ZOOM_IN] = {DM_TEXT_ZOOM, SDL_SCANCODE_LEFTBRACKET, 0, ACTIONS_ZOOM,
+                     ACTION_WORKSPACE | ACTION_PIANO_OFF},
+    [ACT_ZOOM_OUT] = {DM_TEXT_ZOOM_OUT, SDL_SCANCODE_RIGHTBRACKET, 0, ACTIONS_ZOOM,
+                      ACTION_WORKSPACE | ACTION_PIANO_OFF},
+    [ACT_ZOOM_RESET] = {DM_TEXT_RESET_ZOOM, SDL_SCANCODE_BACKSLASH, 0, ACTIONS_ZOOM,
+                        ACTION_WORKSPACE | ACTION_PIANO_OFF},
+    [ACT_SHORTCUTS] = {DM_TEXT_KEYBOARD_SHORTCUTS, SDL_SCANCODE_K, 0, ACTIONS_WINDOWS,
+                       ACTION_PIANO_OFF},
+    [ACT_CONFIG] = {DM_TEXT_PROJECT_SETTINGS, SDL_SCANCODE_SLASH, 0, ACTIONS_WINDOWS,
+                    ACTION_PIANO_OFF},
+    [ACT_EDITOR] = {DM_TEXT_TOGGLE_PIANO_ROLL, SDL_SCANCODE_E, 0, ACTIONS_WINDOWS,
+                    ACTION_PIANO_OFF},
+    [ACT_SELECT] = {DM_TEXT_SELECT_TOOL, SDL_SCANCODE_1, 0, ACTIONS_WINDOWS, ACTION_PIANO_OFF},
+    [ACT_MARQUEE] = {DM_TEXT_MARQUEE_TOOL, SDL_SCANCODE_2, 0, ACTIONS_WINDOWS, ACTION_PIANO_OFF},
+    [ACT_SLICE] = {DM_TEXT_SLICE_TOOL, SDL_SCANCODE_3, 0, ACTIONS_WINDOWS, ACTION_PIANO_OFF},
+    [ACT_DELETE] = {DM_TEXT_DELETE_TOOL, SDL_SCANCODE_4, 0, ACTIONS_WINDOWS, ACTION_PIANO_OFF},
+    [ACT_BRUSH] = {DM_TEXT_BRUSH_TOOL, SDL_SCANCODE_5, 0, ACTIONS_WINDOWS, ACTION_PIANO_OFF},
+    [ACT_PIANO_DOWN] = {DM_TEXT_KEYBOARD_OCTAVE_DOWN, SDL_SCANCODE_KP_1, 0, ACTIONS_TRANSPORT, 0},
+    [ACT_PIANO_UP] = {DM_TEXT_KEYBOARD_OCTAVE_UP, SDL_SCANCODE_KP_2, 0, ACTIONS_TRANSPORT, 0},
+    [ACT_PLAY_START] = {DM_TEXT_PLAY_BEGINNING, SDL_SCANCODE_SPACE, SDL_KMOD_SHIFT,
+                        ACTIONS_TRANSPORT, 0},
+    [ACT_SONG_EVENT] = {DM_TEXT_SONG_EVENTS, SDL_SCANCODE_E, SDL_KMOD_SHIFT, ACTIONS_WINDOWS, 0},
+    [ACT_CHANNEL_UP] = {DM_TEXT_MOVE_CHANNEL_UP, SDL_SCANCODE_UP, SDL_KMOD_ALT, ACTIONS_PATTERNS,
+                        ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_CHANNEL_DOWN] = {DM_TEXT_MOVE_CHANNEL_DOWN, SDL_SCANCODE_DOWN, SDL_KMOD_ALT,
+                          ACTIONS_PATTERNS, ACTION_REPEATS | ACTION_WORKSPACE},
+    [ACT_MUTE] = {DM_TEXT_MUTE_SELECTED_CHANNEL, SDL_SCANCODE_M, 0, ACTIONS_PATTERNS,
+                  ACTION_PIANO_OFF},
+    [ACT_SOLO] = {DM_TEXT_SOLO_SELECTED_CHANNEL, SDL_SCANCODE_S, 0, ACTIONS_PATTERNS,
+                  ACTION_PIANO_OFF},
+    [ACT_RECORD] = {DM_TEXT_RECORD_KEYBOARD_PIANO, SDL_SCANCODE_R, 0, ACTIONS_TRANSPORT,
+                    ACTION_PIANO_OFF},
+    [ACT_METRONOME] = {DM_TEXT_METRONOME, SDL_SCANCODE_F2, 0, ACTIONS_TRANSPORT, 0},
+    [ACT_WAIT] = {DM_TEXT_WAIT_INPUT, SDL_SCANCODE_F3, 0, ACTIONS_TRANSPORT, 0},
+    [ACT_OVERLAP] = {DM_TEXT_OVERLAPPING_NOTES, SDL_SCANCODE_F4, 0, ACTIONS_TRANSPORT, 0},
+    [ACT_RECORD_GLOBAL] = {DM_TEXT_RECORD, SDL_SCANCODE_F5, 0, ACTIONS_TRANSPORT, 0},
+    [ACT_DUPLICATE] = {DM_TEXT_DUPLICATE_SELECTION, SDL_SCANCODE_D, SDL_KMOD_CTRL, ACTIONS_PATTERNS,
+                       ACTION_WORKSPACE},
+    [ACT_PLAY_MODE] = {DM_TEXT_SONG_PATTERN_PLAYBACK, SDL_SCANCODE_GRAVE, 0, ACTIONS_TRANSPORT, 0},
+    [ACT_NOTE_COLOR] = {DM_TEXT_COLOR_SELECTED_NOTES, SDL_SCANCODE_C, SDL_KMOD_ALT,
+                        ACTIONS_PATTERNS, ACTION_WORKSPACE},
+    [ACT_NEXT_AUTOMATION] = {DM_TEXT_NEXT_CREATE_AUTOMATION, SDL_SCANCODE_KP_PLUS, SDL_KMOD_SHIFT,
+                             ACTIONS_PATTERNS, 0},
+    [ACT_PREVIOUS_AUTOMATION] = {DM_TEXT_PREVIOUS_AUTOMATION, SDL_SCANCODE_KP_MINUS, SDL_KMOD_SHIFT,
+                                 ACTIONS_PATTERNS, 0},
+    [ACT_INSTRUMENT] = {DM_TEXT_CHOOSE_CHANNEL_INSTRUMENT, SDL_SCANCODE_I, 0, ACTIONS_WINDOWS, 0},
+    [ACT_PREFERENCES] = {DM_TEXT_PREFERENCES, SDL_SCANCODE_P, 0, ACTIONS_WINDOWS, 0},
+    [ACT_COPY_NOTE_BENDS] = {DM_TEXT_COPY_NOTE_BENDS, SDL_SCANCODE_C,
+                             SDL_KMOD_CTRL | SDL_KMOD_SHIFT, ACTIONS_PATTERNS, ACTION_WORKSPACE},
+    [ACT_CUT_NOTE_BENDS] = {DM_TEXT_CUT_NOTE_BENDS, SDL_SCANCODE_X, SDL_KMOD_CTRL | SDL_KMOD_SHIFT,
+                            ACTIONS_PATTERNS, ACTION_WORKSPACE},
+};
+
 static void preview_open_pattern(Editor *e, int id);
 static bool push(DmBytes *stack, int *count, const DmProject *p);
 static void publish_loop(Editor *e);
@@ -114,22 +106,34 @@ void ed_focus_edit(Editor *e, EditFocus focus) {
     }
 
     e->edit_focus = focus;
+}
 
-    if (focus == FOCUS_NOTES || focus == FOCUS_EVENTS) {
-        e->context = 2;
-    } else {
-        e->context = 1;
+EditContext ed_context(const Editor *e) {
+    return e->edit_focus == FOCUS_NONE                                     ? CONTEXT_NONE
+           : e->edit_focus == FOCUS_NOTES || e->edit_focus == FOCUS_EVENTS ? CONTEXT_ROLL
+                                                                           : CONTEXT_PLAYLIST;
+}
+
+void ed_focus_timeline(Editor *e, EditContext context) {
+    if (ed_context(e) == context) {
+        return;
+    }
+
+    if (context == CONTEXT_ROLL) {
+        ed_focus_edit(e, FOCUS_NOTES);
+    } else if (context == CONTEXT_PLAYLIST) {
+        ed_focus_edit(e, FOCUS_PLAYLIST);
     }
 }
 
 bool ed_velocity_editing(Editor *e) {
-    return e->automation_cc == -3 && e->selected_pattern >= 0 &&
+    return e->automation_cc == DM_EVENT_VELOCITY && e->selected_pattern >= 0 &&
            (size_t)e->selected_pattern < e->project.pattern_count &&
            !e->project.patterns[e->selected_pattern].kind;
 }
 
 EditFocus ed_selection_focus(Editor *e) {
-    return e->edit_focus ? e->edit_focus : e->context == 2 ? FOCUS_NOTES : FOCUS_PLAYLIST;
+    return e->edit_focus ? e->edit_focus : FOCUS_PLAYLIST;
 }
 
 void ed_reset_layout(Editor *e) {
@@ -390,7 +394,41 @@ SDL_Keymod ed_normalized(SDL_Keymod m) {
                         ((m & SDL_KMOD_GUI) ? SDL_KMOD_GUI : 0));
 }
 
-const char *ed_gesture_names[GESTURE_COUNT] = {"copy_placements_drag", "copy_notes_drag"};
+/* Every mouse gesture: its preferences key and default. Rows up to GESTURE_REBINDABLE can be
+   changed in Keyboard Shortcuts and are saved; the rest are fixed. MOUSE_ANY rows are modifiers
+   that change what a press, drag or wheel turn already under way does. */
+#define CTRL SDL_KMOD_CTRL
+#define SHIFT SDL_KMOD_SHIFT
+#define ALT SDL_KMOD_ALT
+const GestureInfo ed_gestures[GESTURE_COUNT] = {
+    [GESTURE_COPY_PLACEMENTS] = {"copy_placements_drag",
+                                 {MOUSE_LEFT, SHIFT},
+                                 DM_TEXT_COPY_PLACEMENTS_DRAG},
+    [GESTURE_COPY_NOTES] = {"copy_notes_drag", {MOUSE_MIDDLE, 0}, DM_TEXT_COPY_NOTES_DRAG},
+    [GESTURE_FREE] = {"free", {MOUSE_ANY, ALT}},
+    [GESTURE_MARQUEE] = {"marquee", {MOUSE_LEFT, CTRL}},
+    [GESTURE_EXTEND] = {"extend_selection", {MOUSE_LEFT, SHIFT}},
+    [GESTURE_MENU] = {"item_menu", {MOUSE_RIGHT, SHIFT}},
+    [GESTURE_ZOOM] = {"zoom", {MOUSE_WHEEL, CTRL}},
+    [GESTURE_SCROLL_ROWS] = {"scroll_rows", {MOUSE_WHEEL, SHIFT}},
+    [GESTURE_VELOCITY_WHEEL] = {"velocity_wheel", {MOUSE_WHEEL, ALT}},
+    [GESTURE_NOTE_BEND] = {"note_bend", {MOUSE_LEFT, SHIFT}},
+    [GESTURE_BEND_EDIT] = {"bend_edit", {MOUSE_LEFT, SHIFT}},
+    [GESTURE_BEND_POINT] = {"bend_point", {MOUSE_LEFT, ALT}},
+    [GESTURE_BRUSH_KEY] = {"brush_key", {MOUSE_ANY, CTRL}},
+    [GESTURE_LOCK_VALUE] = {"lock_value", {MOUSE_ANY, SHIFT}},
+    [GESTURE_LOCK_TIME] = {"lock_time", {MOUSE_ANY, CTRL}},
+    [GESTURE_CONNECT] = {"connect_point", {MOUSE_LEFT, SHIFT}},
+    [GESTURE_LANE_SETTINGS] = {"lane_settings", {MOUSE_LEFT, SHIFT}},
+    [GESTURE_PLAY_RANGE] = {"play_range", {MOUSE_LEFT, SHIFT}},
+    [GESTURE_DESELECT] = {"deselect_pattern", {MOUSE_LEFT, CTRL}},
+    [GESTURE_APPLY_ALL] = {"apply_all", {MOUSE_LEFT, SHIFT}},
+    [GESTURE_PORT_MENU] = {"port_menu", {MOUSE_LEFT, SHIFT}},
+    [GESTURE_PANIC] = {"panic", {MOUSE_LEFT, SHIFT}},
+};
+#undef CTRL
+#undef SHIFT
+#undef ALT
 
 static SDL_Keymod mouse_mods(UiMouse mouse) {
     return (SDL_Keymod)((mouse.ctrl ? SDL_KMOD_CTRL : 0) | (mouse.shift ? SDL_KMOD_SHIFT : 0) |
@@ -403,6 +441,18 @@ bool ed_mouse_down(UiMouse mouse, int button) {
                                    : button == MOUSE_MIDDLE && mouse.middle;
 }
 
+bool ed_gesture_held(const Editor *e, Gesture gesture, UiMouse mouse) {
+    SDL_Keymod mods = e->gestures[gesture].mods;
+    return (mouse_mods(mouse) & mods) == mods;
+}
+
+void ed_gesture_set(const Editor *e, Gesture gesture, UiMouse *mouse, bool held) {
+    SDL_Keymod mods = e->gestures[gesture].mods;
+    mouse->ctrl = mods & SDL_KMOD_CTRL ? held : mouse->ctrl;
+    mouse->shift = mods & SDL_KMOD_SHIFT ? held : mouse->shift;
+    mouse->alt = mods & SDL_KMOD_ALT ? held : mouse->alt;
+}
+
 bool ed_gesture_pressed(Editor *e, Gesture gesture, UiMouse mouse) {
     MouseBinding b = e->gestures[gesture];
     bool pressed = b.button == MOUSE_LEFT    ? mouse.clicked
@@ -413,7 +463,7 @@ bool ed_gesture_pressed(Editor *e, Gesture gesture, UiMouse mouse) {
 
 /* Plain left and right drags select, move and erase, so a gesture needs another button or a
    modifier. */
-bool ed_gesture_allowed(MouseBinding b) {
+static bool ed_gesture_allowed(MouseBinding b) {
     return b.button == MOUSE_MIDDLE || b.mods;
 }
 
@@ -482,28 +532,12 @@ bool ed_gesture_parse(const char *text, MouseBinding *out) {
 
 void ed_defaults(Editor *e) {
     for (int i = 0; i < ACT_COUNT; ++i) {
-        e->bindings[i] = (Binding){.key = default_keys[i]};
+        e->bindings[i] = (Binding){.key = ed_actions[i].key, .mods = ed_actions[i].mods};
     }
 
-    e->gestures[GESTURE_COPY_PLACEMENTS] = (MouseBinding){MOUSE_LEFT, SDL_KMOD_SHIFT};
-    e->gestures[GESTURE_COPY_NOTES] = (MouseBinding){MOUSE_MIDDLE, (SDL_Keymod)0};
-
-    e->bindings[ACT_QUANTIZE].mods = SDL_KMOD_CTRL;
-    e->bindings[ACT_DUPLICATE].mods = SDL_KMOD_CTRL;
-    e->bindings[ACT_COPY_NOTE_BENDS].mods = e->bindings[ACT_CUT_NOTE_BENDS].mods =
-        SDL_KMOD_CTRL | SDL_KMOD_SHIFT;
-    e->bindings[ACT_PLAY_START].mods = SDL_KMOD_SHIFT;
-    e->bindings[ACT_NOTE_COLOR].mods = SDL_KMOD_ALT;
-    e->bindings[ACT_NEXT_AUTOMATION].mods = e->bindings[ACT_PREVIOUS_AUTOMATION].mods =
-        SDL_KMOD_SHIFT;
-    e->bindings[ACT_SONG_EVENT].mods = SDL_KMOD_SHIFT;
-
-    for (int i = ACT_FORWARD_BEAT; i <= ACT_BACK_BEAT; ++i) {
-        e->bindings[i].mods = SDL_KMOD_SHIFT;
+    for (int i = 0; i < GESTURE_COUNT; ++i) {
+        e->gestures[i] = ed_gestures[i].binding;
     }
-
-    e->bindings[ACT_ITEM_UP].mods = e->bindings[ACT_ITEM_DOWN].mods = SDL_KMOD_SHIFT;
-    e->bindings[ACT_OCTAVE_UP].mods = e->bindings[ACT_OCTAVE_DOWN].mods = SDL_KMOD_CTRL;
 }
 
 void ed_message(Editor *e, const char *text) {
@@ -590,6 +624,19 @@ bool ed_checkpoint(Editor *e) {
 
     ed_clear_history(e->redo, &e->redo_count);
     return pushed;
+}
+
+bool ed_right_free(const Editor *e, UiMouse mouse) {
+    return !ed_gesture_held(e, GESTURE_MENU, mouse) && !e->loop_drag && !e->curve_drag &&
+           e->copy_button < 0;
+}
+
+void ed_erase_step(Editor *e) {
+    if (!e->erase_active) {
+        ed_checkpoint(e);
+    }
+
+    e->erase_active = true;
 }
 
 void ed_checkpoint_abandon(Editor *e, bool pushed) {
@@ -770,7 +817,15 @@ static int clip_identity(const void *left, const void *right) {
         return a->pattern < b->pattern ? -1 : 1;
     }
 
-    return (int)a->channel - b->channel;
+    if (a->channel != b->channel) {
+        return a->channel - b->channel;
+    }
+
+    if (a->lane != b->lane) {
+        return a->lane - b->lane;
+    }
+
+    return a->row - b->row;
 }
 
 static void retain_note_selection(DmPattern *next, const DmPattern *live) {
@@ -833,6 +888,7 @@ void ed_undo(Editor *e, bool redo) {
     ed_close_instrument(e);
     e->midi_event_index = -1;
     e->song_event = false;
+    e->song_event_channel = -1;
     e->curve_drag = e->marquee = e->event_marquee = false;
     e->wait_armed = e->take_started = false;
     e->event_selection.size = 0;

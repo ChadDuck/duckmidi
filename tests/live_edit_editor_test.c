@@ -1,24 +1,11 @@
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool value, const char *text) {
-    ++checks;
-
-    if (!value) {
-        fprintf(stderr, "FAIL live edit UI: %s\n", text);
-        exit(1);
-    }
-}
-
+#define TEST_NAME "live edit UI"
+#include "test_common.h"
 extern void test_live_edit_ui(Editor *, void (*)(bool, const char *));
 
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("Live edit UI", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "hidden renderer");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", "", true);
+    Editor *e = test_editor_open("Live edit UI", (TestDesktop){0});
+    SDL_Renderer *r = e->renderer;
     editor_smoke(e);
     test_live_edit_ui(e, check);
     ui_frame();
@@ -33,8 +20,8 @@ int main(void) {
     e->event_drag.size = 0;
     e->automation_node = 0;
     e->automation_raw = true;
-    e->automation_cc = -2;
-    e->drag = 5;
+    e->automation_cc = DM_EVENT_BEND;
+    e->drag = DRAG_EVENT_POINT;
     e->edit_moved = false;
     e->node_beat = e->project.automation[0].beat;
     e->marquee_start = (UiPoint){120, 200};
@@ -46,14 +33,13 @@ int main(void) {
     e->project.automation[0].a = 11;
     e->automation_node = 0;
     e->automation_cc = 11;
-    e->drag = 5;
+    e->drag = DRAG_EVENT_POINT;
     e->edit_moved = false;
     ed_automation_node_drag(e, (UiRect){100, 100, 400, 300}, &e->roll_view, 80, mouse);
     check(!e->edit_feedback, "non-pitch controller drag does not audition an arbitrary note");
-    e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
-    e->tool = 0;
-    e->drag = 0;
+    e->tool = TOOL_SELECT;
+    e->drag = DRAG_NONE;
     int list[] = {0, 1, 9};
     size_t clips = e->project.clip_count;
     mouse = (UiMouse){.clicked = true, .ctrl = true, .pos = {120, 110}};
@@ -69,9 +55,9 @@ int main(void) {
 
     mouse = (UiMouse){.clicked = true, .shift = true};
     ed_playlist_hit_click(e, mouse, 0, 0);
-    e->drag = 0;
+    e->drag = DRAG_NONE;
     ed_playlist_hit_click(e, mouse, 1, 0);
-    e->drag = 0;
+    e->drag = DRAG_NONE;
     check(e->project.clips[0].selected && e->project.clips[1].selected,
           "Shift click keeps additive playlist selection");
     ed_playlist_hit_click(e, mouse, 0, 0);
@@ -80,10 +66,5 @@ int main(void) {
     ui_end();
     ui_render(r);
     printf("PASS live edit UI: %d checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

@@ -1,21 +1,19 @@
 #include "editor/internal.h"
+#include <assert.h>
+#define TEST_NAME "channel routing"
+#include "test_common.h"
+#include "../shared/pattern_generation.h"
+extern int recording_feedback_audio_port_cc(DmAudio *, unsigned, int, int);
+extern int recording_feedback_audio_port_bend(DmAudio *, unsigned, int);
+extern bool recording_feedback_audio_port_voice(DmAudio *, unsigned, int, int);
+extern void test_port_strips_ui(Editor *);
+extern void test_note_color_popup_ui(Editor *);
 
-extern void recording_feedback_audio_pause(DmAudio *);
 extern void recording_feedback_audio_render(DmAudio *, int);
 extern int recording_feedback_audio_preset(DmAudio *, int, bool);
 extern int recording_feedback_audio_bank(DmAudio *, int, bool);
 extern unsigned recording_feedback_audio_voice(DmAudio *, int, int);
 extern void test_channel_routing_ui(Editor *, void (*)(bool, const char *));
-static int checks;
-
-static void check(bool ok, const char *text) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL channel routing: %s\n", text);
-        exit(1);
-    }
-}
 
 static void fixture(Editor *e) {
     ed_release_piano(e);
@@ -26,9 +24,8 @@ static void fixture(Editor *e) {
     e->selected_clip = e->playlist_context_clip = -1;
     e->preview_override = false;
     e->preview_source_channel = -1;
-    e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
-    e->drag = 0;
+    e->drag = DRAG_NONE;
     e->clip_moved = false;
     ed_pattern(e)->count = 0;
     dm_note_add(ed_pattern(e), (DmNote){0, 1, 60, 100, 0});
@@ -133,7 +130,7 @@ static void linked_slices(Editor *e) {
 static void note_curves(Editor *e) {
     fixture(e);
     DmPattern *p = ed_pattern(e);
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_raw = false;
     e->bend_range = 12;
     ed_note_bend_line(e, .25, .75, 10240, &p->notes[0]);
@@ -200,13 +197,13 @@ static void independent_bends(Editor *e) {
     fixture(e);
     DmPattern *p = ed_pattern(e);
     p->notes[0].length = 2; /* Its end meets the next note's onset. */
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_raw = false;
     e->automation_center = 64;
     UiRect lane = {0, 0, 640, 300};
     View view = {0};
     UiMouse click = {.pos = {160, 150}, .released = true};
-    e->drag = 4;
+    e->drag = DRAG_EVENT_LINE;
     e->marquee_start = click.pos;
     ed_automation_drag(e, lane, &view, 80, click);
     check(e->project.automation_count == 1, "Events places one independent pitch point");
@@ -216,7 +213,7 @@ static void independent_bends(Editor *e) {
           "a pitch point placed on the new note's onset sets a neutral MIDI bend");
 
     e->automation_raw = true;
-    e->drag = 4;
+    e->drag = DRAG_EVENT_LINE;
     e->marquee_start = (UiPoint){480, 145};
     ed_automation_drag(e, lane, &view, 80,
                        (UiMouse){.pos = {560, 105}, .released = true, .alt = true});
@@ -292,7 +289,7 @@ static void detached_pitch_playback(Editor *e) {
     p->notes[1].beat = 1.5;
     p->notes[1].key = 55;
     e->project.bpm = 120;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_raw = false;
     e->automation_center = 55;
     e->bend_range = 12;
@@ -690,35 +687,215 @@ static void imports(void) {
     dm_project_free(&loaded);
 }
 
-int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("Channel routing", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "renderer");
-    char error[512];
-    DmAudio *audio = dm_audio_create(error, sizeof(error));
-    check(audio && dm_audio_soundfont(audio, "agents/reports/generated-programs.sf2", error,
-                                      sizeof(error)),
-          "load generated multi-program SoundFont");
-    uint64_t start = SDL_GetTicks();
+/* Notes, controllers and bends on ports 0, 1 and 127 stay apart in MIDI, the project file,
+   generated patterns, live playback and a rendered file. */
+static void independent_ports(Editor *e) {
+    ed_new_project(e);
+    DmProject *p = &e->project;
+    DmPattern *pat = &p->patterns[0];
+    pat->count = 0;
+    p->clip_count = 0;
+    p->automation_count = 0;
+    assert(dm_note_add(pat, (DmNote){0, 4, 60, 100, 0, 0}) &&
+           dm_note_add(pat, (DmNote){0, 1, 60, 100, 0, 1}) &&
+           dm_note_add(pat, (DmNote){0, 2, 67, 100, 0, 127}));
+    assert(dm_clip_add(p, (DmClip){.pattern = 0, .channel = 0}));
+    const unsigned ports[] = {0, 1, 127};
+    const int values[] = {10, 127, 64};
 
-    while (dm_audio_busy(audio)) {
-        bool success = false;
-
-        if (dm_audio_poll(audio, error, sizeof(error), &success, NULL)) {
-            check(success, error);
-        }
-
-        if (SDL_GetTicks() - start > 30000) {
-            check(false, "font load timeout");
-        }
-
-        SDL_Delay(5);
+    for (unsigned i = 0; i < 3; i++) {
+        assert(dm_automation_add(p, (DmAutomation){.type = 0xb0,
+                                                   .channel = 0,
+                                                   .a = 11,
+                                                   .b = values[i],
+                                                   .pattern = 0,
+                                                   .port = (uint8_t)ports[i]}));
+        assert(dm_automation_add(p, (DmAutomation){.type = 0xe0,
+                                                   .channel = 0,
+                                                   .b = i == 1 ? 96 : 64,
+                                                   .pattern = 0,
+                                                   .port = (uint8_t)ports[i]}));
     }
 
-    recording_feedback_audio_pause(audio);
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, audio, "", "", true);
+    DmExportEvent *events = NULL;
+    size_t count = 0;
+    uint64_t duration;
+    char error[512];
+    assert(dm_export_timeline(p, &events, &count, &duration, error, sizeof(error)));
+    unsigned starts[DM_NOTE_PORTS] = {0};
+
+    for (size_t i = 0; i < count; i++) {
+        if ((events[i].status & 0xf0) == 0x90 && events[i].b) {
+            starts[events[i].port]++;
+        }
+    }
+
+    assert(starts[0] == 1 && starts[1] == 1 && starts[127] == 1);
+    free(events);
+    DmBytes data = {0};
+    assert(dm_midi(p, &data, error, sizeof(error)));
+    DmProject imported;
+    dm_project_init(&imported);
+    assert(dm_import(&imported, data.data, data.size, 1, 0, error, sizeof(error)) &&
+           imported.port_count == 3 && imported.patterns[0].count == 1);
+    assert(dm_view_switch(&imported, 127, 0, error, sizeof(error)) &&
+           imported.patterns[0].notes[0].key == 67);
+    dm_project_free(&imported);
+    dm_bytes_free(&data);
+    assert(dm_pack(p, &data));
+    dm_project_init(&imported);
+    assert(dm_unpack(&imported, data.data, data.size, error, sizeof(error)) &&
+           imported.patterns[0].notes[2].port == 127);
+    dm_project_free(&imported);
+    dm_bytes_free(&data);
+    DmProject generated;
+    dm_project_init(&generated);
+    DmGenerationStats stats;
+    assert(dm_generate_patterns(p, &generated, NULL, &stats, error, sizeof(error)));
+    assert(dm_export_timeline(&generated, &events, &count, &duration, error, sizeof(error)));
+    memset(starts, 0, sizeof(starts));
+
+    for (size_t i = 0; i < count; i++) {
+        if ((events[i].status & 0xf0) == 0x90 && events[i].b) {
+            starts[events[i].port]++;
+        }
+    }
+
+    assert(starts[0] == 1 && starts[1] == 1 && starts[127] == 1);
+    free(events);
+    dm_project_free(&generated);
+    assert(dm_audio_publish(e->audio, p, 0, true, error, sizeof(error)));
+    recording_feedback_audio_render(e->audio, 256);
+
+    for (unsigned i = 0; i < 3; i++) {
+        assert(recording_feedback_audio_port_cc(e->audio, ports[i], 0, 11) == values[i]);
+    }
+
+    assert(recording_feedback_audio_port_bend(e->audio, 0, 0) == 8192 &&
+           recording_feedback_audio_port_bend(e->audio, 1, 0) == 12288);
+    assert(recording_feedback_audio_port_voice(e->audio, 0, 0, 60) &&
+           recording_feedback_audio_port_voice(e->audio, 1, 0, 60));
+    recording_feedback_audio_render(e->audio, 24000);
+    assert(recording_feedback_audio_port_voice(e->audio, 0, 0, 60) &&
+           !recording_feedback_audio_port_voice(e->audio, 1, 0, 60));
+    assert(dm_audio_publish(e->audio, p, .25, true, error, sizeof(error)));
+    recording_feedback_audio_render(e->audio, 128);
+
+    for (unsigned i = 0; i < 3; i++) {
+        assert(recording_feedback_audio_port_cc(e->audio, ports[i], 0, 11) == values[i]);
+    }
+
+    dm_audio_loop(e->audio, true, .25, .75);
+    recording_feedback_audio_render(e->audio, 30000);
+    assert(recording_feedback_audio_port_cc(e->audio, 1, 0, 11) == 127 &&
+           recording_feedback_audio_port_cc(e->audio, 0, 0, 11) == 10);
+    dm_audio_loop(e->audio, false, 0, 0);
+    dm_audio_transport(e->audio, false);
+    recording_feedback_audio_render(e->audio, 128);
+    assert(dm_audio_soundfont(e->audio, TEST_SOUNDFONT, error, sizeof(error)));
+    assert(test_audio_wait(e->audio));
+    assert(dm_audio_publish(e->audio, p, 0, true, error, sizeof(error)));
+    recording_feedback_audio_render(e->audio, 128);
+    assert(recording_feedback_audio_port_cc(e->audio, 127, 0, 11) == 64);
+    dm_audio_transport(e->audio, false);
+    snprintf(p->soundfont, DM_PATH, TEST_SOUNDFONT);
+    assert(dm_audio_export(e->audio, p, "agents/reports/channel-routing-ports.wav", NULL, error,
+                           sizeof(error)));
+    assert(test_audio_wait(e->audio));
+    e->selected_pattern = e->pattern_channel = 0;
+    e->edit_focus = FOCUS_NOTES;
+    p->patterns[0].notes[0].selected = 1;
+    assert(ed_color_notes(e, 2) && p->patterns[0].notes[0].port == 2);
+    ed_undo(e, false);
+    assert(p->patterns[0].notes[0].port == 0);
+    e->note_ports[0] = 1;
+    assert(ed_curve_node(e, 0, 100, 11, 0, 60).port == 1);
+    e->note_ports[0] = 0;
+    puts(
+        "PASS independent ports 0/1/127: MIDI, project/generation persistence, live CC/bend/voices, note releases, seek/loop, font reload, WAV, color Undo and event scope");
+}
+
+/* Each port of a channel has its own volume, pan, mute and solo. */
+static void port_mixer(Editor *e) {
+    dm_project_free(&e->project);
+    dm_project_init(&e->project);
+    e->active = true;
+    e->selected_pattern = dm_pattern_add(&e->project, "Ports");
+    e->selected_channel = e->pattern_channel = 0;
+    e->channel_selected = true;
+    e->project.channels[0].program = 0;
+    DmPattern *p = ed_pattern(e);
+    p->length = 1;
+    assert(dm_note_add(p, (DmNote){0, .5, 60, 100, 0, 0}) &&
+           dm_note_add(p, (DmNote){0, .5, 72, 100, 0, 1}));
+    assert(dm_clip_add(&e->project, (DmClip){.pattern = 0, .channel = 0}));
+    assert(dm_port_mix_set(&e->project, (DmPortMix){0, 0, 70, 20, false, false}));
+    assert(dm_port_mix_set(&e->project, (DmPortMix){1, 0, 35, 100, false, false}));
+    DmBytes data = {0};
+    DmProject copy;
+    dm_project_init(&copy);
+    char error[512];
+    assert(dm_pack(&e->project, &data) &&
+           dm_unpack(&copy, data.data, data.size, error, sizeof(error)));
+    assert(dm_port_mix(&copy, 1, 0).volume == 35 && dm_port_mix(&copy, 0, 0).pan == 20);
+    assert(dm_project_copy(&copy, &e->project));
+    copy.port_mix[0].volume = 99;
+    assert(e->project.port_mix[0].volume == 35);
+    dm_project_free(&copy);
+    dm_bytes_free(&data);
+    assert(dm_audio_publish(e->audio, &e->project, 0, true, error, sizeof(error)));
+    recording_feedback_audio_render(e->audio, 128);
+    assert(recording_feedback_audio_port_cc(e->audio, 0, 0, 7) == 70 &&
+           recording_feedback_audio_port_cc(e->audio, 1, 0, 7) == 35);
+    dm_audio_part_control(e->audio, 1, 0, 7, 88);
+    recording_feedback_audio_render(e->audio, 64);
+    assert(recording_feedback_audio_port_cc(e->audio, 0, 0, 7) == 70 &&
+           recording_feedback_audio_port_cc(e->audio, 1, 0, 7) == 88);
+    DmPortMix mix = dm_port_mix(&e->project, 1, 0);
+    mix.mute = true;
+    assert(dm_port_mix_set(&e->project, mix));
+    DmExportEvent *events = NULL;
+    size_t count;
+    uint64_t duration;
+    assert(dm_export_timeline(&e->project, &events, &count, &duration, error, sizeof(error)));
+    int notes[2] = {0};
+
+    for (size_t i = 0; i < count; i++) {
+        if ((events[i].status & 0xf0) == 0x90 && events[i].b) {
+            notes[events[i].port]++;
+        }
+    }
+
+    assert(notes[0] == 1 && notes[1] == 0);
+    free(events);
+    mix.mute = false;
+    mix.solo = true;
+    assert(dm_port_mix_set(&e->project, mix));
+    assert(dm_export_timeline(&e->project, &events, &count, &duration, error, sizeof(error)));
+    notes[0] = notes[1] = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        if ((events[i].status & 0xf0) == 0x90 && events[i].b) {
+            notes[events[i].port]++;
+        }
+    }
+
+    assert(notes[0] == 0 && notes[1] == 1);
+    free(events);
+    mix.solo = false;
+    assert(dm_port_mix_set(&e->project, mix));
+    assert(dm_midi(&e->project, &data, error, sizeof(error)));
+    assert(data.size);
+    dm_bytes_free(&data);
+    dm_audio_transport(e->audio, false);
+    puts(
+        "PASS independent port volume/pan, live routing, mute/solo, mixer persistence and deep copy");
+}
+
+int main(void) {
+    Editor *e = test_editor_open("Channel routing",
+                                 (TestDesktop){.soundfont = TEST_SOUNDFONT, .paused = true});
+    SDL_Renderer *r = e->renderer;
     ui_frame();
     ui_root(0, 900);
     programs(e);
@@ -735,12 +912,10 @@ int main(void) {
     ui_render(r);
     fixture(e);
     test_channel_routing_ui(e, check);
+    independent_ports(e);
+    test_note_color_popup_ui(e);
+    port_mixer(e);
+    test_port_strips_ui(e);
     printf("PASS channel routing: %d checks\n", checks);
-    editor_free(e);
-    free(e);
-    dm_audio_destroy(audio);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

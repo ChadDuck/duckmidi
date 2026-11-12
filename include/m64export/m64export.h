@@ -104,6 +104,8 @@ typedef struct {
     uint64_t(M64_CALL *artifact_count)(const M64Result *);
     int32_t(M64_CALL *artifact_at)(const M64Result *, uint64_t, M64ArtifactView *);
     void(M64_CALL *result_free)(M64Result *);
+    /* Stock presets: 0-127 are the GM programs or drum notes; from 128, one plain preset per
+       sample of the stock instruments bank. NULL past the last preset. */
     const M64Instrument *(M64_CALL *default_program)(uint32_t);
     const M64Instrument *(M64_CALL *default_drum)(uint32_t);
     /* Analysis produces diagnostics/range issues, with no output artifacts. */
@@ -111,6 +113,9 @@ typedef struct {
     uint64_t(M64_CALL *range_count)(const M64Result *);
     int32_t(M64_CALL *range_at)(const M64Result *, uint64_t, M64RangeIssue *);
     int32_t(M64_CALL *preset_supported)(const M64RangeIssue *, uint32_t preset);
+    /* Up to capacity curated alternates for a GM program's default preset, best first, as
+       default_program values. Returns how many were written. */
+    uint32_t(M64_CALL *program_alternates)(uint32_t program, uint32_t *out, uint32_t capacity);
 } M64Api;
 
 /* The single required entry point. Hosts never probe older interfaces. */

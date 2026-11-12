@@ -43,8 +43,8 @@ static int flood(void *context) {
         unsigned due = (unsigned)((ns - start) * 3000 / 1000000000);
 
         while (controls < due) {
-            unsigned control = f->bound ? BOUND_FIRST_CC + controls % (2 * BOUND_STRIPS)
-                                        : MIDI_CC_MODULATION;
+            unsigned control =
+                f->bound ? BOUND_FIRST_CC + controls % (2 * BOUND_STRIPS) : MIDI_CC_MODULATION;
             unsigned value = f->bound ? controls / (2 * BOUND_STRIPS) % 128 : controls % 128;
             fixture_emit(f->source, 0, MIDI_CONTROL, control, value, SDL_GetTicksNS());
             ++controls;
@@ -94,7 +94,6 @@ int main(int argc, char **argv) {
     Editor *e = calloc(1, sizeof(*e));
     editor_init(e, window, renderer, audio, "", "", true);
     fixture(e);
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->roll = true;
     e->automation_open = true;

@@ -2,6 +2,9 @@
 #include "midi_input_fixture.h"
 
 void recording_feedback_audio_pause(DmAudio *audio);
+void recording_feedback_audio_render(DmAudio *audio, int frames);
+int recording_feedback_audio_port_cc(DmAudio *audio, unsigned port, int channel, int cc);
+int recording_feedback_audio_port_bend(DmAudio *audio, unsigned port, int channel);
 bool recording_feedback_audio_event(DmAudio *audio, int type, int key, int value);
 
 static MidiFixture fixture;
@@ -24,7 +27,6 @@ static void reset(Editor *e, bool overlap) {
     assert(ed_pattern(e));
     ed_pattern(e)->count = 0;
     e->project.automation_count = 0;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->pattern_mode = true;
     e->piano = true;
@@ -54,7 +56,7 @@ static void recorded_graph(Editor *e) {
     send_at(e, .173, MIDI_CONTROL, MIDI_CC_MODULATION, 48);
     ed_midi_input_frame(e);
     ed_midi_input_flush(e);
-    assert(dm_graph_resolution(ed_pattern(e), MIDI_CC_MODULATION) == 16 &&
+    assert(dm_graph_resolution(ed_pattern(e), MIDI_CC_MODULATION) == DM_GRAPH_MAX &&
            e->project.automation_count == 1);
     assert(fabs(e->project.automation[0].beat - .346) < 1e-7);
     ed_toggle_record(e);
@@ -69,7 +71,7 @@ static void recorded_graph(Editor *e) {
     send_at(e, .225, MIDI_CONTROL, MIDI_CC_MODULATION, 80);
     ed_midi_input_frame(e);
     ed_midi_input_flush(e);
-    assert(dm_graph_resolution(ed_pattern(e), -2) == 16 &&
+    assert(dm_graph_resolution(ed_pattern(e), DM_EVENT_BEND) == DM_GRAPH_MAX &&
            !dm_graph_resolution(ed_pattern(e), MIDI_CC_MODULATION) &&
            e->project.automation_count == 4);
     assert(e->project.automation[2].curve == 1 && e->project.automation[3].curve == 1);
@@ -82,7 +84,7 @@ static void recorded_graph(Editor *e) {
     ed_midi_input_frame(e);
     ed_midi_input_flush(e);
     assert(!dm_graph_resolution(ed_pattern(e), MIDI_CC_MODULATION) &&
-           dm_graph_resolution(ed_pattern(e), MIDI_CC_EXPRESSION) == 16 &&
+           dm_graph_resolution(ed_pattern(e), MIDI_CC_EXPRESSION) == DM_GRAPH_MAX &&
            e->project.automation_count == 2);
 
     reset(e, true);
@@ -96,6 +98,149 @@ static void recorded_graph(Editor *e) {
     ed_midi_input_frame(e);
     ed_midi_input_flush(e);
     assert(!dm_pattern_has_graph(ed_pattern(e)) && e->project.automation_count == 4);
+}
+
+static void event_binding(Editor *e, EdMidiTargetKind target, uint8_t status, uint8_t a) {
+    DmBytes bindings = {0};
+    EdMidiBinding binding = {
+        .source = {.kind = status == MIDI_CONTROL ? DM_MIDI_SOURCE_CC : DM_MIDI_SOURCE_BEND,
+                   .channel = 2,
+                   .number = a},
+        .target = {.kind = target},
+    };
+    assert(ed_midi_binding_append(&bindings, binding));
+    assert(ed_midi_bindings_replace(e, &bindings));
+}
+
+static void mapped_events(Editor *e) {
+    reset(e, true);
+    e->project.channels[3].enabled = true;
+    e->pattern_channel = 3;
+    e->note_ports[3] = 0;
+    e->preview_override = true;
+    e->preview_program = 0;
+    e->selected_channel = 0;
+    e->edit_focus = FOCUS_PLAYLIST;
+    e->input_controllers = DM_INPUT_CONTROLLERS_SONG;
+    ed_midi_input_apply(e);
+    fixture_drain(e->midi_input, 0, NULL);
+    event_binding(e, ED_MIDI_EVENT_MODULATION, MIDI_CONTROL, 21);
+    send_at(e, .173, MIDI_CONTROL | 2, 21, 48);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(e->project.automation_count == 1);
+    DmAutomation recorded = e->project.automation[0];
+    assert(recorded.type == MIDI_CONTROL && recorded.a == MIDI_CC_MODULATION && recorded.b == 48 &&
+           recorded.channel == 3);
+    assert(dm_graph_resolution(ed_pattern(e), MIDI_CC_MODULATION) == DM_GRAPH_MAX);
+    assert(!dm_graph_resolution(ed_pattern(e), 21));
+    assert(!fixture_drain(e->midi_input, 0, NULL));
+    recording_feedback_audio_render(e->audio, 64);
+    assert(recording_feedback_audio_port_cc(e->audio, 0, 3, MIDI_CC_MODULATION) == 48);
+    assert(recording_feedback_audio_port_cc(e->audio, 0, 0, MIDI_CC_MODULATION) != 48);
+    assert(recording_feedback_audio_port_cc(e->audio, 0, 3, 21) != 48);
+
+    event_binding(e, ED_MIDI_EVENT_BEND, MIDI_CONTROL, 21);
+    send_at(e, .225, MIDI_CONTROL | 2, 21, 64);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    recorded = e->project.automation[1];
+    int bend = 64 * MIDI_BEND_MAX / MIDI_DATA_MAX;
+    assert(recorded.type == MIDI_PITCH_BEND && (recorded.a | (recorded.b << 7)) == bend &&
+           recorded.channel == 3);
+    recording_feedback_audio_render(e->audio, 64);
+    assert(recording_feedback_audio_port_bend(e->audio, 0, 3) == bend);
+    event_binding(e, ED_MIDI_EVENT_EXPRESSION, MIDI_PITCH_BEND, 0);
+    send_at(e, .3, MIDI_PITCH_BEND | 2, MIDI_DATA_MAX, MIDI_DATA_MAX);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    recorded = e->project.automation[2];
+    assert(recorded.type == MIDI_CONTROL && recorded.a == MIDI_CC_EXPRESSION &&
+           recorded.b == MIDI_DATA_MAX && recorded.channel == 3);
+    /* Closing the device clears translated live destinations as well as preview routes. */
+    dm_midi_input_close(e->midi_input, "Fixture 0");
+    fixture_wait(e->midi_input, 0, DM_MIDI_CLOSED);
+    recording_feedback_audio_render(e->audio, 64);
+    assert(recording_feedback_audio_port_bend(e->audio, 0, 3) == MIDI_BEND_CENTER);
+    assert(recording_feedback_audio_port_cc(e->audio, 0, 3, MIDI_CC_EXPRESSION) == MIDI_DATA_MAX);
+    assert(dm_midi_input_open(e->midi_input, "Fixture 0"));
+    fixture_wait(e->midi_input, 0, DM_MIDI_OPEN);
+    ed_midi_input_frame(e);
+    DmBytes empty = {0};
+    assert(ed_midi_bindings_replace(e, &empty));
+    e->input_controllers = DM_INPUT_CONTROLLERS_KEYBOARD;
+    ed_midi_input_apply(e);
+}
+
+static void automation_recording(Editor *e) {
+    reset(e, true);
+    ed_toggle_record(e);
+    ed_pattern(e)->kind = 1;
+    ed_pattern(e)->mode = 0;
+    ed_pattern(e)->event = MIDI_CC_MODULATION;
+    e->project.clip_count = 0;
+    e->selected_channel = 4;
+    e->project.channels[4].enabled = true;
+    e->preview_override = false;
+    e->input_controllers = DM_INPUT_CONTROLLERS_SONG;
+    ed_midi_input_apply(e);
+    ed_publish(e);
+    ed_toggle_record(e);
+    e->wait_input = true;
+    ed_play(e);
+    ed_play(e);
+    assert(e->record && e->wait_armed);
+    uint64_t ns = SDL_GetTicksNS();
+    dm_midi_clock_write(dm_midi_input_clock(e->midi_input),
+                        (DmMidiClockValue){.ticks_ns = ns, .transport = ++generation});
+    fixture_emit(&fixture, 0, MIDI_CONTROL, MIDI_CC_MODULATION, 55, ns);
+    ed_midi_input_frame(e);
+    assert(!e->wait_armed && dm_audio_playing(e->audio));
+    send_at(e, .175, MIDI_CONTROL, MIDI_CC_EXPRESSION, 22);
+    send_at(e, .18, MIDI_NOTE_ON, 60, 100);
+    send_at(e, .19, MIDI_NOTE_OFF, 60, 0);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(e->project.automation_count == 1 && !ed_pattern(e)->count);
+    DmAutomation recorded = e->project.automation[0];
+    assert(recorded.a == MIDI_CC_MODULATION && recorded.b == 55 && recorded.channel == 4);
+    assert(!dm_pattern_has_graph(ed_pattern(e)));
+    recording_feedback_audio_render(e->audio, 64);
+    assert(recording_feedback_audio_port_cc(e->audio, 0, 4, MIDI_CC_MODULATION) == 55);
+
+    event_binding(e, ED_MIDI_EVENT_MODULATION, MIDI_CONTROL, 21);
+    send_at(e, .225, MIDI_CONTROL | 2, 21, 70);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(e->project.automation_count == 2);
+    recorded = e->project.automation[1];
+    assert(recorded.a == MIDI_CC_MODULATION && recorded.b == 70 && recorded.channel == 4);
+    assert(dm_clip_add(&e->project, (DmClip){.pattern = e->selected_pattern, .channel = 3}));
+    assert(dm_clip_add(&e->project,
+                       (DmClip){.pattern = e->selected_pattern, .channel = 5, .beat = 4}));
+    e->project.channels[3].enabled = e->project.channels[5].enabled = true;
+    e->selected_clip = 1;
+    e->note_ports[5] = 0;
+    send_at(e, .3, MIDI_CONTROL | 2, 21, 80);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(e->pattern_channel == 5 && e->project.automation_count == 3);
+    assert(e->project.automation[2].channel == 5 && e->project.automation[2].b == 80);
+    e->selected_clip = -1;
+    send_at(e, .4, MIDI_CONTROL | 2, 21, 90);
+    ed_midi_input_frame(e);
+    ed_midi_input_flush(e);
+    assert(e->pattern_channel == 3 && e->project.automation_count == 4);
+    assert(e->project.automation[3].channel == 3 && e->project.automation[3].b == 90);
+    send_at(e, .45, MIDI_CONTROL | 2, 21, 95);
+    ed_toggle_record(e);
+    assert(e->project.automation_count == 5 && e->project.automation[4].b == 95);
+    ed_undo(e, false);
+    assert(!e->project.automation_count && !ed_pattern(e)->count);
+    DmBytes empty = {0};
+    assert(ed_midi_bindings_replace(e, &empty));
+    e->input_controllers = DM_INPUT_CONTROLLERS_KEYBOARD;
+    ed_midi_input_apply(e);
 }
 
 static DmNote record_pad(Editor *e, int program, uint8_t key, bool unmap_before_release) {
@@ -148,24 +293,24 @@ static void percussion_mapping(Editor *e) {
     snprintf(e->settings_path, sizeof(e->settings_path),
              "build/development/midi_recording_percussion.ini");
     e->percussion_midi_global[38] = 49 + 1;
-    assert(dm_preferences_save(e, 0, ed_action_names));
+    assert(dm_preferences_save(e));
     memset(e->percussion_midi_global, 0, sizeof(e->percussion_midi_global));
-    assert(dm_preferences_load(e, 0) && e->percussion_midi_global[38] == 50);
+    assert(dm_preferences_load(e) && e->percussion_midi_global[38] == 50);
     static const char duplicate[] = "[application]\nschema=3\n[percussion_midi]\n"
                                     "acoustic_snare=49\nbass_drum_1=49\n";
     assert(SDL_SaveFile(e->settings_path, duplicate, sizeof(duplicate) - 1) &&
-           !dm_preferences_load(e, 0) && e->percussion_midi_global[38] == 50);
+           !dm_preferences_load(e) && e->percussion_midi_global[38] == 50);
     SDL_RemovePath(e->settings_path);
     memset(e->percussion_midi_global, 0, sizeof(e->percussion_midi_global));
     e->preview_override = false;
 
     /* Outside the pattern editor, any channel marked as percussion plays the mapping. */
     reset(e, false);
-    e->context = 0;
+    e->edit_focus = FOCUS_NONE;
     e->project.channels[3].drums = true;
     e->project.channels[MIDI_DRUM_CHANNEL].drums = false;
     assert(ed_route_drums(e, 3) && !ed_route_drums(e, 4) && !ed_route_drums(e, MIDI_DRUM_CHANNEL));
-    e->context = 2;
+    ed_focus_timeline(e, CONTEXT_ROLL);
     assert(ed_route_drums(e, MIDI_DRUM_CHANNEL) && !ed_route_drums(e, 3));
 }
 
@@ -376,6 +521,7 @@ int main(void) {
     assert(ed_pattern(e)->count == 1 && ed_pattern(e)->notes[0].velocity == 73);
     assert(!e->record);
     ed_pattern(e)->kind = 1;
+    ed_pattern(e)->mode = 1;
     ed_toggle_record(e);
     assert(!e->record);
 
@@ -423,9 +569,9 @@ int main(void) {
              "build/development/midi_recording_test.ini");
     snprintf(e->input_names[0], DM_MIDI_NAME, "Name, with \"quotes\"");
     snprintf(e->input_names[1], DM_MIDI_NAME, "Missing device");
-    assert(dm_preferences_save(e, 0, ed_action_names));
+    assert(dm_preferences_save(e));
     memset(e->input_names, 0, sizeof(e->input_names));
-    assert(dm_preferences_load(e, 0));
+    assert(dm_preferences_load(e));
     assert(!strcmp(e->input_names[0], "Name, with \"quotes\""));
     assert(!strcmp(e->input_names[1], "Missing device"));
     SDL_RemovePath(e->settings_path);
@@ -466,6 +612,8 @@ int main(void) {
     assert(e->project.automation_count == 1000);
     percussion_mapping(e);
     recorded_graph(e);
+    mapped_events(e);
+    automation_recording(e);
     e->settings_path[0] = 0;
     editor_free(e);
     free(e);

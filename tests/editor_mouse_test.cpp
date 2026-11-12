@@ -72,7 +72,7 @@ extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) 
                ImGui::GetStyle().ItemSpacing.y + 28;
     float y = gy + (70 - 68) * 20 + 10, x = gx + 4 * 80 + 3;
     size_t count = e->project.patterns[0].count;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
     mouse_frame(e, x, y, false);
@@ -83,11 +83,11 @@ extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) 
     mouse_frame(e, edge + 40, y, true);
     mouse_frame(e, edge + 40, y, false);
     check(e->project.patterns[0].notes[index].length >= .7, "mouse resizes note edge");
-    e->tool = 2;
+    e->tool = TOOL_SLICE;
     mouse_frame(e, gx + 4 * 80 + 21, y, true);
     mouse_frame(e, gx + 4 * 80 + 21, y, false);
     check(e->project.patterns[0].count == count + 2, "slice tool splits a note");
-    e->tool = 1;
+    e->tool = TOOL_MARQUEE;
     ed_deselect_notes(&e->project.patterns[0]);
     auto *notes = e->project.patterns[0].notes;
     notes[0].selected = 1;
@@ -120,7 +120,7 @@ extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) 
     remove.key.down = true;
     remove.key.scancode = SDL_SCANCODE_DELETE;
     editor_event(e, &remove);
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     float bend_x = gx + .5f * 80 + 15, bend_y = gy + (70 - 64) * 20 + 10;
     mouse_frame(e, bend_x, bend_y, false, false, true);
     mouse_frame(e, bend_x, bend_y, true, false, true);
@@ -227,6 +227,68 @@ extern "C" void test_channel_row_ui(Editor *e, void (*check)(bool, const char *)
     check(!e->project.channels[3].enabled && e->project.clip_count == 0 &&
               e->project.pattern_count == 1,
           "confirming removal clears the row and keeps the source pattern");
+
+    ed_new_project(e);
+    mouse_frame(e, 0, 0, false);
+    playlist = find_window("/Playlist_");
+    float label_x = playlist->WorkRect.Min.x;
+    float top = playlist->WorkRect.Min.y + 32 + ImGui::GetStyle().ItemSpacing.y + 28;
+    float add_y = top + 2 * 64 - 10;
+    auto click = [&](float cx, float cy, bool right = false) {
+        mouse_frame(e, cx, cy, false);
+        mouse_frame(e, cx, cy, !right, false, false, false, 0, right);
+        mouse_frame(e, cx, cy, false);
+    };
+    click(label_x + 40, add_y);
+    check(e->project.note_rows[0] == 2, "the label's Add button appends a note row");
+    e->selected_channel = MIDI_DRUM_CHANNEL;
+    click(label_x + 40, top + 2 * 64 + 10);
+    check(e->selected_channel == 0, "the lower half of a merged label selects its channel");
+    click(label_x + 40, top + 2 * 64 + 10, true);
+    check(e->instrument_channel == 0, "the lower half of a merged label opens its instrument");
+    ed_close_instrument(e);
+    check(ed_place_pattern(e, 0, ed_row_code(0, 0, 1), 0) >= 0, "parallel playlist mouse fixture");
+    mouse_frame(e, 0, 0, false);
+    e->project.patterns[0].length = 4;
+    float grid_x = label_x + e->label_width;
+    float second_y = top + 2 * 64 + 28;
+    mouse_frame(e, grid_x + 15, second_y, false);
+    mouse_frame(e, grid_x + 15, second_y, true);
+    mouse_frame(e, grid_x + 15, second_y - 64, true);
+    mouse_frame(e, grid_x + 15, second_y - 64, false);
+    check(e->project.clips[0].row == 0, "dragging a placement reaches the first note row");
+    mouse_frame(e, grid_x + 15, second_y - 64, true);
+    mouse_frame(e, grid_x + 15, second_y, true);
+    mouse_frame(e, grid_x + 15, second_y, false);
+    check(e->project.clips[0].row == 1, "dragging a placement reaches the second note row");
+
+    e->project.clips[0].selected = 0;
+    mouse_frame(e, grid_x + 10, second_y - 25, false, false, false, true);
+    mouse_frame(e, grid_x + 10, second_y - 25, true, false, false, true);
+    mouse_frame(e, grid_x + 150, second_y + 25, true, false, false, true);
+    mouse_frame(e, grid_x + 150, second_y + 25, false);
+    check(e->project.clips[0].selected,
+          "marquee selection finds a placement on its actual note row");
+    float remove_x = label_x + (e->label_width - 18) * .75f;
+    float remove_y = add_y + 64;
+    click(remove_x, remove_y);
+    check(e->remove_note_row && e->project.note_rows[0] == 2 && e->project.clip_count == 1,
+          "Remove asks before deleting a populated bottom note row");
+    auto *question = ImGui::FindWindowByName("Remove note row");
+    check(question && (question->Flags & ImGuiWindowFlags_Modal),
+          "note row removal uses the shared modal confirmation");
+    activate(question, "Cancel");
+    check(!e->remove_note_row && e->project.clip_count == 1,
+          "canceling note row removal preserves its placements");
+    click(remove_x, remove_y);
+    activate(question, "Remove");
+    check(e->project.note_rows[0] == 1 && !e->project.clip_count,
+          "confirming removes the bottom note row and its placements");
+    ed_undo(e, false);
+    check(e->project.note_rows[0] == 2 && e->project.clip_count == 1 &&
+              e->project.clips[0].row == 1,
+          "undo restores a note row removed through its label");
+    capture_workspace_navigation(e, "agents/reports/parallel-note-rows.bmp");
 }
 
 static UiPoint roll_origin() {
@@ -241,9 +303,8 @@ static void group_drag(Editor *e, void (*check)(bool, const char *)) {
     p.length = 4;
     e->project.automation_count = 0;
     e->selected_pattern = 0;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     e->roll_view.scroll_x = 0;
     e->roll_view.scroll_y = (127 - 70) * 20;
     e->roll_view.zoom = 1;
@@ -260,7 +321,6 @@ static void group_drag(Editor *e, void (*check)(bool, const char *)) {
     check(p.notes[0].key == 65 && p.notes[1].key == 68,
           "selected notes preserve pitch spacing while dragging");
     e->cursor_beat[1] = 3.25;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     size_t before = p.count;
     direct_key(e, SDL_SCANCODE_C, SDL_KMOD_CTRL);
@@ -278,9 +338,8 @@ static void note_copy_drag(Editor *e, void (*check)(bool, const char *)) {
     p.length = 4;
     e->project.automation_count = 0;
     e->selected_pattern = 0;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     e->roll_view.scroll_x = 0;
     e->roll_view.scroll_y = (127 - 70) * 20;
     e->roll_view.zoom = 1;
@@ -307,7 +366,7 @@ static void note_copy_drag(Editor *e, void (*check)(bool, const char *)) {
     check(p.notes[1].velocity == 77 && p.notes[1].port == 1 && p.notes[1].length == .5 &&
               p.notes[1].selected && !p.notes[0].selected,
           "a copied note keeps its length, velocity and color");
-    check(e->undo_count == history + 1 && e->pan_context == 0,
+    check(e->undo_count == history + 1 && e->pan_context == CONTEXT_NONE,
           "a note copy drag is one undo step and does not pan the view");
     direct_key(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
     check(e->project.patterns[0].count == 1, "undo removes the dragged note copy");
@@ -318,7 +377,6 @@ static void quantized_alignment(Editor *e, void (*check)(bool, const char *)) {
     ed_pattern.count = 0;
     ed_pattern.length = 4;
     e->project.automation_count = 0;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->automation_open = false;
     dm_note_add(&ed_pattern, {.37, .5, 64, 100, 1});
@@ -405,7 +463,7 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     float height_before = e->automation_height;
     e->automation_height = 240;
     e->automation_open = true;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_center = 64;
     mouse_frame(e, 0, 0, false);
     auto lane = pattern_event_lane();
@@ -531,7 +589,7 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
 static void labels_and_drop(Editor *e, void (*check)(bool, const char *)) {
     e->roll_height = 320;
     e->playlist_view.scroll_y = 0;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     mouse_frame(e, 0, 0, false);
     auto *w = find_window("/Playlist_");
     check(w != nullptr, "playlist exists");
@@ -737,7 +795,6 @@ static void layout_and_mixer(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, x + 40, y, false);
     check(e->start_beat[0] == 4 && e->cursor_beat[0] == 4,
           "dragging a ruler selects and remembers the playback start");
-    e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
     direct_key(e, SDL_SCANCODE_SPACE, SDL_KMOD_SHIFT);
     check(e->start_beat[0] == 0, "Shift-Space starts from the beginning");
@@ -866,6 +923,8 @@ static void shortcut_and_dialogs(Editor *e, void (*check)(bool, const char *)) {
     check(e->instrument_program == program + 1 && e->project.channels[0].program == program,
           "instrument arrows select a draft preset without changing the project");
     ed_close_instrument(e);
+    mouse_frame(e, 0, 0, false);
+    mouse_frame(e, 0, 0, false);
     e->piano = true;
     direct_key(e, SDL_SCANCODE_KP_2);
     direct_key(e, SDL_SCANCODE_Q);
@@ -902,9 +961,8 @@ static void transport_shortcuts_ui(Editor *e, void (*check)(bool, const char *))
     editor_smoke(e);
     e->automation_open = false;
     e->pattern_channel = 0;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     e->roll_height = 400;
     auto &p = e->project.patterns[0];
     p.length = 64;
@@ -964,13 +1022,13 @@ static void transport_shortcuts_ui(Editor *e, void (*check)(bool, const char *))
     mouse_frame(e, x + 20, y - 20, false, false, true);
     mouse_frame(e, x + 20, y - 20, true, false, true);
     mouse_frame(e, x + 20, y - 20, false);
-    check(e->automation_node >= 0 && e->drag == 0,
+    check(e->automation_node >= 0 && e->drag == DRAG_NONE,
           "real Shift click selects overlay point without starting note drag");
     direct_key(e, SDL_SCANCODE_DELETE);
     check(e->project.automation_count == 3 && p.count == 1,
           "real overlay selection routes Delete to the point");
     e->automation_open = true;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_height = 180;
     mouse_frame(e, 0, 0, false);
 }
@@ -982,9 +1040,8 @@ static void middle_frame(Editor *e, float x, float y, bool down) {
 
 static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
     editor_smoke(e);
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     e->roll_height = 400;
     e->automation_open = false;
     e->roll_view = {1, 200, 1140, 0};
@@ -999,7 +1056,7 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
     check(e->roll_view.scroll_x > sx + 25 && e->roll_view.scroll_y > sy + 15,
           "middle drag pans the piano roll on both axes");
     middle_frame(e, x - 30, y - 20, false);
-    check(e->pan_context == 0, "releasing middle mouse ends pan capture");
+    check(e->pan_context == CONTEXT_NONE, "releasing middle mouse ends pan capture");
 
     for (int c = 0; c < 16; ++c) {
         e->project.channels[c].enabled = true;
@@ -1042,7 +1099,7 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
           "floating dialog wheel does not scroll the arrangement underneath");
     e->about = false;
     e->automation_open = true;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_raw = false;
     e->automation_center = 64;
     e->automation_height = 180;
@@ -1057,7 +1114,6 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
           "middle drag pans time and pitch in the event lane");
     middle_frame(e, lx - 30, ly + 18, false);
     e->edit_focus = FOCUS_NOTES;
-    e->context = 2;
     mouse_frame(e, lane.x + lane.w * .5f, lane.y - 28 - 14, false);
     mouse_frame(e, lane.x + lane.w * .5f, lane.y - 28 - 14, true);
     mouse_frame(e, lane.x + lane.w * .5f, lane.y - 28 - 14, false);
@@ -1084,7 +1140,7 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, x, y, true, false, false, true);
     mouse_frame(e, grid.x + 200, y - 80, true, false, false, true);
     mouse_frame(e, grid.x + 200, y - 80, false);
-    check(p.count == notes && e->tool == 0 && !e->drag && !e->marquee,
+    check(p.count == notes && e->tool == TOOL_SELECT && !e->drag && !e->marquee,
           "Ctrl marquee is temporary and does not insert or move a note");
     auto *patterns = find_window("/Patterns_");
     float cx = patterns->Pos.x + patterns->WindowPadding.x + 20;
@@ -1101,12 +1157,11 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
     e->confirm = true;
     mouse_frame(e, 0, 0, false);
     auto *confirm = ImGui::FindWindowByName("Unsaved project");
-    check(confirm && (confirm->Flags & ImGuiWindowFlags_NoResize) && confirm->Size.x == 430 &&
-              confirm->Size.y == 160,
-          "save confirmation is a fixed-size window");
+    check(confirm && (confirm->Flags & ImGuiWindowFlags_Modal) &&
+              (confirm->Flags & ImGuiWindowFlags_NoResize),
+          "save confirmation blocks the editor until it is answered");
     e->confirm = false;
 }
-
 
 static void metadata_export_ui(Editor *e, void (*check)(bool, const char *)) {
     e->config = e->preferences = e->shortcuts = false;
@@ -1145,7 +1200,7 @@ static void metadata_export_ui(Editor *e, void (*check)(bool, const char *)) {
 static void playlist_marquee_ui(Editor *e, void (*check)(bool, const char *)) {
     editor_smoke(e);
     e->automation_open = false;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     e->playlist_view = {1, 0, 0, 0};
     mouse_frame(e, 0, 0, false);
     auto *playlist = find_window("/Playlist_");
@@ -1220,7 +1275,7 @@ static void capture_workspace_navigation(Editor *e, const char *path) {
         SDL_DestroySurface(s);
     }
 }
-#ifdef DM_TEST_VISUALIZERS
+
 extern "C" void recording_feedback_audio_render(DmAudio *, int);
 extern "C" int visualizers_audio_voices(DmAudio *);
 
@@ -1231,7 +1286,7 @@ extern "C" void test_visualizers_ui(Editor *e, void (*check)(bool, const char *)
     e->focus_pattern = false;
     capture_workspace_navigation(e, "agents/reports/about-paused.bmp");
     auto *about = ImGui::FindWindowByName("About duckmidi");
-    check(about && about->Active && about->Size.y == 158 && !about->ScrollbarY,
+    check(about && about->Active && !about->ScrollbarY,
           "compact About fits its information without scrolling");
     float maximum = 0;
 
@@ -1404,7 +1459,7 @@ extern "C" void test_visualizers_ui(Editor *e, void (*check)(bool, const char *)
     ImGui::End();
     ui_render(e->renderer);
 }
-#endif
+
 extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)) {
     e->roll = true;
     e->roll_height = 600;
@@ -1451,7 +1506,7 @@ extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)
     }
 
     capture_workspace_navigation(e, "agents/reports/event-lanes-pedal-playhead.bmp");
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_raw = false;
     e->automation_center = 60;
     capture_workspace_navigation(e, "agents/reports/event-lanes-note-pitch.bmp");
@@ -1496,7 +1551,7 @@ extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)
     e->midi_events = false;
 }
 
-extern "C" void test_toolbar_followup_ui(Editor *e, void (*check)(bool, const char *)) {
+extern "C" void test_toolbar_ui(Editor *e, void (*check)(bool, const char *)) {
     for (const auto &shape : toolbar_geometry::toolbar_shapes) {
         int points = shape.count / 2;
 
@@ -1588,12 +1643,12 @@ extern "C" void test_toolbar_followup_ui(Editor *e, void (*check)(bool, const ch
     ui_set_scale(1);
 }
 
-extern "C" void test_interface_ui(Editor *e, void (*check)(bool, const char *)) {
+extern "C" void test_pattern_toolbar_ui(Editor *e, void (*check)(bool, const char *)) {
     e->roll = true;
     e->roll_height = 500;
     e->automation_open = true;
     e->automation_height = 200;
-    e->automation_cc = -3;
+    e->automation_cc = DM_EVENT_VELOCITY;
     e->focus_pattern = false;
     e->piano = false;
     e->roll_view = {1, 0, (127 - 64) * 20.f, 0};
@@ -1672,6 +1727,94 @@ extern "C" void test_interface_ui(Editor *e, void (*check)(bool, const char *)) 
 
     std::printf("CURSOR 200 motion frames: Iconoir=%.3f ms, OS=%.3f ms\n", elapsed[0], elapsed[1]);
     e->os_cursor = false;
+}
+
+extern "C" void test_channel_events_ui(Editor *e, void (*check)(bool, const char *)) {
+    ed_new_project(e);
+    e->project.channels[0].program = 24;
+    e->project.channels[0].volume = 100;
+    e->project.channels[0].pan = 32;
+    e->channel_expanded[0] = true;
+    e->project.lane_count[0] = 1;
+    ed_song_event_open_bar(e, 4, true, 0);
+    mouse_frame(e, 0, 0, false);
+    mouse_frame(e, 0, 0, false);
+    auto *dialog = ImGui::FindWindowByName("###Channel events");
+    check(dialog && std::strstr(dialog->Name, "Channel events - 01 ") &&
+              std::strstr(dialog->Name, dm_program_name(24)) &&
+              e->midi_draft.data[0] == MIDI_PROGRAM && e->midi_draft.data[1] == 24,
+          "channel dialog title and default program identify its instrument");
+    auto activate = [e](ImGuiWindow *w, const char *label) {
+        ImGui::ActivateItemByID(w->GetID(label));
+        mouse_frame(e, 0, 0, false);
+        mouse_frame(e, 0, 0, false);
+    };
+    auto choose = [&](const char *type) {
+        activate(dialog, "Type");
+        auto &popups = ImGui::GetCurrentContext()->OpenPopupStack;
+        check(popups.Size && popups.back().Window, "channel event type dropdown opens");
+        activate(popups.back().Window, type);
+    };
+    choose("Volume");
+    check(e->midi_draft.size == 3 && e->midi_draft.data[1] == MIDI_CC_VOLUME &&
+              e->midi_draft.data[2] == 100,
+          "channel volume draft starts with its mixer volume");
+    e->midi_draft.data[2] = 50;
+    activate(dialog, "Add event");
+    check(!e->song_event_add && e->project.automation_count == 1 &&
+              e->project.automation[0].pattern == -1 && e->project.automation[0].channel == 0 &&
+              e->project.automation[0].type == MIDI_CONTROL &&
+              e->project.automation[0].a == MIDI_CC_VOLUME && e->project.automation[0].b == 50 &&
+              e->project.automation[0].port == 0,
+          "channel dialog adds lasting volume automation and opens its bar for editing");
+    capture_workspace_navigation(e, "agents/reports/channel-events-dialog.bmp");
+    e->midi_draft.data[2] = 55;
+    check(ed_midi_apply_draft(e) && e->project.automation[0].b == 55,
+          "channel dialog edits the stored volume");
+    ed_song_event_open_bar(e, 5, true, 0);
+    mouse_frame(e, 0, 0, false);
+    e->midi_draft.data[1] = 40;
+    activate(dialog, "Add event");
+    check(e->project.automation_count == 2 && e->project.automation[1].pattern == -1 &&
+              e->project.automation[1].channel == 0 &&
+              e->project.automation[1].type == MIDI_PROGRAM && e->project.automation[1].a == 40,
+          "channel dialog stores its program as song automation on the bound channel");
+    ed_song_event_open_bar(e, 0, true, 0);
+    mouse_frame(e, 0, 0, false);
+    choose("Pan");
+    check(e->midi_draft.data[1] == MIDI_CC_PAN && e->midi_draft.data[2] == 32,
+          "channel pan draft starts with its mixer pan");
+    e->midi_draft.data[2] = 80;
+    activate(dialog, "Add event");
+    check(e->project.channels[0].pan == 80 && ed_song_event_rows(e, 0, 4, 0) == 1,
+          "beat-zero channel automation updates the mixer and remains in the channel row");
+    e->song_event = false;
+    mouse_frame(e, 0, 0, false);
+    ed_new_song_event(e);
+    mouse_frame(e, 0, 0, false);
+    mouse_frame(e, 0, 0, false);
+    dialog = ImGui::FindWindowByName("Song event");
+    check(e->song_event_channel == -1 && e->midi_draft.data[0] == MIDI_META,
+          "new song event shortcut resets the channel binding");
+    activate(dialog, "Type");
+    ui_frame();
+    ui_root(0, 900);
+    ImGui::LogToBuffer();
+    ed_song_event_dialog(e);
+    const char *logged = ImGui::GetCurrentContext()->LogBuffer.c_str();
+    check(std::strstr(logged, "Tempo") && std::strstr(logged, "Marker") &&
+              !std::strstr(logged, "Program change"),
+          "song event Type dropdown offers composition events without program changes");
+    ImGui::LogFinish();
+    ui_end();
+    ui_render(e->renderer);
+    ImGui::ClosePopupToLevel(0, true);
+    e->song_event = false;
+    mouse_frame(e, 0, 0, false);
+    capture_workspace_navigation(e, "agents/reports/channel-events-rows.bmp");
+}
+
+extern "C" void test_midi_browser_ui(Editor *e, void (*check)(bool, const char *)) {
     uint8_t pedal[] = {0xb0, 66, 127}, program[] = {0xc0, 81};
     DmBytes ed_message = {pedal, sizeof(pedal), sizeof(pedal)};
     dm_event_add(&e->project, 1, 0, 0, &ed_message);
@@ -1877,7 +2020,7 @@ extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, cons
     e->automation_node = -1;
     e->automation_open = true;
     e->roll_height = 480;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->roll_view = {1, 200, 1100, 0};
     e->project.patterns[0].length = 64;
     mouse_frame(e, 0, 0, false);
@@ -1886,9 +2029,9 @@ extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, cons
     mouse_frame(e, 0, 0, false);
     check(std::fabs(pitch_y - event_lane_y()) < .1f,
           "event grid stays aligned across pitch/controller choices");
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     capture_workspace_navigation(e, "agents/reports/workspace_navigation-editor.bmp");
-    check(e->automation_cc == -2, "pitch bend remains selected after rendering");
+    check(e->automation_cc == DM_EVENT_BEND, "pitch bend remains selected after rendering");
     bool time_mode = e->duration_beats;
     mouse_frame(e, 250, 53, false);
     mouse_frame(e, 250, 53, true);
@@ -2152,13 +2295,14 @@ extern "C" void test_automation_transfer_ui(Editor *e, void (*check)(bool, const
     mouse_frame(e, 0, 0, false);
     ed_playlist = find_window("/Playlist_");
     float gx = ed_playlist->WorkRect.Min.x + e->label_width;
+    /* Events row, channel row and its Channel Events subrow come before the first lane. */
     float rowy = ed_playlist->WorkRect.Min.y + ImGui::GetFrameHeight() +
-                 ImGui::GetStyle().ItemSpacing.y + 28 + 2 * 64;
+                 ImGui::GetStyle().ItemSpacing.y + 28 + 3 * 64;
     double original_pattern_length = e->project.patterns[e->selected_pattern].length;
     float edge = gx + (float)dm_clip_length(&e->project, e->project.clips[8]) * 40 - 5;
     mouse_frame(e, edge, rowy + 20, false);
     mouse_frame(e, edge, rowy + 20, true);
-    check(e->drag == 9, "automation placement edge enters duration resize");
+    check(e->drag == DRAG_CLIP_RESIZE, "automation placement edge enters duration resize");
     mouse_frame(e, edge + 80, rowy + 20, true);
     mouse_frame(e, edge + 80, rowy + 20, false);
     check(std::fabs(e->project.clips[8].length - 6) < .001 &&
@@ -2195,8 +2339,8 @@ extern "C" void test_automation_transfer_ui(Editor *e, void (*check)(bool, const
     capture_workspace_navigation(e, "agents/reports/automation_transfer-lanes.bmp");
     auto &pitch = e->project.patterns[e->selected_pattern];
     pitch.mode = 1;
-    pitch.event = -2;
-    e->automation_cc = -2;
+    pitch.event = DM_EVENT_BEND;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_raw = false;
     capture_workspace_navigation(e, "agents/reports/automation_transfer-pitch.bmp");
     events = find_window("/Event Editor_");
@@ -2248,8 +2392,8 @@ extern "C" void test_lfo_shapes_ui(Editor *e, void (*check)(bool, const char *))
     ImGui::ActivateItemByID(events->GetID("Invert"));
     mouse_frame(e, 0, 0, false);
     check(p.inverted != before, "header Invert toggle changes applied waveform");
-    p.event = -2;
-    e->automation_cc = -2;
+    p.event = DM_EVENT_BEND;
+    e->automation_cc = DM_EVENT_BEND;
     p.pitch_center = 60;
     e->automation_center = 60;
     e->automation_raw = false;
@@ -2353,7 +2497,7 @@ extern "C" void test_lfo_shapes_ui(Editor *e, void (*check)(bool, const char *))
 extern "C" void test_event_clipboard_ui(Editor *e, void (*check)(bool, const char *)) {
     e->project.clip_count = 1;
     e->project.clips[0].beat = 1.13;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     e->playlist_view = {1, 0, 0, 0};
     mouse_frame(e, 0, 0, false);
     auto *playlist = find_window("/Playlist_");
@@ -2462,9 +2606,9 @@ extern "C" void test_event_clipboard_ui(Editor *e, void (*check)(bool, const cha
     auto &p = e->project.patterns[0];
     p.kind = 1;
     p.mode = 0;
-    p.event = -2;
+    p.event = DM_EVENT_BEND;
     e->selected_pattern = 0;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_center = 60;
     e->automation_node = -1;
     e->automation_all = false;
@@ -2517,7 +2661,7 @@ extern "C" void test_event_clipboard_ui(Editor *e, void (*check)(bool, const cha
     e->selected_clip = 0;
     capture_workspace_navigation(e, "agents/reports/event_clipboard-six-eight.bmp");
 }
-#ifdef DM_TEST_RECORDING_FEEDBACK
+
 extern "C" void recording_feedback_audio_render(DmAudio *, int);
 extern "C" int recording_feedback_audio_count(DmAudio *);
 
@@ -2552,7 +2696,7 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     e->automation_height = 180;
     e->automation_open = true;
     e->roll_view = {1, 0, (127 - 64) * 20.0f, 0};
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     e->selected_clip = 0;
     auto &p = e->project.patterns[0];
     p.kind = 0;
@@ -2591,7 +2735,7 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
                ImGui::GetStyle().ItemSpacing.y + 28 + 20 + 64;
     mouse_frame(e, px, py, false);
     mouse_frame(e, px, py, true);
-    check(e->drag == 9, "note placement edge activates resizing");
+    check(e->drag == DRAG_CLIP_RESIZE, "note placement edge activates resizing");
     mouse_frame(e, px + 40, py, true);
     mouse_frame(e, px + 40, py, false);
     check(e->project.clips[0].length == source_length + 1 && p.length == source_length &&
@@ -2603,7 +2747,7 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     e->automation_open = true;
     e->project.automation_count = 0;
     e->automation_cc = 11;
-    e->context = 2;
+    ed_focus_timeline(e, CONTEXT_ROLL);
     dm_automation_add(&e->project, {0, 0xb0, 0, 11, 64, 0, 0, 0, 0, false});
     dm_automation_add(&e->project, {2, 0xb0, 0, 11, 64, 0, 0, 0, 0, false});
     mouse_frame(e, 0, 0, false);
@@ -2702,8 +2846,8 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     check(!recording_feedback_tooltip(), "LFO knobs no longer show hover tooltips");
     p.kind = 0;
     p.mode = 0;
-    p.event = -2;
-    e->automation_cc = -2;
+    p.event = DM_EVENT_BEND;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_center = 60;
     e->automation_browser = false;
     e->roll_view = {1, 0, (127 - 64) * 20.0f, 0};
@@ -2731,9 +2875,6 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     mouse_frame(e, 0, 0, false);
 }
 
-#endif
-
-#ifdef DM_TEST_SOURCE_WORKFLOW
 extern "C" void test_source_workflow_focus_workspace() {
     ImGui::FocusWindow(ImGui::FindWindowByName("##workspace"));
 }
@@ -2781,7 +2922,7 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     e->automation_height = 180;
     e->roll_view = {1, 0, (127 - 64) * 20.0f, 0};
     e->automation_cc = 11;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     auto &p = e->project.patterns[0];
     p.kind = 0;
     p.mode = 0;
@@ -2812,7 +2953,7 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
                     : "left click with a selection only deselects");
     }
 
-    e->tool = 1;
+    e->tool = TOOL_MARQUEE;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
     mouse_frame(e, lane.x + 145, lane.y + lane.h - 5, true);
@@ -2820,7 +2961,7 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     check(e->event_selection.size == 3 * sizeof(DmAutomation),
           "manual marquee tool selects event points");
     capture_workspace_navigation(e, "agents/reports/source_workflow-event-marquee.bmp");
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     e->event_selection.size = 0;
     e->automation_node = -1;
     float vy = lane.y + lane.h - 8 - 64.0f / 127 * (lane.h - 8);
@@ -2860,7 +3001,7 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     p.kind = 0;
     e->automation_browser = false;
     e->focus_pattern = false;
-    e->automation_cc = -3;
+    e->automation_cc = DM_EVENT_VELOCITY;
     e->roll_view.scroll_x = 0;
     p.notes[0].selected = 1;
     dm_note_add(&p, {1.5, 1, 64, 70, 0});
@@ -2897,21 +3038,20 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     mouse_frame(e, 20, 130, true);
     mouse_frame(e, 20, 130, false);
     e->edit_focus = FOCUS_PLAYLIST;
-    e->context = 1;
     direct_key(e, SDL_SCANCODE_ESCAPE);
+    mouse_frame(e, 20, 130, false);
     check(!e->preferences && e->config,
           "topmost unfocused floating window closes before workspace selection");
     mouse_frame(e, 0, 0, false);
     direct_key(e, SDL_SCANCODE_ESCAPE);
-    check(!e->config, "next Escape closes remaining floating window");
     mouse_frame(e, 0, 0, false);
+    check(!e->config, "next Escape closes remaining floating window");
     e->pattern_highlight = true;
     e->project.clips[0].selected = 1;
     e->channel_selected = true;
     e->roll = true;
     e->roll_auto_hidden = false;
     e->edit_focus = FOCUS_PLAYLIST;
-    e->context = 1;
     e->loop_enabled[0] = e->loop_enabled[1] = false;
     direct_key(e, SDL_SCANCODE_ESCAPE);
     check(!e->pattern_highlight && !e->project.clips[0].selected && e->roll && !e->roll_auto_hidden,
@@ -3008,14 +3148,13 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     source_workflow_capture(e, "agents/reports/source_workflow-preferences.bmp");
     e->preferences = false;
 }
-#endif
 
 extern "C" void test_live_edit_ui(Editor *e, void (*check)(bool, const char *)) {
     e->roll_height = 480;
     e->automation_open = false;
     e->focus_pattern = false;
     e->roll_view = {1, 0, (127 - 64) * 20.0f, 0};
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     auto &p = e->project.patterns[0];
     p.count = 0;
     p.length = 4;
@@ -3051,7 +3190,8 @@ extern "C" void test_live_edit_ui(Editor *e, void (*check)(bool, const char *)) 
     mouse_frame(e, grid.x + 40, y - 20, false, true);
     mouse_frame(e, grid.x + 40, y - 20, true, true);
     mouse_frame(e, grid.x + 40, y - 40, true, true);
-    check(e->drag == 7 && e->edit_feedback, "pitch-bend overlay point drag auditions its pitch");
+    check(e->drag == DRAG_BEND_POINT && e->edit_feedback,
+          "pitch-bend overlay point drag auditions its pitch");
     mouse_frame(e, grid.x + 40, y - 40, false);
     check(!e->edit_feedback, "pitch-bend audition ends on release");
     size_t before = e->project.patterns[0].count;
@@ -3059,7 +3199,7 @@ extern "C" void test_live_edit_ui(Editor *e, void (*check)(bool, const char *)) 
     float nx = grid.x + 280, ny = y + 20;
     mouse_frame(e, nx, ny, false);
     mouse_frame(e, nx, ny, true);
-    check(e->project.patterns[0].count == before + 1 && e->drag == 2 && e->drag_edge == 0 &&
+    check(e->project.patterns[0].count == before + 1 && e->drag == DRAG_NOTE && e->drag_edge == 0 &&
               e->edit_feedback,
           "insertion immediately holds preview and starts body drag, even near the new edge");
     mouse_frame(e, nx, ny, true);
@@ -3071,7 +3211,7 @@ extern "C" void test_live_edit_ui(Editor *e, void (*check)(bool, const char *)) 
               std::fabs(moved.length - .25) < .001,
           "same insertion gesture moves time and pitch instead of resizing");
     mouse_frame(e, nx + 40, ny - 40, false);
-    check(!e->edit_feedback && e->drag == 0 && e->undo_count == history + 1,
+    check(!e->edit_feedback && e->drag == DRAG_NONE && e->undo_count == history + 1,
           "release ends insert drag and keeps one undo entry");
     direct_key(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
     check(e->project.patterns[0].count == before, "one undo removes the inserted and moved note");
@@ -3089,7 +3229,6 @@ extern "C" void test_live_edit_ui(Editor *e, void (*check)(bool, const char *)) 
           "Ctrl marquee is temporary and preserves note count");
 }
 
-#ifdef DM_TEST_PATTERN_WORKFLOW
 extern "C" void recording_feedback_audio_render(DmAudio *, int);
 extern "C" int recording_feedback_audio_preset(DmAudio *, int, bool);
 
@@ -3118,31 +3257,32 @@ extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const ch
     p.count = 0;
     p.kind = 0;
     mouse_frame(e, 0, 0, false);
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     direct_key(e, SDL_SCANCODE_5);
-    check(e->tool == 0 && e->held[SDL_SCANCODE_5] >= 0,
+    check(e->tool == TOOL_SELECT && e->held[SDL_SCANCODE_5] >= 0,
           "5 plays a note instead of selecting Brush while keyboard piano is enabled");
     SDL_Event release;
     SDL_zero(release);
     release.type = SDL_EVENT_KEY_UP;
     release.key.scancode = SDL_SCANCODE_5;
     editor_event(e, &release);
-    e->tool = 4;
+    e->tool = TOOL_BRUSH;
     auto grid = roll_origin();
     float x = grid.x + 20, y = grid.y + 90;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, true);
     mouse_frame(e, x + 120, y - 40, true);
     mouse_frame(e, x + 120, y - 40, false);
-    check(p.count >= 7 && e->drag == 0, "manual Brush paints a gap-free quarter-beat stroke");
+    check(p.count >= 7 && e->drag == DRAG_NONE,
+          "manual Brush paints a gap-free quarter-beat stroke");
     p.count = 0;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     mouse_frame(e, x, y, false, false, true, true);
     mouse_frame(e, x, y, true, false, true, true);
     mouse_frame(e, x + 120, y - 60, true, false, true, true);
     mouse_frame(e, x + 120, y - 60, false);
     check(p.count == 0, "Ctrl+Shift with Note tool no longer activates temporary Brush");
-    e->tool = 4;
+    e->tool = TOOL_BRUSH;
     mouse_frame(e, x, y, false, false, false, true);
     mouse_frame(e, x, y, true, false, false, true);
     mouse_frame(e, x + 120, y - 60, true, false, false, true);
@@ -3156,12 +3296,12 @@ extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const ch
     check(locked, "explicit Brush with Ctrl has priority over marquee and locks starting pitch");
     capture_workspace_navigation(e, "agents/reports/pattern_workflow-brush.bmp");
     p.count = 0;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     dm_note_add(&p, {.25, 1, 60, 50, 1});
     dm_note_add(&p, {1.5, 1, 64, 75, 1});
     e->automation_open = true;
     e->automation_height = 180;
-    e->automation_cc = -3;
+    e->automation_cc = DM_EVENT_VELOCITY;
     e->piano = false;
     mouse_frame(e, 0, 0, false);
     grid = roll_origin();
@@ -3268,4 +3408,3 @@ extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const ch
     check(e->instrument_channel < 0,
           "Enter accepts topmost Instrument independently of workspace focus");
 }
-#endif

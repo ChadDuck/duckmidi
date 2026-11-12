@@ -1,16 +1,6 @@
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool ok, const char *what) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL recording_feedback: %s\n", what);
-        exit(1);
-    }
-}
-
-extern void recording_feedback_audio_pause(DmAudio *);
+#define TEST_NAME "recording_feedback"
+#include "test_common.h"
 extern void recording_feedback_audio_render(DmAudio *, int);
 extern unsigned recording_feedback_audio_voice(DmAudio *, int, int);
 extern int recording_feedback_audio_count(DmAudio *);
@@ -25,7 +15,6 @@ static void fixture(Editor *e) {
     dm_audio_recording(e->audio, false);
     editor_smoke(e);
     e->selected_pattern = 0;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->record = e->wait_input = e->wait_armed = e->take_started = false;
     e->recording_take = e->take_snapshot = false;
@@ -36,7 +25,7 @@ static void fixture(Editor *e) {
     e->piano = true;
     e->pattern_mode = false;
     e->preview_program = 0;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_center = 60;
     e->automation_raw = false;
     e->automation_node = -1;
@@ -157,14 +146,14 @@ static void recording_and_pause(Editor *e) {
           "chords/nonoverlapping notes");
     ed_play(e);
     fixture(e);
-    e->context = 1;
+    ed_focus_timeline(e, CONTEXT_PLAYLIST);
     ed_seek(e, .5);
     ed_play(e);
     recording_feedback_audio_render(e->audio, 12000);
     ed_play(e);
     check(fabs(dm_audio_position(e->audio) - .25) < .01,
           "playlist-focused pause returns to the set position");
-    e->context = 2;
+    ed_focus_timeline(e, CONTEXT_ROLL);
     ed_play(e);
     recording_feedback_audio_render(e->audio, 12000);
     ed_play(e);
@@ -235,11 +224,10 @@ static void instrument_switching(Editor *e) {
 
     for (size_t i = 0; i < sizeof(programs) / sizeof(programs[0]); ++i) {
         int program = programs[i], route = program == 128 ? 9 : 0;
-        e->context = 1;
         e->edit_focus = FOCUS_PLAYLIST;
         ed_select_preview_instrument(e, program);
         recording_feedback_audio_render(e->audio, 128);
-        check(e->context == 2 && e->preview_program == program,
+        check(ed_context(e) == CONTEXT_ROLL && e->preview_program == program,
               "selection establishes pattern keyboard focus and visible instrument");
         check(recording_feedback_audio_preset(e->audio, route, true) ==
                   (program == 128 ? 0 : program),
@@ -274,7 +262,7 @@ static void instrument_switching(Editor *e) {
 
     e->project.event_count = 0;
     e->pattern_mode = false;
-    e->context = 1;
+    ed_focus_timeline(e, CONTEXT_PLAYLIST);
     e->selected_channel = 0;
     ed_keyboard_channel(e);
     ed_transport_publish(e, 0, true);
@@ -375,31 +363,89 @@ static void waiting_backing_onset(Editor *e) {
     fixture(e);
 }
 
-int main(void) {
-    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "wasapi");
-    check(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("recording_feedback", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "hidden renderer");
-    char error[512];
-    DmAudio *audio = dm_audio_create(error, sizeof(error));
-    check(audio && dm_audio_soundfont(audio, "agents/reports/generated-programs.sf2", error,
-                                      sizeof(error)),
-          "SoundFont job");
+/* Record, Play and Wait: what each press arms, starts, pauses or cancels. */
+static void recording_controls(Editor *e) {
+    editor_smoke(e);
+    e->pattern_mode = true;
+    e->edit_focus = FOCUS_NOTES;
+    e->selected_pattern = e->pattern_channel = 0;
+    e->record = e->wait_input = e->wait_armed = false;
+    e->piano = true;
+    ed_toggle_record(e);
+    recording_feedback_audio_render(e->audio, 256);
+    check(e->record && !dm_audio_playing(e->audio) && !e->wait_armed,
+          "Record enables recording while paused without starting playback");
+    ed_action(e, ACT_PLAY);
+    recording_feedback_audio_render(e->audio, 256);
+    check(dm_audio_playing(e->audio) && !e->wait_armed, "Play starts immediately when Wait is off");
+    ed_action(e, ACT_PLAY);
+    check(!dm_audio_playing(e->audio), "Play pauses running recording");
+    e->wait_input = true;
+    ed_action(e, ACT_PLAY);
+    recording_feedback_audio_render(e->audio, 256);
+    check(e->wait_armed && !dm_audio_playing(e->audio), "Play arms recording when Wait is on");
+    ed_action(e, ACT_PLAY);
+    check(!e->wait_armed && !e->recording_take && !dm_audio_playing(e->audio),
+          "second Play cancels the pending recording take");
+    ed_action(e, ACT_PLAY);
+    SDL_Event key;
+    SDL_zero(key);
+    key.type = SDL_EVENT_KEY_DOWN;
+    key.key.scancode = SDL_SCANCODE_Z;
+    key.key.down = true;
+    key.key.windowID = SDL_GetWindowID(e->window);
+    editor_event(e, &key);
+    recording_feedback_audio_render(e->audio, 4800);
+    check(dm_audio_playing(e->audio) && !e->wait_armed && e->take_started,
+          "keyboard piano starts the armed recording");
+    size_t notes = ed_pattern(e)->count;
+    key.type = SDL_EVENT_KEY_UP;
+    key.key.down = false;
+    editor_event(e, &key);
+    check(ed_pattern(e)->count == notes + 1, "armed take records the played key on release");
+    ed_action(e, ACT_PLAY);
+    ed_action(e, ACT_PLAY);
+    check(e->wait_armed, "another Play can re-arm a paused take");
+    ed_action(e, ACT_WAIT);
+    check(!e->wait_input && !e->wait_armed && !e->recording_take,
+          "turning Wait off cancels its pending take without playback");
+    ed_toggle_record(e);
+    ed_action(e, ACT_PLAY);
+    recording_feedback_audio_render(e->audio, 256);
+    double position = dm_audio_position(e->audio);
+    ed_toggle_record(e);
+    recording_feedback_audio_render(e->audio, 256);
+    check(e->record && dm_audio_playing(e->audio) && dm_audio_position(e->audio) >= position,
+          "enabling Record during playback preserves transport");
+    ed_action(e, ACT_PLAY);
+    ed_toggle_record(e);
+}
 
-    while (dm_audio_busy(audio)) {
-        bool success = false;
+static void focus_after_recording(Editor *e) {
+    ed_new_project(e);
+    e->roll = true;
+    e->record = true;
+    ed_focus_edit(e, FOCUS_PLAYLIST);
+    ed_play(e);
 
-        if (dm_audio_poll(audio, error, sizeof(error), &success, NULL)) {
-            check(success, "SoundFont ready");
-        }
-
-        SDL_Delay(5);
+    if (!dm_audio_playing(e->audio)) {
+        dm_audio_transport(e->audio, true);
     }
 
-    recording_feedback_audio_pause(audio);
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, audio, "", "", true);
+    check(dm_audio_playing(e->audio), "a take is playing");
+    ed_focus_edit(e, FOCUS_PLAYLIST);
+    ed_play(e);
+    check(e->edit_focus == FOCUS_NOTES && ed_context(e) == CONTEXT_ROLL,
+          "stopping a take focuses the open pattern editor");
+    dm_audio_transport(e->audio, false);
+    e->record = false;
+}
+
+int main(void) {
+    Editor *e = test_editor_open(
+        "recording_feedback",
+        (TestDesktop){.driver = "wasapi", .soundfont = TEST_SOUNDFONT, .paused = true});
+    SDL_Renderer *r = e->renderer;
     ui_frame();
     defaults_and_placement(e);
     recording_and_pause(e);
@@ -410,12 +456,12 @@ int main(void) {
     ui_render(r);
     fixture(e);
     test_recording_feedback_ui(e, check);
+    ui_frame();
+    ui_root(0, 900);
+    recording_controls(e);
+    ui_end();
+    ui_render(r);
+    focus_after_recording(e);
     printf("PASS recording_feedback: %d focused checks\n", checks);
-    editor_free(e);
-    free(e);
-    dm_audio_destroy(audio);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

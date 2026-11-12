@@ -1,5 +1,7 @@
 #include "editor/internal.h"
 #include "text/en.h"
+
+static void ed_percussion_accept(Editor *e);
 /* Stable project key indices, independent of SDL's binary representation. */
 static const SDL_Scancode piano_keys[DM_PIANO_KEYS] = {
     SDL_SCANCODE_Z,           SDL_SCANCODE_S, SDL_SCANCODE_X,           SDL_SCANCODE_D,
@@ -58,7 +60,8 @@ static void stop_listening(Editor *e) {
 /* The pattern editor previews drums on the keyboard synth's channel 10; elsewhere the route is
    the project channel, which plays drums when it is marked as percussion. */
 bool ed_route_drums(const Editor *e, int route) {
-    return e->context == 2 ? route == MIDI_DRUM_CHANNEL : dm_channel_drums(&e->project, route);
+    return ed_context(e) == CONTEXT_ROLL ? route == MIDI_DRUM_CHANNEL
+                                      : dm_channel_drums(&e->project, route);
 }
 
 int ed_keyboard_note(Editor *e, SDL_Scancode key, bool drums) {
@@ -250,7 +253,7 @@ void ed_percussion_save(Editor *e, bool project) {
         memcpy(e->percussion_global, e->percussion_draft, 128);
         memcpy(e->percussion_midi_global, e->percussion_midi_draft, 128);
 
-        if (!dm_preferences_save(e, ed_shortcut_schema(), ed_action_names)) {
+        if (!dm_preferences_save(e)) {
             memcpy(e->percussion_global, keys, 128);
             memcpy(e->percussion_midi_global, midi, 128);
             snprintf(e->percussion_feedback, sizeof(e->percussion_feedback),
@@ -266,7 +269,7 @@ void ed_percussion_save(Editor *e, bool project) {
 
 /* Enter saves the drafts where this project's mappings come from (its own mappings, or the global
    preferences) and closes the window, as Apply does in the instrument window. */
-void ed_percussion_accept(Editor *e) {
+static void ed_percussion_accept(Editor *e) {
     if (!drafts_saved(e)) {
         ed_percussion_save(e, e->project.percussion_override);
 
@@ -333,7 +336,8 @@ void ed_percussion_dialog(Editor *e) {
     }
 
     /* The window's height follows its contents: fixed-height lists, then the buttons. */
-    if (ui_fitted_dialog(DM_TEXT_PERCUSSION_KEYBOARD_MAPPING, &e->percussion_window, 780)) {
+    if (ui_dialog(DM_TEXT_PERCUSSION_KEYBOARD_MAPPING, &e->percussion_window,
+                  (UiDialog){.width = 780})) {
         ui_wrap(e->project.percussion_override ? DM_TEXT_THIS_PROJECT_USES_ITS
                                                : DM_TEXT_THIS_PROJECT_USES_GLOBAL);
         float width = ui_available().x, left = width * .42f, height = 380;
@@ -417,7 +421,7 @@ void ed_percussion_dialog(Editor *e) {
         }
     }
 
-    ui_end();
+    ui_dialog_end();
 
     if (!e->percussion_window) {
         stop_listening(e);

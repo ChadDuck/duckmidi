@@ -30,7 +30,12 @@ typedef struct {
     uint8_t channel; /* 0 = all channels, 1–16 = source channel. */
 } DmMidiInputOptions;
 
-typedef enum { DM_MIDI_SOURCE_CC, DM_MIDI_SOURCE_NOTE } DmMidiInputSource;
+typedef enum {
+    DM_MIDI_SOURCE_CC,
+    DM_MIDI_SOURCE_NOTE,
+    DM_MIDI_SOURCE_BEND,
+    DM_MIDI_SOURCE_PRESSURE
+} DmMidiInputSource;
 
 typedef struct {
     char device[DM_MIDI_NAME]; /* Empty matches any device. */
@@ -38,7 +43,12 @@ typedef struct {
     uint8_t channel, number; /* Zero-based source channel. */
 } DmMidiBindingSource;
 
-typedef enum { DM_MIDI_LEARN_OFF, DM_MIDI_LEARN_CC, DM_MIDI_LEARN_BUTTON } DmMidiLearnMode;
+typedef enum {
+    DM_MIDI_LEARN_OFF,
+    DM_MIDI_LEARN_CC,
+    DM_MIDI_LEARN_BUTTON,
+    DM_MIDI_LEARN_EVENT
+} DmMidiLearnMode;
 
 enum {
     DM_MIDI_EVENT_PLAYING = 1u,        /* The transport was playing when the event arrived. */

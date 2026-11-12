@@ -9,16 +9,30 @@ typedef enum {
     SONG_SMPTE,
     SONG_KEY,
     SONG_MARKER,
-    SONG_PROGRAM,
     SONG_LOOP_START,
     SONG_LOOP_END,
+    CHANNEL_PROGRAM,
+    CHANNEL_VOLUME,
+    CHANNEL_PAN,
     SONG_KIND_COUNT,
 } SongEventKind;
 
-static const char *const song_event_names[] = {
-    DM_TEXT_TEMPO,          DM_TEXT_METER,         DM_TEXT_TEXT,   DM_TEXT_TRACK_NAME,
-    DM_TEXT_SMPTE_OFFSET,   DM_TEXT_KEY_SIGNATURE, DM_TEXT_MARKER, DM_TEXT_PROGRAM_CHANGE,
-    DM_TEXT_M64_LOOP_START, DM_TEXT_M64_LOOP_END,
+static const struct {
+    const char *name;
+    bool channel;
+} song_event_types[] = {
+    [SONG_TEMPO] = {DM_TEXT_TEMPO, false},
+    [SONG_METER] = {DM_TEXT_METER, false},
+    [SONG_TEXT] = {DM_TEXT_TEXT, false},
+    [SONG_TRACK_NAME] = {DM_TEXT_TRACK_NAME, false},
+    [SONG_SMPTE] = {DM_TEXT_SMPTE_OFFSET, false},
+    [SONG_KEY] = {DM_TEXT_KEY_SIGNATURE, false},
+    [SONG_MARKER] = {DM_TEXT_MARKER, false},
+    [SONG_LOOP_START] = {DM_TEXT_M64_LOOP_START, false},
+    [SONG_LOOP_END] = {DM_TEXT_M64_LOOP_END, false},
+    [CHANNEL_PROGRAM] = {DM_TEXT_PROGRAM_CHANGE, true},
+    [CHANNEL_VOLUME] = {DM_TEXT_VOLUME, true},
+    [CHANNEL_PAN] = {DM_TEXT_PAN, true},
 };
 
 double ed_song_event_bar(const Editor *e, double beat, double *start, double *end) {
@@ -43,13 +57,26 @@ double ed_song_event_bar(const Editor *e, double beat, double *start, double *en
     return meter.completed + bar + 1;
 }
 
-static bool song_event_row(const Editor *e, MidiRow row) {
+static bool channel_event_type(int type, int a) {
+    return type == MIDI_PROGRAM ||
+           (type == MIDI_CONTROL && (a == MIDI_CC_VOLUME || a == MIDI_CC_PAN));
+}
+
+static bool song_event_row(const Editor *e, MidiRow row, int channel) {
     if (row.automation) {
         DmAutomation a = e->project.automation[row.index];
-        return a.type == MIDI_PROGRAM && a.pattern < 0;
+        return channel >= 0 && a.pattern < 0 && a.channel == channel &&
+               channel_event_type(a.type, a.a);
     }
 
     const DmBytes *m = &e->project.events[row.index].message;
+
+    if (channel >= 0) {
+        int type = m->size ? m->data[0] & MIDI_STATUS_MASK : 0;
+        return m->size >= 2 && (m->data[0] & MIDI_CHANNEL_MASK) == channel &&
+               channel_event_type(type, m->data[1]) &&
+               (type == MIDI_PROGRAM || (m->size == 3 && row.beat != 0));
+    }
 
     if (m->size >= 2 && m->data[0] == MIDI_META) {
         switch (m->data[1]) {
@@ -64,10 +91,10 @@ static bool song_event_row(const Editor *e, MidiRow row) {
         }
     }
 
-    return m->size == 2 && (m->data[0] & MIDI_STATUS_MASK) == MIDI_PROGRAM;
+    return false;
 }
 
-size_t ed_song_event_rows(Editor *e, double start, double end) {
+size_t ed_song_event_rows(Editor *e, double start, double end, int channel) {
     size_t count = ed_midi_rows_between(e, start, end);
     MidiRow *rows = (MidiRow *)e->midi_rows.data;
     size_t selected = 0;
@@ -77,7 +104,7 @@ size_t ed_song_event_rows(Editor *e, double start, double end) {
         MidiRow row = rows[i];
         int prior = dm_project_program_repeat(history, &e->project, row.index, row.automation);
 
-        if (prior < 0 && song_event_row(e, row)) {
+        if (prior < 0 && song_event_row(e, row, channel)) {
             rows[selected++] = row;
         }
     }
@@ -115,11 +142,20 @@ static void song_event_add_draft(Editor *e, SongEventKind kind) {
         size = sizeof(meter);
         break;
     }
-    case SONG_PROGRAM: {
-        int channel = e->selected_channel;
+    case CHANNEL_PROGRAM: {
+        int channel = e->song_event_channel;
         data[0] = MIDI_PROGRAM | channel;
         data[1] = (uint8_t)fmax(0, e->project.channels[channel].program);
         size = 2;
+        break;
+    }
+    case CHANNEL_VOLUME:
+    case CHANNEL_PAN: {
+        int channel = e->song_event_channel;
+        data[0] = MIDI_CONTROL | channel;
+        data[1] = kind == CHANNEL_VOLUME ? MIDI_CC_VOLUME : MIDI_CC_PAN;
+        data[2] = kind == CHANNEL_VOLUME ? e->project.channels[channel].volume
+                                         : e->project.channels[channel].pan;
         break;
     }
     case SONG_LOOP_START:
@@ -156,19 +192,20 @@ static void song_event_mode(Editor *e, bool add) {
     e->event_beat = e->song_event_anchor;
 
     if (add) {
-        song_event_add_draft(e, SONG_TEMPO);
+        song_event_add_draft(e, e->song_event_channel < 0 ? SONG_TEMPO : CHANNEL_PROGRAM);
         return;
     }
 
     double start, end;
     ed_song_event_bar(e, e->song_event_anchor, &start, &end);
 
-    if (ed_song_event_rows(e, start, end)) {
+    if (ed_song_event_rows(e, start, end, e->song_event_channel)) {
         ed_midi_select(e, ((MidiRow *)e->midi_rows.data)[0]);
     }
 }
 
-void ed_song_event_open_bar(Editor *e, double beat, bool add) {
+void ed_song_event_open_bar(Editor *e, double beat, bool add, int channel) {
+    e->song_event_channel = channel;
     e->midi_events = false;
     e->song_event = true;
     e->song_event_bound = true;
@@ -177,7 +214,7 @@ void ed_song_event_open_bar(Editor *e, double beat, bool add) {
 }
 
 void ed_new_song_event(Editor *e) {
-    ed_song_event_open_bar(e, e->cursor_beat[0], true);
+    ed_song_event_open_bar(e, e->cursor_beat[0], true, -1);
     e->song_event_bound = false;
 }
 
@@ -186,12 +223,22 @@ bool ed_song_event_position_valid(Editor *e) {
         return false;
     }
 
-    if (e->song_event_bound || !e->song_event_add) {
+    /* Add moves its bar with the beat; Edit keeps an event in the bar its list shows. */
+    if (!e->song_event_add) {
         double start, end;
         ed_song_event_bar(e, e->song_event_anchor, &start, &end);
 
         if (e->event_beat < start || e->event_beat >= end) {
             snprintf(e->midi_error, sizeof(e->midi_error), DM_TEXT_SONG_EVENT_BEAT_RANGE);
+            return false;
+        }
+    }
+
+    if (e->song_event_channel >= 0) {
+        const DmBytes *m = &e->midi_draft;
+
+        if (!dm_message_valid(m) || (m->data[0] & MIDI_CHANNEL_MASK) != e->song_event_channel ||
+            !channel_event_type(m->data[0] & MIDI_STATUS_MASK, m->data[1])) {
             return false;
         }
     }
@@ -231,11 +278,12 @@ bool ed_song_event_add(Editor *e) {
     bool pushed = ed_checkpoint(e);
     bool saved;
 
-    if (e->song_event_kind == SONG_PROGRAM) {
+    if (e->song_event_channel >= 0) {
         DmAutomation a = {.beat = beat,
-                          .type = MIDI_PROGRAM,
+                          .type = m->data[0] & MIDI_STATUS_MASK,
                           .channel = m->data[0] & MIDI_CHANNEL_MASK,
                           .a = m->data[1],
+                          .b = m->size > 2 ? m->data[2] : 0,
                           .pattern = -1};
         saved = dm_automation_add(&e->project, a);
     } else {
@@ -265,6 +313,7 @@ bool ed_song_event_add(Editor *e) {
         song_event_mode(e, false);
     } else {
         e->song_event = false;
+        e->song_event_channel = -1;
     }
 
     return true;
@@ -284,6 +333,10 @@ void ed_song_event_position(Editor *e) {
                             ? dm_seconds_beat(&e->project, dm_audio_position(e->audio))
                             : e->cursor_beat[0];
     }
+
+    if (e->song_event_add && isfinite(e->event_beat) && e->event_beat >= 0) {
+        e->song_event_anchor = e->event_beat;
+    }
 }
 
 void ed_song_event_dialog(Editor *e) {
@@ -294,8 +347,24 @@ void ed_song_event_dialog(Editor *e) {
     /* Add fits its fields; Edit's panels take the spare height, first 60% of the window. */
     float height = ui_display().y * .6f;
 
-    if (ui_flexible_dialog(DM_TEXT_SONG_EVENT, &e->song_event, fminf(1000, ui_display().x - 40),
-                           height, false, e->song_event_add)) {
+    char title[192];
+    const char *name = DM_TEXT_SONG_EVENT;
+
+    if (e->song_event_channel >= 0) {
+        int channel = e->song_event_channel;
+        int program = e->project.channels[channel].program;
+        const char *instrument = dm_channel_drums(&e->project, channel)
+                                     ? DM_TEXT_PERCUSSION
+                                     : dm_program_name(program < 0 ? 0 : program);
+        snprintf(title, sizeof(title), DM_TEXT_CHANNEL_EVENT_TITLE, channel + 1, instrument);
+        name = title;
+    }
+
+    if (ui_dialog(name, &e->song_event,
+                  (UiDialog){.width = 1000,
+                             .height = height,
+                             .size = UI_FLEXIBLE,
+                             .layout = e->song_event_add})) {
         ui_width(140);
 
         if (ui_combo(DM_TEXT_SONG_EVENT_MODE,
@@ -329,9 +398,13 @@ void ed_song_event_dialog(Editor *e) {
             ed_song_event_position(e);
             ui_width(240);
 
-            if (ui_combo(DM_TEXT_TYPE, song_event_names[e->song_event_kind])) {
+            if (ui_combo(DM_TEXT_TYPE, song_event_types[e->song_event_kind].name)) {
                 for (int i = 0; i < SONG_KIND_COUNT; ++i) {
-                    if (ui_select(song_event_names[i], e->song_event_kind == i, 0, 0)) {
+                    if (song_event_types[i].channel != (e->song_event_channel >= 0)) {
+                        continue;
+                    }
+
+                    if (ui_select(song_event_types[i].name, e->song_event_kind == i, 0, 0)) {
                         song_event_add_draft(e, i);
                     }
                 }
@@ -349,10 +422,14 @@ void ed_song_event_dialog(Editor *e) {
                 ed_song_event_add(e);
             }
         } else {
-            size_t count = ed_song_event_rows(e, start, end);
+            size_t count = ed_song_event_rows(e, start, end, e->song_event_channel);
             ed_midi_event_panels(e, count, &e->song_event_split, ui_flex(200, height - 90));
         }
     }
 
-    ui_end();
+    ui_dialog_end();
+
+    if (!e->song_event) {
+        e->song_event_channel = -1;
+    }
 }

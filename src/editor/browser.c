@@ -105,7 +105,7 @@ void ed_choose_pattern_card(Editor *e, int id, bool selected) {
     bool override = e->preview_override;
     ed_release_piano(e);
 
-    if (selected && ui_mouse().ctrl) {
+    if (selected && ed_gesture_held(e, GESTURE_DESELECT, ui_mouse())) {
         ed_clear_pattern_selection(e);
     } else {
         for (size_t i = 0; i < e->project.clip_count; ++i) {
@@ -604,7 +604,7 @@ bool ed_mixer_apply(Editor *e, DmPortMix before, DmPortMix mix) {
         dm_audio_part_control(e->audio, mix.port, mix.channel, MIDI_CC_PAN, mix.pan);
     }
 
-    int preview = e->context == 2 ? e->pattern_channel : e->selected_channel;
+    int preview = ed_context(e) == CONTEXT_ROLL ? e->pattern_channel : e->selected_channel;
 
     if (preview == mix.channel && e->note_ports[preview] == mix.port) {
         ed_keyboard_channel(e);

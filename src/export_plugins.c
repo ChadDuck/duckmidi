@@ -51,7 +51,7 @@ static bool custom_mapping(const DmeMappingRow *row, const DmeCustomMapping *pre
     if (m->size != sizeof(*m) || m->available > 1 || s->size != sizeof(*s) || s->enabled > 1 ||
         s->show_all > 1 || s->region_set > 1 || s->operation > DME_SAMPLE_REPLACE ||
         s->sample.size != sizeof(s->sample) || (s->sample.flags & ~DME_SAMPLE_PERCUSSION) ||
-        !view_string(s->sample.locator, 8192) || !view_string(s->sample.set_id, 128) ||
+        !view_string(s->sample.locator, DME_PATH_LIMIT) || !view_string(s->sample.set_id, 128) ||
         !view_string(s->sample.preset_id, 128) || !view_string(s->physical_target, 16384) ||
         !view_string(m->unavailable_reason, 4096) || m->target_count > 20000 ||
         (m->target_count && !m->targets) || row->source.channel >= 16 || row->source.port >= 128 ||
@@ -66,7 +66,7 @@ static bool custom_mapping(const DmeMappingRow *row, const DmeCustomMapping *pre
     for (uint32_t i = 0; !same_targets && i < m->target_count; i++) {
         if (!m->targets[i].id.length || !m->targets[i].path.length ||
             !view_string(m->targets[i].id, 16384) || !view_string(m->targets[i].label, 16384) ||
-            !view_string(m->targets[i].path, 8192)) {
+            !view_string(m->targets[i].path, DME_PATH_LIMIT)) {
             return false;
         }
     }
@@ -81,7 +81,7 @@ static bool custom_mapping(const DmeMappingRow *row, const DmeCustomMapping *pre
         return true;
     }
 
-    if (c->size != sizeof(*c) || c->set_count > 1024 || c->preset_count > 8192 ||
+    if (c->size != sizeof(*c) || c->set_count > 1024 || c->preset_count > DME_PRESET_LIMIT ||
         c->zone_count > 32768 || (c->set_count && !c->sets) || (c->preset_count && !c->presets) ||
         (c->zone_count && !c->zones)) {
         return false;
@@ -93,8 +93,8 @@ static bool custom_mapping(const DmeMappingRow *row, const DmeCustomMapping *pre
         if (set->size != sizeof(*set) || set->available > 1 ||
             set->first_preset > c->preset_count ||
             set->preset_count > c->preset_count - set->first_preset || !set->id.length ||
-            !view_string(set->id, 128) || !view_string(set->name, 512) ||
-            !view_string(set->locator, 8192) || !view_string(set->error, 4096)) {
+            !view_string(set->id, 128) || !view_string(set->name, DME_LABEL_LIMIT) ||
+            !view_string(set->locator, DME_PATH_LIMIT) || !view_string(set->error, 4096)) {
             return false;
         }
     }
@@ -105,7 +105,7 @@ static bool custom_mapping(const DmeMappingRow *row, const DmeCustomMapping *pre
         if (p->size != sizeof(*p) || p->set >= c->set_count || p->suggested_program > 128 ||
             (p->flags & ~DME_SAMPLE_PERCUSSION) || p->first_zone > c->zone_count ||
             p->zone_count > c->zone_count - p->first_zone || !p->id.length ||
-            !view_string(p->id, 128) || !view_string(p->name, 512)) {
+            !view_string(p->id, 128) || !view_string(p->name, DME_LABEL_LIMIT)) {
             return false;
         }
     }
@@ -123,7 +123,7 @@ bool dm_export_ui_valid(const DmeUi *ui, char *error, size_t cap) {
     for (uint32_t i = 0; i < ui->count; i++) {
         const DmeField *f = &ui->fields[i];
 
-        if (!identifier(f->id) || !text(f->label, 512) || f->type > DME_ACTION) {
+        if (!identifier(f->id) || !text(f->label, DME_LABEL_LIMIT) || f->type > DME_ACTION) {
             goto fail;
         }
 
@@ -152,12 +152,12 @@ bool dm_export_ui_valid(const DmeUi *ui, char *error, size_t cap) {
         }
 
         if (f->type == DME_CHOICE || f->type == DME_MAPPING) {
-            if (!f->choice_count || f->choice_count > 512 || !f->choices) {
+            if (!f->choice_count || f->choice_count > DME_CHOICE_LIMIT || !f->choices) {
                 goto fail;
             }
 
             for (uint32_t j = 0; j < f->choice_count; j++) {
-                if (!text(f->choices[j].label, 512)) {
+                if (!text(f->choices[j].label, DME_LABEL_LIMIT)) {
                     goto fail;
                 }
 
@@ -182,15 +182,16 @@ bool dm_export_ui_valid(const DmeUi *ui, char *error, size_t cap) {
             for (uint32_t j = 0; j < f->row_count; j++) {
                 const DmeMappingRow *r = &f->rows[j];
 
-                if (!identifier(r->id) || !text(r->label, 512) || !choices(f, r->value) ||
-                    !choices(f, r->default_value) || r->similar_count > 512 ||
-                    (r->similar_count && !r->similar) ||
+                if (!identifier(r->id) || !text(r->label, DME_LABEL_LIMIT) ||
+                    !choices(f, r->value) || !choices(f, r->default_value) ||
+                    r->similar_count > DME_CHOICE_LIMIT || (r->similar_count && !r->similar) ||
                     !custom_mapping(r, j ? f->rows[j - 1].custom : NULL)) {
                     goto fail;
                 }
 
                 for (uint32_t k = 0; k < r->similar_count; k++) {
-                    if (!text(r->similar[k].label, 512) || !choices(f, r->similar[k].value)) {
+                    if (!text(r->similar[k].label, DME_LABEL_LIMIT) ||
+                        !choices(f, r->similar[k].value)) {
                         goto fail;
                     }
                 }
@@ -217,17 +218,17 @@ fail:
 }
 
 bool dm_export_review_valid(const DmeReview *r, char *error, size_t cap) {
-    if (!r || r->count > 2048 || (r->count && (!r->rows || !text(r->description, 4096)))) {
+    if (!r || r->count > DME_ROW_LIMIT || (r->count && (!r->rows || !text(r->description, 4096)))) {
         goto fail;
     }
 
     for (uint32_t i = 0; i < r->count; i++) {
         const DmeReviewRow *row = &r->rows[i];
 
-        if (!identifier(row->id) || !text(row->label, 512) || !text(row->description, 4096) ||
-            !text(row->current_mapping, 512) || row->supported < 0 || row->supported > 1 ||
-            !row->choices || !row->choice_count || row->choice_count > 512 ||
-            row->recommended_count > row->choice_count ||
+        if (!identifier(row->id) || !text(row->label, DME_LABEL_LIMIT) ||
+            !text(row->description, 4096) || !text(row->current_mapping, DME_LABEL_LIMIT) ||
+            row->supported < 0 || row->supported > 1 || !row->choices || !row->choice_count ||
+            row->choice_count > DME_CHOICE_LIMIT || row->recommended_count > row->choice_count ||
             (row->recommended_count && !row->recommended)) {
             goto fail;
         }
@@ -241,7 +242,7 @@ bool dm_export_review_valid(const DmeReview *r, char *error, size_t cap) {
         bool found = false;
 
         for (uint32_t j = 0; j < row->choice_count; j++) {
-            if (!text(row->choices[j].label, 512)) {
+            if (!text(row->choices[j].label, DME_LABEL_LIMIT)) {
                 goto fail;
             }
 
@@ -263,7 +264,7 @@ bool dm_export_review_valid(const DmeReview *r, char *error, size_t cap) {
         for (uint32_t j = 0; j < row->recommended_count; j++) {
             found = false;
 
-            if (!text(row->recommended[j].label, 512)) {
+            if (!text(row->recommended[j].label, DME_LABEL_LIMIT)) {
                 goto fail;
             }
 

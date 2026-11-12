@@ -19,6 +19,27 @@ for key, name in [("programs", "gm_programs"), ("drums", "gm_drums")]:
             row["sample"], tuning, row.get("release_rate", 10 if key == "drums" else 128),
             row.get("attack", 2), row.get("decay", 1), row.get("sustain", 29430), i))
     lines.append("};")
+# Mapping values 128 + n name the stock bank's n-th sample with a plain envelope, so samples
+# that no GM program or drum preset uses can still be mapped. Keep the sample order stable:
+# saved export settings store these values.
+for name, release, decay, sustain in [("stock_samples", 128, 1, 29430),
+                                      ("stock_drum_samples", 10, 120, 0)]:
+    lines.append(f"const M64Instrument {name}[M64_STOCK_SAMPLES] = {{")
+    for i, (sample, rate) in enumerate(catalog["samples"].items()):
+        lines.append('    {"%s", %.14g, %d, 2, %d, %d}, /* %d */' % (
+            sample, rate / 32000, release, decay, sustain, 128 + i))
+    lines.append("};")
+# Each program's alternates, best first, as preset values: another program, or 128 + n for the
+# stock bank's n-th sample. Unused slots are -1.
+samples = list(catalog["samples"])
+lines.append("const int16_t gm_alternates[128][M64_ALTERNATES] = {")
+for i, row in enumerate(catalog["programs"]):
+    values = [item if isinstance(item, int) else 128 + samples.index(item)
+              for item in row.get("alternates", [])]
+    assert len(values) <= 6 and all(0 <= v < 128 + len(samples) and v != i for v in values)
+    values += [-1] * (6 - len(values))
+    lines.append("    {%s}, /* %d */" % (", ".join(map(str, values)), i))
+lines.append("};")
 lines.append("const StockRegister stock_registers[] = {")
 for family, samples in enumerate(catalog["register_families"]):
     for sample in samples:

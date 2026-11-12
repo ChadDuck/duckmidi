@@ -161,17 +161,28 @@ void ed_select_all(Editor *e) {
 
     e->automation_node = -1;
 
-    if (e->context == 2 && ed_pattern(e)) {
+    if (ed_context(e) == CONTEXT_ROLL && ed_pattern(e)) {
         DmPattern *p = ed_pattern(e);
 
         for (size_t i = 0; i < p->count; ++i) {
             p->notes[i].selected = 1;
         }
-    } else if (e->context == 1) {
+    } else if (ed_context(e) == CONTEXT_PLAYLIST) {
         for (size_t i = 0; i < e->project.clip_count; ++i) {
             e->project.clips[i].selected = 1;
         }
     }
+}
+
+double ed_duplicate_span(Editor *e, double first, double end, bool bars) {
+    double span = fmax(1, ceil(end - 1e-9) - floor(first + 1e-9));
+    double bar = dm_meter(&e->project, first).bar;
+
+    if (bars && span >= bar) {
+        span = ceil(span / bar) * bar;
+    }
+
+    return span;
 }
 
 void ed_duplicate_clips(Editor *e) {
@@ -195,7 +206,7 @@ void ed_duplicate_clips(Editor *e) {
         return;
     }
 
-    double span = fmax(1, ceil(end - 1e-9) - floor(first + 1e-9));
+    double span = ed_duplicate_span(e, first, end, false);
     ed_checkpoint(e);
 
     for (size_t i = 0; i < count; ++i) {
@@ -217,7 +228,7 @@ void ed_duplicate_clips(Editor *e) {
 void ed_duplicate_notes(Editor *e) {
     DmPattern *p = ed_pattern(e);
 
-    if (!e->active || e->context != 2 || !p) {
+    if (!e->active || ed_context(e) != CONTEXT_ROLL || !p) {
         return;
     }
 
@@ -238,12 +249,7 @@ void ed_duplicate_notes(Editor *e) {
         return;
     }
 
-    double span = fmax(1, ceil(end - 1e-9) - floor(first + 1e-9));
-    double bar = dm_meter(&e->project, first).bar;
-
-    if (span >= bar) {
-        span = ceil(span / bar) * bar;
-    }
+    double span = ed_duplicate_span(e, first, end, true);
 
     if (!dm_reserve((void **)&p->notes, &p->capacity, count + selected, sizeof(*p->notes))) {
         ed_message(e, DM_TEXT_CANNOT_ALLOCATE_DUPLICATED);
@@ -303,7 +309,7 @@ bool ed_marquee_retains(Editor *e, size_t index, bool shift) {
 }
 
 void ed_deselect(Editor *e) {
-    if (e->context == 2) {
+    if (ed_context(e) == CONTEXT_ROLL) {
         ed_deselect_notes(ed_pattern(e));
     } else {
         for (size_t i = 0; i < e->project.clip_count; ++i) {
@@ -360,7 +366,7 @@ void ed_transpose(Editor *e, int steps) {
     ed_checkpoint(e);
     DmPattern *p = ed_pattern(e);
 
-    if (e->context == 2 && p) {
+    if (ed_context(e) == CONTEXT_ROLL && p) {
         steps = transpose_delta(p, steps);
         DmNote *before = malloc((p->count + 1) * sizeof(*before));
 
@@ -389,6 +395,8 @@ void ed_transpose(Editor *e, int steps) {
 
                 if (c >= 0 && c < 16) {
                     e->project.clips[i].channel = c;
+                    e->project.clips[i].row =
+                        (int)fmin(e->project.clips[i].row, e->project.note_rows[c] - 1);
                     int lane = e->project.clips[i].lane;
 
                     if (lane) {
@@ -581,6 +589,7 @@ static bool copy_notes(Editor *e, DmProject *to) {
 
 static bool copy_clips(Editor *e, DmProject *to) {
     memcpy(to->lane_count, e->project.lane_count, sizeof(to->lane_count));
+    memcpy(to->note_rows, e->project.note_rows, sizeof(to->note_rows));
     memcpy(to->lane_names, e->project.lane_names, sizeof(to->lane_names));
     snprintf(to->name, sizeof(to->name), DM_TEXT_CLIPS);
     double first = INFINITY;
@@ -717,6 +726,7 @@ static void paste_clips(Editor *e, const DmProject *from, double at) {
     for (size_t i = 0; i < from->clip_count; ++i) {
         DmClip c = from->clips[i];
         c.pattern = map[c.pattern];
+        c.row = c.lane ? 0 : (int)fmin(c.row, e->project.note_rows[c.channel] - 1);
         c.beat += at;
         c.selected = 1;
 
@@ -761,7 +771,7 @@ void ed_paste(Editor *e) {
 
         bool pushed = ed_checkpoint(e);
         ed_deselect(e);
-        double at = e->cursor_beat[e->context == 2];
+        double at = e->cursor_beat[ed_context(e) == CONTEXT_ROLL];
 
         if (focus == FOCUS_PATTERNS) {
             if (!strcmp(from.name, DM_TEXT_PATTERNS_TITLE)) {
@@ -770,7 +780,7 @@ void ed_paste(Editor *e) {
         } else if (focus == FOCUS_EVENTS && ed_point_editing(e) &&
                    !strcmp(from.name, DM_TEXT_EVENTS)) {
             ed_paste_events(e, &from, at);
-        } else if (e->context == 2 && !strcmp(from.name, DM_TEXT_NOTES)) {
+        } else if (ed_context(e) == CONTEXT_ROLL && !strcmp(from.name, DM_TEXT_NOTES)) {
             paste_notes(e, &from, at);
 
             if (from.automation_count && !ed_paste_note_bends(e, &from, at)) {
@@ -778,7 +788,7 @@ void ed_paste(Editor *e) {
                 dm_project_free(&from);
                 return;
             }
-        } else if (e->context == 1 && !strcmp(from.name, DM_TEXT_CLIPS)) {
+        } else if (ed_context(e) == CONTEXT_PLAYLIST && !strcmp(from.name, DM_TEXT_CLIPS)) {
             paste_clips(e, &from, at);
         }
 
@@ -788,12 +798,12 @@ void ed_paste(Editor *e) {
     dm_project_free(&from);
 }
 
-void ed_clipboard(Editor *e, int mode) {
+void ed_clipboard(Editor *e, ClipboardAction action) {
     if (!e->active) {
         return;
     }
 
-    if (mode == 2) {
+    if (action == CLIPBOARD_PASTE) {
         ed_paste(e);
         return;
     }
@@ -806,10 +816,10 @@ void ed_clipboard(Editor *e, int mode) {
 
     DmProject copy;
     dm_project_init(&copy);
-    bool ok = focus == FOCUS_EVENTS     ? ed_point_editing(e) && ed_copy_events(e, &copy)
-              : focus == FOCUS_PATTERNS ? copy_pattern_card(e, &copy)
-              : e->context == 2         ? copy_notes(e, &copy)
-                                        : copy_clips(e, &copy);
+    bool ok = focus == FOCUS_EVENTS        ? ed_point_editing(e) && ed_copy_events(e, &copy)
+              : focus == FOCUS_PATTERNS    ? copy_pattern_card(e, &copy)
+              : ed_context(e) == CONTEXT_ROLL ? copy_notes(e, &copy)
+                                           : copy_clips(e, &copy);
 
     if (ok) {
         DmBytes bytes = {0};
@@ -817,7 +827,7 @@ void ed_clipboard(Editor *e, int mode) {
         if (dm_pack(&copy, &bytes)) {
             store_clipboard(e, bytes);
 
-            if (mode == 1) {
+            if (action == CLIPBOARD_CUT) {
                 ed_delete_selection(e);
             }
         }

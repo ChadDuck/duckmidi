@@ -87,15 +87,15 @@ void ed_set_event_value(DmAutomation *a, int value) {
 
 DmAutomation ed_curve_node(Editor *e, double beat, int value, int cc, int id, int anchor) {
     DmAutomation a = {beat,
-                      cc == -1   ? MIDI_PROGRAM
-                      : cc == -4 ? MIDI_CHANNEL_PRESSURE
-                      : cc == -5 ? MIDI_KEY_PRESSURE
-                      : cc < 0   ? MIDI_PITCH_BEND
-                                 : MIDI_CONTROL,
+                      cc == DM_EVENT_PROGRAM            ? MIDI_PROGRAM
+                      : cc == DM_EVENT_CHANNEL_PRESSURE ? MIDI_CHANNEL_PRESSURE
+                      : cc == DM_EVENT_KEY_PRESSURE     ? MIDI_KEY_PRESSURE
+                      : cc < 0                          ? MIDI_PITCH_BEND
+                                                        : MIDI_CONTROL,
                       e->pattern_channel,
-                      cc == -5 ? anchor
-                      : cc < 0 ? 0
-                               : cc,
+                      cc == DM_EVENT_KEY_PRESSURE ? anchor
+                      : cc < 0                    ? 0
+                                                  : cc,
                       0,
                       e->selected_pattern,
                       id,
@@ -109,11 +109,12 @@ DmAutomation ed_curve_node(Editor *e, double beat, int value, int cc, int id, in
 }
 
 int ed_value_before(Editor *e, double beat, int cc) {
-    int value = cc == -2   ? MIDI_BEND_CENTER
-                : cc == -1 ? (int)fmax(0, e->project.channels[e->pattern_channel].program)
-                : cc == 11 ? 127
-                : cc == 7  ? e->project.channels[e->pattern_channel].volume
-                : cc == 10 ? e->project.channels[e->pattern_channel].pan
+    int value = cc == DM_EVENT_BEND ? MIDI_BEND_CENTER
+                : cc == DM_EVENT_PROGRAM
+                    ? (int)fmax(0, e->project.channels[e->pattern_channel].program)
+                : cc == 11             ? 127
+                : cc == 7              ? e->project.channels[e->pattern_channel].volume
+                : cc == 10             ? e->project.channels[e->pattern_channel].pan
                 : cc >= 70 && cc <= 79 ? 64
                                        : 0;
 
@@ -128,9 +129,11 @@ int ed_value_before(Editor *e, double beat, int cc) {
             continue;
         }
 
-        if ((cc == -2 && a.type == MIDI_PITCH_BEND) || (cc == -1 && a.type == MIDI_PROGRAM) ||
-            (cc == -4 && a.type == MIDI_CHANNEL_PRESSURE) ||
-            (cc == -5 && a.type == MIDI_KEY_PRESSURE) || (a.type == MIDI_CONTROL && a.a == cc)) {
+        if ((cc == DM_EVENT_BEND && a.type == MIDI_PITCH_BEND) ||
+            (cc == DM_EVENT_PROGRAM && a.type == MIDI_PROGRAM) ||
+            (cc == DM_EVENT_CHANNEL_PRESSURE && a.type == MIDI_CHANNEL_PRESSURE) ||
+            (cc == DM_EVENT_KEY_PRESSURE && a.type == MIDI_KEY_PRESSURE) ||
+            (a.type == MIDI_CONTROL && a.a == cc)) {
             value = ed_event_value(a);
         }
     }
@@ -179,7 +182,7 @@ static void replace_curve_range(Editor *e, double start, double end, int cc) {
         bool match = (cc < 0 && a.type == MIDI_PITCH_BEND) || (a.type == MIDI_CONTROL && a.a == cc);
 
         if (a.pattern != e->selected_pattern || a.port != ed_note_port(e) || !match ||
-            a.beat < start || a.beat > end || (cc == -2 && a.curve)) {
+            a.beat < start || a.beat > end || (cc == DM_EVENT_BEND && a.curve)) {
             continue;
         }
 
@@ -249,7 +252,7 @@ static void automation_line(Editor *e, double start, double end, int first, int 
         return;
     }
 
-    size_t added = cc == -2 ? 15 : 3;
+    size_t added = cc == DM_EVENT_BEND ? 15 : 3;
 
     if (!dm_reserve((void **)&e->project.automation, &e->project.automation_capacity,
                     e->project.automation_count + added, sizeof(DmAutomation))) {
@@ -263,7 +266,7 @@ static void automation_line(Editor *e, double start, double end, int first, int 
     DmPitchState previous = ed_pitch_state(e, start);
     replace_curve_range(e, start, end, cc);
 
-    if (cc == -2) { /* Pitch bends carry their bend range. */
+    if (cc == DM_EVENT_BEND) { /* Pitch bends carry their bend range. */
         ed_curve_range(e, start, e->bend_range, 0, 127, 127, id);
     }
 
@@ -272,7 +275,7 @@ static void automation_line(Editor *e, double start, double end, int first, int 
 
     DmAutomation *root = reverse ? &to : &from;
 
-    if (cc == -2) {
+    if (cc == DM_EVENT_BEND) {
         root->bend_root = note || !ed_automation_raw(e) ? DM_BEND_ROOT_PITCH : DM_BEND_ROOT_MIDI;
     }
 
@@ -290,7 +293,7 @@ static void automation_line(Editor *e, double start, double end, int first, int 
     double after = end;
     dm_automation_add(&e->project, ed_curve_node(e, after, baseline, cc, -id, anchor));
 
-    if (cc == -2) {
+    if (cc == DM_EVENT_BEND) {
         ed_curve_range(e, after, previous.range, previous.cents, previous.msb, previous.lsb, -id);
     }
 

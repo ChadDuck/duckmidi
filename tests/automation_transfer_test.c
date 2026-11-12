@@ -1,15 +1,6 @@
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool ok, const char *what) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL automation_transfer: %s\n", what);
-        exit(1);
-    }
-}
-
+#define TEST_NAME "automation_transfer"
+#include "test_common.h"
 extern void test_automation_transfer_ui(Editor *, void (*)(bool, const char *));
 
 static int control_at(const DmSchedule *s, int channel, int cc, double seconds) {
@@ -284,7 +275,7 @@ static void transfer_checks(Editor *e) {
     e->project.patterns[e->project.clips[0].pattern].notes[0].key = 61;
     check(e->project.patterns[e->project.clips[2].pattern].notes[0].key == 61,
           "independent placement selection retains shared note content");
-    e->drag = 0;
+    e->drag = DRAG_NONE;
     e->selected_channel = 3;
     e->piano = true;
     ed_piano_press(e, SDL_SCANCODE_Z, 0, false);
@@ -321,20 +312,10 @@ int main(void) {
     modular_schedule();
     bend_and_density();
     schema_validation();
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("automation_transfer checks", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "hidden renderer");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", "", true);
+    Editor *e = test_editor_open("automation_transfer checks", (TestDesktop){0});
     transfer_checks(e);
     editor_smoke(e);
     test_automation_transfer_ui(e, check);
     printf("PASS automation_transfer: %d focused checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

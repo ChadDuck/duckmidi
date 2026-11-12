@@ -1,14 +1,6 @@
-#include "../src/audio/audio.c"
-static int checks;
-
-static void check(bool value, const char *what) {
-    ++checks;
-
-    if (!value) {
-        fprintf(stderr, "FAIL keyboard loop: %s\n", what);
-        exit(1);
-    }
-}
+#include "audio_engine.h"
+#define TEST_NAME "keyboard loop"
+#include "test_common.h"
 
 static unsigned voice_id(Synth *s, int channel, int key, bool held) {
     fluid_voice_t *voices[512] = {0};
@@ -56,8 +48,6 @@ static void await_font(DmAudio *a) {
 
         SDL_Delay(5);
     }
-
-    check(true, "SoundFont finishes before timeout");
 }
 
 static void whole_song(DmAudio *a, DmProject *p) {

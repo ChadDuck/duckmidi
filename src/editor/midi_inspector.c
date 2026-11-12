@@ -380,9 +380,14 @@ bool ed_midi_replace_payload(Editor *e, const uint8_t *payload, size_t size) {
 static void midi_channel_fields(Editor *e, uint8_t *m, size_t size) {
     int type = m[0] & MIDI_STATUS_MASK, channel = (m[0] & MIDI_CHANNEL_MASK) + 1;
 
+    bool bound = e->song_event && e->song_event_channel >= 0;
+    ui_disabled(bound);
+
     if (ui_int(DM_TEXT_MIDI_CHANNEL, &channel, 1, 16)) {
         m[0] = type | (channel - 1);
     }
+
+    ui_disabled_end();
 
     if (type == MIDI_PROGRAM) {
         bool drums = dm_channel_drums(&e->project, channel - 1);
@@ -408,6 +413,8 @@ static void midi_channel_fields(Editor *e, uint8_t *m, size_t size) {
         char label[128];
         snprintf(label, sizeof(label), "%s", controller_name(m[1]));
 
+        ui_disabled(bound);
+
         if (ui_combo(DM_TEXT_CONTROLLER, label)) {
             for (int i = 0; i < 128; ++i) {
                 if (!controller_names[i]) {
@@ -424,6 +431,7 @@ static void midi_channel_fields(Editor *e, uint8_t *m, size_t size) {
             ui_combo_end();
         }
 
+        ui_disabled_end();
         int cc = m[1], value = m[2];
 
         if ((cc >= 64 && cc <= 69) || cc == 122) {
@@ -886,7 +894,7 @@ void ed_midi_event_panels(Editor *e, size_t count, float *split, float height) {
     ui_child(DM_TEXT_MIDI_EVENT_LIST, left, size.y, true);
 
     if (e->song_event && !count) {
-        ui_dim(DM_TEXT_SONG_EVENT_EMPTY);
+        ui_dim(e->song_event_channel < 0 ? DM_TEXT_SONG_EVENT_EMPTY : DM_TEXT_CHANNEL_EVENT_EMPTY);
     } else {
         midi_event_list(e, count);
     }
@@ -910,9 +918,10 @@ void ed_midi_event_window(Editor *e) {
        around the centered divider. */
     float h = ui_display().y * .6f;
 
-    if (ui_dialog(DM_TEXT_MIDI_EVENTS, &e->midi_events, fminf(1000, ui_display().x - 40), h)) {
+    if (ui_dialog(DM_TEXT_MIDI_EVENTS, &e->midi_events,
+                  (UiDialog){.width = 1000, .height = h, .size = UI_RESIZABLE})) {
         ed_midi_event_panels(e, count, &e->midi_split, 0);
     }
 
-    ui_end();
+    ui_dialog_end();
 }

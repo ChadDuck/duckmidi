@@ -8,7 +8,7 @@ static const uint32_t palette[DM_PATTERN_COLORS] = {
     COLOR(96, 164, 236),  COLOR(120, 136, 240), COLOR(150, 120, 232), COLOR(186, 120, 226),
     COLOR(222, 110, 200), COLOR(240, 130, 166), COLOR(184, 140, 104), COLOR(160, 170, 180)};
 
-uint32_t ed_palette_color(Editor *e, unsigned color) {
+static uint32_t ed_palette_color(Editor *e, unsigned color) {
     if (!color || color > DM_PATTERN_COLORS) {
         return e->accent;
     }

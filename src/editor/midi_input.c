@@ -351,7 +351,7 @@ static bool recorded_graph_modes(Editor *e, const DmPattern *pattern, uint16_t *
 
     memcpy(graphs, pattern->graph_lanes, sizeof(pattern->graph_lanes));
 
-    if (pattern->mode || !m->points.size) {
+    if (pattern->kind || pattern->mode || !m->points.size) {
         return false;
     }
 
@@ -388,7 +388,7 @@ static bool recorded_graph_modes(Editor *e, const DmPattern *pattern, uint16_t *
 
     for (int lane = 0; lane < DM_GRAPH_LANES; ++lane) {
         if (touched[lane] && !graphs[lane]) {
-            graphs[lane] = DM_GRAPH_DEFAULT;
+            graphs[lane] = DM_GRAPH_MAX;
         }
     }
 
@@ -553,13 +553,27 @@ static void input_event(Editor *e, DmMidiInputEvent event) {
         return;
     }
 
-    if (!e->record || !e->active || !ed_pattern(e) || ed_pattern(e)->kind) {
+    DmPattern *pattern = ed_pattern(e);
+
+    if (!e->record || !e->active || !pattern || (pattern->kind && pattern->mode)) {
         return;
+    }
+
+    if (pattern->kind) {
+        int target = type == MIDI_CONTROL            ? event.a
+                     : type == MIDI_PITCH_BEND       ? DM_EVENT_BEND
+                     : type == MIDI_CHANNEL_PRESSURE ? DM_EVENT_CHANNEL_PRESSURE
+                     : type == MIDI_KEY_PRESSURE     ? DM_EVENT_KEY_PRESSURE
+                                                     : DM_EVENT_VELOCITY;
+
+        if (target != pattern->event || type == MIDI_NOTE_ON || type == MIDI_NOTE_OFF) {
+            return;
+        }
     }
 
     bool waiting = e->wait_armed;
 
-    if (waiting && type != MIDI_NOTE_ON) {
+    if (waiting && !pattern->kind && type != MIDI_NOTE_ON) {
         return;
     }
 
@@ -573,8 +587,8 @@ static void input_event(Editor *e, DmMidiInputEvent event) {
 
     double beat = dm_seconds_beat(&e->project, fmax(0, event.song_seconds));
 
-    /* Wait for input starts playback at the first note, which was stamped while stopped. Events
-       until the transport reports playing are placed by elapsed time from that note. */
+    /* Wait for input starts at the first note, or matching automation event. Until the transport
+       reports playing, events are placed by elapsed time from that first input. */
     if (waiting) {
         m->waiting = true;
         m->wait_ns = event.ticks_ns;
@@ -640,14 +654,55 @@ static void input_event(Editor *e, DmMidiInputEvent event) {
     m->dirty = true;
 }
 
+/* Event bindings follow the open pattern even when another editor pane has focus. */
+static int event_channel(Editor *e) {
+    DmPattern *pattern = ed_pattern(e);
+
+    if (!pattern) {
+        return e->selected_channel;
+    }
+
+    if (!pattern->kind) {
+        return e->pattern_channel;
+    }
+
+    if (e->selected_clip >= 0 && (size_t)e->selected_clip < e->project.clip_count &&
+        e->project.clips[e->selected_clip].pattern == e->selected_pattern) {
+        return e->project.clips[e->selected_clip].channel;
+    }
+
+    for (size_t i = 0; i < e->project.clip_count; ++i) {
+        if (e->project.clips[i].pattern == e->selected_pattern) {
+            return e->project.clips[i].channel;
+        }
+    }
+
+    return e->selected_channel;
+}
+
+void ed_midi_input_bound_event(Editor *e, DmMidiInputEvent event) {
+    struct DmEditorMidiInput *m = e->midi_input_state;
+
+    if (!e->active || !m || event.ticks_ns <= m->discard_ns) {
+        return;
+    }
+
+    int channel = event_channel(e);
+    int route = ed_pattern(e) ? ed_pattern_keyboard_channel(e) : ed_keyboard_channel(e);
+    int part = ed_note_port(e) * MIDI_CHANNELS + channel;
+    dm_audio_input_event(e->audio, route, part, event);
+    input_event(e, event);
+}
+
 /* The state ed_keyboard_channel reads; the route is recomputed only when it changes. */
 static uint64_t route_signature(Editor *e) {
     uint64_t hash = 1469598103934665603ULL;
     int values[] = {e->active,
-                    e->context,
+                    ed_context(e),
                     e->channel_selected,
                     e->selected_channel,
                     e->selected_pattern,
+                    e->selected_clip,
                     e->pattern_channel,
                     e->preview_program,
                     e->preview_override,
@@ -699,6 +754,10 @@ static int window_route(Editor *e) {
 
 static void update_route(Editor *e, bool enabled) {
     struct DmEditorMidiInput *m = e->midi_input_state;
+    if (ed_pattern(e) && ed_pattern(e)->kind) {
+        e->pattern_channel = event_channel(e);
+    }
+
     uint64_t signature = route_signature(e);
 
     if (signature == m->signature) {
@@ -769,7 +828,7 @@ void ed_midi_input_frame(Editor *e) {
         resolve_take_pattern(e);
     }
 
-    bool enabled = e->active && !(e->context == 1 && !e->channel_selected);
+    bool enabled = e->active && !(ed_context(e) == CONTEXT_PLAYLIST && !e->channel_selected);
     update_route(e, enabled);
     update_note_map(e);
 
@@ -799,23 +858,21 @@ void ed_midi_input_frame(Editor *e) {
         }
 
         if (event.flags & (DM_MIDI_EVENT_BOUND | DM_MIDI_EVENT_LEARN)) {
-            if (!m->finishing) {
-                if (!device_snapshot) {
-                    dm_midi_input_status(e->midi_input, devices);
-                    device_snapshot = true;
-                }
-
-                ed_midi_binding_event(e, event, devices[event.device].name);
+            if (!device_snapshot) {
+                dm_midi_input_status(e->midi_input, devices);
+                device_snapshot = true;
             }
+
+            ed_midi_binding_event(e, event, devices[event.device].name, m->finishing);
 
             continue;
         }
 
         if (event.flags & DM_MIDI_EVENT_DEVICE_RELEASE) {
-            ed_midi_binding_event(e, event, "");
+            ed_midi_binding_event(e, event, "", false);
         }
 
-        enabled = e->active && !(e->context == 1 && !e->channel_selected);
+        enabled = e->active && !(ed_context(e) == CONTEXT_PLAYLIST && !e->channel_selected);
         bool listened = ed_percussion_midi_listen(e, event);
 
         if (!listened || (event.flags & DM_MIDI_EVENT_DEVICE_RELEASE)) {
@@ -831,7 +888,7 @@ void ed_midi_input_frame(Editor *e) {
     m->draining = false;
 
     if (device_snapshot) {
-        update_route(e, e->active && !(e->context == 1 && !e->channel_selected));
+        update_route(e, e->active && !(ed_context(e) == CONTEXT_PLAYLIST && !e->channel_selected));
         update_note_map(e);
     }
 

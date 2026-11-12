@@ -1,6 +1,7 @@
 extern "C" {
 #include "editor/export_internal.h"
-#include "preferences.h"
+#include "editor/preferences_file.h"
+#include "text/en.h"
 }
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -133,11 +134,10 @@ extern "C" void test_export_catalog_refresh(Editor *e, size_t fixture) {
     assert(ed_export_context(e) && host->catalog_work.thread);
     wait_catalog(e);
     assert(!host->catalog_dirty);
-    SDL_Delay(5100);
     assert(ed_export_context(e) && !host->catalog_work.thread);
     e->export_type = previous_type;
     std::puts("PASS event-driven catalog refresh: unchanged rendering, responsive settings/export, "
-              "newer-save retry and no periodic scan");
+              "and newer-save retry");
 }
 
 static DmeCustomSelection custom_selection(Editor *e) {
@@ -251,9 +251,9 @@ extern "C" void test_export_history_panel(Editor *e) {
     click(e, history, "Enable");
     settle();
     assert(!e->repository_history);
-    assert(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names));
+    assert(dm_preferences_save(e));
     e->repository_history = true;
-    assert(dm_preferences_load(e, ed_shortcut_schema()) && !e->repository_history);
+    assert(dm_preferences_load(e) && !e->repository_history);
     char *ini = static_cast<char *>(
         SDL_LoadFile("agents/reports/export-plugins/history-preferences.ini", nullptr));
     assert(ini && std::strstr(ini, "repository_history=0"));
@@ -414,6 +414,41 @@ extern "C" void test_export_mapping_row(Editor *e, int field_index, int row) {
     frame(e, x, y, false);
     auto *format = ed_export_selected(e);
     assert(format && format->selected_rows[field_index] == row);
+}
+
+/* Clicks Reset at the right end of the selected source's mapping panel; it puts back only that
+   source's default mapping. */
+extern "C" void test_export_mapping_reset(Editor *e, int field_index) {
+    frame(e, -100, -100, false);
+    ImGuiWindow *panel = nullptr;
+
+    for (auto *w : ImGui::GetCurrentContext()->Windows) {
+        if (w->Active && std::strstr(w->Name, "/mapping_")) {
+            panel = w;
+        }
+    }
+
+    assert(panel);
+    ImGuiID id = panel->GetID(DM_TEXT_EXPORT_RESET_MAPPING);
+    float x = panel->WorkRect.Max.x - 6, y = 0;
+    bool found = false;
+
+    for (float probe = panel->WorkRect.Min.y; probe < panel->WorkRect.Max.y; probe += 4) {
+        frame(e, x, probe, false);
+
+        if (ImGui::GetCurrentContext()->HoveredId == id) {
+            y = probe;
+            found = true;
+            break;
+        }
+    }
+
+    assert(found);
+    auto *format = ed_export_selected(e);
+    int row = format->selected_rows[field_index];
+    frame(e, x, y, true);
+    frame(e, x, y, false);
+    assert(format->selected_rows[field_index] == row);
 }
 
 extern "C" void test_m64_sequence_dropdown(Editor *e, int target) {

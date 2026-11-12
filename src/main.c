@@ -100,6 +100,10 @@ static bool window_frame(Editor *editor, SDL_Window *window, bool smoke) {
     return true;
 }
 
+/* Where a smoke run saves its 30th frame: the path after --smoke or --welcome-smoke, or NULL to
+   save nothing. */
+static const char *smoke_capture;
+
 static void editor_loop(Editor *editor, SDL_Window *window, SDL_Renderer *renderer, bool smoke) {
     while (editor->running) {
         SDL_Event event;
@@ -126,11 +130,10 @@ static void editor_loop(Editor *editor, SDL_Window *window, SDL_Renderer *render
         ui_render(renderer);
 
         if (smoke && ++editor->smoke_frames == 30) {
-            SDL_Surface *surface = SDL_RenderReadPixels(renderer, NULL);
+            SDL_Surface *surface = smoke_capture ? SDL_RenderReadPixels(renderer, NULL) : NULL;
 
             if (surface) {
-                SDL_SaveBMP(surface, editor->active ? "agents/reports/editor-smoke.bmp"
-                                                    : "agents/reports/welcome-smoke.bmp");
+                SDL_SaveBMP(surface, smoke_capture);
                 SDL_DestroySurface(surface);
             }
 
@@ -174,6 +177,7 @@ static int launch_mode(int argc, char **argv) {
 int main(int argc, char **argv) {
     int mode = launch_mode(argc, argv);
     bool welcome = mode == 2, smoke = mode != 0;
+    smoke_capture = smoke && argc > 2 ? argv[2] : NULL;
 #ifdef _WIN32
     SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "wasapi", SDL_HINT_OVERRIDE);
 #endif

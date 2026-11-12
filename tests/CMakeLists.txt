@@ -17,104 +17,92 @@ function(test_dependencies TARGET)
 endfunction()
 
 get_target_property(EDITOR_SOURCES duckmidi SOURCES)
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX "(src/main\\.c|src/audio/audio\\.c|tools/app\\.rc)$")
+set(AUDIO_ENGINE_SOURCES ${EDITOR_SOURCES})
+list(FILTER AUDIO_ENGINE_SOURCES INCLUDE REGEX "src/audio/[a-z_]+\\.c$")
+list(TRANSFORM AUDIO_ENGINE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX "(src/main\\.c|src/audio/[a-z_]+\\.c|tools/app\\.rc)$")
 list(TRANSFORM EDITOR_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
 add_library(editor_test_objects OBJECT ${EDITOR_SOURCES})
 test_dependencies(editor_test_objects)
-foreach(AUDIO audio recording_feedback_audio event_controls_audio visualizers_audio)
-  if(AUDIO STREQUAL "audio")
-    set(AUDIO_SOURCE "${PROJECT_SOURCE_DIR}/src/audio/audio.c")
-  else()
-    set(AUDIO_SOURCE "${AUDIO}.c")
-  endif()
-  add_library(${AUDIO}_test_objects OBJECT ${AUDIO_SOURCE})
-  test_dependencies(${AUDIO}_test_objects)
-endforeach()
-
+# audio_test and the guide captures use the engine as shipped; the desktop tests link the probe.
+add_library(audio_test_objects OBJECT ${AUDIO_ENGINE_SOURCES})
+test_dependencies(audio_test_objects)
+add_library(audio_probe_objects OBJECT audio_probe.c)
+test_dependencies(audio_probe_objects)
 add_library(editor_mouse_test_objects OBJECT editor_mouse_test.cpp)
 test_dependencies(editor_mouse_test_objects)
-foreach(SPECIAL source_workflow pattern_workflow recording_feedback visualizers)
-  add_library(${SPECIAL}_mouse_test_objects OBJECT editor_mouse_test.cpp)
-  string(TOUPPER "${SPECIAL}" DEFINE)
-  target_compile_definitions(${SPECIAL}_mouse_test_objects PRIVATE "DM_TEST_${DEFINE}")
-  test_dependencies(${SPECIAL}_mouse_test_objects)
-endforeach()
 
-function(desktop_test NAME AUDIO)
-  add_executable(${NAME} ${NAME}.c $<TARGET_OBJECTS:editor_test_objects>)
-  test_dependencies(${NAME})
-  set(MOUSE editor_mouse_test_objects)
-  foreach(SPECIAL source_workflow pattern_workflow recording_feedback visualizers)
-    if(NAME STREQUAL "${SPECIAL}_test")
-      set(MOUSE ${SPECIAL}_mouse_test_objects)
-    endif()
-  endforeach()
-  target_sources(${NAME} PRIVATE $<TARGET_OBJECTS:${MOUSE}> $<TARGET_OBJECTS:${AUDIO}_test_objects>)
+# The DLLs and plugins every test runs beside, copied once.
+add_custom_target(test_runtime
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${TEST_BIN}/plugins"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${FLUID_DLLS} ${FFMPEG_DLLS} "$<TARGET_FILE:SDL3::SDL3>" "${TEST_BIN}"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:m64export>" "${TEST_BIN}/plugins/"
+  DEPENDS m64export COMMAND_EXPAND_LISTS VERBATIM)
+if(EXISTS "${COMPILER_BIN}/libwinpthread-1.dll")
+  add_custom_command(TARGET test_runtime POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+    "${COMPILER_BIN}/libwinpthread-1.dll" "${TEST_BIN}" VERBATIM)
+endif()
+
+function(test_executable NAME)
   set_target_properties(${NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_BIN}" LINKER_LANGUAGE CXX)
+  test_dependencies(${NAME})
   if(MINGW)
     target_link_options(${NAME} PRIVATE -static-libgcc -static-libstdc++)
   endif()
-  add_dependencies(${NAME} duckmidi)
-  add_custom_command(TARGET ${NAME} POST_BUILD
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${FLUID_DLLS} ${FFMPEG_DLLS} "$<TARGET_FILE:SDL3::SDL3>" "${TEST_BIN}"
-    COMMAND "${CMAKE_COMMAND}" -E make_directory "${TEST_BIN}/plugins"
-    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:m64export>" "${TEST_BIN}/plugins/"
-    COMMAND_EXPAND_LISTS VERBATIM)
-  if(EXISTS "${COMPILER_BIN}/libwinpthread-1.dll")
-    add_custom_command(TARGET ${NAME} POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-      "${COMPILER_BIN}/libwinpthread-1.dll" "${TEST_BIN}" VERBATIM)
+  add_dependencies(${NAME} duckmidi test_runtime)
+endfunction()
+
+# A test of the whole editor: NAME.c with the editor, the mouse tests and the audio probe.
+# MANUAL builds the target without registering it with CTest; extra arguments are more sources.
+function(desktop_test NAME)
+  cmake_parse_arguments(TEST "MANUAL" "AUDIO" "" ${ARGN})
+  if(NOT TEST_AUDIO)
+    set(TEST_AUDIO audio_probe_objects)
   endif()
-  # MANUAL builds the target without registering it with CTest.
-  if(NOT "MANUAL" IN_LIST ARGN)
+  add_executable(${NAME} ${NAME}.c ${TEST_UNPARSED_ARGUMENTS} $<TARGET_OBJECTS:editor_test_objects>
+    $<TARGET_OBJECTS:editor_mouse_test_objects> $<TARGET_OBJECTS:${TEST_AUDIO}>)
+  test_executable(${NAME})
+  if(NOT TEST_MANUAL)
     add_test(NAME ${NAME} COMMAND ${NAME})
     set_tests_properties(${NAME} PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
       LABELS desktop RUN_SERIAL TRUE FIXTURES_REQUIRED soundfont_fixtures)
   endif()
 endfunction()
 
-foreach(NAME editor recording window transport_shortcuts dialog edit_gestures ports_editor
-    workspace_navigation selection_history automation_transfer lfo_shapes event_clipboard
-    source_workflow channel_row live_edit_editor interface event_lanes midi_inspector export_plugins backlog
-    event_graph midi_input_preferences)
-  desktop_test(${NAME}_test audio)
+foreach(NAME editor recording application_window transport_shortcuts dialog edit_gestures
+    ports_editor workspace_navigation automation_transfer lfo_shapes event_clipboard
+    source_workflow channel_row live_edit_editor midi_inspector event_graph recording_feedback
+    toolbar frame_performance event_controls midi_recording visualizers preferences percussion
+    pattern_generation)
+  desktop_test(${NAME}_test)
 endforeach()
+# The native file picker benchmark: kept for manual runs.
 set_tests_properties(dialog_test PROPERTIES DISABLED TRUE)
-foreach(NAME recording_feedback pattern_workflow channel_routing toolbar_followup todo_b todo_c todo_d
-    frame_performance todo_e)
-  desktop_test(${NAME}_test recording_feedback_audio)
-endforeach()
-desktop_test(event_controls_test event_controls_audio)
-desktop_test(midi_recording_test recording_feedback_audio)
-desktop_test(midi_bindings_test recording_feedback_audio)
-target_sources(midi_bindings_test PRIVATE midi_bindings_ui.cpp)
-add_library(midi_input_performance_audio_test_objects OBJECT midi_input_performance_audio.c)
-test_dependencies(midi_input_performance_audio_test_objects)
-desktop_test(midi_input_performance_test midi_input_performance_audio MANUAL)
-desktop_test(visualizers_test visualizers_audio)
-desktop_test(samples_editor_test audio)
-target_sources(samples_editor_test PRIVATE samples_editor_ui.cpp)
+desktop_test(midi_bindings_test midi_bindings_ui.cpp)
+desktop_test(midi_input_preferences_test midi_input_preferences_ui.cpp)
+desktop_test(floating_windows_test floating_windows_ui.cpp)
+desktop_test(audio_render_test audio_render_ui.cpp)
+desktop_test(channel_routing_test ports_ui.cpp)
+desktop_test(pattern_workflow_test pattern_rename_ui.cpp)
+desktop_test(selection_history_test selection_clicks_ui.cpp)
+desktop_test(event_lanes_test event_lane_modes_ui.cpp)
+desktop_test(export_plugins_test export_plugins_ui.cpp native_repository_fixture.c)
+desktop_test(samples_editor_test samples_editor_ui.cpp)
 set_tests_properties(samples_editor_test PROPERTIES FIXTURES_REQUIRED
   "soundfont_fixtures;sample_import_audio")
 add_custom_command(TARGET samples_editor_test POST_BUILD
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:sampletool>" "${TEST_BIN}/plugins/"
   VERBATIM)
-target_sources(export_plugins_test PRIVATE export_plugins_ui.cpp native_repository_fixture.c)
-target_sources(todo_b_test PRIVATE todo_b_ui.cpp)
-target_sources(midi_input_preferences_test PRIVATE midi_input_preferences_ui.cpp)
-target_sources(todo_c_test PRIVATE todo_c_ui.cpp)
-target_sources(todo_e_test PRIVATE todo_e_ui.cpp)
+add_library(midi_input_performance_audio_objects OBJECT midi_input_performance_audio.c)
+test_dependencies(midi_input_performance_audio_objects)
+desktop_test(midi_input_performance_test MANUAL AUDIO midi_input_performance_audio_objects)
 
 foreach(NAME audio_test audio_loop_test live_edit_audio_test midi_input_audio_test)
   add_executable(${NAME} ${NAME}.c)
   if(NAME STREQUAL "audio_test")
     target_sources(${NAME} PRIVATE $<TARGET_OBJECTS:audio_test_objects>)
   endif()
-  test_dependencies(${NAME})
-  set_target_properties(${NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_BIN}" LINKER_LANGUAGE CXX)
-  if(MINGW)
-    target_link_options(${NAME} PRIVATE -static-libgcc -static-libstdc++)
-  endif()
-  add_dependencies(${NAME} editor_test)
+  test_executable(${NAME})
   add_test(NAME ${NAME} COMMAND ${NAME})
   set_tests_properties(${NAME} PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
     LABELS audio RUN_SERIAL TRUE FIXTURES_REQUIRED soundfont_fixtures)
@@ -153,19 +141,12 @@ add_custom_target(export_registry_fixtures
     plugin_allocation-failure plugin_z-duplicate VERBATIM)
 add_dependencies(export_plugins_test export_registry_fixtures)
 add_executable(export_registry_test export_registry_test.c "${PROJECT_SOURCE_DIR}/src/export_plugins.c")
-test_dependencies(export_registry_test)
-set_target_properties(export_registry_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_BIN}")
-add_dependencies(export_registry_test editor_test export_registry_fixtures)
+test_executable(export_registry_test)
+add_dependencies(export_registry_test export_registry_fixtures)
 add_test(NAME export_registry_test COMMAND export_registry_test)
 set_tests_properties(export_registry_test PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" LABELS plugins RUN_SERIAL TRUE)
 
 # Renders the user guide's screenshots; run through tools/update-guide-images.ps1, not CTest.
 add_executable(guide_captures "${PROJECT_SOURCE_DIR}/tools/guide-captures.cpp"
   $<TARGET_OBJECTS:editor_test_objects> $<TARGET_OBJECTS:audio_test_objects>)
-test_dependencies(guide_captures)
-set_target_properties(guide_captures PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_BIN}"
-  LINKER_LANGUAGE CXX)
-if(MINGW)
-  target_link_options(guide_captures PRIVATE -static-libgcc -static-libstdc++)
-endif()
-add_dependencies(guide_captures editor_test)
+test_executable(guide_captures)

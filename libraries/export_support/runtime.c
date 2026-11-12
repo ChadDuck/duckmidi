@@ -35,7 +35,7 @@ static DmeString string(const char *s) {
 }
 
 static char *copy(DmeString s) {
-    if (s.length > 8192 || (s.length && (!s.data || memchr(s.data, 0, (size_t)s.length)))) {
+    if (s.length > DME_PATH_LIMIT || (s.length && (!s.data || memchr(s.data, 0, (size_t)s.length)))) {
         return NULL;
     }
 

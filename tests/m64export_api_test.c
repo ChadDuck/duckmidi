@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Dense, distinct volume ramps on every channel pass 64 KiB; they are fitted by simplifying the
    curves (warning 64), never by the note reduction of warning 54. */
@@ -148,11 +149,38 @@ int main(void) {
     const M64Api *api = m64_get_api_3();
     dense_curves(api);
     voice_capacity(api);
-    assert(api && !api->default_program(128) && !api->default_drum(128));
+    assert(api);
+    unsigned presets = 0;
+    bool sleigh_bells = false;
 
-    for (unsigned i = 0; i < 128; i++) {
-        assert(api->default_program(i)->sample && api->default_drum(i)->sample);
+    /* The GM presets come first, then a plain preset for each stock instruments-bank sample, so
+       samples no GM program or drum note uses can be mapped. */
+    while (api->default_program(presets)) {
+        assert(api->default_drum(presets) &&
+               (presets < 128 || !strcmp(api->default_program(presets)->sample,
+                                         api->default_drum(presets)->sample)));
+        sleigh_bells |= !strcmp(api->default_program(presets)->sample, "2F_sleigh_bells");
+        presets++;
     }
+
+    assert(presets > 128 && !api->default_drum(presets) && sleigh_bells);
+
+    /* Each GM program has curated alternates, best first, that are other stock presets. The
+       overdriven guitar is the stock distortion sample, with the rhythm guitar first after it. */
+    for (uint32_t program = 0; program < 128; program++) {
+        uint32_t alternates[6];
+        uint32_t count = api->program_alternates(program, alternates, 6);
+        assert(count >= 5);
+
+        for (uint32_t i = 0; i < count; i++) {
+            assert(alternates[i] != program && api->default_program(alternates[i]));
+        }
+    }
+
+    uint32_t guitar[6];
+    assert(!strcmp(api->default_program(29)->sample, "31_rarefaction-convolution_Eb2") &&
+           api->program_alternates(29, guitar, 6) == 6 &&
+           !strcmp(api->default_program(guitar[0])->sample, "1C_les_paul_guitar_E2"));
 
     M64Event events[] = {{0, 1, 0x90, 60, 100}, {48, 2, 0x80, 60, 0}};
     M64Request q = {0};

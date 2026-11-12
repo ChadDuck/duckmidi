@@ -215,7 +215,7 @@ bool coopdx_resolve(Compile *c) {
         }
     }
 
-    for (unsigned key = 0; key < 384; key++) {
+    for (unsigned key = 0; key < M64_DRUM_SLOTS; key++) {
         if (c->drums[key] >= 0) {
             resolve_drum(c, key);
         }
@@ -245,7 +245,7 @@ bool coopdx_resolve(Compile *c) {
        a loop can return to a section with another instrument selected. */
     bool melodic_drums = false;
 
-    for (unsigned key = 0; key < 384; key++) {
+    for (unsigned key = 0; key < M64_DRUM_SLOTS; key++) {
         melodic_drums |= c->drums[key] >= 0 && c->drum_instrument[key] >= 0 &&
                          c->drum_instrument[key] != COOPDX_PERCUSSION;
     }

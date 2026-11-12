@@ -3,7 +3,8 @@
    Many GM programs and drum notes share one stock sample. Presets with the same sample and the
    same settings are listed once. Presets that reuse a sample with different settings stay
    separate, and their labels name the difference: envelope for melodic samples, pitch for
-   drums. */
+   drums. Stock samples that no preset of the list's kind uses follow as plain presets, from
+   value 128, so every sample of the stock bank can be mapped. */
 #include "m64_plugin.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +12,27 @@
 
 static const M64Instrument *preset(bool percussion, int index) {
     const M64Api *api = m64_get_api_3();
+
+    if (index < 0) {
+        return NULL;
+    }
+
     return percussion ? api->default_drum((uint32_t)index) : api->default_program((uint32_t)index);
+}
+
+bool m64_preset_valid(bool percussion, int index) {
+    return preset(percussion, index) != NULL;
+}
+
+/* Whether one of the 128 GM presets of this kind plays the sample. */
+static bool gm_sample(bool percussion, const char *sample) {
+    for (int i = 0; i < 128; ++i) {
+        if (!strcmp(preset(percussion, i)->sample, sample)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static bool same_settings(const M64Instrument *a, const M64Instrument *b) {
@@ -20,7 +41,7 @@ static bool same_settings(const M64Instrument *a, const M64Instrument *b) {
 }
 
 int m64_canonical_preset(bool percussion, int index) {
-    if (index < 0 || index > 127) {
+    if (!m64_preset_valid(percussion, index)) {
         return 0;
     }
 
@@ -37,6 +58,7 @@ int m64_canonical_preset(bool percussion, int index) {
     return index;
 }
 
+/* Variants among the GM presets; the plain sample presets name samples no GM preset uses. */
 static bool has_variants(bool percussion, const M64Instrument *target) {
     for (int i = 0; i < 128; ++i) {
         const M64Instrument *other = preset(percussion, i);
@@ -97,8 +119,9 @@ static int compare_labels(const void *left, const void *right) {
 unsigned m64_preset_choices(bool percussion, DmeChoice *choices, char (*labels)[220]) {
     unsigned count = 0;
 
-    for (int i = 0; i < 128; ++i) {
-        if (m64_canonical_preset(percussion, i) != i) {
+    for (int i = 0; m64_preset_valid(percussion, i) && count < M64_CHOICE_LIMIT; ++i) {
+        if (m64_canonical_preset(percussion, i) != i ||
+            (i >= 128 && gm_sample(percussion, preset(percussion, i)->sample))) {
             continue;
         }
 

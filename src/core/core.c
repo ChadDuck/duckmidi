@@ -1,4 +1,6 @@
+/* The project model: channels, ports, patterns, notes, placements, automation and LFO shapes. */
 #include "core/duck.h"
+#include "core/midi_internal.h"
 #include "text/en.h"
 #include <errno.h>
 #include <math.h>
@@ -84,6 +86,7 @@ void dm_project_init(DmProject *p) {
     p->port_count = 1;
 
     for (int c = 0; c < 16; ++c) {
+        p->note_rows[c] = 1;
         p->channels[c] = dm_channel_default(c);
         p->channels[c].enabled = c == 0 || c == MIDI_DRUM_CHANNEL;
         p->channels[c].program = c == MIDI_DRUM_CHANNEL ? 0 : -1;
@@ -96,6 +99,92 @@ DmChannel dm_channel_default(int channel) {
 
 bool dm_channel_drums(const DmProject *p, int channel) {
     return channel >= 0 && channel < 16 && p->channels[channel].drums;
+}
+
+static int swapped_channel(int channel, int a, int b) {
+    return channel == a ? b : channel == b ? a : channel;
+}
+
+/* GS rhythm-part setup belongs to the part it addresses, including imported setup messages.
+   Keep its checksum valid when the part moves across the special channel-10 block. */
+static void swap_rhythm_part(DmBytes *message, int a, int b) {
+    int channel;
+    bool drums;
+
+    if (!dm_midi_rhythm_part(message, &channel, &drums)) {
+        return;
+    }
+
+    int next = swapped_channel(channel, a, b);
+
+    if (next == channel) {
+        return;
+    }
+
+    Reader input = {message->data + 1, message->data + message->size, true};
+    uint32_t size = dm_midi_read_vlq(&input);
+    uint8_t *body = message->data + (input.p - message->data);
+    uint32_t checksum = size - (body[size - 1] == MIDI_SYSEX_END ? 2 : 1);
+
+    if (checksum < 8) {
+        return;
+    }
+
+    uint8_t block = (uint8_t)(next == MIDI_DRUM_CHANNEL  ? 0
+                              : next < MIDI_DRUM_CHANNEL ? next + 1
+                                                         : next);
+    uint8_t address = 0x10 | block;
+    body[checksum] = (uint8_t)((body[checksum] + body[5] - address) & MIDI_DATA_MASK);
+    body[5] = address;
+}
+
+bool dm_channel_swap(DmProject *p, int a, int b) {
+    if (!p || a < 0 || a >= MIDI_CHANNELS || b < 0 || b >= MIDI_CHANNELS || a == b) {
+        return false;
+    }
+
+    DmChannel channel = p->channels[a];
+    p->channels[a] = p->channels[b];
+    p->channels[b] = channel;
+    int lanes = p->lane_count[a], rows = p->note_rows[a];
+    p->lane_count[a] = p->lane_count[b];
+    p->lane_count[b] = lanes;
+    p->note_rows[a] = p->note_rows[b];
+    p->note_rows[b] = rows;
+    char names[DM_LANES][64];
+    memcpy(names, p->lane_names[a], sizeof(names));
+    memcpy(p->lane_names[a], p->lane_names[b], sizeof(names));
+    memcpy(p->lane_names[b], names, sizeof(names));
+
+    for (size_t i = 0; i < p->clip_count; ++i) {
+        p->clips[i].channel = swapped_channel(p->clips[i].channel, a, b);
+    }
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        p->automation[i].channel = swapped_channel(p->automation[i].channel, a, b);
+    }
+
+    for (size_t i = 0; i < p->event_count; ++i) {
+        DmBytes *message = &p->events[i].message;
+
+        if (message->size && message->data[0] >= MIDI_NOTE_OFF && message->data[0] < MIDI_SYSTEM) {
+            int c = swapped_channel(message->data[0] & MIDI_CHANNEL_MASK, a, b);
+            message->data[0] = (uint8_t)((message->data[0] & MIDI_STATUS_MASK) | c);
+        } else {
+            swap_rhythm_part(message, a, b);
+        }
+    }
+
+    for (size_t i = 0; i < p->port_mix_count; ++i) {
+        p->port_mix[i].channel = swapped_channel(p->port_mix[i].channel, a, b);
+    }
+
+    for (size_t i = 0; i < p->patch_replacement_count; ++i) {
+        DmPatchKey *key = &p->patch_replacements[i].key;
+        key->channel = (uint8_t)swapped_channel(key->channel, a, b);
+    }
+
+    return true;
 }
 
 DmPortMix dm_port_mix(const DmProject *p, int port, int channel) {
@@ -223,8 +312,8 @@ bool dm_patch_replacement_set(DmProject *p, const DmPatchReplacement *r) {
     size_t count = p->patch_replacement_count;
 
     if (count >= DM_PATCH_REPLACEMENTS_MAX ||
-        !dm_reserve((void **)&p->patch_replacements, &p->patch_replacement_capacity,
-                    count + 1, sizeof(*p->patch_replacements))) {
+        !dm_reserve((void **)&p->patch_replacements, &p->patch_replacement_capacity, count + 1,
+                    sizeof(*p->patch_replacements))) {
         return false;
     }
 
@@ -464,7 +553,7 @@ int dm_pattern_add(DmProject *p, const char *name) {
     memset(pat, 0, sizeof(*pat));
     pat->length = 1;
     pat->uid = ++p->next_pattern_uid;
-    pat->event = -2;
+    pat->event = DM_EVENT_BEND;
     pat->speed = 1;
     pat->pulse = .5;
     pat->amount = .5;
@@ -597,6 +686,224 @@ int dm_pattern_copy(DmProject *p, int source) {
     }
 
     free(copy);
+    return id;
+}
+
+static bool automation_series(DmAutomation a, DmAutomation b) {
+    return a.pattern == b.pattern && a.port == b.port && a.type == b.type &&
+           ((a.type != MIDI_CONTROL && a.type != MIDI_KEY_PRESSURE) || a.a == b.a);
+}
+
+static const DmAutomation *automation_curve_next(const DmProject *p, size_t index) {
+    DmAutomation a = p->automation[index];
+
+    for (size_t i = index + 1; i < p->automation_count; ++i) {
+        if (automation_series(a, p->automation[i]) && a.curve == p->automation[i].curve) {
+            return &p->automation[i];
+        }
+    }
+
+    return NULL;
+}
+
+static DmAutomation automation_curve_node(DmAutomation a, DmAutomation b, double beat) {
+    int value = (int)llround(dm_curve_value(a, b, (beat - a.beat) / (b.beat - a.beat)));
+    a.beat = beat;
+
+    if (a.type == MIDI_PITCH_BEND) {
+        a.a = value & MIDI_DATA_MASK;
+        a.b = value >> 7;
+    } else if (a.type == MIDI_PROGRAM || a.type == MIDI_CHANNEL_PRESSURE) {
+        a.a = value;
+    } else {
+        a.b = value;
+    }
+
+    return a;
+}
+
+/* Preserve authored nodes and identities; only the two cut boundaries need new nodes.
+   Restricting a quadratic to a fraction of its span scales its midpoint bend by that fraction
+   squared, just as splitting a curve node does in the editor. */
+static bool pattern_trim_automation(const DmProject *p, DmClip clip, DmBytes *points) {
+    double end = clip.offset + dm_clip_length(p, clip);
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        DmAutomation original = p->automation[i];
+
+        if (original.pattern != clip.pattern || original.beat > end) {
+            continue;
+        }
+
+        const DmAutomation *next = automation_curve_next(p, i);
+        bool segment = dm_automation_curves(original) && next && next->beat > original.beat;
+        DmAutomation a = original;
+
+        if (a.beat < clip.offset) {
+            bool last = true;
+
+            for (size_t j = i + 1; last && j < p->automation_count; ++j) {
+                last = !automation_series(original, p->automation[j]) ||
+                       p->automation[j].beat > clip.offset;
+            }
+
+            if (!last) {
+                continue;
+            }
+
+            if (segment && next->beat > clip.offset) {
+                a = automation_curve_node(original, *next, clip.offset);
+            } else {
+                a.beat = clip.offset;
+                a.bend = 0;
+                a.ramp = false;
+                /* An attached held bend still needs its line identity. */
+                a.curve = a.bend_note ? a.curve : 0;
+
+                if (!a.curve && a.bend_root) {
+                    a.fixed_anchor = true;
+                }
+            }
+        }
+
+        if (segment && next->beat > a.beat) {
+            double fraction = (fmin(next->beat, end) - a.beat) / (next->beat - original.beat);
+            a.bend = original.bend * fraction * fraction;
+        }
+
+        a.beat -= clip.offset;
+
+        if (!dm_bytes(points, &a, sizeof(a))) {
+            return false;
+        }
+
+        if (segment && original.beat < end && next->beat > end) {
+            a = automation_curve_node(original, *next, end);
+            a.beat -= clip.offset;
+            a.bend = 0;
+            a.bend_note = 0;
+            a.bend_root = DM_BEND_ROOT_NONE;
+
+            if (!dm_bytes(points, &a, sizeof(a))) {
+                return false;
+            }
+        }
+    }
+
+    /* A cut can remove a bend's root while keeping later nodes of its curve. Move the link to
+       the earliest retained node; note bend ids remain pattern-local and do not need changing. */
+    DmAutomation *items = (DmAutomation *)points->data;
+    size_t count = points->size / sizeof(*items);
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        DmAutomation root = p->automation[i];
+        size_t first = count;
+
+        if (root.pattern != clip.pattern || !root.bend_note) {
+            continue;
+        }
+
+        for (size_t j = 0; j < count; ++j) {
+            if (automation_series(root, items[j]) && items[j].curve == root.curve) {
+                items[j].bend_note = 0;
+
+                if (first == count || items[j].beat < items[first].beat) {
+                    first = j;
+                }
+            }
+        }
+
+        if (first < count) {
+            items[first].bend_note = root.bend_note;
+        }
+    }
+
+    return true;
+}
+
+int dm_clip_make_unique(DmProject *p, size_t index) {
+    if (index >= p->clip_count) {
+        return -1;
+    }
+
+    DmClip clip = p->clips[index];
+    double length = dm_clip_length(p, clip);
+    const DmPattern *source = &p->patterns[clip.pattern];
+    bool sliced = !(source->kind && source->mode) && (clip.offset > 0 || length < source->length);
+    DmBytes points = {0};
+
+    if (sliced && !pattern_trim_automation(p, clip, &points)) {
+        dm_bytes_free(&points);
+        return -1;
+    }
+    int id = dm_pattern_copy(p, clip.pattern);
+
+    if (id < 0 || !sliced) {
+        dm_bytes_free(&points);
+
+        if (id >= 0) {
+            p->clips[index].pattern = id;
+        }
+
+        return id;
+    }
+
+    DmPattern *pattern = &p->patterns[id];
+    size_t write = 0;
+
+    for (size_t i = 0; i < pattern->count; ++i) {
+        DmNote note = pattern->notes[i];
+        double start = fmax(note.beat, clip.offset);
+        double end = fmin(note.beat + note.length, clip.offset + length);
+
+        if (end > start) {
+            note.beat = start - clip.offset;
+            note.length = end - start;
+            pattern->notes[write++] = note;
+        }
+    }
+
+    pattern->count = write;
+    pattern->length = 1;
+    write = 0;
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        if (p->automation[i].pattern != id) {
+            p->automation[write++] = p->automation[i];
+        }
+    }
+
+    p->automation_count = write;
+    DmAutomation *items = (DmAutomation *)points.data;
+    bool ok = true;
+
+    for (size_t i = 0; ok && i < points.size / sizeof(*items); ++i) {
+        DmAutomation a = items[i];
+        a.pattern = id;
+        bool attached = false;
+
+        for (size_t j = 0; a.bend_note && j < pattern->count; ++j) {
+            attached |=
+                pattern->notes[j].bend_id == a.bend_note && pattern->notes[j].port == a.port;
+        }
+
+        if (!attached) {
+            a.bend_note = 0;
+        }
+
+        ok = dm_automation_add(p, a);
+    }
+
+    dm_bytes_free(&points);
+
+    if (!ok) {
+        dm_pattern_remove(p, id);
+        return -1;
+    }
+
+    dm_pattern_fit(p, pattern);
+    p->clips[index].pattern = id;
+    p->clips[index].offset = p->clips[index].length = 0;
     return id;
 }
 
@@ -780,12 +1087,13 @@ int dm_lfo_range(const DmPattern *p) {
 int dm_lfo_value(const DmPattern *p, double beat) {
     double wave = dm_lfo(p, beat), value = p->center + 63.5 * wave;
 
-    if (p->event == -2) {
+    if (p->event == DM_EVENT_BEND) {
         double pitch = fmax(0, fmin(127, p->pitch_center + 2 * wave));
         value = MIDI_BEND_CENTER + (pitch - p->reference) * MIDI_BEND_CENTER / dm_lfo_range(p);
     }
 
-    return (int)llround(fmax(0, fmin(p->event == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX, value)));
+    return (int)llround(
+        fmax(0, fmin(p->event == DM_EVENT_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX, value)));
 }
 
 bool dm_clip_add(DmProject *p, DmClip c) {
@@ -796,6 +1104,10 @@ bool dm_clip_add(DmProject *p, DmClip c) {
 
     if (!isfinite(c.beat) || c.beat < 0 || c.channel < 0 || c.channel > 15 || c.pattern < 0 ||
         (size_t)c.pattern >= p->pattern_count || c.selected > 1) {
+        return false;
+    }
+
+    if (c.row < 0 || (c.lane ? c.row != 0 : c.row >= p->note_rows[c.channel])) {
         return false;
     }
 
@@ -834,7 +1146,7 @@ bool dm_automation_later(DmAutomation a, DmAutomation b) {
 
 int dm_graph_lane(int event) {
     switch (event) {
-    case -2:
+    case DM_EVENT_BEND:
         return DM_GRAPH_PITCH_LANE;
     case MIDI_CC_PORTAMENTO_TIME:
     case MIDI_CC_DATA:
@@ -852,7 +1164,7 @@ int dm_graph_lane(int event) {
 int dm_automation_graph_lane(DmAutomation point) {
     return point.type == MIDI_PITCH_BEND ? DM_GRAPH_PITCH_LANE
            : point.type == MIDI_CONTROL  ? dm_graph_lane(point.a)
-                                          : -1;
+                                         : -1;
 }
 
 int dm_graph_resolution(const DmPattern *pattern, int event) {
@@ -929,7 +1241,7 @@ double dm_curve_value(DmAutomation first, DmAutomation last, double t) {
 /* The bend range at beat from a list of automation points in project order: the whole project's,
    or a subset holding at least the pattern's RPN and data entry controllers. */
 DmPitchState dm_pitch_state(const DmAutomation *items, size_t count, int pattern_id, double beat,
-                             unsigned port) {
+                            unsigned port) {
     DmPitchState state = {2, 0, 127, 127};
 
     for (size_t i = 0; i < count; ++i) {
@@ -1059,286 +1371,6 @@ void dm_quantize(DmPattern *p, double grid) {
             p->length = fmax(p->length, p->notes[i].beat + p->notes[i].length);
         }
     }
-}
-#ifdef _WIN32
-static wchar_t *wide_path(const char *path) {
-    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
-
-    if (!n) {
-        return NULL;
-    }
-
-    wchar_t *w = malloc((size_t)n * sizeof(*w));
-
-    if (w) {
-        MultiByteToWideChar(CP_UTF8, 0, path, -1, w, n);
-    }
-
-    return w;
-}
-#endif
-static FILE *file_open(const char *path, const char *mode) {
-#ifdef _WIN32
-    wchar_t *w = wide_path(path);
-
-    if (!w) {
-        return NULL;
-    }
-
-    FILE *f = _wfopen(w, mode[0] == 'r' ? L"rb" : L"wbx");
-    free(w);
-    return f;
-#else
-    return fopen(path, mode);
-#endif
-}
-
-bool dm_read(const char *path, DmBytes *out, char *error, size_t cap) {
-    FILE *f = file_open(path, "rb");
-
-    if (!f) {
-        snprintf(error, cap, DM_TEXT_CANNOT_OPEN_FILE, strerror(errno));
-        return false;
-    }
-
-    bool ok = fseek(f, 0, SEEK_END) == 0;
-    long size = ok ? ftell(f) : -1;
-    rewind(f);
-    ok = size > 0 && size <= 1024 * 1024 * 1024 &&
-         dm_reserve((void **)&out->data, &out->capacity, (size_t)size, 1);
-
-    if (ok) {
-        out->size = (size_t)size;
-        ok = fread(out->data, 1, out->size, f) == out->size;
-    }
-
-    fclose(f);
-
-    if (!ok) {
-        dm_bytes_free(out);
-        snprintf(error, cap, DM_TEXT_FILE_UNREADABLE_EMPTY);
-    }
-
-    return ok;
-}
-
-bool dm_output_begin(DmOutput *out, const char *path, char *error, size_t cap) {
-    static atomic_uint serial = 0;
-    memset(out, 0, sizeof(*out));
-
-    if (strlen(path) >= sizeof(out->path)) {
-        snprintf(error, cap, DM_TEXT_OUTPUT_PATH_TOO);
-        return false;
-    }
-
-    snprintf(out->path, sizeof(out->path), "%s", path);
-    unsigned sequence = atomic_fetch_add(&serial, 1);
-    snprintf(out->temporary, sizeof(out->temporary), DM_TEXT_DUCK_TMP, path,
-             (unsigned long long)time(NULL), (unsigned long)clock(), sequence);
-    out->file = file_open(out->temporary, "wbx");
-
-    if (!out->file) {
-        snprintf(error, cap, DM_TEXT_CANNOT_CREATE_TEMPORARY, strerror(errno));
-        return false;
-    }
-
-    return true;
-}
-
-bool dm_output_write(DmOutput *out, const void *data, size_t size, char *error, size_t cap) {
-    if (!out->file || out->failed) {
-        return false;
-    }
-
-    if (fwrite(data, 1, size, out->file) != size) {
-        out->failed = true;
-        snprintf(error, cap, DM_TEXT_WRITING_FAILED, strerror(errno));
-        return false;
-    }
-
-    return true;
-}
-
-static bool output_replace(const char *temporary, const char *path) {
-#ifdef _WIN32
-    wchar_t *from = wide_path(temporary), *to = wide_path(path);
-    bool ok =
-        from && to && MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-    free(from);
-    free(to);
-    return ok;
-#else
-    return rename(temporary, path) == 0;
-#endif
-}
-
-static void output_remove(const char *path) {
-#ifdef _WIN32
-    wchar_t *wide = wide_path(path);
-
-    if (wide) {
-        DeleteFileW(wide);
-        free(wide);
-    }
-#else
-    remove(path);
-#endif
-}
-
-bool dm_output_finish(DmOutput *out, bool commit, char *error, size_t cap) {
-    if (!out->file) {
-        return false;
-    }
-
-    bool ok = !out->failed;
-
-    if (fflush(out->file)) {
-        ok = false;
-        snprintf(error, cap, DM_TEXT_CANNOT_FLUSH_OUTPUT, strerror(errno));
-    }
-
-    if (fclose(out->file)) {
-        ok = false;
-        snprintf(error, cap, DM_TEXT_CANNOT_CLOSE_OUTPUT, strerror(errno));
-    }
-
-    out->file = NULL;
-
-    if (!commit) {
-        ok = false;
-    }
-
-    if (ok) {
-        ok = output_replace(out->temporary, out->path);
-
-        if (!ok) {
-#ifdef _WIN32
-            DWORD code = GetLastError();
-            char reason[256] = {0};
-            FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code,
-                           0, reason, sizeof(reason), NULL);
-            reason[strcspn(reason, "\r\n")] = 0;
-            snprintf(error, cap, DM_TEXT_CANNOT_REPLACE_DESTINATION_WINDOWS,
-                     *reason ? reason : DM_TEXT_FILE_SYSTEM_OPERATION_FAILED, (unsigned long)code);
-#else
-            snprintf(error, cap, DM_TEXT_CANNOT_REPLACE_DESTINATION_ORIGINAL, strerror(errno));
-#endif
-        }
-    }
-
-    if (!ok) {
-        output_remove(out->temporary);
-
-        if (commit && !*error) {
-            snprintf(error, cap, DM_TEXT_WRITING_FAILED_ORIGINAL);
-        }
-    }
-
-    return ok;
-}
-
-bool dm_write(const char *path, const void *data, size_t size, char *error, size_t cap) {
-    DmOutput out;
-
-    if (!dm_output_begin(&out, path, error, cap)) {
-        return false;
-    }
-
-    bool ok = dm_output_write(&out, data, size, error, cap);
-    return dm_output_finish(&out, ok, error, cap);
-}
-
-static bool zip_le(DmBytes *out, uint32_t value, int width) {
-    unsigned char b[4];
-
-    for (int i = 0; i < width; i++) {
-        b[i] = (unsigned char)value;
-        value >>= 8;
-    }
-
-    return dm_bytes(out, b, (size_t)width);
-}
-
-bool dm_zip(const DmArchiveEntry *entries, size_t count, DmBytes *out, char *error, size_t cap) {
-    DmBytes zip = {0};
-    uint32_t offsets[64], checksums[64];
-    bool ok = entries && count && count <= 64;
-
-    /* Entries carry the local time of the export, in the DOS format ZIP uses. */
-    time_t now = time(NULL);
-    struct tm local = {0};
-#ifdef _WIN32
-    localtime_s(&local, &now);
-#else
-    localtime_r(&now, &local);
-#endif
-    uint32_t dos_time = (uint32_t)(local.tm_hour << 11 | local.tm_min << 5 | local.tm_sec / 2);
-    uint32_t dos_date = (uint32_t)((local.tm_year < 80 ? 0 : local.tm_year - 80) << 9 |
-                                   (local.tm_mon + 1) << 5 | local.tm_mday);
-
-    for (size_t i = 0; i < count && ok; i++) {
-        const DmArchiveEntry *e = &entries[i];
-        size_t name = e->name ? strlen(e->name) : 0;
-        ok = name && name <= 65535 && e->size <= UINT32_MAX && zip.size <= UINT32_MAX &&
-             (!e->size || e->data);
-
-        if (!ok) {
-            break;
-        }
-
-        offsets[i] = (uint32_t)zip.size;
-        uint32_t crc = UINT32_MAX;
-
-        for (size_t j = 0; j < e->size; j++) {
-            crc ^= e->data[j];
-
-            for (int bit = 0; bit < 8; bit++) {
-                crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1)));
-            }
-        }
-
-        checksums[i] = ~crc;
-        ok = zip_le(&zip, 0x04034b50, 4) && zip_le(&zip, 20, 2) && zip_le(&zip, 0x800, 2) &&
-             zip_le(&zip, 0, 2) && zip_le(&zip, dos_time, 2) && zip_le(&zip, dos_date, 2) &&
-             zip_le(&zip, checksums[i], 4) && zip_le(&zip, (uint32_t)e->size, 4) &&
-             zip_le(&zip, (uint32_t)e->size, 4) && zip_le(&zip, (uint32_t)name, 2) &&
-             zip_le(&zip, 0, 2) && dm_bytes(&zip, e->name, name) &&
-             dm_bytes(&zip, e->data, e->size);
-    }
-
-    size_t central = zip.size;
-
-    for (size_t i = 0; i < count && ok; i++) {
-        const DmArchiveEntry *e = &entries[i];
-        size_t name = strlen(e->name);
-        ok = zip_le(&zip, 0x02014b50, 4) && zip_le(&zip, 20, 2) && zip_le(&zip, 20, 2) &&
-             zip_le(&zip, 0x800, 2) && zip_le(&zip, 0, 2) && zip_le(&zip, dos_time, 2) &&
-             zip_le(&zip, dos_date, 2) && zip_le(&zip, checksums[i], 4) &&
-             zip_le(&zip, (uint32_t)e->size, 4) && zip_le(&zip, (uint32_t)e->size, 4) &&
-             zip_le(&zip, (uint32_t)name, 2) && zip_le(&zip, 0, 2) && zip_le(&zip, 0, 2) &&
-             zip_le(&zip, 0, 2) && zip_le(&zip, 0, 2) && zip_le(&zip, 0, 4) &&
-             zip_le(&zip, offsets[i], 4) && dm_bytes(&zip, e->name, name);
-    }
-
-    if (zip.size > UINT32_MAX) {
-        ok = false;
-    }
-
-    size_t central_size = zip.size - central;
-    ok = ok && zip_le(&zip, 0x06054b50, 4) && zip_le(&zip, 0, 2) && zip_le(&zip, 0, 2) &&
-         zip_le(&zip, (uint32_t)count, 2) && zip_le(&zip, (uint32_t)count, 2) &&
-         zip_le(&zip, (uint32_t)central_size, 4) && zip_le(&zip, (uint32_t)central, 4) &&
-         zip_le(&zip, 0, 2);
-
-    if (!ok) {
-        dm_bytes_free(&zip);
-        snprintf(error, cap, DM_TEXT_CANNOT_ASSEMBLE_EXPORT_ARCHIVE);
-        return false;
-    }
-
-    dm_bytes_free(out);
-    *out = zip;
-    return true;
 }
 
 /* Song beat of a channel's first note, or HUGE_VAL when it has none. */

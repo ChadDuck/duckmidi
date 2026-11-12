@@ -138,11 +138,11 @@ static int32_t prepare(ExportJob *j, const DmeContext *c, const DmeHost *host, c
     j->events = calloc((size_t)c->event_count + 1, sizeof(*j->events));
     free(j->stock_values);
     j->stock_values = malloc(((size_t)c->event_count + 1) * sizeof(*j->stock_values));
-    OotPortLayout *layout = calloc(1, sizeof(*layout));
+    EsPortLayout *layout = calloc(1, sizeof(*layout));
 
     if (!j->events || !j->stock_values || !layout ||
         !es_mapping_job_values(j->custom, 0, c, j->stock_values, error, (size_t)cap) ||
-        !oot_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
+        !es_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
         snprintf(error, (size_t)cap, "Cannot allocate the OoT timeline.");
         free(layout);
         return DME_NOMEM;
@@ -151,7 +151,7 @@ static int32_t prepare(ExportJob *j, const DmeContext *c, const DmeHost *host, c
     for (uint64_t i = 0; i < c->event_count; i++) {
         DmeEvent e = c->events[i];
 
-        if (e.status >= MIDI_STATUS && e.status < MIDI_SYSTEM && e.port < OOT_PORTS) {
+        if (e.status >= MIDI_STATUS && e.status < MIDI_SYSTEM && e.port < ES_PORTS) {
             e.status =
                 (e.status & MIDI_STATUS_MASK) | layout->out[e.status & MIDI_CHANNEL_MASK][e.port];
         }
@@ -171,16 +171,9 @@ static int32_t prepare(ExportJob *j, const DmeContext *c, const DmeHost *host, c
     q->ppq = c->ppq;
 
     if (j->loop_points && c->loop_points) {
-        uint64_t start = c->loop_points & DME_LOOP_START ? c->loop_start : 0;
-        uint64_t end = c->loop_points & DME_LOOP_END ? c->loop_end : 0;
+        uint64_t start, end;
 
-        if (end >= c->duration) {
-            end = 0;
-        }
-
-        if (start >= (end ? end : c->duration)) {
-            snprintf(error, (size_t)cap,
-                     "M64 - Loop Start must come before M64 - Loop End and the end of the song.");
+        if (!es_loop_region(c, &start, &end, error, (size_t)cap)) {
             return DME_INVALID;
         }
 

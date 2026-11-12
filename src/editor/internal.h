@@ -2,7 +2,7 @@
 #define DM_EDITOR_INTERNAL_H
 /* Shared editor implementation contracts; desktop entry points remain in editor.h. */
 #include "editor/editor.h"
-#include "preferences.h"
+#include "editor/preferences_file.h"
 #include <ctype.h>
 #include <errno.h>
 #include <math.h>
@@ -32,6 +32,8 @@ void ed_midi_input_finish(Editor *e, bool publish);
 void ed_midi_input_take(Editor *e);
 /* Writes pending MIDI recording to the project; see editor/midi_input.c for when it plays. */
 void ed_midi_input_flush(Editor *e);
+void ed_midi_input_bound_event(Editor *e, DmMidiInputEvent event);
+bool ed_midi_target_event(EdMidiTarget target);
 bool ed_midi_target_continuous(EdMidiTarget target);
 void ed_midi_target_id(EdMidiTarget target, char *id, size_t cap);
 bool ed_midi_target_parse(const char *id, EdMidiTarget *target);
@@ -51,11 +53,10 @@ bool ed_midi_binding_learning(const Editor *e, EdMidiTarget target);
 void ed_midi_bindings_reset_pickup(Editor *e);
 void ed_midi_bindings_flush(Editor *e, uint64_t now);
 void ed_midi_bindings_tick(Editor *e, uint64_t now);
-void ed_midi_binding_event(Editor *e, DmMidiInputEvent event, const char *device);
+void ed_midi_binding_event(Editor *e, DmMidiInputEvent event, const char *device, bool events_only);
 bool ed_mixer_apply(Editor *e, DmPortMix before, DmPortMix mix);
 size_t ed_automation_visible_first(Editor *e, double beat, bool overlay);
 uint32_t ed_port_color(Editor *e, unsigned port);
-uint32_t ed_palette_color(Editor *e, unsigned color);
 void ed_pattern_color_request(Editor *e, int pattern);
 void ed_pattern_color_dialog(Editor *e);
 unsigned ed_note_port(Editor *e);
@@ -154,20 +155,52 @@ typedef struct {
 } MidiRow;
 
 extern uint32_t ed_dialog_event;
-extern const char *ed_action_names[ACT_COUNT];
-extern const char *ed_gesture_names[GESTURE_COUNT];
+
+typedef enum {
+    ACTIONS_TRANSPORT,
+    ACTIONS_NAVIGATION,
+    ACTIONS_PATTERNS,
+    ACTIONS_ZOOM,
+    ACTIONS_WINDOWS,
+    ACTION_GROUPS
+} ActionGroup;
+
+enum {
+    ACTION_REPEATS = 1,   /* Runs again while its key is held. */
+    ACTION_WORKSPACE = 2, /* Acts on the playlist or pattern editor: off while a window is open. */
+    ACTION_PIANO_OFF = 4  /* Only while the computer keyboard piano is off. */
+};
+
+typedef struct {
+    const char *name;
+    SDL_Scancode key;
+    SDL_Keymod mods;
+    ActionGroup group;
+    unsigned flags;
+} ActionInfo;
+
+extern const ActionInfo ed_actions[ACT_COUNT];
+extern const GestureInfo ed_gestures[GESTURE_COUNT];
 bool ed_mouse_down(UiMouse mouse, int button);
 bool ed_gesture_pressed(Editor *e, Gesture gesture, UiMouse mouse);
-bool ed_gesture_allowed(MouseBinding binding);
+/* The gesture's modifier keys are down. The caller tests the button, drag or wheel it applies to.
+ */
+bool ed_gesture_held(const Editor *e, Gesture gesture, UiMouse mouse);
+/* Makes a copy of the mouse state report the gesture's modifiers as held or released. */
+void ed_gesture_set(const Editor *e, Gesture gesture, UiMouse *mouse, bool held);
 bool ed_gesture_capture(Editor *e, UiMouse mouse);
 bool ed_gesture_format(MouseBinding binding, char *out, size_t cap);
 bool ed_gesture_parse(const char *text, MouseBinding *binding);
 void ed_focus_edit(Editor *e, EditFocus focus);
+/* The timeline the focused section belongs to: the pattern editor for notes and events, otherwise
+   the playlist. */
+EditContext ed_context(const Editor *e);
+/* Moves focus to the timeline's own section unless a section of that timeline already has it. */
+void ed_focus_timeline(Editor *e, EditContext context);
 bool ed_velocity_editing(Editor *e);
 EditFocus ed_selection_focus(Editor *e);
 void ed_toggle_roll(Editor *e);
 void ed_reset_layout(Editor *e);
-float ed_events_section_height(Editor *e);
 int ed_channel_program(Editor *e, int channel);
 int ed_placed_program(Editor *e);
 void ed_preview_channel(Editor *e, int channel, bool placed);
@@ -190,6 +223,11 @@ DmPattern *ed_pattern(Editor *e);
 void ed_bind_pattern_channel(Editor *e);
 void ed_clear_history(DmBytes *b, int *count);
 bool ed_checkpoint(Editor *e);
+/* The right button may clear a selection or erase: Shift (context menus) is up and no loop,
+   curve or copy drag is using the mouse. */
+bool ed_right_free(const Editor *e, UiMouse mouse);
+/* Before removing an item under a held right button: the whole stroke is one undo step. */
+void ed_erase_step(Editor *e);
 /* Restores the project saved by the checkpoint just taken and drops it, for an edit that failed
    before completing; pass ed_checkpoint's result. */
 void ed_checkpoint_abandon(Editor *e, bool pushed);
@@ -204,7 +242,6 @@ void ed_commit(Editor *e);
 int ed_note_identity(const void *left, const void *right);
 void ed_undo(Editor *e, bool redo);
 void ed_add_recent(Editor *e, const char *path);
-uint32_t ed_shortcut_schema(void);
 void ed_preference_save(Editor *e);
 void ed_preference_load(Editor *e);
 void ed_dialog(Editor *e, int kind);
@@ -225,7 +262,6 @@ void ed_new_project(Editor *e);
 void ed_load(Editor *e, const char *path);
 void ed_combine_source_ports(Editor *e, bool all);
 void ed_request_combine(Editor *e, bool all);
-int ed_port_collisions(Editor *e, bool all, char *text, size_t capacity);
 void ed_combine_dialog(Editor *e);
 void ed_pending_execute(Editor *e);
 void ed_request(Editor *e, int ed_action, const char *path);
@@ -242,6 +278,9 @@ bool ed_point_editing(Editor *e);
 void ed_remove_placement(Editor *e, size_t index);
 void ed_delete_selection(Editor *e);
 void ed_select_all(Editor *e);
+/* Beats between a selection spanning first..end and its duplicate: whole beats, and whole bars
+   once the selection is a bar long when bars is set (notes and events). */
+double ed_duplicate_span(Editor *e, double first, double end, bool bars);
 void ed_duplicate_clips(Editor *e);
 void ed_duplicate_notes(Editor *e);
 void ed_deselect(Editor *e);
@@ -257,7 +296,6 @@ void ed_percussion_open(Editor *e);
 void ed_percussion_dialog(Editor *e);
 bool ed_percussion_key(Editor *e, const SDL_KeyboardEvent *key);
 void ed_percussion_save(Editor *e, bool project);
-void ed_percussion_accept(Editor *e);
 void ed_percussion_close(Editor *e);
 /* Incoming MIDI note to sounding note for the active percussion mapping. */
 void ed_percussion_midi_map(const Editor *e, uint8_t map[MIDI_KEYS]);
@@ -279,8 +317,9 @@ bool ed_reserved(SDL_Scancode key, SDL_Keymod mods);
 void ed_action_zoom(Editor *e, int a);
 void ed_action(Editor *e, int a);
 void ed_paste(Editor *e);
-void ed_clipboard(Editor *e, int mode);
+void ed_clipboard(Editor *e, ClipboardAction action);
 void ed_clipboard_note_bends(Editor *e, bool cut);
+int ed_pattern_keyboard_channel(Editor *e);
 int ed_keyboard_channel(Editor *e);
 void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat);
 void ed_shortcut(Editor *e, SDL_Scancode key, SDL_Keymod raw, bool repeat);
@@ -316,6 +355,10 @@ int ed_available_channel(Editor *e);
 void ed_mixer(Editor *e, float width, float height);
 const bool *ed_channel_ports(Editor *e, int channel);
 int ed_channels(Editor *e, int *list);
+#define ED_ZOOM_MIN .15f
+#define ED_ZOOM_MAX 8.0f
+/* Zooms a timeline with the wheel, keeping the beat x pixels from its left edge in place. */
+void ed_wheel_zoom(View *v, float wheel, float x);
 void ed_grid_scroll(Editor *e, View *v, UiRect canvas, float content_width, float content_height,
                     float row, bool consumed);
 void ed_horizontal_scroll(View *v, UiRect canvas, float total);
@@ -328,7 +371,6 @@ void ed_scrub_publish(Editor *e, double beat, int context, bool playing);
 bool ed_clear_loop(Editor *e);
 void ed_timeline_drag(Editor *e, UiRect r, View *v, float scale, float label, int context,
                       bool hovered);
-int ed_playlist_channels(Editor *e, int *list);
 int ed_place_pattern(Editor *e, int id, int encoded, double beat);
 void ed_split_note(DmPattern *p, size_t index, double at);
 void ed_split_clip(Editor *e, size_t index, double at);
@@ -337,15 +379,41 @@ void ed_marquee_begin(Editor *e, EditFocus focus, UiMouse mouse);
 bool ed_marquee_retains(Editor *e, size_t index, bool shift);
 UiRect ed_marquee_box(Editor *e, UiMouse mouse);
 bool ed_black_key(int step);
-void ed_playlist_label_text(Editor *e, UiRect r, float label, float row, const int *list, int i,
-                            float y, char *text, size_t capacity);
+
+/* Low bits preserve channel + lane * 16; the note row occupies a separate digit.
+   The reserved lane holds channel events. */
+enum {
+    ED_ROW_CHANNEL_EVENTS = DM_LANES + 1,
+    ED_ROW_LANES,
+    ED_PLAYLIST_ROWS = 16 * (DM_NOTE_ROWS + DM_LANES + 1)
+};
+
+static inline int ed_row_code(int channel, int lane, int note_row) {
+    return channel + 16 * (lane + ED_ROW_LANES * note_row);
+}
+
+static inline int ed_row_channel(int code) {
+    return code % 16;
+}
+
+static inline int ed_row_lane(int code) {
+    return code / 16 % ED_ROW_LANES;
+}
+
+static inline int ed_row_note(int code) {
+    return code / (16 * ED_ROW_LANES);
+}
+
+int ed_playlist_channels(Editor *e, int *list);
+bool ed_add_note_row(Editor *e, int channel);
+bool ed_remove_note_row(Editor *e, int channel);
 void ed_playlist_label_action(Editor *e, int channel, int lane, UiMouse mouse);
 void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *list, int i, float y,
                        UiMouse mouse);
 const char *ed_event_label(const DmBytes *m);
-void ed_song_event_open_bar(Editor *e, double beat, bool add);
+void ed_song_event_open_bar(Editor *e, double beat, bool add, int channel);
 double ed_song_event_bar(const Editor *e, double beat, double *start, double *end);
-size_t ed_song_event_rows(Editor *e, double start, double end);
+size_t ed_song_event_rows(Editor *e, double start, double end, int channel);
 void ed_resize_clip(Editor *e, DmClip *clip, double length);
 void ed_move_clip(Editor *e, DmClip *clip, int encoded, double beat);
 void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, const int *list,
@@ -356,8 +424,7 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
                        const int *list, int count, UiMouse mouse, int hit);
 void ed_playlist_remove(Editor *e, int hit);
 void ed_playlist(Editor *e, float width, float height);
-DmPitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat,
-                                    unsigned port);
+DmPitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double beat, unsigned port);
 DmPitchState ed_pitch_state(Editor *e, double beat);
 int ed_curve_id(Editor *e);
 int ed_nearest_note(Editor *e, double beat);
@@ -374,7 +441,6 @@ double ed_note_bend_offset(Editor *e, const DmNote *notes, size_t count, double 
 bool ed_automation_line_overlaps(Editor *e, double start, double end, int cc);
 void ed_follow_note_curves(Editor *e, int pattern, const DmNote *before, size_t count,
                            double previous_offset);
-bool ed_sounding(Editor *e, int key);
 void ed_resize_note_group(Editor *e, DmPattern *p, double delta, bool free);
 bool ed_gesture_moved(Editor *e, UiMouse mouse);
 void ed_begin_edit_move(Editor *e);
@@ -405,9 +471,9 @@ uint32_t ed_graph_color(Editor *e);
 bool ed_graph_controls(Editor *e, DmPattern *p, bool lfo);
 void ed_graph_resolution_controls(Editor *e);
 void ed_automation_selector(Editor *e);
-float ed_lane_step(UiRect lane);
+#define ED_LANE_STEP 20.0f /* Pixels between pitch rows in an event lane. */
 /* Raw value lanes (controllers, raw pitch bends and graph bars) have rows of a power-of-two value
-   step about ed_lane_step pixels apart in a lane `height` tall; values snap to them unless Alt is
+   step about ED_LANE_STEP pixels apart in a lane `height` tall; values snap to them unless Alt is
    held. 0 for the displayed lane when it has no value rows (pedals, program changes, pitch rows,
    velocity). */
 int ed_value_step(Editor *e, float height);
@@ -450,7 +516,6 @@ bool ed_copy_events(Editor *e, DmProject *to);
 bool ed_copy_note_bends(Editor *e, DmProject *to, double origin, bool *selected);
 void ed_copy_event_lane(Editor *e, bool all);
 void ed_paste_event_lane(Editor *e);
-void ed_event_types_used(Editor *e, const int *types, int count, bool *used);
 bool ed_event_type_used(Editor *e, int cc);
 void ed_paste_events(Editor *e, const DmProject *from, double at);
 bool ed_paste_note_bends(Editor *e, const DmProject *from, double at);
@@ -464,7 +529,6 @@ void ed_automation_pan_y(Editor *e, UiRect lane, float pixels);
 void ed_automation_preview(Editor *e, int id, UiRect box, uint32_t color, float x, float x_scale,
                            double offset);
 bool ed_transfer_automation(Editor *e);
-void ed_lfo_center_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse, bool hovered);
 void ed_event_editor(Editor *e, float width, float height);
 int ed_velocity_delta(DmPattern *p, int hit, int delta, const DmNote *source);
 bool ed_note_velocity_wheel(Editor *e, DmPattern *p, UiRect r, View *v, float label, float row,
@@ -514,6 +578,5 @@ bool ed_midi_apply_draft(Editor *e);
 void ed_midi_event_window(Editor *e);
 void ed_export_dialog(Editor *e);
 void ed_dialogs(Editor *e);
-void ed_welcome(Editor *e, float width, float body);
 
 #endif

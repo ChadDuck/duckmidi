@@ -36,9 +36,9 @@ endif()
 add_library(duckversion STATIC src/version.c)
 target_include_directories(duckversion PRIVATE "${DUCKMIDI_GENERATED}" src)
 add_dependencies(duckversion duckmidi_version)
-add_library(duckcore STATIC shared/spectrum.c src/core/core.c src/core/midi.c
-  src/core/import_ports.c src/core/project.c src/core/project_compat.c src/core/compress.c
-  src/core/instruments.c)
+add_library(duckcore STATIC shared/spectrum.c src/core/core.c src/core/files.c src/core/midi.c
+  src/core/import.c src/core/timeline.c src/core/schedule.c src/core/import_ports.c
+  src/core/project.c src/core/project_compat.c src/core/compress.c src/core/instruments.c)
 add_subdirectory(libraries/export_support)
 add_subdirectory(libraries/m64export)
 add_subdirectory(libraries/ootexport)
@@ -95,14 +95,16 @@ else()
   target_compile_definitions(duckmidi_io PRIVATE __LINUX_ALSA__)
   target_link_libraries(duckmidi_io PRIVATE ALSA::ALSA Threads::Threads)
 endif()
-add_executable(duckmidi src/main.c src/audio/audio.c src/export_plugins.c src/preferences.c
+add_executable(duckmidi src/main.c src/audio/audio.c src/audio/realtime.c src/audio/live.c
+  src/audio/publish.c src/audio/audition.c src/audio/jobs.c src/export_plugins.c
   src/update.c shared/pattern_generation.c
   src/editor/browser.c src/editor/dialogs.c src/editor/editor.c src/editor/event_graph.c
   src/editor/event_view.c src/editor/events.c src/editor/export.c src/editor/export_ui.c
   src/editor/generate.c src/editor/input.c src/editor/midi_bindings.c src/editor/midi_input.c
   src/editor/midi_inspector.c src/editor/note_ports.c src/editor/notes.c
   src/editor/pattern_colors.c src/editor/percussion.c src/editor/pitch.c src/editor/playlist.c
-  src/editor/preferences.c src/editor/project.c src/editor/samples.c src/editor/save.c
+  src/editor/preferences.c src/editor/preferences_file.c src/editor/project.c
+  src/editor/samples.c src/editor/save.c
   src/editor/selection.c src/editor/shell.c src/editor/song_events.c src/editor/state.c
   src/editor/timeline.c src/editor/transport.c src/editor/update.c)
 add_dependencies(duckmidi m64export ootexport sampletool)
@@ -189,9 +191,6 @@ if(BUILD_TESTING)
   file(MAKE_DIRECTORY "${PROJECT_SOURCE_DIR}/agents/reports/repository-history")
   add_test(NAME repository_history COMMAND repository_history_test
     "${PROJECT_SOURCE_DIR}/agents/reports/repository-history")
-  add_executable(sample_playback_spike EXCLUDE_FROM_ALL tests/sample_playback_spike.c)
-  target_link_libraries(sample_playback_spike PRIVATE fluidsynth SDL3::SDL3)
-  add_dependencies(sample_playback_spike duckmidi)
   add_executable(audio_export_test tests/audio_export_test.c)
   target_link_libraries(audio_export_test PRIVATE duckmedia SDL3::SDL3)
   add_dependencies(audio_export_test duckmidi)
@@ -218,7 +217,7 @@ if(BUILD_TESTING)
   add_executable(m64_install_test tests/m64_install_test.c tests/repository_install.c
     tests/native_repository_fixture.c libraries/m64export/plugin/ui.c
     libraries/m64export/plugin/review.c libraries/m64export/plugin/samples.c
-    libraries/m64export/plugin/memory.c libraries/m64export/plugin/ports.c
+    libraries/m64export/plugin/memory.c
     libraries/m64export/plugin/coopdx.c
     libraries/m64export/plugin/repository.c
     libraries/m64export/plugin/exporter.c)
@@ -226,7 +225,7 @@ if(BUILD_TESTING)
   add_executable(custom_m64_export_test tests/custom_m64_export_test.c
     libraries/m64export/plugin/ui.c libraries/m64export/plugin/review.c
     libraries/m64export/plugin/samples.c libraries/m64export/plugin/memory.c
-    libraries/m64export/plugin/ports.c libraries/m64export/plugin/coopdx.c
+    libraries/m64export/plugin/coopdx.c
     libraries/m64export/plugin/exporter.c libraries/m64export/plugin/repository.c)
   target_link_libraries(custom_m64_export_test PRIVATE m64export_static duck_export_support SDL3::SDL3)
   target_compile_options(custom_m64_export_test PRIVATE -UNDEBUG)
@@ -239,12 +238,12 @@ if(BUILD_TESTING)
   add_test(NAME oot_export_conversion COMMAND oot_export_test)
   add_executable(oot_install_test tests/oot_install_test.c tests/repository_install.c
     tests/native_repository_fixture.c libraries/ootexport/plugin/ui.c
-    libraries/ootexport/plugin/review.c libraries/ootexport/plugin/ports.c
+    libraries/ootexport/plugin/review.c
     libraries/ootexport/plugin/exporter.c)
   target_sources(oot_install_test PRIVATE libraries/ootexport/plugin/repository.c)
   add_executable(custom_oot_export_test tests/custom_m64_export_test.c
     libraries/ootexport/plugin/ui.c libraries/ootexport/plugin/review.c
-    libraries/ootexport/plugin/ports.c libraries/ootexport/plugin/exporter.c
+    libraries/ootexport/plugin/exporter.c
     libraries/ootexport/plugin/repository.c)
   target_compile_definitions(custom_oot_export_test PRIVATE CUSTOM_TEST_OOT)
   target_compile_options(custom_oot_export_test PRIVATE -UNDEBUG)

@@ -7,6 +7,7 @@
 
 static const struct {
     const char *id, *label;
+    int event;
 } targets[ED_MIDI_TARGETS] = {
     [ED_MIDI_VOLUME] = {"mixer.volume", DM_TEXT_VOLUME},
     [ED_MIDI_PAN] = {"mixer.pan", DM_TEXT_PAN},
@@ -21,14 +22,35 @@ static const struct {
     [ED_MIDI_REDO] = {"action.redo", DM_TEXT_REDO},
     [ED_MIDI_CHANNEL_PREVIOUS] = {"action.channel_previous", DM_TEXT_MIDI_BIND_PREVIOUS_CHANNEL},
     [ED_MIDI_CHANNEL_NEXT] = {"action.channel_next", DM_TEXT_MIDI_BIND_NEXT_CHANNEL},
+    [ED_MIDI_EVENT_BEND] = {"event.pitch_bend", DM_TEXT_PITCH_BEND, DM_EVENT_BEND},
+    [ED_MIDI_EVENT_MODULATION] = {"event.modulation", DM_TEXT_MODULATION, MIDI_CC_MODULATION},
+    [ED_MIDI_EVENT_EXPRESSION] = {"event.expression", DM_TEXT_EXPRESSION, MIDI_CC_EXPRESSION},
+    [ED_MIDI_EVENT_SUSTAIN] = {"event.sustain", DM_TEXT_SUSTAIN, MIDI_CC_SUSTAIN},
+    [ED_MIDI_EVENT_SOSTENUTO] = {"event.sostenuto", DM_TEXT_SOSTENUTO, MIDI_CC_SOSTENUTO},
+    [ED_MIDI_EVENT_PORTAMENTO] = {"event.portamento", DM_TEXT_PORTAMENTO, MIDI_CC_PORTAMENTO_TIME},
+    [ED_MIDI_EVENT_REVERB] = {"event.reverb", DM_TEXT_REVERB_SEND, MIDI_CC_REVERB},
+    [ED_MIDI_EVENT_CHORUS] = {"event.chorus", DM_TEXT_CHORUS_SEND, MIDI_CC_CHORUS},
+    [ED_MIDI_EVENT_BRIGHTNESS] = {"event.brightness", DM_TEXT_BRIGHTNESS, MIDI_CC_BRIGHTNESS},
+    [ED_MIDI_EVENT_RESONANCE] = {"event.resonance", DM_TEXT_RESONANCE, MIDI_CC_RESONANCE},
+    [ED_MIDI_EVENT_TREMOLO_DEPTH] = {"event.tremolo_depth", DM_TEXT_TREMOLO_DEPTH,
+                                     MIDI_CC_TREMOLO_DEPTH},
+    [ED_MIDI_EVENT_VIBRATO_RATE] = {"event.vibrato_rate", DM_TEXT_VIBRATO_RATE,
+                                    MIDI_CC_VIBRATO_RATE},
+    [ED_MIDI_EVENT_VIBRATO_DEPTH] = {"event.vibrato_depth", DM_TEXT_VIBRATO_DEPTH,
+                                     MIDI_CC_VIBRATO_DEPTH},
 };
 
 static bool mixer(EdMidiTarget target) {
     return target.kind < ED_MIDI_PLAY;
 }
 
+bool ed_midi_target_event(EdMidiTarget target) {
+    return target.kind >= ED_MIDI_EVENT_BEND && target.kind < ED_MIDI_TARGETS;
+}
+
 bool ed_midi_target_continuous(EdMidiTarget target) {
-    return target.kind == ED_MIDI_VOLUME || target.kind == ED_MIDI_PAN;
+    return target.kind == ED_MIDI_VOLUME || target.kind == ED_MIDI_PAN ||
+           ed_midi_target_event(target);
 }
 
 static bool same_target(EdMidiTarget a, EdMidiTarget b) {
@@ -99,6 +121,14 @@ void ed_midi_target_label(EdMidiTarget target, char *text, size_t cap) {
 }
 
 void ed_midi_source_label(const DmMidiBindingSource *source, char *text, size_t cap) {
+    if (source->kind == DM_MIDI_SOURCE_BEND || source->kind == DM_MIDI_SOURCE_PRESSURE) {
+        snprintf(
+            text, cap, DM_TEXT_MIDI_BIND_CHANNEL_SOURCE,
+            *source->device ? source->device : DM_TEXT_MIDI_BIND_ANY_DEVICE, source->channel + 1u,
+            source->kind == DM_MIDI_SOURCE_BEND ? DM_TEXT_PITCH_BEND : DM_TEXT_CHANNEL_PRESSURE);
+        return;
+    }
+
     snprintf(text, cap, DM_TEXT_MIDI_BIND_SOURCE,
              *source->device ? source->device : DM_TEXT_MIDI_BIND_ANY_DEVICE, source->channel + 1u,
              source->kind == DM_MIDI_SOURCE_CC ? DM_TEXT_MIDI_BIND_CC : DM_TEXT_MIDI_BIND_NOTE,
@@ -241,8 +271,9 @@ void ed_midi_binding_learn(Editor *e, EdMidiTarget target, bool any_device) {
 
     e->percussion_midi_listening = false;
     e->midi_learn = (EdMidiLearn){target, SDL_GetTicksNS(), any_device};
-    dm_midi_input_learn(e->midi_input, ed_midi_target_continuous(target) ? DM_MIDI_LEARN_CC
-                                                                         : DM_MIDI_LEARN_BUTTON);
+    dm_midi_input_learn(e->midi_input, ed_midi_target_event(target)        ? DM_MIDI_LEARN_EVENT
+                                       : ed_midi_target_continuous(target) ? DM_MIDI_LEARN_CC
+                                                                           : DM_MIDI_LEARN_BUTTON);
 }
 
 bool ed_midi_binding_learning(const Editor *e, EdMidiTarget target) {
@@ -463,7 +494,8 @@ static void action(Editor *e, EdMidiTargetKind kind) {
     }
 }
 
-void ed_midi_binding_event(Editor *e, DmMidiInputEvent event, const char *device) {
+void ed_midi_binding_event(Editor *e, DmMidiInputEvent event, const char *device,
+                           bool events_only) {
     if (event.flags & DM_MIDI_EVENT_DEVICE_RELEASE) {
         for (size_t i = 0; i < ed_midi_binding_count(e); ++i) {
             ed_midi_binding_at(e, i)->input[event.device] = (EdMidiPickup){0};
@@ -474,14 +506,19 @@ void ed_midi_binding_event(Editor *e, DmMidiInputEvent event, const char *device
 
     unsigned type = event.status & MIDI_STATUS_MASK;
     DmMidiBindingSource source = {
-        .kind = type == MIDI_CONTROL ? DM_MIDI_SOURCE_CC : DM_MIDI_SOURCE_NOTE,
+        .kind = type == MIDI_CONTROL            ? DM_MIDI_SOURCE_CC
+                : type == MIDI_PITCH_BEND       ? DM_MIDI_SOURCE_BEND
+                : type == MIDI_CHANNEL_PRESSURE ? DM_MIDI_SOURCE_PRESSURE
+                                                : DM_MIDI_SOURCE_NOTE,
         .channel = event.status & MIDI_CHANNEL_MASK,
-        .number = event.a,
+        .number = type == MIDI_PITCH_BEND || type == MIDI_CHANNEL_PRESSURE ? 0 : event.a,
     };
     snprintf(source.device, sizeof(source.device), "%s", device);
 
     if (event.flags & DM_MIDI_EVENT_LEARN) {
-        learn(e, event, source);
+        if (!events_only) {
+            learn(e, event, source);
+        }
         return;
     }
 
@@ -492,7 +529,36 @@ void ed_midi_binding_event(Editor *e, DmMidiInputEvent event, const char *device
             continue;
         }
 
-        if (mixer(binding->target)) {
+        if (events_only && !ed_midi_target_event(binding->target)) {
+            return;
+        }
+
+        if (ed_midi_target_event(binding->target)) {
+            unsigned value = type == MIDI_PITCH_BEND         ? event.a | (event.b << 7)
+                             : type == MIDI_CHANNEL_PRESSURE ? event.a
+                                                             : event.b;
+            int target = targets[binding->target.kind].event;
+
+            if (target == DM_EVENT_BEND) {
+                if (type != MIDI_PITCH_BEND) {
+                    value = value * MIDI_BEND_MAX / MIDI_DATA_MAX;
+                }
+
+                event.status = MIDI_PITCH_BEND | source.channel;
+                event.a = value & MIDI_DATA_MASK;
+                event.b = value >> 7;
+            } else {
+                if (type == MIDI_PITCH_BEND) {
+                    value = value * MIDI_DATA_MAX / MIDI_BEND_MAX;
+                }
+
+                event.status = MIDI_CONTROL | source.channel;
+                event.a = target;
+                event.b = value;
+            }
+
+            ed_midi_input_bound_event(e, event);
+        } else if (mixer(binding->target)) {
             if (ed_midi_target_continuous(binding->target) || pressed(binding, event)) {
                 mixer_event(e, binding, event);
             }

@@ -1,17 +1,9 @@
 #include "editor/internal.h"
+#define TEST_NAME "port UI"
+#include "test_common.h"
 
 /* Multi-port import and port combination, checked through the editor with a generated file. */
 void test_editor_combine(Editor *e, const char *label);
-static int checks;
-
-static void check(bool ok, const char *label) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL port UI: %s\n", label);
-        exit(1);
-    }
-}
 
 static void draw(Editor *e) {
     ui_frame();
@@ -82,12 +74,7 @@ static bool port_program(Editor *e, unsigned port, int program) {
 }
 
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("Port import validation", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "actual UI");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", "", true);
+    Editor *e = test_editor_open("Port import validation", (TestDesktop){0});
     const char *path = "agents/reports/2026-10-30-run/two-ports.mid";
     write_fixture(path);
     ed_load(e, path);
@@ -121,11 +108,6 @@ int main(void) {
     check(notes_on_port(e, 5) == 0 && notes_on_port(e, 0) == 3, "combine all merges every port");
 
     printf("PASS port UI: %d checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
     return 0;
 }

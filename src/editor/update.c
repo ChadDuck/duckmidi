@@ -120,7 +120,7 @@ void ed_update_dialog(Editor *e) {
 
     bool open = true;
 
-    if (ui_fitted_dialog(DM_TEXT_UPDATES, &open, 420)) {
+    if (ui_dialog(DM_TEXT_UPDATES, &open, (UiDialog){.width = 420})) {
         float width = ui_available().x;
         ui_wrap(DM_TEXT_UPDATE_QUESTION);
         static const char *const choices[] = {DM_TEXT_UPDATE_ON_LAUNCH, DM_TEXT_UPDATE_NEVER};
@@ -158,7 +158,7 @@ void ed_update_dialog(Editor *e) {
         status_section(e, width);
     }
 
-    ui_end();
+    ui_dialog_end();
 
     if (!open) {
         close_window(e);

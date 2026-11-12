@@ -18,6 +18,8 @@ extern "C" void test_midi_binding_controls(Editor *e, EdMidiTarget target) {
     preferences_frame(e);
     auto *window = ImGui::FindWindowByName(DM_TEXT_PREFERENCES);
     IM_ASSERT(window);
+    window->StateStorage.SetInt(window->GetID(DM_TEXT_MIDI_CONFIGURATION), 1);
+    preferences_frame(e);
     char id[48];
     ed_midi_target_id(target, id, sizeof(id));
     auto row = window->GetID((int)SDL_crc32(0, id, strlen(id)));
@@ -43,11 +45,16 @@ static void mixer_frame(Editor *e) {
     bool open = true;
     ui_frame();
 
-    if (ui_dialog("Mixer fixture", &open, 640, 400)) {
+    UiDialog dialog = {};
+    dialog.width = 640;
+    dialog.height = 400;
+    dialog.size = UI_RESIZABLE;
+
+    if (ui_dialog("Mixer fixture", &open, dialog)) {
         ed_mixer(e, 600, 300);
     }
 
-    ui_end();
+    ui_dialog_end();
     ui_render(e->renderer);
 }
 
@@ -86,6 +93,7 @@ extern "C" void test_midi_binding_clear_all(Editor *e) {
     preferences_frame(e);
     auto *window = ImGui::FindWindowByName(DM_TEXT_PREFERENCES);
     assert(window);
+    window->StateStorage.SetInt(window->GetID(DM_TEXT_MIDI_BIND_EVENTS), 0);
     ImGui::SetScrollY(window, window->ScrollMax.y);
     preferences_frame(e);
     auto confirm = [e, window](const char *choice) {

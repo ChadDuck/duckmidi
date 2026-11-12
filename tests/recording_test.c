@@ -3,14 +3,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define TEST_NAME "recording"
+#include "test_common.h"
 void test_editor_stop(Editor *e);
-
-static void check(bool ok, const char *label) {
-    if (!ok) {
-        fprintf(stderr, "FAIL recording: %s\n", label);
-        exit(1);
-    }
-}
 
 static void key(Editor *e, SDL_Scancode scancode, bool down) {
     SDL_Event event;
@@ -52,7 +47,6 @@ int main(void) {
     check(e != NULL, "allocate editor");
     editor_init(e, window, renderer, audio, "", "", true);
     editor_smoke(e);
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->pattern_mode = true;
     e->record = true;
@@ -143,7 +137,6 @@ int main(void) {
        pattern's beginning, keeping the beat within the bar where playing began. */
     int unplaced = dm_pattern_add(&e->project, "Unplaced take");
     e->selected_pattern = unplaced;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->pattern_mode = false;
     e->record = true;

@@ -5,8 +5,12 @@
 #include "m64export/m64export.h"
 #include "../../export_support/mapping.h"
 #include "../../export_support/sample.h"
+#include "../../export_support/ports.h"
 #include <stdbool.h>
 #include <stddef.h>
+
+/* Most mapping choices one list holds: the distinct GM presets plus the unused stock samples. */
+#define M64_CHOICE_LIMIT 128
 
 /* Games a package is made for, in the order of the Target dropdown. */
 enum { M64_GAME_SM64, M64_GAME_HACKERSM64, M64_GAME_COOPDX, M64_GAME_COUNT };
@@ -16,7 +20,7 @@ enum { M64_MEMORY_ENLARGE, M64_MEMORY_STOCK };
 
 typedef struct {
     EsMappings *custom;
-    char checkout[8192], checkout_identity[96];
+    char checkout[DME_PATH_LIMIT], checkout_identity[96];
     char sequence[97], bank[97];
     char custom_sequence[97];
     char project_sequence[97]; /* Custom sequence name taken from the project. */
@@ -30,31 +34,16 @@ typedef struct {
     uint64_t session;
     char program_names[128][80], drum_names[128][80];
     DmeField fields[12];
-    bool port_interference;
-    DmeChoice choices[128];
-    char choice_labels[128][220];
-    DmeMappingRow rows[2048];
-    char row_ids[2048][40], row_labels[2048][180];
+    DmeChoice choices[M64_CHOICE_LIMIT];
+    char choice_labels[M64_CHOICE_LIMIT][220];
+    DmeMappingRow rows[DME_ROW_LIMIT];
+    char row_ids[DME_ROW_LIMIT][40], row_labels[DME_ROW_LIMIT][180];
     double demand[16][128]; /* Highest C4-relative playback rate each used source needs. */
-    DmeChoice similar[2048][8];
-    unsigned similar_count[2048];
+    DmeChoice similar[DME_ROW_LIMIT][8];
+    unsigned similar_count[DME_ROW_LIMIT];
     bool similar_stale;
 } M64PluginUi;
 typedef struct M64ReviewUi M64ReviewUi;
-
-/* Where each colored port's channel messages play in M64; see ports.c. */
-#define M64_PORTS 128
-
-typedef struct {
-    uint8_t out[MIDI_CHANNELS][M64_PORTS];
-    bool merged, interference;
-    unsigned moved_count, conflict_count;
-    char notice[768];
-    char merges[768]; /* One "where: control" line per interfering merge. */
-} M64PortLayout;
-
-bool m64_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion,
-                     M64PortLayout *layout);
 
 typedef struct {
     M64Request request;
@@ -64,7 +53,7 @@ typedef struct {
     EsNativeSamples samples;
     M64Instrument custom_definitions[ES_NATIVE_REGIONS];
     EsRepository *repository; /* Borrowed only during a repository worker callback. */
-    char checkout[8192], checkout_identity[96];
+    char checkout[DME_PATH_LIMIT], checkout_identity[96];
     char sequence[97], bank[97];
     M64Instrument melodic[16 * 128], drums[128];
     char sample_bank[128];
@@ -90,6 +79,7 @@ unsigned m64_similar(const M64RangeIssue *issue, int original, const DmeChoice *
                      unsigned count, DmeChoice *out, unsigned capacity);
 void m64_review_free(M64PluginJob *);
 /* Shared SM64 sample choices; see samples.c. */
+bool m64_preset_valid(bool percussion, int index);
 int m64_canonical_preset(bool percussion, int index);
 void m64_preset_label(bool percussion, int index, char *out, size_t capacity);
 unsigned m64_preset_choices(bool percussion, DmeChoice *choices, char (*labels)[220]);
@@ -129,6 +119,9 @@ typedef struct {
 M64MemoryPlan m64_memory_plan(uint64_t required);
 char *m64_memory_guide(uint64_t required, const char *sequence);
 #define M64_HACKER_POOL 0x7400 /* HackerSM64 TEMPORARY_SEQ_MEM without EXPAND_AUDIO_HEAP */
+/* Temporary sequence memory the song needs, from the manifest; 0 when the target has no
+   sequence pool (sm64coopdx). */
+uint64_t m64_required_memory(const M64Result *result);
 char *m64_hacker_memory_guide(uint64_t required, const char *sequence);
 bool m64_hacker_expanded(const uint8_t *config, uint64_t size);
 bool m64_patch_hacker_data_h(const uint8_t *data, uint64_t size, uint64_t required, bool expanded,

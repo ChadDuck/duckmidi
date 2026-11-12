@@ -1,13 +1,15 @@
-/* Colored note ports in M64 export.
+/* Colored note ports in the native exporters.
 
-   M64 has one controller state per channel. A port that shares a channel with another moves to
+   A native channel has one controller state. A port that shares a channel with another moves to
    an unused channel when one is free, which keeps it exact. Drum ports stay on the drum channel,
    and ports beyond the free channels merge into their own channel. Merged ports interfere when
    they send different values for the same control, such as pitch bend or a controller; the
    export then keeps the latest value and the window warns about it. Other percussion channels
    (the context's percussion mask) merge into the drum channel, and a melodic channel 10 moves to
    a free channel. */
-#include "m64_plugin.h"
+#include "ports.h"
+#include "../../src/text/en.h"
+#include "../../include/duckmidi_midi.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,10 +57,10 @@ static void kind_name(int kind, char *out, size_t capacity) {
 }
 
 static bool channel_message(const DmeEvent *e) {
-    return e->status >= MIDI_STATUS && e->status < MIDI_SYSTEM && e->port < M64_PORTS;
+    return e->status >= MIDI_STATUS && e->status < MIDI_SYSTEM && e->port < ES_PORTS;
 }
 
-static void add_notice(M64PortLayout *layout, const char *format, unsigned a, unsigned b,
+static void add_notice(EsPortLayout *layout, const char *format, unsigned a, unsigned b,
                        unsigned c) {
     char *notice = layout->notice + strlen(layout->notice);
     size_t left = sizeof(layout->notice) - strlen(layout->notice);
@@ -71,10 +73,10 @@ static void add_notice(M64PortLayout *layout, const char *format, unsigned a, un
     snprintf(notice, left, format, a, b, c);
 }
 
-bool m64_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion,
-                     M64PortLayout *layout) {
+bool es_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion,
+                    EsPortLayout *layout) {
     memset(layout, 0, sizeof(*layout));
-    bool present[MIDI_CHANNELS][M64_PORTS] = {{false}}, channel_used[MIDI_CHANNELS] = {false};
+    bool present[MIDI_CHANNELS][ES_PORTS] = {{false}}, channel_used[MIDI_CHANNELS] = {false};
 
     for (uint64_t i = 0; i < count; ++i) {
         if (channel_message(&events[i])) {
@@ -90,12 +92,12 @@ bool m64_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion
     /* The lowest port keeps its channel; the others move to free channels in order. Other
        percussion parts play on the drum channel. */
     unsigned next_free = 0;
-    int groups = 0, group_of[MIDI_CHANNELS][M64_PORTS];
+    int groups = 0, group_of[MIDI_CHANNELS][ES_PORTS];
 
     for (unsigned ch = 0; ch < MIDI_CHANNELS; ++ch) {
         bool first = true, drums = (percussion >> ch) & 1;
 
-        for (unsigned port = 0; port < M64_PORTS; ++port) {
+        for (unsigned port = 0; port < ES_PORTS; ++port) {
             group_of[ch][port] = -1;
             layout->out[ch][port] = (uint8_t)ch;
 
@@ -147,7 +149,7 @@ bool m64_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion
     /* Merged ports: fingerprint each port's events per kind, then compare ports that share a
        channel. Identical streams do not interfere, and drum kit choices are ignored. */
     for (unsigned ch = 0; ch < MIDI_CHANNELS; ++ch) {
-        for (unsigned port = 0; port < M64_PORTS; ++port) {
+        for (unsigned port = 0; port < ES_PORTS; ++port) {
             unsigned out = layout->out[ch][port];
 
             if (present[ch][port] && out == ch) {
@@ -184,7 +186,7 @@ bool m64_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion
             unsigned first_ch = 0, first_port = 0;
 
             for (unsigned ch = 0; ch < MIDI_CHANNELS; ++ch) {
-                for (unsigned port = 0; port < M64_PORTS; ++port) {
+                for (unsigned port = 0; port < ES_PORTS; ++port) {
                     int group = group_of[ch][port];
                     uint64_t h = group >= 0 && layout->out[ch][port] == out
                                      ? hash[(size_t)group * KINDS + (size_t)kind]
@@ -231,5 +233,22 @@ bool m64_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion
     }
 
     free(hash);
+    return true;
+}
+
+bool es_loop_region(const DmeContext *context, uint64_t *start, uint64_t *end, char *error,
+                    size_t cap) {
+    *start = context->loop_points & DME_LOOP_START ? context->loop_start : 0;
+    *end = context->loop_points & DME_LOOP_END ? context->loop_end : 0;
+
+    if (*end >= context->duration) {
+        *end = 0;
+    }
+
+    if (*start >= (*end ? *end : context->duration)) {
+        snprintf(error, cap, "%s", DM_TEXT_EXPORT_LOOP_ORDER);
+        return false;
+    }
+
     return true;
 }

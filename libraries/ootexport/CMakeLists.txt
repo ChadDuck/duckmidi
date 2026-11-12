@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 project(ootexport LANGUAGES C)
 set(OOT_SOURCES src/catalog.c src/catalog_data.c src/sequence.c src/repository.c)
-set(OOT_PLUGIN_SOURCES plugin/ui.c plugin/review.c plugin/ports.c plugin/exporter.c plugin/repository.c)
+set(OOT_PLUGIN_SOURCES plugin/ui.c plugin/review.c plugin/exporter.c plugin/repository.c)
 add_library(ootexport SHARED ${OOT_SOURCES} ${OOT_PLUGIN_SOURCES})
 target_compile_features(ootexport PRIVATE c_std_17)
 target_include_directories(ootexport PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")

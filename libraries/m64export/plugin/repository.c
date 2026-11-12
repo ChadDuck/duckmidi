@@ -188,7 +188,7 @@ static bool allowed(const char *path) {
 
     if (suffix(path, ".bkp")) {
         size_t n = strlen(path);
-        char source[8192];
+        char source[DME_PATH_LIMIT];
 
         if (n >= sizeof(source)) {
             return false;
@@ -298,22 +298,6 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
     }
 
     es_paths_free(&all);
-    all = (EsPaths){0};
-    EsFile coop = {0};
-    ok = ok && es_repository_read(repo, M64_COOPDX_MARKER, &coop, error, cap);
-
-    if (ok && coop.exists) {
-        ok = es_repository_paths(repo, "mods", true, &all, error, cap);
-
-        for (size_t i = 0; ok && i < all.count; i++) {
-            if (allowed(all.items[i])) {
-                ok = es_paths_add(paths, all.items[i]);
-            }
-        }
-    }
-
-    es_paths_free(&all);
-    es_file_free(&coop);
     return ok;
 }
 
@@ -402,24 +386,11 @@ typedef struct {
 
 static bool current(EsRepository *, const EsPlan *, const char *, EsFile *, char *, size_t);
 
-/* Whether path exists in the desired state, without reading its content. */
-static bool present(EsRepository *repo, const EsPlan *plan, const char *path, bool *exists,
-                    char *error, size_t cap) {
-    const EsFile *file = plan ? es_plan_find(plan, path) : NULL;
-
-    if (file) {
-        *exists = file->exists;
-        return true;
-    }
-
-    return es_repository_baseline_exists(repo, path, exists, error, cap);
-}
-
 static bool resolve_sample(Scan *scan, const char *sample, char path[512], bool *exists,
                            char *error, size_t cap) {
     snprintf(path, 512, "sound/samples/%s/%s.aiff", scan->sample_bank, sample);
 
-    if (!present(scan->repo, scan->desired, path, exists, error, cap)) {
+    if (!es_plan_exists(scan->repo, scan->desired, path, exists, error, cap)) {
         return false;
     }
 
@@ -480,7 +451,7 @@ static bool resolve_sample(Scan *scan, const char *sample, char path[512], bool 
             for (unsigned i = 0; i < count; i++) {
                 snprintf(path, 512, "sound/samples/instruments/%s.aiff", names[i]);
 
-                if (!present(scan->repo, scan->desired, path, exists, error, cap)) {
+                if (!es_plan_exists(scan->repo, scan->desired, path, exists, error, cap)) {
                     return false;
                 }
 
@@ -914,7 +885,7 @@ static bool validate_registration(EsRepository *repo, EsPlan *plan, char *error,
     for (size_t i = 0; ok && i < paths.count; i++) {
         if (!strncmp(paths.items[i], "sound/sound_banks/", 18) && suffix(paths.items[i], ".json")) {
             bool exists = false;
-            ok = present(repo, plan, paths.items[i], &exists, error, cap) &&
+            ok = es_plan_exists(repo, plan, paths.items[i], &exists, error, cap) &&
                  (!exists || es_paths_add(&banks, paths.items[i]));
         }
     }
@@ -988,7 +959,7 @@ static bool validate_registration(EsRepository *repo, EsPlan *plan, char *error,
 
             if (strlen(name) == length && !strncmp(leaf + 1, name, length)) {
                 bool exists = false;
-                ok = present(repo, plan, path, &exists, error, cap);
+                ok = es_plan_exists(repo, plan, path, &exists, error, cap);
                 sources += exists;
 
                 if (ok && exists) {
@@ -1006,7 +977,7 @@ static bool validate_registration(EsRepository *repo, EsPlan *plan, char *error,
         yyjson_val *bank;
         yyjson_arr_foreach(value, b, size, bank) {
             const char *stem = yyjson_get_str(bank);
-            char path[8192];
+            char path[DME_PATH_LIMIT];
             bool found = false;
 
             if (stem && !strchr(stem, '/')) {
@@ -1057,7 +1028,7 @@ static bool validate_registration(EsRepository *repo, EsPlan *plan, char *error,
         }
 
         bool exists = false;
-        ok = present(repo, plan, path, &exists, error, cap);
+        ok = es_plan_exists(repo, plan, path, &exists, error, cap);
         size_t length = strlen(leaf + 1) - (suffix(path, ".m64") ? 4 : 2);
         char name[512];
 
@@ -1395,17 +1366,13 @@ static bool compose(M64PluginJob *j, EsRepository *repo, const M64Result *result
     bool ok = api->artifact_at(result, M64_SEQUENCE, &sequence) == M64_OK &&
               api->artifact_at(result, M64_BANK_JSON, &bank) == M64_OK &&
               api->artifact_at(result, M64_MANIFEST, &manifest) == M64_OK;
-    char *text = calloc((size_t)manifest.size + 1, 1);
+    uint64_t memory = m64_required_memory(result);
 
-    if (text) {
-        memcpy(text, manifest.data, (size_t)manifest.size);
+    if (!memory) { /* sm64coopdx: no sequence pool; record what a pool would need. */
+        memory = ((sequence.size + 15) & ~15ull) + 32;
     }
 
-    const char *need = text ? strstr(text, "\"temporary_sequence_bytes\":") : NULL;
-    uint64_t memory =
-        need ? strtoull(strchr(need, ':') + 1, NULL, 10) : ((sequence.size + 15) & ~15ull) + 32;
     snprintf(required, sizeof(required), "%llu", (unsigned long long)memory);
-    free(text);
     ok = ok && es_recipe_string(&recipes[0], "kind", "m64-song-1") &&
          es_recipe_string(&recipes[0], "sequence", j->sequence) &&
          es_recipe_string(&recipes[0], "bank", j->bank) &&

@@ -9,11 +9,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int channel_pattern(const DmProject *p, int channel) {
+static int channel_pattern(const DmProject *p, int channel, int row) {
     for (size_t i = 0; i < p->clip_count; ++i) {
         DmClip clip = p->clips[i];
 
-        if (clip.channel == channel && !clip.lane && !p->patterns[clip.pattern].kind) {
+        if (clip.channel == channel && clip.row == row && !clip.lane &&
+            !p->patterns[clip.pattern].kind) {
             return (int)i;
         }
     }
@@ -70,6 +71,8 @@ static bool merge_port(DmProject *to, const DmProject *from, uint8_t port) {
     /* Placements enable their channels, so remember which channels the arrangement already had. */
     for (int c = 0; c < 16; ++c) {
         had_channel[c] = to->channels[c].enabled;
+        to->note_rows[c] =
+            to->note_rows[c] > from->note_rows[c] ? to->note_rows[c] : from->note_rows[c];
     }
 
     /* Note patterns join the channel's existing pattern; the rest are copied. */
@@ -80,7 +83,7 @@ static bool merge_port(DmProject *to, const DmProject *from, uint8_t port) {
     for (size_t i = 0; i < from->clip_count && ok; ++i) {
         DmClip clip = from->clips[i];
         const DmPattern *source = &from->patterns[clip.pattern];
-        int existing = clip.lane || source->kind ? -1 : channel_pattern(to, clip.channel);
+        int existing = clip.lane || source->kind ? -1 : channel_pattern(to, clip.channel, clip.row);
 
         if (map[clip.pattern] < 0 && existing >= 0) {
             DmClip *target = &to->clips[existing];

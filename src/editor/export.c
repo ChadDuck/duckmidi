@@ -420,7 +420,7 @@ static bool artifact_path(const char *name, bool folders) {
         return artifact_name(name);
     }
 
-    if (!name || !*name || SDL_strnlen(name, 8192) >= 8192) {
+    if (!name || !*name || SDL_strnlen(name, DME_PATH_LIMIT) >= DME_PATH_LIMIT) {
         return false;
     }
 

@@ -25,29 +25,12 @@ void ed_add_recent(Editor *e, const char *path) {
     snprintf(e->recent[0], DM_PATH, "%s", path);
 }
 
-uint32_t ed_shortcut_schema(void) {
-    Editor defaults_editor = {0};
-    ed_defaults(&defaults_editor);
-    uint32_t hash = 2166136261u;
-
-    for (int i = 0; i < ACT_COUNT; ++i) {
-        hash = (hash ^ defaults_editor.bindings[i].key) * 16777619u;
-        hash = (hash ^ defaults_editor.bindings[i].mods) * 16777619u;
-
-        for (const char *s = ed_action_names[i]; *s; ++s) {
-            hash = (hash ^ (unsigned char)*s) * 16777619u;
-        }
-    }
-
-    return hash;
-}
-
 void ed_preference_save(Editor *e) {
     if (e->smoke) {
         return;
     }
 
-    if (!dm_preferences_save(e, ed_shortcut_schema(), ed_action_names)) {
+    if (!dm_preferences_save(e)) {
         ed_message(e, DM_TEXT_COULD_SAVE_CONFIGURATION);
     }
 }
@@ -60,7 +43,7 @@ void ed_preference_load(Editor *e) {
         return;
     }
 
-    if (!dm_preferences_load(e, ed_shortcut_schema())) {
+    if (!dm_preferences_load(e)) {
         return;
     }
 
@@ -247,6 +230,7 @@ static void reset_regions(Editor *e) {
     ++e->project_session;
     ed_export_reset_results(e);
     e->song_event = e->midi_events = false;
+    e->song_event_channel = -1;
     e->event_ruler_drag = false;
     e->midi_error[0] = 0;
     e->midi_event_index = -1;
@@ -262,6 +246,8 @@ static void reset_regions(Editor *e) {
     memset(e->loop_enabled, 0, sizeof(e->loop_enabled));
     memset(e->channel_expanded, 0, sizeof(e->channel_expanded));
     e->loop_drag = e->lane_settings = e->automation_browser = e->lfo_editing = false;
+    e->remove_note_row = false;
+    e->remove_note_row_channel = -1;
     dm_audio_loop(e->audio, false, 0, 0);
 }
 
@@ -278,11 +264,13 @@ void ed_new_project(Editor *e) {
     reset_regions(e);
     e->last_note_pattern_uid = 0;
     e->pattern_mode = false;
-    e->automation_cc = -2;
-    e->edit_focus = FOCUS_NONE;
+    e->automation_cc = DM_EVENT_BEND;
+    e->edit_focus = ed_context(e) == CONTEXT_ROLL       ? FOCUS_NOTES
+                    : ed_context(e) == CONTEXT_PLAYLIST ? FOCUS_PLAYLIST
+                                                        : FOCUS_NONE;
     e->roll_auto_hidden = e->automation_all = false;
     e->pattern_highlight = e->erase_active = false;
-    e->pan_context = 0;
+    e->pan_context = CONTEXT_NONE;
     e->last_automation_valid = false;
     e->automation_node = -1;
     e->context_note = -1;
@@ -328,7 +316,7 @@ void editor_open(Editor *e, const char *path) {
 void ed_load(Editor *e, const char *path) {
     reset_regions(e);
     e->pattern_mode = false;
-    e->automation_cc = -2;
+    e->automation_cc = DM_EVENT_BEND;
     e->automation_node = -1;
     e->context_note = -1;
     char font[DM_PATH];
@@ -421,7 +409,7 @@ static bool merged_port(const Editor *e, unsigned port, bool all) {
 
 /* Lists channels that have content on more than one of the ports being combined, including the
    default port. Returns the number of such channels. */
-int ed_port_collisions(Editor *e, bool all, char *text, size_t capacity) {
+static int ed_port_collisions(Editor *e, bool all, char *text, size_t capacity) {
     const DmProject *p = &e->project;
     bool used[16][DM_NOTE_PORTS] = {{false}};
 
@@ -536,27 +524,14 @@ void ed_combine_dialog(Editor *e) {
         return;
     }
 
+    static const char *const buttons[] = {DM_TEXT_COMBINE, DM_TEXT_CANCEL};
+    char text[256];
+    snprintf(text, sizeof(text), DM_TEXT_COMBINE_PORTS_WARNING, e->combine_channels);
     bool open = true;
 
-    if (ui_fixed_dialog(DM_TEXT_COMBINE_PORTS_TITLE, &open, 460, 180)) {
-        char text[256];
-        snprintf(text, sizeof(text), DM_TEXT_COMBINE_PORTS_WARNING, e->combine_channels);
-        ui_confirmation_message(text);
-        ui_center_row(212);
-
-        if (ui_button(DM_TEXT_COMBINE, 100, 0)) {
-            ed_combine_source_ports(e, e->combine_request == 2);
-            open = false;
-        }
-
-        ui_same();
-
-        if (ui_button(DM_TEXT_CANCEL, 100, 0)) {
-            open = false;
-        }
+    if (ui_confirm(DM_TEXT_COMBINE_PORTS_TITLE, &open, text, buttons, 2) == 0) {
+        ed_combine_source_ports(e, e->combine_request == 2);
     }
-
-    ui_end();
 
     if (!open) {
         e->combine_request = 0;

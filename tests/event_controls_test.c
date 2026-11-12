@@ -1,17 +1,9 @@
 #include "editor/internal.h"
+#define TEST_NAME "event controls"
+#include "test_common.h"
 
 extern void test_event_controls_ui(Editor *, void (*)(bool, const char *));
 extern void test_event_controls_audio(DmAudio *, void (*)(bool, const char *));
-static int checks;
-
-static void check(bool ok, const char *text) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL event controls: %s\n", text);
-        exit(1);
-    }
-}
 
 static int scheduled_value(const DmSchedule *s, int cc, double seconds) {
     int value = -1;
@@ -47,10 +39,9 @@ static void fixture(Editor *e, int cc, bool standalone) {
     e->automation_all = false;
     e->event_selection.size = e->event_drag.size = 0;
     e->last_automation_valid = false;
-    e->drag = 0;
-    e->context = 2;
+    e->drag = DRAG_NONE;
     e->edit_focus = FOCUS_EVENTS;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     e->project.channels[0].volume = 93;
     e->project.channels[0].pan = 37;
 
@@ -86,15 +77,56 @@ static void continuous(Editor *e) {
 
 static void imported_mix_controls(Editor *e) {
     static const uint8_t midi[] = {
-        'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0, 96,
-        'M', 'T', 'r', 'k', 0, 0, 0, 28,
-        0, MIDI_CONTROL, MIDI_CC_VOLUME, 93,
-        0, MIDI_CONTROL, MIDI_CC_PAN, 37,
-        0, MIDI_NOTE_ON, 60, 100,
-        96, MIDI_CONTROL, MIDI_CC_VOLUME, 45,
-        0, MIDI_CONTROL, MIDI_CC_PAN, 80,
-        96, MIDI_NOTE_OFF, 60, 0,
-        0, MIDI_META, MIDI_META_END, 0,
+        'M',
+        'T',
+        'h',
+        'd',
+        0,
+        0,
+        0,
+        6,
+        0,
+        0,
+        0,
+        1,
+        0,
+        96,
+        'M',
+        'T',
+        'r',
+        'k',
+        0,
+        0,
+        0,
+        28,
+        0,
+        MIDI_CONTROL,
+        MIDI_CC_VOLUME,
+        93,
+        0,
+        MIDI_CONTROL,
+        MIDI_CC_PAN,
+        37,
+        0,
+        MIDI_NOTE_ON,
+        60,
+        100,
+        96,
+        MIDI_CONTROL,
+        MIDI_CC_VOLUME,
+        45,
+        0,
+        MIDI_CONTROL,
+        MIDI_CC_PAN,
+        80,
+        96,
+        MIDI_NOTE_OFF,
+        60,
+        0,
+        0,
+        MIDI_META,
+        MIDI_META_END,
+        0,
     };
     fixture(e, MIDI_CC_VOLUME, false);
     char error[256] = {0};
@@ -145,7 +177,7 @@ static void switches_and_glide(Editor *e) {
             m.released = true;
             m.pos.x = 340;
             ed_automation_input(e, lane, &v, 80, m, true, -1);
-            check(e->project.automation_count == 3 && e->drag == 0,
+            check(e->project.automation_count == 3 && e->drag == DRAG_NONE,
                   "pedal drag creates bounded interval in both editors");
             DmSchedule s = {0};
             check(dm_schedule(&e->project, &s), "schedule pedal interval");
@@ -178,12 +210,12 @@ static void switches_and_glide(Editor *e) {
     /* Dragging past the click buffer draws a section; release places it. */
     UiMouse m = {.clicked = true, .left = true, .pos = {180, 180}};
     ed_automation_lane_click(e, lane, &v, 80, m, -1);
-    check(e->drag == 12 && e->project.automation_count == 0,
+    check(e->drag == DRAG_EVENT_PRESS && e->project.automation_count == 0,
           "a press waits to tell a click from a drag");
     m.clicked = false;
     m.pos = (UiPoint){200, 180};
     ed_automation_press(e, lane, &v, 80, m);
-    check(e->drag == 4, "moving past the buffer starts a line");
+    check(e->drag == DRAG_EVENT_LINE, "moving past the buffer starts a line");
     m.left = false;
     m.released = true;
     ed_automation_drag(e, lane, &v, 80, m);
@@ -245,7 +277,7 @@ static void program_change_points(Editor *e) {
     ed_automation_lane_click(e, lane, &v, 80,
                              (UiMouse){.clicked = true, .left = true, .pos = {140, 180}}, 0);
     ed_automation_node_drag(e, lane, &v, 80, (UiMouse){.released = true, .pos = {140, 180}});
-    e->drag = 0;
+    e->drag = DRAG_NONE;
     ed_shortcut(e, SDL_SCANCODE_DELETE, SDL_KMOD_NONE, false);
     check(e->project.automation_count == added - 1,
           "Delete removes a selected program change point");
@@ -256,15 +288,9 @@ static void program_change_points(Editor *e) {
 }
 
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("Event controls", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "hidden renderer");
-    char error[512];
-    DmAudio *audio = dm_audio_create(error, sizeof(error));
-    check(audio != NULL, "audio backend");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, audio, "", "", true);
+    Editor *e = test_editor_open("Event controls", (TestDesktop){.audio = true});
+    SDL_Renderer *r = e->renderer;
+    DmAudio *audio = e->audio;
     ui_frame();
     ui_root(0, 900);
     continuous(e);
@@ -277,11 +303,5 @@ int main(void) {
     test_event_controls_ui(e, check);
     test_event_controls_audio(audio, check);
     printf("PASS event controls: %d checks\n", checks);
-    editor_free(e);
-    free(e);
-    dm_audio_destroy(audio);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

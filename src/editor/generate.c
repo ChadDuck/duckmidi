@@ -173,7 +173,7 @@ bool ed_generate_apply(Editor *e) {
     dm_project_init(&job->result);
     e->selected_pattern = -1;
     e->selected_clip = -1;
-    e->drag = 0;
+    e->drag = DRAG_NONE;
     e->automation_node = -1;
     e->clip_drag.size = 0;
 
@@ -292,13 +292,17 @@ void ed_generate_dialog(Editor *e) {
 
     bool expanded = ed_generate_preview(e) != NULL;
 
-    if (ui_fixed_dialog(DM_TEXT_GENERATE_PATTERNS, &e->generate_window, expanded ? 950 : 540,
-                        expanded ? 650 : 210)) {
+    /* The question fits its contents; the preview needs room for its lists. */
+    UiDialog dialog = expanded
+                          ? (UiDialog){.width = 950, .height = 650, .size = UI_FIXED, .layout = 1}
+                          : (UiDialog){.width = 540};
+
+    if (ui_dialog(DM_TEXT_GENERATE_PATTERNS, &e->generate_window, dialog)) {
         ui_wrap(DM_TEXT_ANALYZE_SEPARATE_MIDI_ARRANGEMENT);
         bool busy = ed_generate_busy(e);
         ui_disabled(busy);
 
-        if (ui_button("Generate", 140, 0)) {
+        if (ui_button(DM_TEXT_GENERATE, 140, 0)) {
             ed_generate_start(e);
         }
 
@@ -306,7 +310,7 @@ void ed_generate_dialog(Editor *e) {
         ui_same();
         ui_disabled(busy || !ed_generate_preview(e) || e->record);
 
-        if (ui_button("Apply", 140, 0)) {
+        if (ui_button(DM_TEXT_APPLY, 140, 0)) {
             ed_generate_apply(e);
         }
 
@@ -338,5 +342,5 @@ void ed_generate_dialog(Editor *e) {
         }
     }
 
-    ui_end();
+    ui_dialog_end();
 }

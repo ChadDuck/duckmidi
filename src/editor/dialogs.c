@@ -11,7 +11,7 @@ static void rename_dialog(Editor *e) {
 
     bool open = true;
 
-    if (ui_content_dialog(DM_TEXT_RENAME_PATTERN, &open, 380)) {
+    if (ui_dialog(DM_TEXT_RENAME_PATTERN, &open, (UiDialog){.width = 380, .escape_closes = true})) {
         if (ui_appearing()) {
             ui_focus_next();
         }
@@ -26,7 +26,7 @@ static void rename_dialog(Editor *e) {
         }
     }
 
-    ui_end();
+    ui_dialog_end();
 
     if (!open) {
         e->rename_pattern = -1;
@@ -40,7 +40,8 @@ static void lane_dialog(Editor *e) {
 
     int c = e->lane_channel, lane = e->lane_index;
 
-    if (ui_dialog(DM_TEXT_AUTOMATION_LANE, &e->lane_settings, 420, 210)) {
+    if (ui_dialog(DM_TEXT_AUTOMATION_LANE, &e->lane_settings,
+                  (UiDialog){.width = 420, .escape_closes = true})) {
         if (lane) {
             if (ui_appearing()) {
                 ui_focus_next();
@@ -99,9 +100,9 @@ static void lane_dialog(Editor *e) {
             e->lane_settings = false;
             ed_commit(e);
         }
-
-        ui_end();
     }
+
+    ui_dialog_end();
 }
 
 static void audio_export_controls(Editor *e) {
@@ -110,7 +111,7 @@ static void audio_export_controls(Editor *e) {
     ui_disabled(dm_audio_busy(e->audio) || e->dialog_busy);
     ui_width(240);
 
-    if (ui_combo("Codec", dm_audio_codec_name(o->codec))) {
+    if (ui_combo(DM_TEXT_CODEC, dm_audio_codec_name(o->codec))) {
         for (int codec = 0; codec < DM_AUDIO_CODECS; codec++) {
             if (ui_select(dm_audio_codec_name(codec), o->codec == codec, 0, 0)) {
                 *o = dm_audio_options_default();
@@ -125,12 +126,12 @@ static void audio_export_controls(Editor *e) {
     if (o->codec == DM_AUDIO_WAV || o->codec == DM_AUDIO_FLAC) {
         ui_width(160);
 
-        if (ui_combo(DM_TEXT_BIT_DEPTH, o->bits == 24 ? "24-bit" : "16-bit")) {
-            if (ui_select("16-bit", o->bits == 16, 0, 0)) {
+        if (ui_combo(DM_TEXT_BIT_DEPTH, o->bits == 24 ? DM_TEXT_BITS_24 : DM_TEXT_BITS_16)) {
+            if (ui_select(DM_TEXT_BITS_16, o->bits == 16, 0, 0)) {
                 o->bits = 16;
             }
 
-            if (ui_select("24-bit", o->bits == 24, 0, 0)) {
+            if (ui_select(DM_TEXT_BITS_24, o->bits == 24, 0, 0)) {
                 o->bits = 24;
             }
 
@@ -167,7 +168,7 @@ static void audio_export_controls(Editor *e) {
             snprintf(label, sizeof(label), "%d kbps", o->bitrate);
             ui_width(160);
 
-            if (ui_combo("Bitrate", label)) {
+            if (ui_combo(DM_TEXT_BITRATE, label)) {
                 for (size_t i = 0; i < sizeof(rates) / sizeof(rates[0]); i++) {
                     snprintf(label, sizeof(label), "%d kbps", rates[i]);
 
@@ -183,7 +184,7 @@ static void audio_export_controls(Editor *e) {
 
     ui_text("48 kHz stereo, with a two-second release tail.");
 
-    if (ui_button("Export", ui_available().x, 0)) {
+    if (ui_button(DM_TEXT_EXPORT, ui_available().x, 0)) {
         ed_dialog(e, DIALOG_WAVE);
     }
 
@@ -220,8 +221,12 @@ void ed_export_dialog(Editor *e) {
 
     if (e->export_window) {
         UiRect export_rect = {0};
-        bool visible = ui_flexible_dialog(DM_TEXT_EXPORT, &e->export_window, 760, 400,
-                                          ed_export_history_visible(e), e->export_type);
+        bool visible = ui_dialog(DM_TEXT_EXPORT, &e->export_window,
+                                 (UiDialog){.width = 760,
+                                            .height = 400,
+                                            .size = UI_FLEXIBLE,
+                                            .drawer = ed_export_history_visible(e),
+                                            .layout = e->export_type});
         if (visible) {
             ui_text(DM_TEXT_EXPORT_COMPOSITION);
             ui_separator();
@@ -298,7 +303,7 @@ void ed_export_dialog(Editor *e) {
             export_rect = ui_window_rect();
         }
 
-        ui_end();
+        ui_dialog_end();
 
         if (e->export_window && export_rect.h > 0) {
             ed_export_history_panel(e, export_rect);
@@ -354,6 +359,15 @@ void ed_dialogs(Editor *e) {
         e->spectrum_tick = 0;
     }
 
+    if (e->remove_note_row) {
+        static const char *const buttons[] = {DM_TEXT_REMOVE_NOTE_ROW, DM_TEXT_CANCEL};
+
+        if (ui_confirm(DM_TEXT_REMOVE_NOTE_ROW_TITLE, &e->remove_note_row,
+                       DM_TEXT_REMOVE_NOTE_ROW_WARNING, buttons, 2) == 0) {
+            ed_remove_note_row(e, e->remove_note_row_channel);
+        }
+    }
+
     lane_dialog(e);
     rename_dialog(e);
     ed_pattern_color_dialog(e);
@@ -369,7 +383,7 @@ void ed_dialogs(Editor *e) {
     ed_update_dialog(e);
 
     if (e->about) {
-        if (ui_fixed_dialog(DM_TEXT_ABOUT_DUCKMIDI, &e->about, 560, 158)) {
+        if (ui_dialog(DM_TEXT_ABOUT_DUCKMIDI, &e->about, (UiDialog){.width = 560})) {
             about_spectrum(e);
             UiPoint at = ui_cursor();
             ui_piano_icon((UiRect){at.x + ui_available().x - 72, at.y + 2, 66, 36});
@@ -382,7 +396,7 @@ void ed_dialogs(Editor *e) {
             ui_text(DM_TEXT_DISTRIBUTED_UNDER_MIT_LICENSE);
         }
 
-        ui_end();
+        ui_dialog_end();
     }
 
     ed_export_dialog(e);
@@ -392,34 +406,17 @@ void ed_dialogs(Editor *e) {
     ed_export_review_dialog(e);
 
     if (e->confirm) {
+        static const char *const buttons[] = {DM_TEXT_SAVE, DM_TEXT_DISCARD, DM_TEXT_CANCEL};
         bool open = true;
+        int choice =
+            ui_confirm(DM_TEXT_UNSAVED_PROJECT, &open, DM_TEXT_SAVE_CHANGES_BEFORE, buttons, 3);
 
-        if (ui_fixed_dialog(DM_TEXT_UNSAVED_PROJECT, &open, 430, 160)) {
-            ui_confirmation_message(DM_TEXT_SAVE_CHANGES_BEFORE);
-            ui_center_row(316);
-
-            if (ui_button(DM_TEXT_SAVE, 100, 0)) {
-                e->confirm = false;
-                ed_save(e, false);
-            }
-
-            ui_same();
-
-            if (ui_button(DM_TEXT_DISCARD, 100, 0)) {
-                ed_pending_execute(e);
-            }
-
-            ui_same();
-
-            if (ui_button(DM_TEXT_CANCEL, 100, 0)) {
-                e->confirm = false;
-                e->pending_action = 0;
-            }
-        }
-
-        ui_end();
-
-        if (!open) {
+        if (choice == 0) {
+            e->confirm = false;
+            ed_save(e, false);
+        } else if (choice == 1) {
+            ed_pending_execute(e);
+        } else if (!open) {
             e->confirm = false;
             e->pending_action = 0;
         }

@@ -1,19 +1,13 @@
 #include "editor/internal.h"
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define TEST_NAME "editor"
+#include "test_common.h"
 static int checks;
 void test_editor_mouse(Editor *e, void (*check)(bool, const char *));
 void test_editor_updates(Editor *e, void (*check)(bool, const char *));
-
-static void check(bool condition, const char *label) {
-    ++checks;
-
-    if (!condition) {
-        fprintf(stderr, "FAIL editor: %s\n", label);
-        exit(1);
-    }
-}
 
 static void press(Editor *e, SDL_Scancode key, SDL_Keymod mods) {
     SDL_Event event;
@@ -35,7 +29,6 @@ static void frame(Editor *e) {
 }
 
 static void notes(Editor *e) {
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->selected_pattern = 0;
 
@@ -64,7 +57,6 @@ static void notes(Editor *e) {
 }
 
 static void clips(Editor *e) {
-    e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
 
     for (size_t i = 0; i < e->project.clip_count; ++i) {
@@ -227,9 +219,9 @@ static void automation_shortcuts(Editor *e) {
 static void test_shortcuts(Editor *e) {
     press(e, SDL_SCANCODE_F1, 0);
     check(e->piano, "keyboard piano enabled");
-    e->tool = 3;
+    e->tool = TOOL_DELETE;
     press(e, SDL_SCANCODE_1, 0);
-    check(e->tool == 3, "piano suppresses tool keys");
+    check(e->tool == TOOL_DELETE, "piano suppresses tool keys");
     press(e, SDL_SCANCODE_K, 0);
     check(!e->shortcuts, "piano suppresses letter shortcuts");
     press(e, SDL_SCANCODE_F1, 0);
@@ -240,9 +232,11 @@ static void test_shortcuts(Editor *e) {
     e->about = true;
     frame(e);
     press(e, SDL_SCANCODE_ESCAPE, 0);
+    frame(e);
     check(!e->about && e->shortcuts, "Escape closes topmost window");
     frame(e);
     press(e, SDL_SCANCODE_ESCAPE, 0);
+    frame(e);
     check(!e->shortcuts && e->running, "Escape closes floating window without quitting");
     note_pattern_shortcuts(e);
     automation_shortcuts(e);
@@ -257,7 +251,6 @@ static void test_shortcuts(Editor *e) {
         DmPattern *automation = ed_pattern(e);
         check(automation && automation->kind, "automation pattern for controller undo");
         automation->mode = mode;
-        e->context = 2;
         e->edit_focus = FOCUS_EVENTS;
         int before = automation->event, history = e->undo_count;
         e->automation_cc = before == 1 ? 7 : 1;
@@ -345,16 +338,90 @@ static void save_load(Editor *e) {
     check(!e->config, "project load bypasses import configuration");
 }
 
+static void grid_shades(Editor *e) {
+    ed_new_project(e);
+    uint32_t bar = ed_grid_color(e, 0), beat = ed_grid_color(e, 1), quarter = ed_grid_color(e, .25);
+    check((bar & 0xff) > (beat & 0xff) && (beat & 0xff) > (quarter & 0xff),
+          "beat lines sit between bar and quarter-beat lines");
+    check(ed_grid_color(e, 4) == bar, "every bar uses the bar shade");
+}
+
+static void save_fixture(Editor *e) {
+    ed_save_free(e);
+    ed_release_piano(e);
+    ed_clear_history(e->undo, &e->undo_count);
+    ed_clear_history(e->redo, &e->redo_count);
+    dm_project_free(&e->project);
+    dm_project_init(&e->project);
+    ++e->project_session;
+    int p = dm_pattern_add(&e->project, "Generated fixture");
+    assert(p == 0);
+    assert(dm_note_add(&e->project.patterns[0], (DmNote){0, 1, 60, 100, 0}));
+    e->active = true;
+    e->selected_pattern = e->selected_channel = e->pattern_channel = 0;
+    e->drag = DRAG_NONE;
+    e->tool = TOOL_SELECT;
+    e->percussion_window = false;
+}
+
+static void wait_save(Editor *e) {
+    uint64_t start = SDL_GetTicks();
+
+    while (ed_save_busy(e) && SDL_GetTicks() - start < 10000) {
+        ed_save_poll(e);
+        SDL_Delay(1);
+    }
+
+    assert(!ed_save_busy(e));
+}
+
+/* A save writes the snapshot taken when it started; later edits keep the project unsaved. */
+static void worker_saves(Editor *e) {
+    save_fixture(e);
+
+    for (int i = 1; i < 20000; i++) {
+        assert(dm_note_add(ed_pattern(e), (DmNote){i * .25, .125, (uint8_t)(48 + i % 24), 90, 0}));
+    }
+
+    ed_changed(e);
+    const char *path = "agents/reports/editor-save-snapshot.duck";
+    uint64_t start = SDL_GetPerformanceCounter();
+    assert(ed_save_to(e, path) && ed_save_busy(e));
+    printf("Save snapshot main-thread preparation: %.3f ms\n",
+           (SDL_GetPerformanceCounter() - start) * 1000.0 / SDL_GetPerformanceFrequency());
+    ed_pattern(e)->notes[0].velocity = 31;
+    ed_changed(e);
+    wait_save(e);
+    assert(e->dirty);
+    DmBytes data = {0};
+    char error[256];
+    DmProject copy;
+    dm_project_init(&copy);
+    assert(dm_read(path, &data, error, sizeof(error)) &&
+           dm_unpack(&copy, data.data, data.size, error, sizeof(error)));
+    assert(copy.patterns[0].count == 20000 && copy.patterns[0].notes[0].velocity == 100);
+    dm_project_free(&copy);
+    dm_bytes_free(&data);
+    assert(ed_save_to(e, path));
+    wait_save(e);
+    assert(!e->dirty);
+    ed_changed(e);
+    assert(ed_save_to(e, "AGENTS.md/cannot-save.duck"));
+    wait_save(e);
+    assert(e->dirty && strstr(e->status, "failed"));
+    assert(ed_save_to(e, path));
+    ed_save_cancel(e);
+    wait_save(e);
+    assert(dm_read(path, &data, error, sizeof(error)));
+    dm_project_init(&copy);
+    assert(dm_unpack(&copy, data.data, data.size, error, sizeof(error)));
+    dm_project_free(&copy);
+    dm_bytes_free(&data);
+    puts("PASS worker save snapshots, newer edits, output failure and cancellation atomicity");
+}
+
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL video initialization");
-    SDL_Window *window = SDL_CreateWindow("duckmidi validation", 1400, 900, SDL_WINDOW_HIDDEN);
-    check(window != NULL, "window");
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, "direct3d11");
-    check(renderer != NULL, "GPU renderer");
-    check(ui_init(window, renderer, NULL), "ImGui initialization");
-    Editor *e = calloc(1, sizeof(*e));
-    check(e != NULL, "editor allocation");
-    editor_init(e, window, renderer, NULL, "", "", true);
+    Editor *e = test_editor_open("duckmidi validation", (TestDesktop){0});
     editor_smoke(e);
     frame(e);
     test_editor_mouse(e, check);
@@ -364,15 +431,13 @@ int main(void) {
     placed_instrument(e);
     save_load(e);
     test_editor_updates(e, check);
+    grid_shades(e);
+    worker_saves(e);
+    editor_smoke(e);
     frame(e);
     printf("PASS editor: %d checks (editing, clipboard, undo/redo, shortcut context, Escape, "
            "save/drop)\n",
            checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    test_editor_close(e);
     return 0;
 }

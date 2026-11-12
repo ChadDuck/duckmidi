@@ -3,8 +3,7 @@
 static void grid_pan(Editor *e, View *v, UiRect canvas, UiMouse mouse, int context);
 static void ruler_ticks(Editor *e, UiRect r, View *v, float scale, float label);
 static void ruler_bars(Editor *e, UiRect r, View *v, float scale, float label);
-static void timeline_autoscroll(Editor *e, UiRect r, View *v, float scale, float label,
-                                UiMouse mouse, double length);
+static void timeline_autoscroll(UiRect r, View *v, float label, UiMouse mouse);
 static bool pattern_copy(Editor *e, DmClip clip);
 static double fallback_pattern_origin(Editor *e, int previous, int first);
 static void timeline_begin(Editor *e, UiRect r, float label, int context, bool hovered,
@@ -35,13 +34,19 @@ static void grid_pan(Editor *e, View *v, UiRect canvas, UiMouse mouse, int conte
     }
 
     if (!mouse.middle) {
-        e->pan_context = 0;
+        e->pan_context = CONTEXT_NONE;
         return;
     }
 
     ui_pan_cursor();
     v->scroll_x -= mouse.delta.x;
     v->scroll_y -= mouse.delta.y;
+}
+
+void ed_wheel_zoom(View *v, float wheel, float x) {
+    float old = v->zoom;
+    v->zoom = ed_clampf(v->zoom * powf(1.15f, wheel), ED_ZOOM_MIN, ED_ZOOM_MAX);
+    v->scroll_x = fmaxf(0, (v->scroll_x + x) * (v->zoom / old) - x);
 }
 
 void ed_grid_scroll(Editor *e, View *v, UiRect canvas, float content_width, float content_height,
@@ -53,12 +58,9 @@ void ed_grid_scroll(Editor *e, View *v, UiRect canvas, float content_width, floa
     }
 
     if (ui_hover() && ed_inside(m.pos, canvas) && m.wheel) {
-        if (m.ctrl || m.pos.y < canvas.y + 28) {
-            float old = v->zoom;
-            v->zoom = ed_clampf(v->zoom * powf(1.15f, m.wheel), .15f, 8);
-            v->scroll_x = fmaxf(0, (v->scroll_x + m.pos.x - canvas.x) * (v->zoom / old) -
-                                       (m.pos.x - canvas.x));
-        } else if (m.shift) {
+        if (ed_gesture_held(e, GESTURE_ZOOM, m) || m.pos.y < canvas.y + 28) {
+            ed_wheel_zoom(v, m.wheel, m.pos.x - canvas.x);
+        } else if (ed_gesture_held(e, GESTURE_SCROLL_ROWS, m)) {
             v->scroll_y -= m.wheel * row * 3;
         } else {
             v->scroll_x -= m.wheel * 70;
@@ -188,17 +190,13 @@ void ed_ruler(Editor *e, UiRect r, View *v, float scale, float label) {
     }
 }
 
-static void timeline_autoscroll(Editor *e, UiRect r, View *v, float scale, float label,
-                                UiMouse mouse, double length) {
-    (void)e;
+static void timeline_autoscroll(UiRect r, View *v, float label, UiMouse mouse) {
     float right = r.x + r.w;
     float outside = mouse.pos.x < r.x + label ? mouse.pos.x - r.x - label
                     : mouse.pos.x > right     ? mouse.pos.x - right
                                               : 0;
     float elapsed = ui_delta_time();
     v->scroll_x = fmaxf(0, v->scroll_x + outside * 8 * elapsed);
-    (void)length;
-    (void)scale;
 }
 
 static bool pattern_copy(Editor *e, DmClip clip) {
@@ -284,7 +282,7 @@ double ed_pattern_region_origin(Editor *e) {
 }
 
 void ed_scrub_publish(Editor *e, double beat, int context, bool playing) {
-    double absolute = context == 2 && !e->pattern_mode ? e->scrub_origin + beat : beat;
+    double absolute = context == CONTEXT_ROLL && !e->pattern_mode ? e->scrub_origin + beat : beat;
     e->cursor_beat[e->pattern_mode] = e->start_beat[e->pattern_mode] = absolute;
     ed_transport_publish(e, dm_beat_seconds(&e->project, absolute), playing);
 }
@@ -297,32 +295,33 @@ static void timeline_begin(Editor *e, UiRect r, float label, int context, bool h
         e->scrub_context = context;
         e->scrub_playing = dm_audio_playing(e->audio);
 
-        if (context == 1) {
+        if (context == CONTEXT_PLAYLIST) {
             e->pattern_mode = false;
         }
 
-        e->scrub_origin = context == 2 && !e->pattern_mode ? ed_pattern_seek_origin(e) : 0;
-        e->context = context;
+        e->scrub_origin =
+            context == CONTEXT_ROLL && !e->pattern_mode ? ed_pattern_seek_origin(e) : 0;
+        ed_focus_timeline(e, (EditContext)context);
         e->scrub_target = -1;
     }
 }
 
 static void timeline_region(Editor *e, UiRect r, View *v, float scale, float label, int context,
                             bool hovered, UiMouse mouse) {
-    int mode = context == 2;
+    int mode = context == CONTEXT_ROLL;
 
     if (hovered && mouse.right_clicked && mouse.pos.y < r.y + 28 && mouse.pos.x >= r.x + label) {
         ed_release_piano(e);
         e->loop_drag = true;
         e->loop_context = context;
-        e->loop_anchor = ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale, .25, mouse.alt);
+        e->loop_anchor = ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale, .25,
+                                 ed_gesture_held(e, GESTURE_FREE, mouse));
 
         if (!mode) {
             e->loop_anchor = fmin(e->loop_anchor, dm_duration(&e->project));
         }
 
         e->pattern_mode = mode;
-        e->context = context;
         ed_focus_edit(e, mode ? FOCUS_NOTES : FOCUS_PLAYLIST);
     }
 
@@ -334,10 +333,10 @@ static void timeline_region(Editor *e, UiRect r, View *v, float scale, float lab
         /* A pattern's length ends at its last note, often well before the visible ruler does,
            so pattern loops follow the mouse; song loops stay within the song. */
         double length = mode ? INFINITY : dm_duration(&e->project);
-        timeline_autoscroll(e, r, v, scale, label, mouse, length);
-        double beat = fmin(
-            length,
-            fmax(0, ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale, .25, mouse.alt)));
+        timeline_autoscroll(r, v, label, mouse);
+        double beat =
+            fmin(length, fmax(0, ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale, .25,
+                                         ed_gesture_held(e, GESTURE_FREE, mouse))));
         e->loop_start[mode] = fmin(e->loop_anchor, beat);
         e->loop_end[mode] = fmax(e->loop_anchor, beat);
         e->loop_enabled[mode] = e->loop_end[mode] - e->loop_start[mode] >= .001;
@@ -380,13 +379,14 @@ void ed_timeline_drag(Editor *e, UiRect r, View *v, float scale, float label, in
     }
 
     if (mouse.left) {
-        double length =
-            context == 2 && ed_pattern(e) ? ed_pattern_length(e) : dm_duration(&e->project);
-        timeline_autoscroll(e, r, v, scale, label, mouse, length);
-        double beat = ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale,
-                              context == 2 ? .25 : 1, mouse.alt);
+        double length = context == CONTEXT_ROLL && ed_pattern(e) ? ed_pattern_length(e)
+                                                                 : dm_duration(&e->project);
+        timeline_autoscroll(r, v, label, mouse);
+        double beat =
+            ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale,
+                    context == CONTEXT_ROLL ? .25 : 1, ed_gesture_held(e, GESTURE_FREE, mouse));
         beat = fmin(beat, length);
-        e->cursor_beat[context == 2] = e->start_beat[context == 2] = beat;
+        e->cursor_beat[context == CONTEXT_ROLL] = e->start_beat[context == CONTEXT_ROLL] = beat;
 
         if (fabs(beat - e->scrub_target) > 1e-8) {
             ed_scrub_publish(e, beat, context, true);
@@ -396,6 +396,6 @@ void ed_timeline_drag(Editor *e, UiRect r, View *v, float scale, float label, in
 
     if (mouse.released || !mouse.left) {
         e->scrub = false;
-        ed_scrub_publish(e, e->cursor_beat[context == 2], context, e->scrub_playing);
+        ed_scrub_publish(e, e->cursor_beat[context == CONTEXT_ROLL], context, e->scrub_playing);
     }
 }

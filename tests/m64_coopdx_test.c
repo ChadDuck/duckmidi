@@ -104,10 +104,10 @@ int main(void) {
     assert(contains(&sequence, c4, 2) && contains(&sequence, d4, 2));
     api->result_free(r);
 
-    /* An unpitched sample plays only in its own note range: GM 113 is cabasa, which instrument
+    /* An unpitched sample plays only in its own note range: GM 126 is cabasa, which instrument
        99 (decaying, like the mapping) plays above note 60, so C4 moves up to note 61 instead of
        playing a triangle. */
-    M64Event cabasa[] = {{0, 1, 0xC0, 113, 0},
+    M64Event cabasa[] = {{0, 1, 0xC0, 126, 0},
                          {0, 2, 0x90, 60, 100},
                          {48, 3, 0x80, 60, 0},
                          {48, 4, 0x90, 60, 100},

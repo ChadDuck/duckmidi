@@ -1,15 +1,7 @@
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool ok, const char *text) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL workspace_navigation: %s\n", text);
-        exit(1);
-    }
-}
-
+#include <assert.h>
+#define TEST_NAME "workspace_navigation"
+#include "test_common.h"
 void test_workspace_navigation_ui(Editor *e, void (*check)(bool, const char *));
 
 static void configuration(Editor *e) {
@@ -28,12 +20,12 @@ static void configuration(Editor *e) {
     snprintf(e->font_folder, DM_PATH, "D:\\Fonts\\");
     snprintf(e->output_name, sizeof(e->output_name), "My MIDI output");
     e->monitor = false;
-    check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names), "save INI configuration");
+    check(dm_preferences_save(e), "save INI configuration");
     e->accent = 0;
     e->background = 0;
     e->preferred_font[0] = e->midi_folder[0] = e->font_folder[0] = e->output_name[0] = 0;
     ed_defaults(e);
-    check(dm_preferences_load(e, ed_shortcut_schema()), "load generated INI");
+    check(dm_preferences_load(e), "load generated INI");
     check(e->accent == 0xff123456 && strstr(e->preferred_font, "\"quoted\"") &&
               !strcmp(e->midi_folder, "C:\\MIDI\\") && !strcmp(e->font_folder, "D:\\Fonts\\"),
           "color and independently escaped folder/font strings round trip");
@@ -63,8 +55,7 @@ static void configuration(Editor *e) {
     check(ed_gesture_format(plain, text, sizeof(text)) && !ed_gesture_parse(text, &parsed),
           "a plain left drag cannot be a gesture");
     ed_defaults(e);
-    check(dm_preferences_load(e, ed_shortcut_schema() + 1),
-          "other preferences survive shortcut schema change");
+    check(dm_preferences_load(e), "other preferences survive shortcut schema change");
     check(e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9 && e->accent == 0xff123456,
           "saved shortcuts survive a changed shortcut list");
 
@@ -79,8 +70,7 @@ static void configuration(Editor *e) {
           "write older INI");
     dm_bytes_free(&saved);
     ed_defaults(e);
-    check(dm_preferences_load(e, ed_shortcut_schema()) &&
-              e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9 &&
+    check(dm_preferences_load(e) && e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9 &&
               e->bindings[ACT_PREVIOUS_AUTOMATION].key == SDL_SCANCODE_KP_MINUS &&
               e->bindings[ACT_PREVIOUS_AUTOMATION].mods == SDL_KMOD_SHIFT,
           "older INI loads; actions missing from it keep their defaults");
@@ -94,18 +84,16 @@ static void configuration(Editor *e) {
     for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); ++i) {
         check(dm_write(path, bad[i], strlen(bad[i]), error, sizeof(error)),
               "write isolated invalid configuration");
-        check(!dm_preferences_load(e, ed_shortcut_schema()) && e->accent == 0xff123456,
+        check(!dm_preferences_load(e) && e->accent == 0xff123456,
               "invalid INI/schema rejected without partial application");
     }
 
     const char *valid = "[application]\nschema=3\nsoundfont=\"é🎹.sf2\"\n[future]\nvalues=unknown";
-    check(dm_write(path, valid, strlen(valid), error, sizeof(error)) &&
-              dm_preferences_load(e, ed_shortcut_schema()),
+    check(dm_write(path, valid, strlen(valid), error, sizeof(error)) && dm_preferences_load(e),
           "Unicode paths and unknown INI sections");
     check(!strcmp(e->preferred_font, "\xc3\xa9\xf0\x9f\x8e\xb9.sf2"), "Unicode stored as UTF-8");
     ed_defaults(e);
-    check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names),
-          "leave a valid isolated configuration example");
+    check(dm_preferences_save(e), "leave a valid isolated configuration example");
 }
 
 static void startup(SDL_Window *window, SDL_Renderer *renderer) {
@@ -167,6 +155,9 @@ static void launch_project(Editor *e) {
     editor_frame(e, 1400, 900);
     ui_render(e->renderer);
     ed_shortcut(e, SDL_SCANCODE_ESCAPE, SDL_KMOD_NONE, false);
+    ui_frame();
+    editor_frame(e, 1400, 900);
+    ui_render(e->renderer);
     check(!e->confirm && !e->pending_action && e->dirty && !*e->path,
           "cancel keeps the unsaved project");
     e->dialog_busy = true;
@@ -191,11 +182,9 @@ static void navigation(Editor *e) {
     e->piano = true;
     ed_shortcut(e, SDL_SCANCODE_GRAVE, SDL_KMOD_NONE, false);
     check(e->pattern_mode, "mode shortcut operates while keyboard piano is enabled");
-    e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
     ed_play(e);
     check(e->pattern_mode, "playlist focus does not override chosen pattern playback");
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     ed_shortcut(e, SDL_SCANCODE_GRAVE, SDL_KMOD_NONE, false);
     check(!e->pattern_mode, "mode shortcut selects song despite piano-roll focus");
@@ -247,17 +236,71 @@ static void selection(Editor *e) {
     mouse.left = false;
     mouse.released = true;
     ed_playlist_drag(e, (UiRect){0, 0, 600, 400}, &e->playlist_view, 64, 40, list, 3, mouse);
-    check(!e->dirty && e->drag == 0, "selection release ends without republishing playback");
+    check(!e->dirty && e->drag == DRAG_NONE,
+          "selection release ends without republishing playback");
+}
+
+static void copy_fixture(const char *source, const char *target) {
+    DmBytes data = {0};
+    char error[256];
+    assert(dm_read(source, &data, error, sizeof(error)) &&
+           dm_write(target, data.data, data.size, error, sizeof(error)));
+    dm_bytes_free(&data);
+}
+
+/* A packaged first launch opens the supplied project with the supplied SoundFont once; the next
+   launch keeps the font and does not reopen the project. */
+static void first_boot(Editor *e) {
+    assert(SDL_CreateDirectory("build/development/bundle-fixture") &&
+           SDL_CreateDirectory("build/development/bundle-fixture/assets") &&
+           SDL_CreateDirectory("build/development/bundle-fixture/projects"));
+    remove("build/development/bundle-fixture/duckmidi-settings.ini");
+    copy_fixture("assets/funky-beat.duck",
+                 "build/development/bundle-fixture/projects/funky-beat.duck");
+    /* The supplied arrangement may retain its author's local SoundFont path.
+       Keep this test independent of that installation and the real font. */
+    DmBytes sample = {0}, packed = {0};
+    DmProject project;
+    dm_project_init(&project);
+    char error[512];
+    assert(dm_read("build/development/bundle-fixture/projects/funky-beat.duck", &sample, error,
+                   sizeof(error)));
+    assert(dm_unpack(&project, sample.data, sample.size, error, sizeof(error)));
+    assert(project.pattern_count > 0 && project.clip_count > 0);
+    project.soundfont[0] = 0;
+    assert(dm_pack(&project, &packed) &&
+           dm_write("build/development/bundle-fixture/projects/funky-beat.duck", packed.data,
+                    packed.size, error, sizeof(error)));
+    dm_project_free(&project);
+    dm_bytes_free(&sample);
+    dm_bytes_free(&packed);
+    copy_fixture("agents/reports/generated-programs.sf2",
+                 "build/development/bundle-fixture/assets/TimGM6mb.sf2");
+    Editor *boot = calloc(1, sizeof(*boot));
+    assert(boot);
+    editor_init(boot, e->window, e->renderer, e->audio, "build/development/bundle-fixture/",
+                "build/development/bundle-fixture/", false);
+    assert(boot->active && boot->project.pattern_count > 0 &&
+           strstr(boot->preferred_font, "assets/TimGM6mb.sf2") &&
+           strstr(boot->project.soundfont, "bundle-fixture/assets/TimGM6mb.sf2") &&
+           strstr(boot->path, "projects/funky-beat.duck"));
+    editor_free(boot);
+    free(boot);
+    boot = calloc(1, sizeof(*boot));
+    assert(boot);
+    editor_init(boot, e->window, e->renderer, e->audio, "build/development/bundle-fixture/",
+                "build/development/bundle-fixture/", false);
+    assert(!boot->active && strstr(boot->preferred_font, "assets/TimGM6mb.sf2"));
+    editor_free(boot);
+    free(boot);
+    puts(
+        "PASS isolated production first boot loads supplied project/default font once; subsequent launch retains preferences without reopening sample");
 }
 
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL");
-    SDL_Window *w =
-        SDL_CreateWindow("workspace_navigation validation", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "hidden renderer");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", "", true);
+    Editor *e = test_editor_open("workspace_navigation validation", (TestDesktop){0});
+    SDL_Window *w = e->window;
+    SDL_Renderer *r = e->renderer;
     configuration(e);
     startup(w, r);
     launch_project(e);
@@ -267,11 +310,7 @@ int main(void) {
     e->background = 0xff0a0a0au;
     ed_message(e, "Ready");
     test_workspace_navigation_ui(e, check);
+    first_boot(e);
     printf("PASS workspace_navigation: %d checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

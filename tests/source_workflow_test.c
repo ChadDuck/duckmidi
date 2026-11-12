@@ -4,19 +4,10 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#define TEST_NAME "source_workflow"
+#include "test_common.h"
 // clang-format on
 #endif
-static int checks;
-
-static void check(bool ok, const char *text) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL source_workflow: %s\n", text);
-        exit(1);
-    }
-}
-
 void test_source_workflow_ui(Editor *, void (*)(bool, const char *));
 void test_source_workflow_focus_workspace(void);
 
@@ -34,8 +25,7 @@ static void fixture(Editor *e) {
     e->project.patterns[0].length = 4;
     e->roll = true;
     e->roll_auto_hidden = false;
-    e->tool = 0;
-    e->context = 2;
+    e->tool = TOOL_SELECT;
     e->edit_focus = FOCUS_EVENTS;
     e->automation_cc = 11;
     e->automation_node = -1;
@@ -43,7 +33,7 @@ static void fixture(Editor *e) {
     e->automation_raw = false;
     e->curve_drag = e->event_marquee = false;
     e->event_selection.size = 0;
-    e->drag = 0;
+    e->drag = DRAG_NONE;
 }
 
 static void preferences_check(Editor *e) {
@@ -56,20 +46,16 @@ static void preferences_check(Editor *e) {
     snprintf(e->recent[0], DM_PATH, "C:\\a b.mid");
     e->recent_count = 1;
     e->bindings[ACT_PLAY_MODE].key = SDL_SCANCODE_F9;
-    check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names), "INI save");
+    check(dm_preferences_save(e), "INI save");
     e->preferred_font[0] = 0;
     e->ui_size = 1;
     ed_defaults(e);
-    check(dm_preferences_load(e, ed_shortcut_schema()), "INI load");
+    check(dm_preferences_load(e), "INI load");
     check(e->ui_size == 2 && e->accent == 0xff123456 && !e->monitor, "scale/color/output persist");
     check(!strcmp(e->preferred_font, " C:\\fónts\\a % [x]=;# \"q\".sf2 ") &&
               !strcmp(e->recent[0], "C:\\a b.mid"),
           "UTF-8 punctuation, percent, backslashes and quoted strings roundtrip");
     check(e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9, "shortcut restored");
-    ed_defaults(e);
-    check(dm_preferences_load(e, ed_shortcut_schema() + 1) &&
-              e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9,
-          "changed shortcut list keeps saved shortcuts and other settings");
     const char *bad[] = {"{\"schema\":1}",
                          "[application]\nschema=1",
                          "[application]\nschema=3\nui_size=3",
@@ -82,26 +68,23 @@ static void preferences_check(Editor *e) {
     for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); ++i) {
         check(SDL_SaveFile(e->settings_path, bad[i], strlen(bad[i])), "write invalid isolated INI");
         e->ui_size = 1;
-        check(!dm_preferences_load(e, ed_shortcut_schema()) && e->ui_size == 1 &&
-                  e->accent == 0xff123456,
+        check(!dm_preferences_load(e) && e->ui_size == 1 && e->accent == 0xff123456,
               "invalid syntax/value/version rejected without partial application");
     }
 
     const char *valid =
         "; comment\r\n[application]\r\nschema=3\r\nsoundfont=\"é🎹.sf2\"\r\n[future]\r\nkey=value";
-    check(SDL_SaveFile(e->settings_path, valid, strlen(valid)) &&
-              dm_preferences_load(e, ed_shortcut_schema()),
+    check(SDL_SaveFile(e->settings_path, valid, strlen(valid)) && dm_preferences_load(e),
           "CRLF, comments, UTF-8 and unknown sections work without final newline");
     check(!strcmp(e->preferred_font, "é🎹.sf2"), "UTF-8 path decoded");
     memset(e->preferred_font, '%', DM_PATH - 1);
     e->preferred_font[DM_PATH - 1] = 0;
-    check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names) &&
-              dm_preferences_load(e, ed_shortcut_schema()) &&
+    check(dm_preferences_save(e) && dm_preferences_load(e) &&
               strlen(e->preferred_font) == DM_PATH - 1,
           "maximum encoded preference field roundtrips");
     e->preferred_font[0] = 0;
     e->ui_size = 1;
-    check(dm_preferences_save(e, ed_shortcut_schema(), ed_action_names), "leave valid example");
+    check(dm_preferences_save(e), "leave valid example");
 }
 
 static void preview_check(Editor *e) {
@@ -115,7 +98,7 @@ static void preview_check(Editor *e) {
     ed_playlist_label_action(e, 1, 0, (UiMouse){.clicked = true});
     check(e->preview_program == 128 && e->pattern_channel == 9,
           "unrelated channel selection preserves open preview/channel");
-    e->context = 2;
+    ed_focus_timeline(e, CONTEXT_ROLL);
     check(ed_keyboard_channel(e) == 9, "percussion editing routes to channel 10");
     e->project.channels[2].program = 40;
     e->selected_channel = 2;
@@ -124,7 +107,7 @@ static void preview_check(Editor *e) {
     check(e->preview_program == 40 && e->preview_source_channel == -1,
           "new unplaced pattern inherits selected instrument once");
     ed_playlist_label_action(e, 1, 0, (UiMouse){.clicked = true});
-    e->context = 2;
+    ed_focus_timeline(e, CONTEXT_ROLL);
     ed_keyboard_channel(e);
     check(e->pattern_channel == 1 && e->preview_program == ed_channel_program(e, 1),
           "unplaced preview follows the selected row's instrument");
@@ -231,12 +214,12 @@ static void source_checks(Editor *e) {
     double start, end;
     check(ed_song_event_bar(e, 1, &start, &end) == 1 && start == 0 && end == change,
           "a meter change ends the preceding bar at its exact beat");
-    check(ed_song_event_rows(e, start, end) == 6 && ed_midi_rows(e) == 11,
+    check(ed_song_event_rows(e, start, end, -1) == 5 && ed_midi_rows(e) == 11,
           "song list keeps composition events while MIDI Events includes system and routing");
     check(ed_song_event_bar(e, change, &start, &end) == 2 && start == change && end == change + 3 &&
-              ed_song_event_rows(e, start, end) == 2,
+              ed_song_event_rows(e, start, end, -1) == 2,
           "meter and following tempo belong to the new bar");
-    ed_song_event_open_bar(e, 1, false);
+    ed_song_event_open_bar(e, 1, false, -1);
     check(!e->song_event_add && e->midi_draft.data[1] == MIDI_META_TEMPO,
           "first bar opens on its effective initial tempo");
     int us = (int)llround(60000000.0 / 142);
@@ -246,7 +229,7 @@ static void source_checks(Editor *e) {
     check(ed_midi_apply_draft(e) && fabs(e->project.bpm - 142) < .001,
           "song event editor updates the effective initial tempo");
 
-    size_t count = ed_song_event_rows(e, 0, change);
+    size_t count = ed_song_event_rows(e, 0, change, -1);
     MidiRow *rows = (MidiRow *)e->midi_rows.data;
     int index = -1;
 
@@ -272,7 +255,7 @@ static void source_checks(Editor *e) {
               !memcmp(e->project.events[index].message.data + 3, updated, sizeof(updated) - 1) &&
               e->project.events[index].track == 2 && e->project.events[index].port == 1,
           "text edit preserves event position and source");
-    ed_song_event_open_bar(e, change, false);
+    ed_song_event_open_bar(e, change, false, -1);
     check(e->midi_draft.data[1] == MIDI_META_TIME, "meter starts the next bar's event list");
     index = e->midi_event_index;
     e->midi_draft.data[3] = 5;
@@ -304,13 +287,14 @@ static void song_program_repeats(Editor *e) {
     DmAutomation a = {.beat = 1, .type = MIDI_PROGRAM, .a = 4, .pattern = -1};
     check(dm_automation_add(&e->project, a) && dm_automation_add(&e->project, a),
           "create repeated song-level program automation");
-    check(ed_midi_rows(e) == 8 && ed_song_event_rows(e, 0, 4) == 6,
-          "Song event folds duplicate programs without changing the underlying project");
-    ed_song_event_open_bar(e, 1, false);
+    check(ed_midi_rows(e) == 8 && ed_song_event_rows(e, 0, 4, -1) == 0 &&
+              ed_song_event_rows(e, 0, 4, 0) == 5,
+          "Channel event folds duplicate programs without changing the underlying project");
+    ed_song_event_open_bar(e, 1, false, 0);
     e->midi_draft.data[1] = 12;
     check(ed_midi_apply_draft(e) && e->project.event_count == 5 &&
               e->project.events[0].message.data[1] == 12 &&
-              e->project.events[1].message.data[1] == 4 && ed_song_event_rows(e, 0, 4) == 6,
+              e->project.events[1].message.data[1] == 4 && ed_song_event_rows(e, 0, 4, 0) == 5,
           "editing a folded row replaces its copies and keeps the independent programs");
     e->song_event = false;
 }
@@ -402,7 +386,7 @@ static void drop_checks(Editor *e) {
     check(audio != NULL, "drop audio backend");
     e->audio = audio;
     e->preferences = true;
-    e->preferences_raise = true;
+    ui_dialog_raise("Preferences");
 
     for (int frame = 0; frame < 5; ++frame) {
         ui_frame();
@@ -445,12 +429,8 @@ static void drop_checks(Editor *e) {
 }
 
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL");
-    SDL_Window *w = SDL_CreateWindow("source_workflow", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *r = SDL_CreateRenderer(w, "direct3d11");
-    check(w && r && ui_init(w, r, NULL), "hidden renderer");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, w, r, NULL, "", "", true);
+    Editor *e = test_editor_open("source_workflow", (TestDesktop){0});
+    SDL_Renderer *r = e->renderer;
     preferences_check(e);
     ui_frame();
     ui_root(0, 900);
@@ -464,10 +444,5 @@ int main(void) {
     fixture(e);
     test_source_workflow_ui(e, check);
     printf("PASS source_workflow: %d focused checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(r);
-    SDL_DestroyWindow(w);
-    SDL_Quit();
+    test_editor_close(e);
 }

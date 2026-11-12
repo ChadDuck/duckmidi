@@ -8,8 +8,7 @@ static void automation_scroll(Editor *e, View *v, UiRect lane, UiMouse mouse, bo
 static bool event_setup(DmAutomation a);
 static int transfer_event(Editor *e, int source);
 static bool transfer_prepare(Editor *e, int source, bool *used);
-static void transfer_button(Editor *e, float right);
-static void event_clipboard_buttons(Editor *e, float right);
+static void event_header_buttons(Editor *e, float right, bool transfer);
 static double lfo_center_change(DmPattern *p, double value, bool free);
 static double lfo_bar(Editor *e);
 static void lfo_controls(Editor *e, DmPattern *p);
@@ -48,10 +47,10 @@ static void automation_grid(Editor *e, UiRect lane, View *v, float scale) {
         ui_line((UiPoint){x, lane.y}, (UiPoint){x, lane.y + lane.h}, ed_grid_color(e, beat), 1);
     }
 
-    if (e->automation_cc != -2 || ed_automation_raw(e)) {
+    if (e->automation_cc != DM_EVENT_BEND || ed_automation_raw(e)) {
         /* Value rows where drawn values snap, about as far apart as pitch rows; the top line is
            the maximum. */
-        int maximum = e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+        int maximum = e->automation_cc == DM_EVENT_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX;
         int step = ed_value_step(e, lane.h);
         e->event_lane_height = lane.h;
 
@@ -68,14 +67,13 @@ static void automation_grid(Editor *e, UiRect lane, View *v, float scale) {
         return;
     }
 
-    float shift = (e->automation_center - roundf(e->automation_center)) * ed_lane_step(lane);
+    float shift = (e->automation_center - roundf(e->automation_center)) * ED_LANE_STEP;
 
-    for (float y = lane.y + lane.h * .5f + shift; y < lane.y + lane.h; y += ed_lane_step(lane)) {
+    for (float y = lane.y + lane.h * .5f + shift; y < lane.y + lane.h; y += ED_LANE_STEP) {
         ui_line((UiPoint){lane.x, y}, (UiPoint){lane.x + lane.w, y}, GRID, 1);
     }
 
-    for (float y = lane.y + lane.h * .5f + shift - ed_lane_step(lane); y > lane.y;
-         y -= ed_lane_step(lane)) {
+    for (float y = lane.y + lane.h * .5f + shift - ED_LANE_STEP; y > lane.y; y -= ED_LANE_STEP) {
         ui_line((UiPoint){lane.x, y}, (UiPoint){lane.x + lane.w, y}, GRID, 1);
     }
 
@@ -94,13 +92,13 @@ static void automation_axis(Editor *e, UiPoint at, UiRect lane) {
                                   DM_TEXT_F_SHARP, DM_TEXT_G,       DM_TEXT_G_SHARP,
                                   DM_TEXT_A,       DM_TEXT_A_SHARP, DM_TEXT_B};
 
-    if (e->automation_cc == -2 && !ed_automation_raw(e)) {
+    if (e->automation_cc == DM_EVENT_BEND && !ed_automation_raw(e)) {
         int center = (int)roundf(e->automation_center);
         int visible = (int)ceilf(lane.h / 40) + 1;
 
         for (int offset = -visible; offset <= visible; ++offset) {
             int key = center + offset;
-            float y = lane.y + lane.h * .5f - (key - e->automation_center) * ed_lane_step(lane);
+            float y = lane.y + lane.h * .5f - (key - e->automation_center) * ED_LANE_STEP;
 
             if (key < 0 || key > 127 || y < lane.y + 16 || y > lane.y + lane.h - 12) {
                 continue;
@@ -112,9 +110,9 @@ static void automation_axis(Editor *e, UiPoint at, UiRect lane) {
         }
     } else {
         ui_label((UiPoint){at.x + 4, lane.y + 2}, DIM,
-                 e->automation_cc == -2 ? DM_TEXT_BEND_MAXIMUM : DM_TEXT_VALUE_MAXIMUM);
+                 e->automation_cc == DM_EVENT_BEND ? DM_TEXT_BEND_MAXIMUM : DM_TEXT_VALUE_MAXIMUM);
         ui_label((UiPoint){at.x + 4, lane.y + lane.h - 15}, DIM, DM_TEXT_VALUE_MINIMUM);
-        int maximum = e->automation_cc == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+        int maximum = e->automation_cc == DM_EVENT_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX;
         int step = ed_value_step(e, lane.h);
         float spacing = step * (lane.h - 8) / maximum;
 
@@ -141,7 +139,7 @@ static void automation_value_input(Editor *e) {
 
     int index = e->automation_node;
 
-    if ((e->automation_cc == -2 && !ed_automation_raw(e)) || index < 0 ||
+    if ((e->automation_cc == DM_EVENT_BEND && !ed_automation_raw(e)) || index < 0 ||
         (size_t)index >= e->project.automation_count) {
         return;
     }
@@ -166,9 +164,8 @@ static void automation_value_input(Editor *e) {
 }
 
 void ed_automation_pan_y(Editor *e, UiRect lane, float pixels) {
-    if (e->automation_cc == -2 && !ed_automation_raw(e)) {
-        e->automation_center =
-            ed_clampf(e->automation_center + pixels / ed_lane_step(lane), 0, 127);
+    if (e->automation_cc == DM_EVENT_BEND && !ed_automation_raw(e)) {
+        e->automation_center = ed_clampf(e->automation_center + pixels / ED_LANE_STEP, 0, 127);
     }
 }
 
@@ -176,20 +173,20 @@ static void automation_scroll(Editor *e, View *v, UiRect lane, UiMouse mouse, bo
     bool lfo = ed_pattern(e) && ed_pattern(e)->kind && ed_pattern(e)->mode;
 
     if (hovered && mouse.wheel) {
-        if (!mouse.shift && !lfo) {
+        if (!ed_gesture_held(e, GESTURE_SCROLL_ROWS, mouse) && !lfo) {
             v->scroll_x = fmaxf(0, v->scroll_x - mouse.wheel * 60);
         } else {
-            ed_automation_pan_y(e, lane, mouse.wheel * ed_lane_step(lane) * 3);
+            ed_automation_pan_y(e, lane, mouse.wheel * ED_LANE_STEP * 3);
         }
     }
 
     if (mouse.middle_clicked && hovered) {
-        e->pan_context = 3;
+        e->pan_context = CONTEXT_EVENT_EDITOR;
     }
 
-    if (e->pan_context == 3) {
+    if (e->pan_context == CONTEXT_EVENT_EDITOR) {
         if (!mouse.middle) {
-            e->pan_context = 0;
+            e->pan_context = CONTEXT_NONE;
         } else {
             ui_pan_cursor();
             v->scroll_x = fmaxf(0, v->scroll_x - mouse.delta.x);
@@ -214,7 +211,7 @@ void ed_automation_preview(Editor *e, int id, UiRect box, uint32_t color, float 
     if (p->mode) {
         /* One sample per pixel, as the LFO view samples, so fast waves are not aliased. */
         int samples = (int)fminf(8192, ceilf(box.w));
-        double maximum = p->event == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+        double maximum = p->event == DM_EVENT_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX;
         UiPoint previous = {0};
 
         for (int i = 0; i <= samples; ++i) {
@@ -271,7 +268,7 @@ static int transfer_event(Editor *e, int source) {
         }
 
         if (event == -999) {
-            event = -2;
+            event = DM_EVENT_BEND;
         }
 
         if (a.type == MIDI_CONTROL && !event_setup(a)) {
@@ -378,38 +375,26 @@ bool ed_transfer_automation(Editor *e) {
     return true;
 }
 
-static void transfer_button(Editor *e, float right) {
-    UiPoint next = ui_cursor();
+/* Copy, Paste and, beside them, Transfer Automation sit together at the right edge of the
+   header row, wrapping to a new row when the row has no room for them. */
+static void event_header_buttons(Editor *e, float right, bool transfer) {
+    const float button = 78, transfer_width = 180;
+    float gap = ui_item_spacing_x();
+    float total = button * 2 + gap + (transfer ? gap + transfer_width : 0);
     ui_same();
     UiPoint row = ui_cursor();
 
-    if (row.x + 180 > right) {
+    if (row.x + total > right) {
         ui_newline();
         row = ui_cursor();
     }
 
-    ui_position(fmaxf(row.x, right - 180), row.y);
-
-    if (ui_button(DM_TEXT_TRANSFER_AUTOMATION, 180, 0)) {
-        ed_transfer_automation(e);
-    }
-
-    UiPoint after = ui_cursor();
-    ui_position(next.x, fmaxf(next.y, after.y));
-}
-
-static void event_clipboard_buttons(Editor *e, float right) {
-    ui_same();
-
-    if (ui_cursor().x + 164 > right) {
-        ui_newline();
-    }
-
-    bool all = ui_mouse().shift;
+    ui_position(fmaxf(row.x, right - total), row.y);
+    bool all = ed_gesture_held(e, GESTURE_APPLY_ALL, ui_mouse());
     bool points = !ed_pattern(e)->kind || !ed_pattern(e)->mode;
     ui_disabled(!points);
 
-    if (ui_button(all ? DM_TEXT_COPY_ALL : DM_TEXT_COPY, 78, 0)) {
+    if (ui_button(all ? DM_TEXT_COPY_ALL : DM_TEXT_COPY, button, 0)) {
         ed_copy_event_lane(e, all);
     }
 
@@ -417,17 +402,25 @@ static void event_clipboard_buttons(Editor *e, float right) {
     ui_same();
     ui_disabled(!points || !e->event_clipboard.size);
 
-    if (ui_button(DM_TEXT_PASTE, 78, 0)) {
+    if (ui_button(DM_TEXT_PASTE, button, 0)) {
         ed_paste_event_lane(e);
     }
 
     ui_disabled_end();
+
+    if (transfer) {
+        ui_same();
+
+        if (ui_button(DM_TEXT_TRANSFER_AUTOMATION, transfer_width, 0)) {
+            ed_transfer_automation(e);
+        }
+    }
 }
 
 static double lfo_center_change(DmPattern *p, double value, bool free) {
-    double snapped = dm_lfo_center_snap(value, p->event == -2, free);
+    double snapped = dm_lfo_center_snap(value, p->event == DM_EVENT_BEND, free);
 
-    if (p->event == -2) {
+    if (p->event == DM_EVENT_BEND) {
         p->pitch_center = snapped;
     } else {
         p->center = snapped;
@@ -446,10 +439,10 @@ static double lfo_bar(Editor *e) {
 static void lfo_controls(Editor *e, DmPattern *p) {
     const char *names[] = {DM_TEXT_CENTER, DM_TEXT_SPEED,       DM_TEXT_TENSION,
                            DM_TEXT_SKEW,   DM_TEXT_PULSE_WIDTH, DM_TEXT_AMOUNT};
-    double *center = p->event == -2 ? &p->pitch_center : &p->center;
+    double *center = p->event == DM_EVENT_BEND ? &p->pitch_center : &p->center;
     double *values[] = {center, &p->speed, &p->tension, &p->skew, &p->pulse, &p->amount};
     double lows[] = {0, .03125, -1, -1, .05, 0}, highs[] = {127, 16, 1, 1, .95, 1},
-           ed_defaults[] = {p->event == -2 ? p->reference : 64, 1, 0, 0, .5, .5};
+           ed_defaults[] = {p->event == DM_EVENT_BEND ? p->reference : 64, 1, 0, 0, .5, .5};
     UiPoint at = ui_cursor();
     float width = ui_available().x;
     int columns = (int)ed_clampf(floorf((width - 68) / 68), 1, 6);
@@ -472,10 +465,12 @@ static void lfo_controls(Editor *e, DmPattern *p) {
             e->lfo_editing = true;
 
             if (i == 0) {
-                value = lfo_center_change(p, value, ui_mouse().alt || ui_mouse().middle_clicked);
+                value = lfo_center_change(p, value,
+                                          ed_gesture_held(e, GESTURE_FREE, ui_mouse()) ||
+                                              ui_mouse().middle_clicked);
             }
 
-            if (i == 1 && !ui_mouse().alt) {
+            if (i == 1 && !ed_gesture_held(e, GESTURE_FREE, ui_mouse())) {
                 value = dm_lfo_speed_snap(value, lfo_bar(e));
             }
 
@@ -506,15 +501,15 @@ static void lfo_controls(Editor *e, DmPattern *p) {
 
 static UiPoint lfo_point(Editor *e, DmPattern *p, UiRect lane, View *v, float scale, double beat) {
     double wave = dm_lfo(p, beat),
-           value =
-               p->event == -2 ? dm_lfo_value(p, beat) : fmax(0, fmin(127, p->center + 63.5 * wave)),
-           maximum = p->event == -2 ? MIDI_BEND_MAX : MIDI_DATA_MAX;
+           value = p->event == DM_EVENT_BEND ? dm_lfo_value(p, beat)
+                                             : fmax(0, fmin(127, p->center + 63.5 * wave)),
+           maximum = p->event == DM_EVENT_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX;
     float y = lane.y + lane.h - 8 - (float)(value / maximum) * (lane.h - 8);
 
-    if (p->event == -2 && !ed_automation_raw(e)) {
+    if (p->event == DM_EVENT_BEND && !ed_automation_raw(e)) {
         y = lane.y + lane.h * .5f -
             (float)(fmax(0, fmin(127, p->pitch_center + 2 * wave)) - e->automation_center) *
-                ed_lane_step(lane);
+                ED_LANE_STEP;
     }
 
     return (UiPoint){lane.x + (float)beat * scale - v->scroll_x, y};
@@ -536,12 +531,12 @@ static void lfo_plot(Editor *e, DmPattern *p, UiRect lane, View *v, float scale)
     }
 }
 
-void ed_lfo_center_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse, bool hovered) {
+static void ed_lfo_center_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse, bool hovered) {
     if (hovered && mouse.clicked && ed_inside(mouse.pos, lane)) {
         e->lfo_center_drag = true;
         e->edit_moved = false;
         e->lfo_center_y = mouse.pos.y;
-        e->lfo_center_origin = p->event == -2 ? p->pitch_center : p->center;
+        e->lfo_center_origin = p->event == DM_EVENT_BEND ? p->pitch_center : p->center;
         e->lfo_center_range = (float)dm_lfo_range(p);
         ed_focus_edit(e, FOCUS_EVENTS);
     }
@@ -551,16 +546,16 @@ void ed_lfo_center_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse, boo
     }
 
     if (mouse.left) {
-        double units = p->event == -2 ? 1 / ed_lane_step(lane) : 127 / (lane.h - 8);
+        double units = p->event == DM_EVENT_BEND ? 1 / ED_LANE_STEP : 127 / (lane.h - 8);
 
-        if (p->event == -2 && e->automation_raw) {
+        if (p->event == DM_EVENT_BEND && e->automation_raw) {
             units = e->lfo_center_range * 2 / (lane.h - 8);
         }
 
         double value =
             dm_lfo_center_snap(e->lfo_center_origin + (e->lfo_center_y - mouse.pos.y) * units,
-                               p->event == -2, mouse.alt);
-        double current = p->event == -2 ? p->pitch_center : p->center;
+                               p->event == DM_EVENT_BEND, ed_gesture_held(e, GESTURE_FREE, mouse));
+        double current = p->event == DM_EVENT_BEND ? p->pitch_center : p->center;
 
         if (value != current) {
             if (!e->edit_moved) {
@@ -617,7 +612,7 @@ static void event_editor_header(Editor *e, DmPattern *p) {
         }
     }
 
-    if (e->automation_cc == -2 && !ed_graph_resolution(e)) {
+    if (e->automation_cc == DM_EVENT_BEND && !ed_graph_resolution(e)) {
         ui_same();
         ui_frame_toggle(DM_TEXT_MIDI_VALUES, &e->automation_raw);
     }
@@ -626,7 +621,7 @@ static void event_editor_header(Editor *e, DmPattern *p) {
 
     if (!p->mode) {
         automation_value_input(e);
-        event_clipboard_buttons(e, header.x + width);
+        event_header_buttons(e, header.x + width, false);
     }
 
     ui_group_end();
@@ -642,11 +637,9 @@ static void event_editor_header(Editor *e, DmPattern *p) {
 
 static void event_editor_scroll(Editor *e, UiRect r, UiRect lane, View *v, UiMouse mouse,
                                 bool hovered) {
-    if (hovered && mouse.wheel && (mouse.ctrl || mouse.pos.y < lane.y)) {
-        float old = v->zoom;
-        v->zoom = ed_clampf(v->zoom * powf(1.15f, mouse.wheel), .15f, 8);
-        v->scroll_x = fmaxf(0, (v->scroll_x + mouse.pos.x - lane.x) * (v->zoom / old) -
-                                   (mouse.pos.x - lane.x));
+    if (hovered && mouse.wheel &&
+        (ed_gesture_held(e, GESTURE_ZOOM, mouse) || mouse.pos.y < lane.y)) {
+        ed_wheel_zoom(v, mouse.wheel, mouse.pos.x - lane.x);
     } else {
         automation_scroll(e, v, lane, mouse, hovered && ed_inside(mouse.pos, lane));
     }
@@ -680,19 +673,19 @@ static void focus_event_pattern(Editor *e, UiRect lane, float scale) {
 }
 
 static void event_editor_vertical(Editor *e, UiRect r, UiRect lane) {
-    if (e->automation_cc != -2 || ed_automation_raw(e)) {
+    if (e->automation_cc != DM_EVENT_BEND || ed_automation_raw(e)) {
         return;
     }
 
-    float span = 127 * ed_lane_step(lane);
-    float position = (127 - e->automation_center) * ed_lane_step(lane);
+    float span = 127 * ED_LANE_STEP;
+    float position = (127 - e->automation_center) * ED_LANE_STEP;
     float before = roundf(position);
     position = before;
     ui_scrollbar(DM_TEXT_EVENT_VERTICAL, (UiRect){r.x + r.w + 2, lane.y, 12, lane.h}, true,
                  &position, lane.h, span + lane.h);
 
     if (position != before) {
-        e->automation_center = 127 - position / ed_lane_step(lane);
+        e->automation_center = 127 - position / ED_LANE_STEP;
     }
 }
 
@@ -782,7 +775,8 @@ int ed_velocity_delta(DmPattern *p, int hit, int delta, const DmNote *source) {
 
 bool ed_note_velocity_wheel(Editor *e, DmPattern *p, UiRect r, View *v, float label, float row,
                             float scale, UiMouse mouse, bool hovered) {
-    if (!hovered || !mouse.alt || !mouse.wheel || mouse.pos.x < r.x + label) {
+    if (!hovered || !ed_gesture_held(e, GESTURE_VELOCITY_WHEEL, mouse) || !mouse.wheel ||
+        mouse.pos.x < r.x + label) {
         return false;
     }
 
@@ -812,14 +806,14 @@ static UiPoint velocity_point(DmNote note, UiRect lane, View *v, float scale) {
 }
 
 static void velocity_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse) {
-    if (e->drag != 11 || e->drag_note_count != p->count || e->drag_index < 0) {
+    if (e->drag != DRAG_VELOCITY || e->drag_note_count != p->count || e->drag_index < 0) {
         return;
     }
 
     if (mouse.left && ed_gesture_moved(e, mouse)) {
         int target = (int)roundf(e->node_value + (e->node_y - mouse.pos.y) * 127 / (lane.h - 8));
 
-        if (!mouse.alt) {
+        if (!ed_gesture_held(e, GESTURE_FREE, mouse)) {
             target = (int)lround(target / 10.0) * 10;
         }
 
@@ -829,7 +823,7 @@ static void velocity_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse) {
     }
 
     if (mouse.released) {
-        e->drag = 0;
+        e->drag = DRAG_NONE;
 
         if (e->edit_moved) {
             ed_publish(e);
@@ -842,8 +836,9 @@ static void velocity_select(Editor *e, DmPattern *p, UiRect lane, View *v, float
     UiRect box = ed_marquee_box(e, mouse);
 
     for (size_t i = 0; i < p->count; ++i) {
-        p->notes[i].selected = ed_marquee_retains(e, i, mouse.shift) ||
-                               ed_inside(velocity_point(p->notes[i], lane, v, scale), box);
+        p->notes[i].selected =
+            ed_marquee_retains(e, i, ed_gesture_held(e, GESTURE_EXTEND, mouse)) ||
+            ed_inside(velocity_point(p->notes[i], lane, v, scale), box);
     }
 
     ui_border(box, e->accent, 0, 1);
@@ -857,10 +852,10 @@ static void velocity_input(Editor *e, DmPattern *p, UiMouse mouse, bool hovered,
     if (hovered && mouse.clicked) {
         ed_focus_edit(e, FOCUS_EVENTS);
 
-        if (mouse.ctrl || e->tool == 1) {
+        if (ed_gesture_held(e, GESTURE_MARQUEE, mouse) || e->tool == TOOL_MARQUEE) {
             ed_marquee_begin(e, FOCUS_EVENTS, mouse);
         } else if (hit >= 0) {
-            if (!p->notes[hit].selected && !mouse.shift) {
+            if (!p->notes[hit].selected && !ed_gesture_held(e, GESTURE_EXTEND, mouse)) {
                 ed_deselect(e);
             }
 
@@ -871,7 +866,7 @@ static void velocity_input(Editor *e, DmPattern *p, UiMouse mouse, bool hovered,
 
             if (e->drag_notes) {
                 memcpy(e->drag_notes, p->notes, p->count * sizeof(DmNote));
-                e->drag = 11;
+                e->drag = DRAG_VELOCITY;
                 e->drag_index = hit;
                 e->edit_moved = false;
                 e->node_y = mouse.pos.y;
@@ -908,7 +903,7 @@ static void velocity_panel(Editor *e, UiRect lane, View *v, float scale, UiMouse
     }
 
     /* Over a point only while nothing else holds the mouse. */
-    if ((hovered && hit >= 0 && !e->drag && !e->marquee) || e->drag == 11) {
+    if ((hovered && hit >= 0 && !e->drag && !e->marquee) || e->drag == DRAG_VELOCITY) {
         ui_gesture_cursor(true);
     }
 
@@ -960,22 +955,18 @@ void ed_automation_panel(Editor *e, UiRect r, View *v, float scale, float label,
 
     ed_automation_selector(e);
 
-    if (e->automation_cc == -2 && !ed_graph_resolution(e)) {
+    if (e->automation_cc == DM_EVENT_BEND && !ed_graph_resolution(e)) {
         ui_same();
         ui_frame_toggle(DM_TEXT_MIDI_VALUES, &e->automation_raw);
     }
 
     ed_graph_resolution_controls(e);
 
-    if (e->automation_cc != -3) {
+    if (e->automation_cc != DM_EVENT_VELOCITY) {
         automation_value_input(e);
     }
 
-    event_clipboard_buttons(e, r.x + r.w - 6);
-
-    if (e->automation_cc != -3) {
-        transfer_button(e, r.x + r.w - 6);
-    }
+    event_header_buttons(e, r.x + r.w - 6, e->automation_cc != DM_EVENT_VELOCITY);
 
     UiPoint at = ui_cursor();
     UiRect lane = {at.x + label, at.y + 28, fmaxf(50, r.w - label),
@@ -985,11 +976,9 @@ void ed_automation_panel(Editor *e, UiRect r, View *v, float scale, float label,
     ui_canvas("automation", r.w, lane.h + 28);
     bool hovered = ui_hover();
 
-    if (hovered && mouse.wheel && (mouse.ctrl || mouse.pos.y < lane.y)) {
-        float old = v->zoom;
-        v->zoom = ed_clampf(v->zoom * powf(1.15f, mouse.wheel), .15f, 8);
-        v->scroll_x =
-            fmaxf(0, (v->scroll_x + mouse.pos.x - lane.x) * v->zoom / old - (mouse.pos.x - lane.x));
+    if (hovered && mouse.wheel &&
+        (ed_gesture_held(e, GESTURE_ZOOM, mouse) || mouse.pos.y < lane.y)) {
+        ed_wheel_zoom(v, mouse.wheel, mouse.pos.x - lane.x);
     } else {
         automation_scroll(e, v, lane, mouse, hovered && ed_inside(mouse.pos, lane));
     }
@@ -1008,7 +997,7 @@ void ed_automation_panel(Editor *e, UiRect r, View *v, float scale, float label,
         e->event_ruler_drag = false;
     }
 
-    if (e->automation_cc == -3) {
+    if (e->automation_cc == DM_EVENT_VELOCITY) {
         velocity_panel(e, lane, v, scale, mouse, hovered && ed_inside(mouse.pos, lane));
         ed_ruler(e, event_ruler, v, scale, label);
         return;

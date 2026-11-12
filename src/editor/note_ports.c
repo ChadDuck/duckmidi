@@ -172,7 +172,7 @@ void ed_port_buttons(Editor *e) {
 
         if (ui_port_color("##event-port", ed_port_color(e, port), ed_note_port(e) == port, 22)) {
             /* Shift+click on a colored port offers to delete it. */
-            if (ui_mouse().shift && port) {
+            if (ed_gesture_held(e, GESTURE_PORT_MENU, ui_mouse()) && port) {
                 menu_port = port;
                 request = true;
             } else {

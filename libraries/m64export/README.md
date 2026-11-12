@@ -60,7 +60,7 @@ cmake --build build/development/m64
 
 The targets are `m64export` and `m64export_static`. Windows setup is covered in [ABOUT.md](../../ABOUT.md#building).
 
-Run `tools/test-m64export.ps1` for converter and independent decoder checks; its Python checks require Python 3. `tools/test-export-plugins.ps1 -HostTests` checks the desktop adapter. Validation output is stored under `agents/reports/`.
+Run `tools/agents/test-m64export.ps1` for converter and independent decoder checks; its Python checks require Python 3. `tools/agents/test-export-plugins.ps1 -HostTests` checks the desktop adapter. Validation output is stored under `agents/reports/`.
 
 ## Integration
 

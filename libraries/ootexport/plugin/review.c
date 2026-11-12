@@ -106,7 +106,7 @@ bool oot_review_build(OotPluginJob *job, const DmeContext *context, const OotRes
         return true;
     }
 
-    if (result->range_count > 2048) {
+    if (result->range_count > DME_ROW_LIMIT) {
         return false;
     }
 

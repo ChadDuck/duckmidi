@@ -44,7 +44,7 @@ struct DmEditorSamples {
     uint16_t program_bank;
     char browse_root[DM_PATH], browse_set[DM_SAMPLE_ID_CAP];
     uint32_t browse_generation;
-    bool scanned, open, raise, initialized, picker, held_preview, loop_warning, drop_claimed;
+    bool scanned, open, initialized, picker, held_preview, loop_warning, drop_claimed;
     bool delete_sample;
     int remove;
     char current_root[DM_PATH];
@@ -1647,7 +1647,7 @@ static bool waveform(Editor *e, DmEditorSamples *s, const DmNativeTool *tool,
     }
 
     if (hovered && mouse.clicked && draft->frames >= 2) {
-        if (mouse.shift) {
+        if (ed_gesture_held(e, GESTURE_PLAY_RANGE, mouse)) {
             s->loop_handle = fabsf(mouse.pos.x - play_lo) <= fabsf(mouse.pos.x - play_hi) ? 2 : 3;
         } else if (loop) {
             s->loop_handle = fabsf(mouse.pos.x - lo) <= fabsf(mouse.pos.x - hi) ? 0 : 1;
@@ -1667,9 +1667,9 @@ static bool waveform(Editor *e, DmEditorSamples *s, const DmNativeTool *tool,
             end = frame > start + 2 ? frame : start + 2;
         }
 
-        if (!playback || mouse.shift) {
-            s->loop_warning =
-                !mouse.alt && api->snap_loop(tool->instance, s->selected, &start, &end) != DME_OK;
+        if (!playback || ed_gesture_held(e, GESTURE_PLAY_RANGE, mouse)) {
+            s->loop_warning = !ed_gesture_held(e, GESTURE_FREE, mouse) &&
+                              api->snap_loop(tool->instance, s->selected, &start, &end) != DME_OK;
 
             if (playback) {
                 if (loop) {
@@ -2066,31 +2066,19 @@ static void sample_rows(Editor *e, DmEditorSamples *s, const DmNativeTool *tool,
 
     bool confirmed = false;
 
-    if (ui_modal(DM_TEXT_SAMPLE_DELETE_TITLE, &s->delete_sample, fminf(380, ui_display().x - 8),
-                 0)) {
-        ui_wrap(DM_TEXT_SAMPLE_DELETE_WARNING);
+    if (s->delete_sample) {
+        static const char *const buttons[] = {DM_TEXT_CANCEL, DM_TEXT_DELETE};
+        char text[DM_PATH + 256];
         DmeSampleDraft draft;
+        const char *name = "";
 
         if (s->remove >= 0 && api->draft(tool->instance, (uint32_t)s->remove, &draft) == DME_OK) {
-            ui_wrap(draft.source_name.length ? draft.source_name.data : file_name(draft.path.data));
+            name = draft.source_name.length ? draft.source_name.data : file_name(draft.path.data);
         }
 
-        float half = (ui_available().x - ui_item_spacing_x()) * .5f;
-
-        if (ui_button(DM_TEXT_CANCEL, half, 0)) {
-            s->delete_sample = false;
-            ui_close_popup();
-        }
-
-        ui_same();
-
-        if (ui_button(DM_TEXT_DELETE, half, 0)) {
-            confirmed = true;
-            s->delete_sample = false;
-            ui_close_popup();
-        }
-
-        ui_popup_end();
+        snprintf(text, sizeof(text), "%s\n\n%s", DM_TEXT_SAMPLE_DELETE_WARNING, name);
+        confirmed =
+            ui_confirm(DM_TEXT_SAMPLE_DELETE_TITLE, &s->delete_sample, text, buttons, 2) == 1;
     }
 
     int removed = confirmed ? s->remove : -1;
@@ -2140,7 +2128,8 @@ void ed_samples_draw(Editor *e) {
         DmEditorSamples *s = state(e);
 
         if (s) {
-            s->open = s->raise = true;
+            s->open = true;
+            ui_dialog_raise(DM_TEXT_SAMPLE_TOOL_NAME);
         }
     }
 
@@ -2148,11 +2137,6 @@ void ed_samples_draw(Editor *e) {
 
     if (!s || !s->open) {
         return;
-    }
-
-    if (s->raise) {
-        ui_raise_next();
-        s->raise = false;
     }
 
     if (!s->initialized) {
@@ -2178,7 +2162,15 @@ void ed_samples_draw(Editor *e) {
     bool open = true;
     uint32_t count = api->count(tool->instance);
 
-    if (ui_expanding_dialog(DM_TEXT_SAMPLE_TOOL_NAME, &open, count ? 1000 : 760, 580, count != 0)) {
+    /* Empty, the window fits its contents; with samples it opens larger and resizes. */
+    UiDialog dialog = count ? (UiDialog){.width = 1000,
+                                         .height = 580,
+                                         .size = UI_RESIZABLE,
+                                         .tool = true,
+                                         .layout = 1}
+                            : (UiDialog){.width = 760, .tool = true};
+
+    if (ui_dialog(DM_TEXT_SAMPLE_TOOL_NAME, &open, dialog)) {
         s->rect = ui_window_rect();
         ui_disabled(s->work.thread != NULL);
 
@@ -2250,7 +2242,7 @@ void ed_samples_draw(Editor *e) {
         }
     }
 
-    ui_end();
+    ui_dialog_end();
 
     if (!open) {
         ed_samples_close(e);

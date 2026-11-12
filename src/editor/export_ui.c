@@ -15,10 +15,47 @@ static bool same_string(DmeString a, DmeString b) {
     return a.length == b.length && (!a.length || !memcmp(a.data, b.data, (size_t)a.length));
 }
 
-static void custom_mapping(Editor *e, DmExportFormat *format, const DmeMappingRow *row) {
-    const DmeCustomMapping *mapping = row->custom;
+/* Reset, at the right end of the current line, restores the selected source's default mapping
+   and clears its custom sample. Returns true when it did, since the clear frees the selection
+   the caller still holds. */
+static bool reset_mapping(Editor *e, DmExportFormat *format, const DmeMappingRow *row,
+                          const DmeCustomMapping *mapping) {
+    const char *label = DM_TEXT_EXPORT_RESET_MAPPING;
+    float width = ui_button_row_width(&label, 1);
+    UiPoint at = ui_cursor();
+    ui_position(fmaxf(at.x, at.x + ui_available().x - width), at.y);
+    bool custom = mapping && mapping->available && mapping->selection.enabled;
+    ui_disabled(row->value == row->default_value && !custom);
+    bool clicked = ui_button(label, width, 0);
+    ui_disabled_end();
+    ui_tip(DM_TEXT_EXPORT_RESET_MAPPING_HELP);
 
-    if (!mapping || !format->api->set_custom) {
+    if (!clicked) {
+        return false;
+    }
+
+    ed_export_set(e, (size_t)(e->export_type - 1), row->id,
+                  (DmeValue){DME_CHOICE, row->default_value, NULL});
+
+    if (mapping && mapping->available) {
+        DmeCustomSelection cleared = {.size = sizeof(cleared),
+                                      .sample = {.size = sizeof(cleared.sample)}};
+        char error[512] = {0};
+
+        if (format->api->set_custom(format->instance, row->id, &cleared, error, sizeof(error)) !=
+            DME_OK) {
+            ed_export_error(e, *error ? error : DM_TEXT_INVALID_EXPORTER_SETTING);
+        }
+    }
+
+    return true;
+}
+
+static void custom_mapping(Editor *e, DmExportFormat *format, const DmeMappingRow *row) {
+    const DmeCustomMapping *mapping = format->api->set_custom ? row->custom : NULL;
+
+    if (!mapping) {
+        reset_mapping(e, format, row, NULL);
         return;
     }
 
@@ -28,6 +65,11 @@ static void custom_mapping(Editor *e, DmExportFormat *format, const DmeMappingRo
     bool changed = ui_check(DM_TEXT_EXPORT_CUSTOM, &enabled);
     selected.enabled = enabled;
     ui_disabled_end();
+    ui_same();
+
+    if (reset_mapping(e, format, row, mapping)) {
+        return;
+    }
 
     if (!mapping->available) {
         ui_wrap(mapping->unavailable_reason.data);
@@ -572,7 +614,7 @@ void ed_export_history_panel(Editor *e, UiRect main) {
     ui_end();
     bool confirm = h->history_confirm != 0;
 
-    if (ui_modal(DM_TEXT_REPOSITORY_CONFIRM, &confirm, 460, 180)) {
+    if (ui_dialog(DM_TEXT_REPOSITORY_CONFIRM, &confirm, (UiDialog){.width = 460, .modal = true})) {
         ui_wrap(h->history_confirm == DME_REPOSITORY_INITIALIZE
                     ? DM_TEXT_REPOSITORY_INITIALIZE_CONFIRM
                     : DM_TEXT_REPOSITORY_REVERT_CONFIRM);
@@ -591,13 +633,9 @@ void ed_export_history_panel(Editor *e, UiRect main) {
         }
 
         ui_disabled_end();
-
-        if (!confirm) {
-            ui_close_popup();
-        }
-
-        ui_popup_end();
     }
+
+    ui_dialog_end();
 
     if (!confirm) {
         h->history_confirm = 0;
@@ -729,7 +767,8 @@ void ed_export_review_dialog(Editor *e) {
     bool open = h->review_pending;
     int decision = -1;
 
-    if (ui_modal(DM_TEXT_REVIEW_EXPORT_MAPPINGS, &open, 900, 590)) {
+    if (ui_dialog(DM_TEXT_REVIEW_EXPORT_MAPPINGS, &open,
+                  (UiDialog){.width = 900, .height = 590, .size = UI_RESIZABLE, .modal = true})) {
         DmeReview review = {0};
         char error[512] = {0};
 
@@ -863,13 +902,13 @@ void ed_export_review_dialog(Editor *e) {
         }
 
         if (decision >= 0) {
-            ui_close_popup();
+            open = false;
         }
-
-        ui_popup_end();
     }
 
-    if (!open && h->review_pending) {
+    ui_dialog_end();
+
+    if (!open && decision < 0 && h->review_pending) {
         decision = 0;
     }
 
@@ -904,18 +943,18 @@ void ed_export_warning_dialog(Editor *e) {
         return;
     }
 
-    if (ui_modal(DM_TEXT_EXPORT_WARNINGS, &h->warning_open, 680, 480)) {
+    if (ui_dialog(DM_TEXT_EXPORT_WARNINGS, &h->warning_open,
+                  (UiDialog){.width = 680, .height = 480, .size = UI_RESIZABLE, .modal = true})) {
         if (ui_child("warning-details", 0, ui_available().y - 45, true)) {
             ui_wrap(h->warning);
         }
 
         ui_child_end();
 
-        if (ui_button("OK", 100, 0)) {
+        if (ui_button(DM_TEXT_OK, 100, 0)) {
             h->warning_open = false;
-            ui_close_popup();
         }
-
-        ui_popup_end();
     }
+
+    ui_dialog_end();
 }

@@ -2,16 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-static int checks;
-
-static void check(bool ok, const char *text) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL ports: %s\n", text);
-        exit(1);
-    }
-}
+#define TEST_NAME "ports"
+#include "test_common.h"
 
 static size_t notes(const DmProject *p) {
     size_t n = 0;

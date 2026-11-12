@@ -1,4 +1,4 @@
-add_library(duck_export_support SHARED filesystem.c map.c repository.c sha256.c source_json.c source_xml.cpp source_make.c mapping.c sample.c choke.c curves.c effects.c bake.c resample.c recipe.c runtime.c history_api.c package.c
+add_library(duck_export_support SHARED filesystem.c map.c repository.c sha256.c source_json.c source_xml.cpp source_make.c mapping.c sample.c choke.c curves.c effects.c bake.c resample.c recipe.c runtime.c history_api.c package.c ports.c
   "${PROJECT_SOURCE_DIR}/vendor/yyjson-0.12.0/yyjson.c"
   "${PROJECT_SOURCE_DIR}/vendor/pugixml-1.15/pugixml.cpp"
   "${PROJECT_SOURCE_DIR}/vendor/sqlite-3.50.4/sqlite3.c")

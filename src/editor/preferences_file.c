@@ -12,7 +12,7 @@ typedef struct {
     Binding keys[ACT_COUNT];
     bool seen[ACT_COUNT];
     bool percussion_seen[128], percussion_midi_seen[128];
-    uint32_t version, fingerprint;
+    uint32_t version;
     int count;
 } Ini;
 
@@ -548,6 +548,10 @@ static bool midi_binding(Ini *ini, const char *key, const char *s) {
 
     if (!strcmp(kind, "cc")) {
         binding.source.kind = DM_MIDI_SOURCE_CC;
+    } else if (ed_midi_target_event(binding.target) && !strcmp(kind, "bend")) {
+        binding.source.kind = DM_MIDI_SOURCE_BEND;
+    } else if (ed_midi_target_event(binding.target) && !strcmp(kind, "pressure")) {
+        binding.source.kind = DM_MIDI_SOURCE_PRESSURE;
     } else if (!continuous && !strcmp(kind, "note")) {
         binding.source.kind = DM_MIDI_SOURCE_NOTE;
     } else {
@@ -570,15 +574,17 @@ static bool midi_binding(Ini *ini, const char *key, const char *s) {
 }
 
 static bool shortcut(Ini *ini, const char *key, char *s) {
+    /* Files written before 0.12.6 carry a shortcut-list number here; it has no meaning. */
     if (!strcmp(key, "schema")) {
-        return number(s, &ini->fingerprint);
+        uint32_t ignored;
+        return number(s, &ignored);
     }
 
     int index = -1;
 
     for (int i = 0; i < ACT_COUNT; i++) {
         char label[160];
-        setting_label(ed_action_names[i], label, sizeof(label));
+        setting_label(ed_actions[i].name, label, sizeof(label));
 
         if (!strcmp(key, label)) {
             index = i;
@@ -680,8 +686,8 @@ static bool recent(Ini *ini, const char *key, const char *s) {
 
 /* Mouse gestures the file does not list keep their defaults; unknown names are ignored. */
 static bool mouse_gesture(Ini *ini, const char *key, const char *s) {
-    for (int i = 0; i < GESTURE_COUNT; ++i) {
-        if (!strcmp(key, ed_gesture_names[i])) {
+    for (int i = 0; i < GESTURE_REBINDABLE; ++i) {
+        if (!strcmp(key, ed_gestures[i].name)) {
             char text[80];
             return value(text, sizeof(text), s) && ed_gesture_parse(text, &ini->next.gestures[i]);
         }
@@ -830,7 +836,7 @@ static void place_new_actions(Ini *ini, Binding *merged) {
     }
 }
 
-bool dm_preferences_load(Editor *e, uint32_t shortcut_schema) {
+bool dm_preferences_load(Editor *e) {
     DmBytes b = {0};
     char error[256];
 
@@ -888,7 +894,6 @@ bool dm_preferences_load(Editor *e, uint32_t shortcut_schema) {
             }
         }
 
-        (void)shortcut_schema;
         upgrade_shortcuts(ini, merged);
         place_new_actions(ini, merged);
 
@@ -1024,7 +1029,10 @@ static bool midi_binding_fields(DmBytes *b, const Editor *e) {
         char id[48], tail[48];
         ed_midi_target_id(binding->target, id, sizeof(id));
         snprintf(tail, sizeof(tail), ",%u,%s,%u,%s\n", binding->source.channel + 1u,
-                 binding->source.kind == DM_MIDI_SOURCE_CC ? "cc" : "note",
+                 binding->source.kind == DM_MIDI_SOURCE_CC         ? "cc"
+                 : binding->source.kind == DM_MIDI_SOURCE_BEND     ? "bend"
+                 : binding->source.kind == DM_MIDI_SOURCE_PRESSURE ? "pressure"
+                                                                   : "note",
                  (unsigned)binding->source.number, binding->toggle ? "toggle" : "momentary");
         ok = text(b, id) && text(b, "=") && quoted_text(b, binding->source.device) && text(b, tail);
     }
@@ -1032,7 +1040,7 @@ static bool midi_binding_fields(DmBytes *b, const Editor *e) {
     return ok;
 }
 
-bool dm_preferences_save(Editor *e, uint32_t shortcut_schema, const char *const *names) {
+bool dm_preferences_save(Editor *e) {
     DmBytes b = {0};
     char head[256];
     snprintf(head, sizeof(head), DM_TEXT_INI_APPLICATION_SECTION, e->accent, e->background,
@@ -1041,22 +1049,21 @@ bool dm_preferences_save(Editor *e, uint32_t shortcut_schema, const char *const 
              e->repository_history ? 1 : 0);
     bool ok =
         text(&b, head) && fields(&b, e) && midi_input_fields(&b, e) && midi_binding_fields(&b, e);
-    snprintf(head, sizeof(head), DM_TEXT_SHORTCUTS_NSCHEMA, shortcut_schema);
-    ok = ok && text(&b, head);
+    ok = ok && text(&b, DM_TEXT_SHORTCUTS_SECTION);
 
     for (int i = 0; i < ACT_COUNT && ok; ++i) {
         char binding[160], label[160];
-        setting_label(names[i], label, sizeof(label));
+        setting_label(ed_actions[i].name, label, sizeof(label));
         ok = dm_binding_format(e->bindings[i], binding, sizeof(binding)) &&
              text_field(&b, label, binding);
     }
 
     ok = ok && text(&b, "\n[mouse]\n");
 
-    for (int i = 0; i < GESTURE_COUNT && ok; ++i) {
+    for (int i = 0; i < GESTURE_REBINDABLE && ok; ++i) {
         char gesture[80];
         ok = ed_gesture_format(e->gestures[i], gesture, sizeof(gesture)) &&
-             text_field(&b, ed_gesture_names[i], gesture);
+             text_field(&b, ed_gestures[i].name, gesture);
     }
 
     ok = ok && text(&b, "\n[percussion]\n");

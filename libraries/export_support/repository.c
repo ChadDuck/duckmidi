@@ -226,8 +226,8 @@ static bool described(char *error, size_t cap) {
     return false;
 }
 
-static bool backup_path(const char *path, char sidecar[8192]) {
-    return snprintf(sidecar, 8192, "%s.bkp", path) < 8192;
+static bool backup_path(const char *path, char sidecar[DME_PATH_LIMIT]) {
+    return snprintf(sidecar, DME_PATH_LIMIT, "%s.bkp", path) < DME_PATH_LIMIT;
 }
 
 static bool is_backup(const char *path) {
@@ -773,6 +773,18 @@ bool es_repository_baseline(EsRepository *r, const char *path, EsFile *out, char
     }
 
     return read_baseline(r, path, out, error, cap);
+}
+
+bool es_plan_exists(EsRepository *r, const EsPlan *plan, const char *path, bool *exists,
+                    char *error, size_t cap) {
+    const EsFile *file = plan ? es_plan_find(plan, path) : NULL;
+
+    if (file) {
+        *exists = file->exists;
+        return true;
+    }
+
+    return es_repository_baseline_exists(r, path, exists, error, cap);
 }
 
 bool es_repository_baseline_exists(EsRepository *r, const char *path, bool *exists, char *error,
@@ -1343,7 +1355,7 @@ static bool validate_graph(EsRepository *r, const EsPlan *plan, const EsModifica
 
 static bool missing_parents(EsRepository *r, const char *path, EsPaths *dirs, char *error,
                             size_t cap) {
-    char copy[8192];
+    char copy[DME_PATH_LIMIT];
     snprintf(copy, sizeof(copy), "%s", path);
     bool ok = true;
 
@@ -1913,7 +1925,7 @@ static bool apply_state(EsRepository *r, EsModifications *mods, char *error, siz
        turns the optional backup setting off. */
     for (size_t i = 0; ok && i < r->entry_count; ++i) {
         const Entry *e = &r->entries[i];
-        char source[8192];
+        char source[DME_PATH_LIMIT];
         size_t length = strlen(e->path);
 
         if (!is_backup(e->path) || !modified(e) || length >= sizeof(source)) {
@@ -1934,7 +1946,7 @@ static bool apply_state(EsRepository *r, EsModifications *mods, char *error, siz
 
     for (size_t i = 0; ok && i < plan.backups.count; ++i) {
         const char *path = plan.backups.items[i];
-        char sidecar[8192];
+        char sidecar[DME_PATH_LIMIT];
         EsFile original = {0}, backup = {0};
         ok = backup_path(path, sidecar) && read_baseline(r, path, &original, error, cap) &&
              read_baseline(r, sidecar, &backup, error, cap);
@@ -1980,13 +1992,13 @@ static bool set_modification(EsModification *m, const char *key, const char *lab
 }
 
 static bool valid_intent(const EsModification *m) {
-    return m->key && *m->key && strlen(m->key) <= 512 && m->label && strlen(m->label) <= 512 &&
-           m->data && m->size <= ES_MAX_RECIPES;
+    return m->key && *m->key && strlen(m->key) <= DME_LABEL_LIMIT && m->label &&
+           strlen(m->label) <= DME_LABEL_LIMIT && m->data && m->size <= ES_MAX_RECIPES;
 }
 
 /* Directories above path, created when missing. */
 static bool make_parents(EsRoot *root, const char *path, char *error, size_t cap) {
-    char parent[8192];
+    char parent[DME_PATH_LIMIT];
     size_t length = strlen(path);
 
     if (length >= sizeof(parent)) {
@@ -2018,7 +2030,7 @@ static bool apply_untracked(EsRepository *r, const EsModification *incoming, siz
     for (size_t i = 0; ok && i < plan.count; ++i) {
         const EsWrite *write = &plan.writes[i];
         EsFile current = {0};
-        char sidecar[8192];
+        char sidecar[DME_PATH_LIMIT];
         ok = (allowed(r, write->path) ||
               es_fail(error, cap,
                       DM_TEXT_REPOSITORY_PATH_IS_OUTSIDE_THE_INITIALIZED_AUDIO_NAMESPACE_S,

@@ -170,9 +170,9 @@ int32_t DME_CALL oot_ui_inspect(void *instance, const DmeContext *c, char *error
         }
     }
 
-    OotPortLayout *layout = calloc(1, sizeof(*layout));
+    EsPortLayout *layout = calloc(1, sizeof(*layout));
 
-    if (!layout || !oot_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
+    if (!layout || !es_port_layout(c->events, c->event_count, c->percussion_channels, layout)) {
         free(layout);
         return DME_NOMEM;
     }
@@ -187,8 +187,8 @@ int32_t DME_CALL oot_ui_inspect(void *instance, const DmeContext *c, char *error
         }
 
         unsigned type = e->status & MIDI_STATUS_MASK;
-        unsigned ch = e->port < OOT_PORTS ? layout->out[e->status & MIDI_CHANNEL_MASK][e->port]
-                                          : e->status & MIDI_CHANNEL_MASK;
+        unsigned ch = e->port < ES_PORTS ? layout->out[e->status & MIDI_CHANNEL_MASK][e->port]
+                                         : e->status & MIDI_CHANNEL_MASK;
 
         if (type == MIDI_PROGRAM) {
             program[ch] = e->a;
@@ -275,7 +275,7 @@ int32_t DME_CALL oot_ui_describe(void *instance, DmeUi *ui) {
         const EsSourceRow *source = es_mappings_source(s->custom, source_index);
         bool is_drum = (source->source.flags & DME_SAMPLE_PERCUSSION) != 0;
 
-        if (is_drum != drums || count >= 2048) {
+        if (is_drum != drums || count >= DME_ROW_LIMIT) {
             continue;
         }
 
@@ -331,12 +331,6 @@ int32_t DME_CALL oot_ui_describe(void *instance, DmeUi *ui) {
         .value = {DME_CHOICE, s->font, NULL},
         .choices = s->font_choices,
         .choice_count = build_font_choices(s)};
-    s->fields[f++] = (DmeField){.id = "volume",
-                                .label = "Sequence volume",
-                                .type = DME_INT,
-                                .value = {DME_INT, s->volume, NULL},
-                                .minimum = 1,
-                                .maximum = 127};
     s->fields[f++] = (DmeField){
         .id = "memory",
         .label = "Sequence memory",
@@ -348,6 +342,12 @@ int32_t DME_CALL oot_ui_describe(void *instance, DmeUi *ui) {
         .value = {DME_CHOICE, s->memory, NULL},
         .choices = memory_choices,
         .choice_count = 2};
+    s->fields[f++] = (DmeField){.id = "volume",
+                                .label = "Sequence volume",
+                                .type = DME_INT,
+                                .value = {DME_INT, s->volume, NULL},
+                                .minimum = 1,
+                                .maximum = 127};
     s->fields[f++] = (DmeField){
         .id = "loop", .label = "Loop song", .type = DME_BOOL, .value = {DME_BOOL, s->loop, NULL}};
 

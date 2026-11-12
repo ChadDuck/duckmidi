@@ -72,6 +72,8 @@ float ui_delta_time(void);
 void ui_same(void);
 float ui_item_spacing_x(void);
 float ui_item_spacing_y(void);
+void ui_indent(float width);
+void ui_unindent(float width);
 void ui_group_begin(void);
 void ui_group_end(void);
 void ui_newline(void);
@@ -129,10 +131,11 @@ bool ui_float_step(const char *label, float *value, float lo, float hi, float st
 bool ui_input(const char *label, char *value, size_t cap);
 bool ui_input_submit(const char *label, char *value, size_t cap);
 void ui_readonly(const char *label, const char *value);
+/* Set the initial open state for the next section; later frames retain user choices. */
+void ui_section_default(bool open);
 bool ui_section(const char *label);
 bool ui_appearing(void);
 bool ui_dialog_enter(void);
-bool ui_content_dialog(const char *title, bool *open, float width);
 bool ui_mixer_value(int *value, float width);
 bool ui_multiline(const char *label, char *value, size_t cap, float height);
 bool ui_knob(const char *label, double *value, double lo, double hi, double reset);
@@ -157,21 +160,48 @@ void ui_menu_end(void);
 bool ui_menu_item(const char *name, const char *shortcut, bool enabled);
 bool ui_menu_check(const char *name, bool checked);
 void ui_pan_cursor(void);
-bool ui_fixed_dialog(const char *s, bool *open, float w, float h);
-bool ui_fitted_dialog(const char *s, bool *open, float w);
 void ui_center_text(const char *text);
 int ui_welcome_content(void);
-void ui_confirmation_message(const char *text);
 void ui_center_row(float width);
-bool ui_dialog(const char *title, bool *open, float width, float height);
-bool ui_expanding_dialog(const char *title, bool *open, float width, float height, bool expanded);
-/* Resizable width; the height fits the contents within the work area. */
-bool ui_growing_dialog(const char *title, bool *open, float width, float height);
-/* Resizable in both directions, never shorter than its contents need; attached leaves room
-   for a drawer at its right edge. Until the user resizes it, its height fits the contents;
-   height is only the first frame's. A different layout fits the contents again. */
-bool ui_flexible_dialog(const char *title, bool *open, float width, float height, bool attached,
-                        int layout);
+
+typedef enum {
+    UI_FIT,       /* The width given; the height follows the contents. The default. */
+    UI_FIXED,     /* width x height. */
+    UI_RESIZABLE, /* Opens at width x height; a window keeps the size the user gives it. */
+    UI_FLEXIBLE   /* Resizable, never shorter than its contents; until the user resizes it its
+                     height fits the contents, with height only the first frame's. ui_flex rows
+                     take the spare height. */
+} UiDialogSize;
+
+/* How a floating window or modal opens. The zero value fits its contents at the given width,
+   centered, and does not resize; set only what differs. Sizes are limited to the work area. */
+typedef struct {
+    float width, height; /* height: UI_FIXED, UI_RESIZABLE and UI_FLEXIBLE. */
+    UiDialogSize size;
+    bool modal;         /* Blocks the windows behind it. */
+    bool drawer;        /* UI_FLEXIBLE: leaves room for a drawer at its right edge. */
+    bool escape_closes; /* Escape closes it even while one of its text fields is being edited. */
+    bool tool;          /* A panel kept open while working: Escape and workspace shortcuts
+                           treat it as part of the workspace, not as an open window. */
+    int layout;         /* A different value sizes the window again. */
+} UiDialog;
+
+/* Returns whether to draw the contents; always pair it with ui_dialog_end. *open turns false when
+   the window is closed by its title bar or by Escape. */
+bool ui_dialog(const char *title, bool *open, UiDialog dialog);
+void ui_dialog_end(void);
+/* A dialog was open on this frame or the last one. */
+bool ui_dialog_open(void);
+/* The dialog is in front of the other dialogs, or about to be raised there. */
+bool ui_dialog_front(const char *title);
+void ui_dialog_raise(const char *title); /* In front of the other windows on its next frame. */
+/* Closes the front dialog on its next frame and returns whether there is one to close. While a
+   field is being edited, only a dialog with escape_closes closes. */
+bool ui_dialog_close_front(bool editing);
+/* A modal question above a centered row of buttons. Returns the button pressed, or -1; *open
+   turns false when a button is pressed or the question is dismissed. */
+int ui_confirm(const char *title, bool *open, const char *text, const char *const *buttons,
+               int count);
 /* Inside a flexible dialog: minimum plus the dialog's spare height, for its one flexible row.
    A dialog that fits its contents gives this row its preferred height. */
 float ui_flex(float minimum, float preferred);
@@ -179,7 +209,6 @@ float ui_flex(float minimum, float preferred);
 UiRect ui_attach_space(float width);
 /* A borderless drawer fixed to main's right edge, with main's height. */
 bool ui_attached_drawer(const char *id, UiRect main, float width);
-bool ui_modal(const char *title, bool *open, float width, float height);
 void ui_close_popup(void);
 bool ui_context(const char *id);
 void ui_popup_end(void);
@@ -192,12 +221,13 @@ bool ui_any_active(void);
 void ui_disabled(bool disabled);
 void ui_disabled_end(void);
 void ui_escape(void);
-int ui_topmost(const char *const *titles, int count);
 bool ui_cancel_popup(void);
 bool ui_popup_open(void);
 void ui_focus_next(void);
-void ui_raise_next(void); /* Brings the next window in front of the others. */
 void ui_canvas(const char *id, float w, float h);
+/* A canvas with embedded controls leaves mouse ownership to its buttons. */
+void ui_canvas_controls(const char *id, float w, float h);
+bool ui_canvas_button(const char *label, UiRect rect);
 void ui_scroll_to(float y);
 void ui_rect(UiRect r, uint32_t color, float rounding);
 void ui_border(UiRect r, uint32_t color, float rounding, float width);

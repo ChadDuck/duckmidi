@@ -172,7 +172,9 @@ extern "C" void test_samples_ui(Editor *e, const char *root, void (*check)(bool,
     check(tool, "registry holds the instance drawn by the desktop");
     auto *api = static_cast<const DmeSamplesApi *>(tool->api->interface_at(DME_SAMPLES_API));
     UiRect rect = {window->Pos.x, window->Pos.y, window->Size.x, window->Size.y};
-    e->preferences = e->preferences_raise = true;
+    e->preferences = true;
+    ui_dialog_raise("Preferences");
+    frame(e);
     frame(e);
     frame(e);
     UiPoint overlap = {std::fmax(rect.x, e->preferences_rect.x) + 20,

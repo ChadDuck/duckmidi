@@ -35,12 +35,13 @@ static bool schema_15(const Input *in) {
 
 /* Events that only take discrete points: no LFO and no graph. */
 static bool point_only_event(int event) {
-    return event == -1 || event == -4 || event == -5 || event == MIDI_CC_PORTAMENTO_TIME ||
+    return event == DM_EVENT_PROGRAM || event == DM_EVENT_CHANNEL_PRESSURE ||
+           event == DM_EVENT_KEY_PRESSURE || event == MIDI_CC_PORTAMENTO_TIME ||
            event == MIDI_CC_SUSTAIN || event == MIDI_CC_SOSTENUTO;
 }
 
 static bool graph_resolution_valid(uint32_t graph) {
-    return graph == 0 || (graph >= 8 && graph <= 256 && !(graph & (graph - 1)));
+    return graph == 0 || (graph >= 8 && graph <= DM_GRAPH_MAX && !(graph & (graph - 1)));
 }
 
 /* Schema 10 stores numbers compactly. Integers are variable-length (7 bits per byte). A real
@@ -393,7 +394,7 @@ static bool pack_channels(const DmProject *p, DmBytes *target) {
     }
 
     for (int c = 0; c < 16 && ok; ++c) {
-        ok = u32(&b, p->lane_count[c]);
+        ok = u32(&b, p->note_rows[c]) && u32(&b, p->lane_count[c]);
 
         for (int i = 0; i < p->lane_count[c] && ok; ++i) {
             ok = string(&b, p->lane_names[c][i]);
@@ -412,7 +413,7 @@ static bool pack_clips(const DmProject *p, DmBytes *target) {
         DmClip c = p->clips[i];
         ok = time_after(&b, c.beat, i ? p->clips[i - 1].beat : 0) && u32(&b, c.pattern) &&
              u32(&b, c.channel) && u32(&b, c.selected) && real(&b, c.length) && u32(&b, c.lane) &&
-             real(&b, c.offset);
+             real(&b, c.offset) && u32(&b, c.row);
     }
 
     *target = b;
@@ -558,7 +559,9 @@ static bool pattern_length_valid(const DmPattern *p, double length) {
 }
 
 static bool automation_event_valid(int event) {
-    return event == -1 || event == -2 || event == -4 || event == -5 || (event >= 0 && event <= 127);
+    return event == DM_EVENT_PROGRAM || event == DM_EVENT_BEND ||
+           event == DM_EVENT_CHANNEL_PRESSURE || event == DM_EVENT_KEY_PRESSURE ||
+           (event >= 0 && event <= 127);
 }
 
 static bool unpack_lfo_center(DmPattern *p, Input *in) {
@@ -750,7 +753,7 @@ static bool valid_meta(const DmBytes *m) {
     }
 
     if (m->data[1] == MIDI_META_TEMPO) {
-        return m->size == 6 && m->data[2] == 3 && (m->data[3] || m->data[4] || m->data[5]);
+        return dm_tempo_microseconds(m->data, m->size) != 0;
     }
 
     if (m->data[1] == MIDI_META_TIME) {
@@ -824,11 +827,15 @@ static bool unpack_clips(DmProject *p, Input *in) {
         c.length = getreal(in);
         c.lane = (int)get32(in);
         c.offset = schema_10(in) ? getreal(in) : 0;
+        c.row = in->schema >= 19 ? (int)get32(in) : 0;
         bool valid_lane =
             c.channel >= 0 && c.channel < 16 && c.lane >= 0 && c.lane <= p->lane_count[c.channel];
         bool valid_pattern = c.pattern >= 0 && (size_t)c.pattern < p->pattern_count;
 
-        if (!in->ok || selected > 1 || !valid_lane || !valid_pattern ||
+        bool valid_row =
+            valid_lane && c.row >= 0 && (c.lane ? c.row == 0 : c.row < p->note_rows[c.channel]);
+
+        if (!in->ok || selected > 1 || !valid_lane || !valid_row || !valid_pattern ||
             (p->patterns[c.pattern].kind != 0) != (c.lane > 0) || !dm_clip_add(p, c)) {
             return false;
         }
@@ -966,6 +973,16 @@ static bool unpack_channels(DmProject *p, Input *in) {
     }
 
     for (int c = 0; c < 16; ++c) {
+        if (in->schema >= 19) {
+            uint32_t rows = get32(in);
+
+            if (rows < 1 || rows > DM_NOTE_ROWS) {
+                return false;
+            }
+
+            p->note_rows[c] = (int)rows;
+        }
+
         uint32_t count = get32(in);
 
         if (count > DM_LANES) {
@@ -985,7 +1002,7 @@ static bool unpack_channels(DmProject *p, Input *in) {
 }
 
 static bool timing_valid(const DmProject *p) {
-    if (p->bpm < 60000000.0 / 16777215 || p->bpm > 60000000) {
+    if (p->bpm < DM_BPM_MIN || p->bpm > DM_BPM_MAX) {
         return false;
     }
 

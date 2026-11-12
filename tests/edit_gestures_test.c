@@ -1,19 +1,11 @@
 /* Production editor boundaries and state transactions, with a real hidden ImGui/SDL renderer. */
 #include "editor/internal.h"
-static int checks;
-
-static void check(bool ok, const char *label) {
-    ++checks;
-
-    if (!ok) {
-        fprintf(stderr, "FAIL edit_gestures: %s\n", label);
-        exit(1);
-    }
-}
+#include <assert.h>
+#define TEST_NAME "edit_gestures"
+#include "test_common.h"
 
 static void history_and_duplication(Editor *e) {
     editor_smoke(e);
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->piano = true;
     ed_shortcut(e, SDL_SCANCODE_A, SDL_KMOD_CTRL, false);
@@ -25,7 +17,6 @@ static void history_and_duplication(Editor *e) {
 
     check(all, "Ctrl A selects every note with keyboard piano enabled");
     check(ed_reserved(SDL_SCANCODE_A, SDL_KMOD_CTRL), "Ctrl A cannot be reassigned");
-    e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
     ed_shortcut(e, SDL_SCANCODE_A, SDL_KMOD_CTRL, false);
     all = true;
@@ -35,7 +26,6 @@ static void history_and_duplication(Editor *e) {
     }
 
     check(all, "Ctrl A selects all playlist placements");
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     DmPattern *p = ed_pattern(e);
     p->count = 0;
@@ -86,7 +76,6 @@ static void history_and_duplication(Editor *e) {
 
 static void resizing_and_quantize(Editor *e) {
     editor_smoke(e);
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     DmPattern *p = ed_pattern(e);
     p->count = 0;
@@ -136,25 +125,22 @@ static void resizing_and_quantize(Editor *e) {
 static void gestures(Editor *e) {
     editor_smoke(e);
     e->piano = true;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
-    e->tool = 0;
+    e->tool = TOOL_SELECT;
     DmPattern *p = ed_pattern(e);
     UiRect grid = {100, 100, 500, 300}, r = {36, 72, 564, 328};
     UiMouse mouse = {.pos = {120, 110}, .clicked = true, .ctrl = true};
     size_t count = p->count;
     ed_piano_click(e, p, r, grid, &e->roll_view, 80, 20, mouse, 0, (UiRect){100, 100, 40, 20});
-    check(e->marquee && e->drag == 0 && p->count == count && e->tool == 0,
+    check(e->marquee && e->drag == DRAG_NONE && p->count == count && e->tool == TOOL_SELECT,
           "Ctrl left starts temporary marquee even over an existing note");
     e->marquee = false;
-    e->context = 1;
     e->edit_focus = FOCUS_PLAYLIST;
     int list[] = {0, 1};
     ed_playlist_click(e, r, grid, &e->playlist_view, 64, 40, list, 2, mouse, 0);
-    check(e->marquee && e->drag == 0 && e->tool == 0,
+    check(e->marquee && e->drag == DRAG_NONE && e->tool == TOOL_SELECT,
           "Shift left also overrides a playlist clip without changing the chosen tool");
     e->marquee = false;
-    e->context = 2;
     e->edit_focus = FOCUS_NOTES;
     e->erase_active = false;
     int snapshots = e->undo_count;
@@ -168,13 +154,73 @@ static void gestures(Editor *e) {
     check(ed_pattern(e)->count == count, "one undo restores the entire erase sweep");
 }
 
+static void drag_fixture(Editor *e) {
+    ed_save_free(e);
+    ed_release_piano(e);
+    ed_clear_history(e->undo, &e->undo_count);
+    ed_clear_history(e->redo, &e->redo_count);
+    dm_project_free(&e->project);
+    dm_project_init(&e->project);
+    ++e->project_session;
+    int p = dm_pattern_add(&e->project, "Generated fixture");
+    assert(p == 0);
+    assert(dm_note_add(&e->project.patterns[0], (DmNote){0, 1, 60, 100, 0}));
+    e->active = true;
+    e->selected_pattern = e->selected_channel = e->pattern_channel = 0;
+    e->drag = DRAG_NONE;
+    e->tool = TOOL_SELECT;
+    e->percussion_window = false;
+}
+
+/* Dragging one selected placement moves the selection; Shift bends and Alt resizes a note. */
+static void group_drag_and_modifiers(Editor *e) {
+    drag_fixture(e);
+    assert(dm_clip_add(&e->project, (DmClip){1, 0, 0, 1, 1, 0}));
+    assert(dm_clip_add(&e->project, (DmClip){3, 0, 1, 1, 1, 0}));
+    assert(dm_clip_add(&e->project, (DmClip){5, 0, 2, 0, 1, 0}));
+    UiMouse m = {0};
+    m.clicked = m.left = true;
+    m.pos = (UiPoint){100, 60};
+    ed_playlist_hit_click(e, m, 0, 1);
+    assert(e->project.clips[0].selected && e->project.clips[1].selected);
+    int rows[] = {0, 1, 2, 3};
+    View v = {1, 0, 0, 0};
+    m.clicked = false;
+    m.pos = (UiPoint){120, 80};
+    ed_playlist_drag(e, (UiRect){0, 0, 800, 500}, &v, 20, 10, rows, 4, m);
+    assert(e->project.clips[0].beat == 3 && e->project.clips[1].beat == 5 &&
+           e->project.clips[0].channel == 1 && e->project.clips[1].channel == 2);
+    assert(e->project.clips[2].beat == 5 && e->project.clips[2].channel == 2 && e->undo_count == 1);
+    m.left = false;
+    m.released = true;
+    ed_playlist_drag(e, (UiRect){0, 0, 800, 500}, &v, 20, 10, rows, 4, m);
+    ed_undo(e, false);
+    assert(e->project.clips[0].beat == 1 && e->project.clips[1].beat == 3);
+    drag_fixture(e);
+    DmPattern *p = ed_pattern(e);
+    UiRect r = {0, 0, 800, 500}, grid = {0, 28, 800, 472}, box = {100, 100, 100, 20};
+    m = (UiMouse){0};
+    m.clicked = m.left = m.shift = true;
+    m.pos = (UiPoint){150, 110};
+    ed_piano_click(e, p, r, grid, &v, 80, 20, m, 0, box);
+    assert(e->drag == DRAG_NOTE_BEND);
+    e->drag = DRAG_NONE;
+    m.shift = false;
+    m.alt = true;
+    ed_piano_click(e, p, r, grid, &v, 80, 20, m, 0, box);
+    assert(e->drag == DRAG_NOTE && e->drag_edge == 0);
+    e->drag = DRAG_NONE;
+    m.pos.x = 101;
+    ed_piano_click(e, p, r, grid, &v, 80, 20, m, 0, box);
+    assert(e->drag == DRAG_NOTE && e->drag_edge == -1);
+    e->drag = DRAG_NONE;
+    puts("PASS selected playlist group drag and initial Shift/Alt note gestures");
+}
+
 int main(void) {
-    check(SDL_Init(SDL_INIT_VIDEO), "SDL initializes");
-    SDL_Window *window = SDL_CreateWindow("edit_gestures validation", 1400, 900, SDL_WINDOW_HIDDEN);
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, "direct3d11");
-    check(window && renderer && ui_init(window, renderer, NULL), "real renderer initializes");
-    Editor *e = calloc(1, sizeof(*e));
-    editor_init(e, window, renderer, NULL, "", "", true);
+    Editor *e = test_editor_open("edit_gestures validation", (TestDesktop){0});
+    SDL_Renderer *renderer = e->renderer;
+    group_drag_and_modifiers(e);
     ui_frame();
     ui_root(0, 900);
     history_and_duplication(e);
@@ -219,7 +265,7 @@ int main(void) {
     dm_event_add(&e->project, 0, 0, 0, &bytes);
     bytes = (DmBytes){meter, sizeof(meter), sizeof(meter)};
     dm_event_add(&e->project, 2, 0, 0, &bytes);
-    ed_song_event_open_bar(e, 2, false);
+    ed_song_event_open_bar(e, 2, false, -1);
     check(e->midi_event_index == 1 && e->event_beat == 2 &&
               e->midi_draft.data[1] == MIDI_META_TIME && e->midi_draft.data[3] == 3,
           "source-event selection updates the selected event's identity and editable fields");
@@ -241,11 +287,6 @@ int main(void) {
     }
 
     printf("PASS edit_gestures: %d targeted checks\n", checks);
-    editor_free(e);
-    free(e);
-    ui_shutdown();
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
+    test_editor_close(e);
     return 0;
 }

@@ -55,7 +55,7 @@ static bool allowed(const char *path) {
     }
 
     if (suffix(path, ".bkp")) {
-        char original[8192];
+        char original[DME_PATH_LIMIT];
         size_t n = strlen(path);
 
         if (n >= sizeof(original)) {
@@ -105,8 +105,14 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
 
     for (size_t i = 0; ok && i < sizeof(fixed) / sizeof(*fixed); i++) {
         EsFile file = {0};
-        ok = es_repository_read(repo, fixed[i], &file, error, cap) && file.exists &&
-             es_paths_add(paths, fixed[i]);
+        ok = es_repository_read(repo, fixed[i], &file, error, cap);
+
+        if (ok && !file.exists) {
+            snprintf(error, cap, "%s: %s", DM_TEXT_OOT_MISSING_NATIVE_SOURCE_INPUT, fixed[i]);
+            ok = false;
+        }
+
+        ok = ok && es_paths_add(paths, fixed[i]);
         es_file_free(&file);
         char backup[256];
         snprintf(backup, sizeof(backup), "%s.bkp", fixed[i]);
@@ -120,19 +126,6 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
     }
 
     return ok;
-}
-
-/* Whether path exists in the desired state, without reading its content. */
-static bool present(EsRepository *repo, const EsPlan *plan, const char *path, bool *exists,
-                    char *error, size_t cap) {
-    const EsFile *file = plan ? es_plan_find(plan, path) : NULL;
-
-    if (file) {
-        *exists = file->exists;
-        return true;
-    }
-
-    return es_repository_baseline_exists(repo, path, exists, error, cap);
 }
 
 static bool current(EsRepository *repo, const EsPlan *plan, const char *path, EsFile *file,
@@ -168,9 +161,9 @@ static bool get_version(EsRepository *repo, char version[64], char *error, size_
 }
 
 static bool effective(EsRepository *repo, const EsPlan *plan, const char *logical,
-                      const char *version, char physical[8192], EsFile *file, char *error,
+                      const char *version, char physical[DME_PATH_LIMIT], EsFile *file, char *error,
                       size_t cap) {
-    char extracted[8192];
+    char extracted[DME_PATH_LIMIT];
 
     if (snprintf(extracted, sizeof(extracted), "extracted/%s/%s", version, logical) >=
         (int)sizeof(extracted)) {
@@ -192,7 +185,7 @@ static bool effective(EsRepository *repo, const EsPlan *plan, const char *logica
     }
 
     if (ok) {
-        snprintf(physical, 8192, "%s", authored.exists ? logical : extracted);
+        snprintf(physical, DME_PATH_LIMIT, "%s", authored.exists ? logical : extracted);
         *file = authored.exists ? authored : fallback;
 
         if (authored.exists) {
@@ -210,14 +203,15 @@ static bool effective(EsRepository *repo, const EsPlan *plan, const char *logica
 /* Resolves the effective physical input for a logical path without reading it: an authored
    source takes precedence over the extracted copy. */
 static bool effective_path(EsRepository *repo, const EsPlan *plan, const char *logical,
-                           const char *version, char physical[8192], char *error, size_t cap) {
-    char extracted[8192];
+                           const char *version, char physical[DME_PATH_LIMIT], char *error,
+                           size_t cap) {
+    char extracted[DME_PATH_LIMIT];
     bool authored = false, fallback = false;
 
     if (snprintf(extracted, sizeof(extracted), "extracted/%s/%s", version, logical) >=
             (int)sizeof(extracted) ||
-        !present(repo, plan, logical, &authored, error, cap) ||
-        !present(repo, plan, extracted, &fallback, error, cap)) {
+        !es_plan_exists(repo, plan, logical, &authored, error, cap) ||
+        !es_plan_exists(repo, plan, extracted, &fallback, error, cap)) {
         return false;
     }
 
@@ -225,7 +219,7 @@ static bool effective_path(EsRepository *repo, const EsPlan *plan, const char *l
         return fail(error, cap, DM_TEXT_OOT_MISSING_NATIVE_SOURCE_INPUT, logical);
     }
 
-    snprintf(physical, 8192, "%s", authored ? logical : extracted);
+    snprintf(physical, DME_PATH_LIMIT, "%s", authored ? logical : extracted);
     return true;
 }
 
@@ -428,16 +422,16 @@ static void graph_free(Graph *g) {
 }
 
 static bool native_path(const char *build, const char *folder, const char *extension,
-                        char logical[8192]) {
+                        char logical[DME_PATH_LIMIT]) {
     char prefix[128];
     snprintf(prefix, sizeof(prefix), "$(BUILD_DIR)/assets/audio/%s/", folder);
 
     if (!build || strncmp(build, prefix, strlen(prefix)) || !suffix(build, extension) ||
-        strlen(build) >= 8192 || strstr(build, "..") || strchr(build, '\\')) {
+        strlen(build) >= DME_PATH_LIMIT || strstr(build, "..") || strchr(build, '\\')) {
         return false;
     }
 
-    snprintf(logical, 8192, "assets/audio/%s/%s", folder, build + strlen(prefix));
+    snprintf(logical, DME_PATH_LIMIT, "assets/audio/%s/%s", folder, build + strlen(prefix));
     return true;
 }
 
@@ -456,7 +450,7 @@ static bool index_value(const char *s, unsigned *number) {
 static const Sample *find_sample(const Graph *, const char *, const char *);
 
 static bool scan_bank(Graph *g, const char *logical, char *error, size_t cap) {
-    char path[8192];
+    char path[DME_PATH_LIMIT];
     EsFile source = {0};
     bool ok = effective(g->repo, g->plan, logical, g->version, path, &source, error, cap);
     EsXml *xml = ok ? es_xml_parse(source.data, source.size, error, cap) : NULL;
@@ -491,7 +485,7 @@ static bool scan_bank(Graph *g, const char *logical, char *error, size_t cap) {
         }
 
         const char *name = es_xml_attribute(n, "Name");
-        char wav_logical[8192], physical[8192];
+        char wav_logical[DME_PATH_LIMIT], physical[DME_PATH_LIMIT];
         ok = name && *name &&
              native_path(es_xml_attribute(n, "Path"), "samples", ".aifc", wav_logical);
 
@@ -539,7 +533,7 @@ static bool patch_pitch(EsXml *xml, size_t node, const char *ending, double rate
 
 static bool scan_font(Graph *g, const char *logical, bool font_indices[256], char *error,
                       size_t cap) {
-    char path[8192], banks[2][8192] = {{0}};
+    char path[DME_PATH_LIMIT], banks[2][DME_PATH_LIMIT] = {{0}};
     EsFile source = {0};
     bool ok = effective(g->repo, g->plan, logical, g->version, path, &source, error, cap);
     EsXml *xml = ok ? es_xml_parse(source.data, source.size, error, cap) : NULL;
@@ -903,7 +897,7 @@ bool oot_repository_sample_targets(OotPluginJob *job, EsRepository *repo, const 
 
 static bool append_sample(EsRepository *repo, EsPlan *plan, const char *version, const char *name,
                           char *error, size_t cap) {
-    char path[8192];
+    char path[DME_PATH_LIMIT];
     EsFile source = {0};
     bool ok = effective(repo, plan, "assets/audio/samplebanks/SampleBank_0.xml", version, path,
                         &source, error, cap);
@@ -1121,7 +1115,7 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
             ok = ok && data && es_plan_put(plan, sample_path, data, bytes, 0, true, error, cap) &&
                  es_plan_affect(plan, m->key, sample_path, "added sample") &&
                  append_sample(repo, plan, version, asset_name, error, cap);
-            char physical[8192];
+            char physical[DME_PATH_LIMIT];
             EsFile bank = {0};
             ok = ok &&
                  effective(repo, plan, "assets/audio/samplebanks/SampleBank_0.xml", version,

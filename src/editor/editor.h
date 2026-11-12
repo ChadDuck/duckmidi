@@ -56,6 +56,8 @@ typedef enum {
     ACT_PREFERENCES,
     ACT_COPY_NOTE_BENDS,
     ACT_CUT_NOTE_BENDS,
+    ACT_CHANNEL_UP,
+    ACT_CHANNEL_DOWN,
     ACT_COUNT
 } Action;
 
@@ -73,10 +75,46 @@ static inline bool ed_same_binding(Binding a, Binding b) {
     return a.key == b.key && a.mods == b.mods && a.mouse == b.mouse;
 }
 
-/* Mouse drags that can be rebound in Keyboard Shortcuts. */
-typedef enum { GESTURE_COPY_PLACEMENTS, GESTURE_COPY_NOTES, GESTURE_COUNT } Gesture;
+/* Every mouse gesture the editor recognizes; ed_gestures in editor/state.c defines each one. The
+   first GESTURE_REBINDABLE are drags that can be rebound in Keyboard Shortcuts. The rest are fixed:
+   test them with ed_gesture_held, never with UiMouse.shift, .ctrl or .alt. */
+typedef enum {
+    GESTURE_COPY_PLACEMENTS,
+    GESTURE_COPY_NOTES,
+    GESTURE_REBINDABLE,
+    GESTURE_FREE = GESTURE_REBINDABLE, /* move, place and resize without snapping */
+    GESTURE_MARQUEE,                   /* left drag draws a selection box */
+    GESTURE_EXTEND,                    /* a click adds to or removes from the selection */
+    GESTURE_MENU,                      /* right click opens the item's menu instead of erasing */
+    GESTURE_ZOOM,                      /* the wheel zooms */
+    GESTURE_SCROLL_ROWS,               /* the wheel scrolls rows instead of time */
+    GESTURE_VELOCITY_WHEEL,            /* the wheel changes the velocity of the notes under it */
+    GESTURE_NOTE_BEND,                 /* dragging from a note draws a pitch bend */
+    GESTURE_BEND_EDIT,                 /* a click on a bend point selects it in the event lane */
+    GESTURE_BEND_POINT,                /* a click on a bend line edits the line */
+    GESTURE_BRUSH_KEY,                 /* the brush stays on the key it started on */
+    GESTURE_LOCK_VALUE,                /* dragging an event point changes its time only */
+    GESTURE_LOCK_TIME,                 /* dragging an event point changes its value only */
+    GESTURE_CONNECT,                   /* a click in an event lane connects to the nearest point */
+    GESTURE_LANE_SETTINGS,             /* a click on a channel label opens its lane settings */
+    GESTURE_PLAY_RANGE,                /* the sample editor's playback range handles */
+    GESTURE_DESELECT,                  /* a click on a selected pattern clears the selection */
+    GESTURE_APPLY_ALL,                 /* an event lane button acts on every point */
+    GESTURE_PORT_MENU,                 /* a click on a port colour offers to delete the port */
+    GESTURE_PANIC,                     /* Stop also silences every MIDI note */
+    GESTURE_COUNT
+} Gesture;
 
-typedef enum { MOUSE_LEFT, MOUSE_RIGHT, MOUSE_MIDDLE, MOUSE_BUTTONS } MouseButton;
+/* MOUSE_BUTTONS counts the buttons a rebindable gesture can use; the two after it only describe
+   fixed gestures. */
+typedef enum {
+    MOUSE_LEFT,
+    MOUSE_RIGHT,
+    MOUSE_MIDDLE,
+    MOUSE_BUTTONS,
+    MOUSE_WHEEL = MOUSE_BUTTONS,
+    MOUSE_ANY
+} MouseButton;
 
 typedef struct {
     MouseButton button;
@@ -84,10 +122,17 @@ typedef struct {
 } MouseBinding;
 
 typedef struct {
+    const char *name; /* preferences key */
+    MouseBinding binding;
+    const char *label; /* Keyboard Shortcuts row; rebindable gestures only */
+} GestureInfo;
+
+typedef struct {
     float zoom, scroll_x, scroll_y;
     int focus;
 } View;
 
+/* The section that owns the selection, the clipboard and the editing shortcuts. */
 typedef enum {
     FOCUS_NONE,
     FOCUS_PLAYLIST,
@@ -97,8 +142,50 @@ typedef enum {
     FOCUS_OTHER
 } EditFocus;
 
+/* The timeline the transport, scrolling and navigation shortcuts act on; derived from the focus
+   by ed_context. */
+typedef enum {
+    CONTEXT_NONE,
+    CONTEXT_PLAYLIST,
+    CONTEXT_ROLL,
+    CONTEXT_EVENT_EDITOR /* Only as a pan owner: the Event Editor pans on its own. */
+} EditContext;
+
+/* Toolbar tools, in the order of ACT_SELECT..ACT_BRUSH. */
+typedef enum { TOOL_SELECT, TOOL_MARQUEE, TOOL_SLICE, TOOL_DELETE, TOOL_BRUSH, TOOL_COUNT } Tool;
+
+/* The mouse drag in progress (Editor.drag). */
+typedef enum {
+    DRAG_NONE,
+    DRAG_CLIP_MOVE,
+    DRAG_CLIP_RESIZE,
+    DRAG_LABEL_WIDTH, /* The playlist's channel label divider. */
+    DRAG_NOTE,        /* Move, or resize when drag_edge is set. */
+    DRAG_NOTE_BEND,   /* Shift + drag on a note draws its pitch bend. */
+    DRAG_BEND_POINT,  /* A pitch bend point on the piano roll. */
+    DRAG_BRUSH,
+    DRAG_VELOCITY,
+    DRAG_EVENT_PRESS, /* A press in an event lane that is not yet a point or a line. */
+    DRAG_EVENT_LINE,
+    DRAG_EVENT_POINT, /* One point, or the selected group. */
+    DRAG_GRAPH_PAINT,
+    DRAG_GRAPH_MOVE,
+    DRAG_GRAPH_ERASE
+} DragKind;
+
+typedef enum { CLIPBOARD_COPY, CLIPBOARD_CUT, CLIPBOARD_PASTE } ClipboardAction;
+
 #define DM_MIDI_LATENCY_LIMIT_MS 1000
 #define ED_UNDO_LIMIT 64 /* Undo and redo steps kept, each. */
+
+enum { ED_SONG_EVENT_ROWS = 1 + 16 };
+
+typedef struct {
+    DmBytes groups;
+    uint64_t revision;
+    double left, right;
+    size_t events, automation;
+} SongEventCache;
 
 typedef struct {
     SDL_Window *window;
@@ -159,7 +246,7 @@ typedef struct {
     char dialog_suggested[DM_PATH];
     char audio_export_pending[DM_PATH], audio_exported[DM_PATH];
     char audio_export_message[512]; /* Digital Audio's own result, apart from the status bar. */
-    bool export_shown;                      /* The export window was open last frame. */
+    bool export_shown;              /* The export window was open last frame. */
     uint64_t ports_revision, ports_session; /* Project state the port cache describes. */
     bool ports_cached;
     bool channel_ports[16][DM_NOTE_PORTS];
@@ -176,7 +263,7 @@ typedef struct {
     uint64_t midi_selection_revision;
     float midi_split, song_event_split;
     double event_beat, song_event_anchor;
-    int song_event_kind;
+    int song_event_kind, song_event_channel;
     bool song_event_add, song_event_bound;
     int ui_size;
     bool os_cursor;
@@ -197,17 +284,15 @@ typedef struct {
     DmBytes record_original, midi_rows;
     /* Playlist Events row: one group per occupied bar in the visible range, rebuilt only when
        the project or the range changes. */
-    DmBytes song_event_groups;
-    uint64_t song_event_groups_revision;
-    double song_event_groups_left, song_event_groups_right;
-    size_t song_event_groups_events, song_event_groups_automation;
+    /* Song, then one cache per MIDI channel. */
+    SongEventCache song_event_groups[ED_SONG_EVENT_ROWS];
     bool curve_drag, curve_changed, curve_overlay;
     int curve_left;
     float curve_y;
     double curve_origin, curve_sensitivity;
     bool automation_all, edit_moved, roll_auto_hidden;
-    EditFocus edit_focus;
-    int pan_context;
+    EditFocus edit_focus; /* The one "where am I": see ed_context for the timeline it implies. */
+    int pan_context;      /* EditContext */
     float mixer_height, label_width, automation_height;
     int piano_octave, pattern_drag, rename_pattern;
     bool pattern_drag_on_playlist; /* The dragged card hides over the playlist's drop outline. */
@@ -216,14 +301,16 @@ typedef struct {
     DmChannel reset_channels[16];
     double start_beat[2], cursor_beat[2];
     bool scrub, scrub_playing;
-    int scrub_context;
+    int scrub_context; /* EditContext */
     double scrub_target, scrub_origin;
     double loop_start[2], loop_end[2], loop_anchor;
     bool loop_enabled[2], loop_drag;
-    int loop_context;
+    int loop_context; /* EditContext */
     int piano_channel;
     uint8_t held_channels[SDL_SCANCODE_COUNT];
     bool automation_browser, channel_expanded[16], lane_settings, lfo_editing;
+    bool remove_note_row;
+    int remove_note_row_channel;
     int lane_channel, lane_index;
     bool lfo_center_drag;
     double lfo_center_origin;
@@ -232,7 +319,7 @@ typedef struct {
     int selected_clip;
     DmNote *drag_notes;
     size_t drag_note_count;
-    bool automation_raw, recording_commit;
+    bool automation_raw;
     bool last_automation_valid;
     DmAutomation last_automation;
     int automation_node, context_note, context_point;
@@ -249,8 +336,10 @@ typedef struct {
     char midi_folder[DM_PATH], font_folder[DM_PATH], export_folder[DM_PATH],
         preferred_font[DM_PATH], output_name[256];
     int smoke_frames;
-    int pattern_channel, selected_pattern, selected_channel, instrument_channel, tool, context,
-        capture, drag, drag_index, drag_edge, export_type;
+    int pattern_channel, selected_pattern, selected_channel, instrument_channel, capture,
+        drag_index, drag_edge, export_type;
+    int tool; /* Tool */
+    int drag; /* DragKind */
     uint32_t last_note_pattern_uid;
     DmAudioOptions audio_options;
     double drag_beat, drag_length, record_start[128];
@@ -262,9 +351,8 @@ typedef struct {
     DmPatchReplacement instrument_source;
     DmPatchReplacement midi_sample_source;
     bool midi_sample_dirty, midi_sample_inherit, instrument_audition;
-    bool instrument_new, instrument_drums, instrument_remove, instrument_raise;
+    bool instrument_new, instrument_drums, instrument_remove;
     bool instrument_preview; /* The instrument window also sets the pattern editor's dropdown. */
-    bool preferences_raise;  /* Preferences comes to the front on its next frame. */
     int brush_quarter, brush_pitch, brush_anchor;
     double record_origin[128];
     uint64_t project_session, clipboard_session;
@@ -310,8 +398,6 @@ typedef struct {
     bool event_clipboard_all;
     int undo_count, redo_count;
     int held[SDL_SCANCODE_COUNT];
-    SDL_Keymod keymods;
-    SDL_Scancode keypress;
     char recent[10][DM_PATH];
     int recent_count;
 } Editor;

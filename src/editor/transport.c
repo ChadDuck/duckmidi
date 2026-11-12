@@ -96,7 +96,7 @@ bool ed_begin_record_take(Editor *e) {
         return true;
     }
 
-    if (!p || p->kind) {
+    if (!p || (p->kind && p->mode)) {
         return false;
     }
 
@@ -120,7 +120,7 @@ bool ed_begin_record_take(Editor *e) {
 
     ed_midi_input_take(e);
 
-    if (!e->overwrite) {
+    if (!e->overwrite && !p->kind) {
         size_t kept = 0;
 
         for (size_t i = 0; i < p->count; i++) {
@@ -232,9 +232,7 @@ void ed_record_note(Editor *e, int note) {
         e, ed_pattern(e), note, ED_DEFAULT_VELOCITY, ed_note_port(e), e->record_start[note],
         dm_seconds_beat(&e->project, dm_audio_position(e->audio)), e->record_origin[note]);
     e->record_start[note] = -1;
-    e->recording_commit = true;
     ed_commit(e);
-    e->recording_commit = false;
 }
 
 void ed_stop_edit_feedback(Editor *e) {
@@ -278,8 +276,8 @@ void ed_release_piano(Editor *e) {
 }
 
 void ed_toggle_record(Editor *e) {
-    if (!e->record && ed_pattern(e) && ed_pattern(e)->kind) {
-        ed_message(e, DM_TEXT_OPEN_NOTE_PATTERN);
+    if (!e->record && ed_pattern(e) && ed_pattern(e)->kind && ed_pattern(e)->mode) {
+        ed_message(e, DM_TEXT_OPEN_RECORD_PATTERN);
         return;
     }
 
