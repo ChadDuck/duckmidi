@@ -246,6 +246,67 @@ static void compare_controls(const char *file, const DmExportEvent *before, size
     }
 }
 
+/* The generated song plays the same notes and controller values as its source, and its layout
+   is usable: no placements overlap on a row, and every note pattern spans at least a beat. */
+static size_t same_song(const char *name, const DmProject *source, const DmProject *result) {
+    char error[512];
+    DmExportEvent *before = NULL, *after = NULL;
+    size_t bn = 0, an = 0;
+    uint64_t bd, ad;
+    assert(dm_export_timeline(source, &before, &bn, &bd, error, sizeof(error)) &&
+           dm_export_timeline(result, &after, &an, &ad, error, sizeof(error)));
+    compare_controls(name, before, bn, after, an);
+    qsort(before, bn, sizeof(*before), note_order);
+    qsort(after, an, sizeof(*after), note_order);
+    size_t i = 0, j = 0, notes = 0;
+
+    for (;;) {
+        while (i < bn && (before[i].status & 0xe0) != 0x80) {
+            i++;
+        }
+
+        while (j < an && (after[j].status & 0xe0) != 0x80) {
+            j++;
+        }
+
+        if (i == bn || j == an) {
+            assert(i == bn && j == an);
+            break;
+        }
+
+        if (before[i].tick != after[j].tick || before[i].status != after[j].status ||
+            before[i].a != after[j].a || before[i].b != after[j].b) {
+            fprintf(stderr, "Note mismatch %s index %zu: %llu %x %u %u / %llu %x %u %u\n", name,
+                    notes, (unsigned long long)before[i].tick, before[i].status, before[i].a,
+                    before[i].b, (unsigned long long)after[j].tick, after[j].status, after[j].a,
+                    after[j].b);
+            assert(false);
+        }
+
+        i++;
+        j++;
+        notes++;
+    }
+
+    for (size_t a = 0; a < result->clip_count; ++a) {
+        DmClip x = result->clips[a];
+        assert(x.lane || x.row < result->note_rows[x.channel]);
+        assert(result->patterns[x.pattern].kind || result->patterns[x.pattern].length >= 1);
+
+        for (size_t k = a + 1; k < result->clip_count; ++k) {
+            DmClip y = result->clips[k];
+            assert(x.channel != y.channel || x.lane != y.lane || x.row != y.row ||
+                   x.beat >= y.beat + dm_clip_length(result, y) - 1e-9 ||
+                   y.beat >= x.beat + dm_clip_length(result, x) - 1e-9);
+        }
+    }
+
+    assert(fabs(dm_duration(source) - dm_duration(result)) < 1e-6);
+    free(before);
+    free(after);
+    return notes;
+}
+
 static void imported_generation(void) {
     const char *files[] = {"samples/imp_night.mid", "samples/e2m1.mus", "samples/D_46_D15.mid",
                            "samples/d_01_51.mus"};
@@ -260,58 +321,58 @@ static void imported_generation(void) {
         assert(dm_read(files[f], &data, error, sizeof(error)) &&
                dm_import(&source, data.data, data.size, 0, 0, error, sizeof(error)));
         assert(dm_generate_patterns(&source, &result, NULL, &stats, error, sizeof(error)));
-        DmExportEvent *before = NULL, *after = NULL;
-        size_t bn = 0, an = 0;
-        uint64_t bd, ad;
-        assert(dm_export_timeline(&source, &before, &bn, &bd, error, sizeof(error)) &&
-               dm_export_timeline(&result, &after, &an, &ad, error, sizeof(error)));
-        compare_controls(files[f], before, bn, after, an);
-        qsort(before, bn, sizeof(*before), note_order);
-        qsort(after, an, sizeof(*after), note_order);
-        size_t i = 0, j = 0, notes = 0;
-
-        for (;;) {
-            while (i < bn && (before[i].status & 0xe0) != 0x80) {
-                i++;
-            }
-
-            while (j < an && (after[j].status & 0xe0) != 0x80) {
-                j++;
-            }
-
-            if (i == bn || j == an) {
-                assert(i == bn && j == an);
-                break;
-            }
-
-            if (before[i].tick != after[j].tick || before[i].status != after[j].status ||
-                before[i].a != after[j].a || before[i].b != after[j].b) {
-                fprintf(stderr, "Note mismatch %s index %zu: %llu %x %u %u / %llu %x %u %u\n",
-                        files[f], notes, (unsigned long long)before[i].tick, before[i].status,
-                        before[i].a, before[i].b, (unsigned long long)after[j].tick,
-                        after[j].status, after[j].a, after[j].b);
-                assert(false);
-            }
-
-            i++;
-            j++;
-            notes++;
-        }
-
-        printf("PASS generation note timeline: %s (%zu events, %zu linked repeats)\n", files[f],
-               notes, stats.linked_placements);
-        free(before);
-        free(after);
+        size_t notes = same_song(files[f], &source, &result);
+        /* Phrases group many notes; the old note-group splitter averaged two or three. */
+        assert(stats.note_patterns * 10 < notes);
+        printf("PASS generation note timeline: %s (%zu events, %zu patterns, %zu linked repeats)\n",
+               files[f], notes, stats.note_patterns, stats.linked_placements);
         dm_bytes_free(&data);
         dm_project_free(&source);
         dm_project_free(&result);
     }
 }
 
+/* Placements as the editor makes them today: a slice showing the middle of its pattern, on the
+   channel's second note row, and a bar repeated off the bar grid. */
+static void sliced_generation(void) {
+    DmProject source, result;
+    dm_project_init(&source);
+    dm_project_init(&result);
+    int id = dm_pattern_add(&source, "Riff");
+    assert(id >= 0);
+
+    for (int bar = 0; bar < 6; ++bar) {
+        for (int j = 0; j < 4; ++j) {
+            assert(dm_note_add(&source.patterns[id],
+                               (DmNote){bar * 3.5 + j * .75, .5, (uint8_t)(60 + j), 100, 0}));
+        }
+    }
+
+    dm_pattern_fit(&source, &source.patterns[id]);
+    source.channels[0].enabled = true;
+    source.note_rows[0] = 2;
+    assert(dm_clip_add(&source, (DmClip){.beat = 0, .pattern = id, .channel = 0}));
+    assert(dm_clip_add(
+        &source,
+        (DmClip){
+            .beat = 32, .pattern = id, .channel = 0, .row = 1, .offset = 3.5, .length = 10.5}));
+    char error[256];
+    DmGenerationStats stats;
+    assert(dm_generate_patterns(&source, &result, NULL, &stats, error, sizeof(error)));
+    size_t notes = same_song("sliced", &source, &result);
+    /* Each note is an on and an off event: six whole bars and the slice's three. */
+    assert(notes == 2 * (4 * 6 + 4 * 3) && stats.linked_placements > 0);
+    printf("PASS generation reads slices and rows (%zu notes, %zu patterns, %zu linked)\n", notes,
+           stats.note_patterns, stats.linked_placements);
+    dm_project_free(&source);
+    dm_project_free(&result);
+}
+
 int main(void) {
     Editor *e = test_editor_open("Pattern generation", (TestDesktop){.renderer = "software"});
     generation(e);
     imported_generation();
+    sliced_generation();
     test_editor_close(e);
     return 0;
 }

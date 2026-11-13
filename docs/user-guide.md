@@ -51,6 +51,8 @@ Every copy of a pattern shares the same notes, so editing one changes them all. 
 
 In the arrangement, **Shift + drag** a placement to make a linked copy, drag its edge to change its length, or use the slice tool to split it.
 
+Selections work as in a file manager: **Ctrl + click** adds or removes a placement, **Shift + click** selects every placement from the last one clicked to the clicked spot, across the rows between them, and **Ctrl + Shift + click** adds that range. In the piano roll, **Shift + click** and **Ctrl + click** add notes, and **Ctrl + click** on a selected note removes it. Turn this off in **Preferences**.
+
 > **Tip:** **Keypad +** jumps to the next pattern, or makes a new empty one. **Keypad −** goes back or removes the newest empty one.
 
 ### Channels and instruments
@@ -69,6 +71,7 @@ Click **+ New** beside **Arrangement** to add a channel, then pick **Melody** or
 | Drag a note / its edge | Move it / change its length |
 | Right-click or right-drag | Erase |
 | Ctrl + drag | Select |
+| Shift + click / Ctrl + click a note | Add it to the selection / add or remove it |
 | Middle-drag a note | Copy it |
 | Shift + drag inside a note | Draw a pitch bend |
 | Alt while dragging | Ignore the grid |
@@ -184,6 +187,20 @@ Sample sets are saved as WAV and SFZ files in the `samples` folder beside your p
 
 **Ctrl + S** saves a `.duck` project. **Ctrl + E** opens the Export window.
 
+duckmidi autosaves unsaved changes every five minutes and keeps the latest five copies per project
+in `projects/auto/` under your settings folder. Autosaves leave your project file untouched; use
+**Ctrl + S** to save normally.
+
+After an unexpected close, reopen duckmidi and choose **Restore** to recover the offered autosave.
+The restored project has unsaved changes, and **Ctrl + S** saves back to its original file. An
+untitled project still asks you to choose a filename. You can also open an older `.duck` copy from
+`projects/auto/` yourself and use **Save as** to choose where to keep it.
+
+To report a crash, attach the matching plain-text `crash-*.txt` file from `logs/` under your settings
+folder to a GitHub issue, or paste its contents. Recovery shows the report path when one is
+available. On Windows these folders are beside `duckmidi.exe`; see [Customize shortcuts](#customize-shortcuts)
+for the settings locations on macOS and Linux.
+
 ![The Export window](images/export.png)
 
 - **MIDI:** saves a standard MIDI file. Keep duckmidi's metadata to reopen it with all your settings, or strip it for plain MIDI.
@@ -197,7 +214,7 @@ Muted channels are left out of every export.
 
 For games, check the instrument mappings on the right, then click **Save M64 Package** or **Save OoT Package** for a ZIP with install steps, or **Export to Repository** to install straight into your checkout. The first time, that button reads **Choose Folder**; you can change the folder later in **Edit > Preferences**.
 
-To loop part of your song in-game, add **M64 - Loop Start** and **M64 - Loop End** song events.
+To loop part of your song in-game, add **Loop Start** and **Loop End** song events.
 
 ### Custom game samples
 
@@ -224,8 +241,8 @@ Keep your game's build stopped while exporting or reverting. See [How repository
 
 ## More handy features
 
-- **Turn an imported song into patterns:** **Edit > Generate Patterns** finds repeated phrases and makes them linked patterns.
-- **Song events:** click the **Events** row in the arrangement to add tempo, time signature, key, markers and more. **MIDI Events** lists every MIDI message.
+- **Turn an imported song into patterns:** **Edit > Generate Patterns** cuts each channel into phrases of whole bars (or of the song's own repeat length when its phrases do not line up with the bars), links phrases whose notes repeat exactly, and moves controller data into automation patterns. Notes held into the next phrase put it on another note row.
+- **Song events:** click the **Events** row in the arrangement to add tempo, time signature, key, markers and more. In **Edit**, Ctrl + click and Shift + click select several events; then move them all by a number of beats, or to one beat. **MIDI Events** lists every MIDI message.
 - **Check for updates:** **Help > Check for Update**. duckmidi only goes online when you ask it to (Windows only).
 
 ![The Updates window](images/updates.png)

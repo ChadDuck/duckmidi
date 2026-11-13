@@ -53,7 +53,7 @@ The song being exported:
 - `project_session`, which changes when another project opens. Use it to reset song-specific settings.
 - The project name (empty if unsaved), the imported MIDI file's path (or empty), and the 128 program and drum names.
 - `percussion_channels`: bit `c` is set when MIDI channel `c + 1` plays drums. That's usually channel 10, but GS, XG and GM2 files can change it.
-- `loop_points`, `loop_start` and `loop_end`: where the song's **M64 - Loop Start** and **M64 - Loop End** events sit, in event ticks.
+- `loop_points`, `loop_start` and `loop_end`: where the song's **Loop Start** and **Loop End** events sit, in event ticks.
 
 A job sees the same frozen song from preflight through conversion, even if the user keeps editing.
 

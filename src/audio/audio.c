@@ -117,6 +117,7 @@ DmAudio *dm_audio_create(char *error, size_t cap) {
     atomic_init(&a->input_policy, DM_INPUT_CONTROLLERS_KEYBOARD);
     atomic_init(&a->input_played, 0);
     atomic_init(&a->input_dropped, 0);
+    dm_midi_clock_init(&a->clock);
     a->input_latency_auto = true;
 
     for (unsigned key = 0; key < MIDI_KEYS; ++key) {
@@ -269,6 +270,26 @@ void dm_audio_transport(DmAudio *a, bool playing) {
 
 double dm_audio_position(DmAudio *a) {
     return a ? SDL_GetAtomicInt(&a->position_ms) / 1000.0 : 0;
+}
+
+double dm_audio_heard_seconds(DmAudio *a, uint64_t ticks_ns) {
+    DmMidiClockValue clock;
+
+    if (!a) {
+        return 0;
+    }
+
+    /* A write in progress is retried briefly; without a reading the rendered position is the
+       best estimate. */
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        if (dm_midi_clock_read(&a->clock, &clock)) {
+            DmMidiInputEvent event = {.ticks_ns = ticks_ns};
+            dm_midi_clock_stamp(clock, &event);
+            return fmax(0, event.song_seconds);
+        }
+    }
+
+    return dm_audio_position(a);
 }
 
 void dm_audio_panic(DmAudio *a) {

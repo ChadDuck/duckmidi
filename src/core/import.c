@@ -598,6 +598,48 @@ bool dm_collapse_program_repeats(DmProject *p, int index, bool automation) {
     return true;
 }
 
+/* Keep the original indices in the history until the scan finishes. Marks follow the
+   compacted stream, while the history carries whether each original prior was picked. */
+void dm_collapse_marked_program_repeats(DmProject *p, bool *marks, bool automation) {
+    DmProgramHistory history[DM_PORT_COMBINED][16] = {0};
+    bool picked[DM_PORT_COMBINED][16] = {0};
+    size_t *count = automation ? &p->automation_count : &p->event_count;
+    size_t write = 0;
+
+    for (size_t i = 0; i < *count; ++i) {
+        int prior = dm_project_program_repeat(history, p, (int)i, automation);
+        int port = automation ? p->automation[i].port : p->events[i].port;
+        const DmBytes *message = automation ? NULL : &p->events[i].message;
+        int channel = automation      ? p->automation[i].channel
+                      : message->size ? message->data[0] & MIDI_CHANNEL_MASK
+                                      : 0;
+        DmProgramHistory *last = &history[port][channel];
+        bool remove = prior >= 0 && picked[port][channel];
+
+        if (last->program_plus_one && last->index == (int)i) {
+            picked[port][channel] = marks[i];
+        }
+
+        if (remove) {
+            if (!automation) {
+                dm_bytes_free(&p->events[i].message);
+            }
+
+            continue;
+        }
+
+        if (automation) {
+            p->automation[write] = p->automation[i];
+        } else {
+            p->events[write] = p->events[i];
+        }
+
+        marks[write++] = marks[i];
+    }
+
+    *count = write;
+}
+
 static bool collapse_restored_programs(DmProject *p, char *error, size_t cap) {
     dm_collapse_program_repeats(p, -1, false);
     dm_collapse_program_repeats(p, -1, true);

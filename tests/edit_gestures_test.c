@@ -143,11 +143,18 @@ static void gestures(Editor *e) {
     e->marquee = false;
     e->edit_focus = FOCUS_NOTES;
     e->erase_active = false;
+    /* Two short notes on the top key with empty space around them: a held right drag from
+       before the first to past the second erases both. */
+    e->roll_view = (View){1, 0, 0, 0};
+    dm_note_add(p, (DmNote){.25, .25, 127, 100, 0});
+    dm_note_add(p, (DmNote){1, .25, 127, 100, 0});
+    count = p->count;
     int snapshots = e->undo_count;
-    mouse = (UiMouse){.pos = {120, 110}, .right = true, .right_clicked = true};
-    ed_piano_mouse(e, p, r, grid, &e->roll_view, 80, 20, mouse, true, 0, (UiRect){0});
+    mouse = (UiMouse){.pos = {105, 110}, .right = true, .right_clicked = true};
+    ed_piano_mouse(e, p, r, grid, &e->roll_view, 80, 20, mouse, true, -1, (UiRect){0});
     mouse.right_clicked = false;
-    ed_piano_mouse(e, p, r, grid, &e->roll_view, 80, 20, mouse, true, 0, (UiRect){0});
+    mouse.pos.x = 215;
+    ed_piano_mouse(e, p, r, grid, &e->roll_view, 80, 20, mouse, true, -1, (UiRect){0});
     check(p->count == count - 2 && e->undo_count == snapshots + 1,
           "held right mouse deletes hovered notes as one sweep transaction");
     ed_undo(e, false);

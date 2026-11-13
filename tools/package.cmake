@@ -1,5 +1,8 @@
 # A local portable layout: the editor locates plugins/preferences/assets beside itself.
 option(DUCKMIDI_PRODUCTION "Include the supplied SoundFont and first-launch sample" OFF)
+# A development delivery keeps debug symbols, so crash report addresses can be resolved with
+# addr2line, and goes to a folder ending in -DEV beside the release deliveries.
+option(DUCKMIDI_DEV_DELIVERY "Deliver an unstripped build to a -DEV folder" OFF)
 install(TARGETS duckmidi RUNTIME DESTINATION .)
 install(TARGETS m64export ootexport sampletool RUNTIME DESTINATION plugins LIBRARY DESTINATION plugins)
 install(TARGETS duck_export_support RUNTIME DESTINATION plugins LIBRARY DESTINATION plugins)
@@ -80,6 +83,7 @@ add_custom_target(deliver
     "-DBUILD_DIR=${CMAKE_BINARY_DIR}" "-DVERSION_FILE=${DUCKMIDI_GENERATED}/version.txt"
     "-DCONFIG=$<CONFIG>"
     "-DDELIVERY_TYPE=${DELIVERY_TYPE_NAME}"
+    "-DDEV=${DUCKMIDI_DEV_DELIVERY}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/deliver.cmake"
   DEPENDS duckmidi
   USES_TERMINAL VERBATIM)

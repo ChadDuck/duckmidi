@@ -10,12 +10,6 @@ typedef struct {
 } Flat;
 
 typedef struct {
-    size_t first, count;
-    double beat;
-    uint64_t hash;
-} Group;
-
-typedef struct {
     uint64_t key;
     size_t count, last;
     int id;
@@ -85,13 +79,6 @@ static Entry *lookup(Entry *table, size_t size, uint64_t key) {
     }
 
     return &table[at];
-}
-
-static uint64_t window_hash(const Group *g, const uint64_t *prefix, const uint64_t *powers,
-                            size_t start, size_t length) {
-    return (prefix[start + length - 1] - prefix[start] * powers[length - 1]) *
-               UINT64_C(1000000007) +
-           g[start + length - 1].hash;
 }
 
 static int control_group(DmAutomation a) {
@@ -261,6 +248,7 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
 
             c.pattern = g.output;
             c.lane = lanes[c.channel][g.event];
+            c.row = 0; /* Automation subrows have one row. */
             c.length = dm_clip_length(source, source->clips[i]);
             c.selected = 0;
             ok = dm_clip_add(next, c);
@@ -291,176 +279,526 @@ static bool matches(const DmPattern *p, const Flat *flat, size_t first, size_t e
     return true;
 }
 
-static bool channel_patterns(DmProject *next, const Flat *flat, size_t count, int channel,
-                             Entry *patterns, size_t pattern_slots, const DmGenerationHooks *hooks,
-                             DmGenerationStats *stats) {
-    Group *groups = calloc(count + 1, sizeof(*groups));
-    uint64_t *prefix = calloc(count + 1, sizeof(uint64_t)),
-             *powers = calloc(count + 1, sizeof(uint64_t));
-    size_t *best = calloc(count + 1, sizeof(size_t));
-    double *scores = calloc(count + 1, sizeof(double));
-    size_t slots = table_size(count + 1);
+/* Phrases are made of whole bars: a bar's notes are those starting inside it. */
+typedef struct {
+    double start, length;
+    size_t first, count;
+    uint64_t hash;
+} Bar;
+
+enum { PHRASE_BARS = 16, UNIQUE_BARS = 4, SONG_BARS = 200000 };
+
+/* The song's bars up to end, following meter changes. */
+static Bar *song_bars(const DmProject *p, double end, size_t *count) {
+    Bar *bars = NULL;
+    size_t n = 0, capacity = 0;
+
+    for (double at = 0; at < end - 1e-9;) {
+        DmMeter m = dm_meter(p, at);
+        double index = floor((at - m.origin) / m.bar + 1e-9);
+        double next = fmin(m.origin + (index + 1) * m.bar, m.next_change);
+
+        if (next <= at + 1e-9) {
+            next = at + m.bar;
+        }
+
+        if (n >= SONG_BARS || !dm_reserve((void **)&bars, &capacity, n + 1, sizeof(*bars))) {
+            free(bars);
+            return NULL;
+        }
+
+        bars[n++] = (Bar){at, next - at, 0, 0, 0};
+        at = next;
+    }
+
+    *count = n;
+    return bars;
+}
+
+/* Fills each bar with the channel's notes that start in it, and hashes its content relative to
+   the bar start so equal bars anywhere in the song hash alike. */
+static void fill_bars(Bar *bars, size_t n, const Flat *flat, size_t count) {
+    size_t at = 0;
+
+    for (size_t b = 0; b < n; b++) {
+        Bar *bar = &bars[b];
+        bar->first = at;
+        uint64_t hash = mix(real_hash(bar->length));
+
+        while (at < count && (b + 1 == n || flat[at].note.beat < bar->start + bar->length - 1e-9)) {
+            DmNote note = flat[at].note;
+            hash =
+                mix(hash ^ note.key ^ ((uint64_t)note.velocity << 8) ^ ((uint64_t)note.port << 16) ^
+                    real_hash(note.length) ^ mix(real_hash(note.beat - bar->start)));
+            at++;
+        }
+
+        bar->count = at - bar->first;
+        bar->hash = hash;
+    }
+}
+
+static bool bars_equal(const Bar *bars, const Flat *flat, size_t a, size_t b, size_t length) {
+    for (size_t k = 0; k < length; k++) {
+        const Bar *x = &bars[a + k], *y = &bars[b + k];
+
+        if (fabs(x->length - y->length) > 1e-10 || x->count != y->count) {
+            return false;
+        }
+
+        for (size_t i = 0; i < x->count; i++) {
+            DmNote p = flat[x->first + i].note, q = flat[y->first + i].note;
+
+            if (p.key != q.key || p.port != q.port || p.velocity != q.velocity ||
+                fabs(p.length - q.length) > 1e-10 ||
+                fabs((p.beat - x->start) - (q.beat - y->start)) > 1e-10) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+static uint64_t window_key(const Bar *bars, size_t start, size_t length) {
+    uint64_t hash = mix(length);
+
+    for (size_t k = 0; k < length; k++) {
+        hash = mix(hash * UINT64_C(1000000007) + bars[start + k].hash);
+    }
+
+    return hash;
+}
+
+/* repeat[i]: the longest window of bars starting at bar i (up to PHRASE_BARS, starting and
+   ending on a bar with notes) whose exact notes occur again elsewhere without overlapping it.
+   For each length, keeping the earliest and latest start of every window content is enough:
+   if any other occurrence is far enough away, one of the two is. */
+static bool find_repeats(const Bar *bars, size_t n, const Flat *flat, size_t *repeat,
+                         const DmGenerationHooks *hooks) {
+    size_t slots = table_size(n + 1);
     Entry *table = calloc(slots, sizeof(*table));
 
-    if (!groups || !prefix || !powers || !best || !scores || !table) {
-        free(groups);
-        free(prefix);
-        free(powers);
-        free(best);
-        free(scores);
-        free(table);
+    if (!table) {
         return false;
     }
 
-    size_t n = 0;
-    bool ok = true;
-
-    for (size_t i = 0; i < count;) {
-        size_t end = i + 1;
-
-        while (end < count && fabs(flat[end].note.beat - flat[i].note.beat) < 1e-10) {
-            end++;
-        }
-
-        uint64_t hash = mix(end - i);
-
-        for (size_t j = i; j < end; j++) {
-            hash = mix(hash ^ flat[j].note.key ^ ((uint64_t)flat[j].note.velocity << 8) ^
-                       ((uint64_t)flat[j].note.port << 16) ^ real_hash(flat[j].note.length));
-        }
-
-        groups[n++] = (Group){i, end - i, flat[i].note.beat, hash};
-        i = end;
-    }
-
-    powers[0] = 1;
-
-    for (size_t i = 0; i < n; i++) {
-        powers[i + 1] = powers[i] * UINT64_C(1000000007);
-        prefix[i + 1] =
-            prefix[i] * UINT64_C(1000000007) +
-            mix(groups[i].hash ^ (i + 1 < n ? real_hash(groups[i + 1].beat - groups[i].beat) : 0));
-    }
-
-    for (size_t length = 1; length <= n && length <= 4096;
-         length = length < 64 ? length + 1 : length * 2) {
+    for (size_t length = 1; length <= PHRASE_BARS && length <= n; length++) {
         if (cancelled(hooks)) {
-            ok = false;
-            break;
+            free(table);
+            return false;
         }
 
         memset(table, 0, slots * sizeof(*table));
 
         for (size_t i = 0; i + length <= n; i++) {
-            uint64_t hash = window_hash(groups, prefix, powers, i, length);
-            Entry *e = lookup(table, slots, hash);
+            if (!bars[i].count || !bars[i + length - 1].count) {
+                continue;
+            }
+
+            uint64_t key = window_key(bars, i, length);
+            Entry *e = lookup(table, slots, key);
 
             if (!e->count) {
-                e->key = hash;
-                e->count = 1;
-                e->last = i;
-            } else if (i >= e->last + length) {
-                e->count++;
+                *e = (Entry){key, 1, i, (int)i};
+            } else {
                 e->last = i;
             }
         }
 
         for (size_t i = 0; i + length <= n; i++) {
-            Entry *e = lookup(table, slots, window_hash(groups, prefix, powers, i, length));
-
-            if (e->count < 2) {
+            if (!bars[i].count || !bars[i + length - 1].count) {
                 continue;
             }
 
-            double score = (double)(length - 1) * (e->count - 1) + (length == 1 ? .5 : 0);
+            Entry *e = lookup(table, slots, window_key(bars, i, length));
+            size_t first = (size_t)e->id, other = first + length <= i     ? first
+                                                  : e->last >= i + length ? e->last
+                                                                          : i;
 
-            if (score > scores[i] || (score == scores[i] && length > best[i])) {
-                scores[i] = score;
-                best[i] = length;
+            if (other != i && bars_equal(bars, flat, i, other, length)) {
+                repeat[i] = length;
             }
         }
     }
 
-    for (size_t i = 0; i < n && ok;) {
-        if (cancelled(hooks)) {
+    free(table);
+    return true;
+}
+
+/* The note row for a placement over [start, end): the first row free by its start. A note held
+   across the end of the previous phrase keeps that placement sounding, so the next one moves
+   to another row instead of overlapping it. */
+static int free_row(double *row_ends, int *rows, double start, double end) {
+    int row = 0;
+
+    while (row < *rows && row_ends[row] > start + 1e-9) {
+        row++;
+    }
+
+    if (row == DM_NOTE_ROWS) {
+        row = DM_NOTE_ROWS - 1;
+    }
+
+    if (row == *rows) {
+        ++*rows;
+    }
+
+    row_ends[row] = fmax(row_ends[row], end);
+    return row;
+}
+
+/* The phrase starting at bar i: the longest repeated window there, or else up to UNIQUE_BARS
+   bars with notes that repeat nowhere. */
+static size_t unit_length(const Bar *bars, size_t n, const size_t *repeat, size_t i) {
+    size_t length = repeat[i];
+
+    if (!length) {
+        length = 1;
+
+        while (length < UNIQUE_BARS && i + length < n && bars[i + length].count &&
+               !repeat[i + length]) {
+            length++;
+        }
+    }
+
+    return length;
+}
+
+/* A way to cut a channel into cells: the song's bars, or a detected repeat period. */
+typedef struct {
+    Bar *cells;
+    size_t count, *repeat, linked; /* linked: notes that land in repeated phrases */
+} Grid;
+
+static void grid_free(Grid *g) {
+    free(g->cells);
+    free(g->repeat);
+    *g = (Grid){0};
+}
+
+/* Takes cells; fails only on allocation or cancellation. */
+static bool grid_plan(Grid *g, Bar *cells, size_t count, const Flat *flat, size_t notes,
+                      const DmGenerationHooks *hooks) {
+    *g = (Grid){cells, count, calloc(count + 1, sizeof(size_t)), 0};
+
+    if (!cells || !g->repeat) {
+        grid_free(g);
+        return false;
+    }
+
+    fill_bars(cells, count, flat, notes);
+
+    if (!find_repeats(cells, count, flat, g->repeat, hooks)) {
+        grid_free(g);
+        return false;
+    }
+
+    for (size_t i = 0; i < count;) {
+        if (!cells[i].count) {
+            i++;
+            continue;
+        }
+
+        size_t length = unit_length(cells, count, g->repeat, i);
+
+        if (g->repeat[i]) {
+            g->linked += cells[i + length - 1].first + cells[i + length - 1].count - cells[i].first;
+        }
+
+        i += length;
+    }
+
+    return true;
+}
+
+/* Cells of one period, lined up with anchor, from the song start to past the last note; the
+   first cell is shorter when the period does not divide the anchor's beat. */
+static Bar *period_cells(double period, double anchor, double last, size_t *count) {
+    double origin = anchor - floor(anchor / period + 1e-9) * period;
+
+    /* Rounding can leave the origin a hair below zero or below a whole period. */
+    if (origin < 1e-9 || origin > period - 1e-9) {
+        origin = 0;
+    }
+    size_t n = (origin > 1e-9) + (size_t)ceil((last - origin) / period + 1e-9) + 1;
+
+    if (n > SONG_BARS) {
+        return NULL;
+    }
+
+    Bar *cells = calloc(n, sizeof(*cells));
+
+    if (!cells) {
+        return NULL;
+    }
+
+    size_t k = 0;
+
+    if (origin > 1e-9) {
+        cells[k++] = (Bar){0, origin, 0, 0, 0};
+    }
+
+    for (size_t step = 0; k < n; step++) {
+        cells[k++] = (Bar){origin + step * period, period, 0, 0, 0};
+    }
+
+    *count = n;
+    return cells;
+}
+
+enum { PERIOD_CANDIDATES = 3, PERIOD_NEIGHBORS = 4 };
+
+typedef struct {
+    uint64_t hash;
+    double beat;
+} Onset;
+
+static int onset_compare(const void *a, const void *b) {
+    const Onset *x = a, *y = b;
+    return x->hash != y->hash ? (x->hash < y->hash ? -1 : 1)
+                              : (x->beat > y->beat) - (x->beat < y->beat);
+}
+
+/* Repeat periods, for songs whose phrases do not line up with the bars: every identical group
+   of notes starting together votes for the distances to its next few occurrences, and the
+   distances with most votes (at least two beats, so single repeated notes do not win) are
+   returned, best first, each with the earliest beat that voted for it to line its cells up. */
+static size_t repeat_periods(const Flat *flat, size_t count, double *periods, double *anchors) {
+    Onset *onsets = malloc((count + 1) * sizeof(*onsets));
+    size_t slots = table_size(count * PERIOD_NEIGHBORS + 1), groups = 0, found = 0;
+    Entry *votes = calloc(slots, sizeof(*votes));
+    /* Votes are keyed by the distance rounded to a millionth of a beat; the exact distance is
+       kept so cells line up with the notes without drifting. */
+    double *exact = calloc(slots, sizeof(double)), *earliest = calloc(slots, sizeof(double));
+
+    if (!onsets || !votes || !exact || !earliest) {
+        free(onsets);
+        free(votes);
+        free(exact);
+        free(earliest);
+        return 0;
+    }
+
+    for (size_t i = 0; i < count;) {
+        size_t end = i + 1;
+        uint64_t hash = mix(1);
+
+        for (; end <= count; end++) {
+            DmNote note = flat[end - 1].note;
+            hash = mix(hash ^ note.key ^ ((uint64_t)note.velocity << 8) ^
+                       ((uint64_t)note.port << 16) ^ real_hash(note.length));
+
+            if (end == count || fabs(flat[end].note.beat - flat[i].note.beat) > 1e-10) {
+                break;
+            }
+        }
+
+        onsets[groups++] = (Onset){hash, flat[i].note.beat};
+        i = end;
+    }
+
+    qsort(onsets, groups, sizeof(*onsets), onset_compare);
+
+    for (size_t i = 0; i < groups; i++) {
+        for (size_t j = i + 1; j < groups && j <= i + PERIOD_NEIGHBORS; j++) {
+            double distance = onsets[j].beat - onsets[i].beat;
+
+            if (onsets[j].hash != onsets[i].hash) {
+                break;
+            }
+
+            if (distance >= 2 && distance <= 256) {
+                uint64_t key = (uint64_t)llround(distance * 1e6);
+                Entry *e = lookup(votes, slots, key);
+
+                if (!e->count) {
+                    exact[e - votes] = distance;
+                    earliest[e - votes] = onsets[i].beat;
+                }
+
+                earliest[e - votes] = fmin(earliest[e - votes], onsets[i].beat);
+
+                e->key = key;
+                e->count++;
+            }
+        }
+    }
+
+    for (size_t pick = 0; pick < PERIOD_CANDIDATES; pick++) {
+        Entry *best = NULL;
+
+        for (size_t s = 0; s < slots; s++) {
+            if (votes[s].count > 1 && (!best || votes[s].count > best->count)) {
+                best = &votes[s];
+            }
+        }
+
+        if (!best) {
+            break;
+        }
+
+        anchors[found] = earliest[best - votes];
+        periods[found++] = exact[best - votes];
+        best->count = 0; /* Keeps the slot occupied for lookups but out of later picks. */
+    }
+
+    free(onsets);
+    free(votes);
+    free(exact);
+    free(earliest);
+    return found;
+}
+
+/* The pattern holding the notes flat[first, end) relative to origin: an earlier phrase's
+   pattern when its notes are the same, or a new one. Returns -1 when no pattern can be made. */
+static int phrase_pattern(DmProject *next, const Flat *flat, size_t first, size_t end,
+                          double origin, uint64_t hash, Entry *patterns, size_t slots,
+                          DmGenerationStats *stats) {
+    size_t at = (size_t)mix(hash) & (slots - 1);
+
+    for (; patterns[at].count; at = (at + 1) & (slots - 1)) {
+        if (patterns[at].key == hash &&
+            matches(&next->patterns[patterns[at].id], flat, first, end, origin)) {
+            stats->linked_placements++;
+            return patterns[at].id;
+        }
+    }
+
+    char name[64];
+    snprintf(name, sizeof(name), "Generated notes %zu", stats->note_patterns + 1);
+    int id = dm_pattern_add(next, name);
+
+    if (id < 0) {
+        return -1;
+    }
+
+    DmPattern *p = &next->patterns[id];
+
+    for (size_t j = first; j < end; j++) {
+        DmNote note = flat[j].note;
+        /* A note within rounding of the phrase start belongs to it. */
+        note.beat = fmax(0, note.beat - origin);
+        note.selected = 0;
+
+        if (!dm_note_add(p, note)) {
+            return -1;
+        }
+    }
+
+    dm_pattern_fit(next, p);
+    patterns[at] = (Entry){hash, 1, 0, id};
+    stats->note_patterns++;
+    return id;
+}
+
+/* One channel's notes become phrases. The channel is cut into cells, either the song's bars or
+   a detected repeat period, whichever links more notes into repeated phrases (bars on a tie,
+   so phrases line up with the music's bars when they can). Each phrase is the longest repeated
+   window of cells at its position, or a short run of cells that repeat nowhere; equal phrases
+   share one pattern and cells without notes get no placement. */
+static bool channel_patterns(DmProject *next, const Flat *flat, size_t count, int channel,
+                             const Bar *song, size_t bar_count, double channel_end, Entry *patterns,
+                             size_t pattern_slots, const DmGenerationHooks *hooks,
+                             DmGenerationStats *stats) {
+    Grid best = {0};
+    Bar *bars = malloc((bar_count + 1) * sizeof(*bars));
+
+    if (bars) {
+        memcpy(bars, song, bar_count * sizeof(*bars));
+    }
+
+    if (!grid_plan(&best, bars, bar_count, flat, count, hooks)) {
+        return false;
+    }
+
+    double periods[PERIOD_CANDIDATES], anchors[PERIOD_CANDIDATES];
+    size_t candidates = repeat_periods(flat, count, periods, anchors);
+
+    /* A voted period may span several phrases or bars, so its halves and quarters are tried
+       too; windows of several cells cover the longer phrases. */
+    for (size_t c = 0; c < candidates * 3; c++) {
+        double period = periods[c / 3] / (1 << (c % 3));
+
+        if (period < 2) {
+            continue;
+        }
+
+        size_t cells = 0;
+        Bar *grid = period_cells(period, anchors[c / 3], flat[count - 1].note.beat, &cells);
+        Grid option;
+
+        if (!grid_plan(&option, grid, cells, flat, count, hooks)) {
+            if (cancelled(hooks)) {
+                grid_free(&best);
+                return false;
+            }
+
+            continue;
+        }
+
+        if (option.linked > best.linked) {
+            grid_free(&best);
+            best = option;
+        } else {
+            grid_free(&option);
+        }
+    }
+
+    Bar *cells = best.cells;
+    double row_ends[DM_NOTE_ROWS] = {0};
+    int rows = 0;
+    bool ok = true;
+
+    for (size_t i = 0; i < best.count && ok;) {
+        if (!cells[i].count) {
+            i++;
+            continue;
+        }
+
+        size_t length = unit_length(cells, best.count, best.repeat, i);
+        size_t first = cells[i].first,
+               end = cells[i + length - 1].first + cells[i + length - 1].count;
+        double origin = cells[i].start, span = 0, sounding = 0;
+
+        for (size_t k = 0; k < length; k++) {
+            span += cells[i + k].length;
+        }
+
+        for (size_t j = first; j < end; j++) {
+            sounding = fmax(sounding, flat[j].note.beat + flat[j].note.length - origin);
+        }
+
+        int id = phrase_pattern(next, flat, first, end, origin, window_key(cells, i, length),
+                                patterns, pattern_slots, stats);
+
+        if (id < 0) {
             ok = false;
             break;
         }
 
-        size_t length = best[i];
+        /* The placement covers its cells, within the channel's original end, and any note held
+           past them. */
+        double clip_length = fmax(sounding, fmin(span, channel_end - origin));
+        int row = free_row(row_ends, &rows, origin, origin + clip_length);
 
-        if (!length) {
-            length = 1;
-
-            while (length < 16 && i + length < n && !best[i + length]) {
-                length++;
-            }
-        }
-
-        size_t first = groups[i].first,
-               end = groups[i + length - 1].first + groups[i + length - 1].count;
-        double origin = groups[i].beat;
-        uint64_t hash = window_hash(groups, prefix, powers, i, length);
-        size_t at = (size_t)mix(hash) & (pattern_slots - 1);
-        int id = -1;
-
-        while (patterns[at].count) {
-            if (patterns[at].key == hash &&
-                matches(&next->patterns[patterns[at].id], flat, first, end, origin)) {
-                id = patterns[at].id;
-                break;
-            }
-
-            at = (at + 1) & (pattern_slots - 1);
-        }
-
-        if (id < 0) {
-            char name[64];
-            snprintf(name, sizeof(name), "Generated notes %zu", stats->note_patterns + 1);
-            id = dm_pattern_add(next, name);
-
-            if (id < 0) {
-                ok = false;
-                break;
-            }
-
-            DmPattern *p = &next->patterns[id];
-            p->length = 1.0 / DM_PPQ;
-
-            for (size_t j = first; j < end; j++) {
-                DmNote note = flat[j].note;
-                note.beat -= origin;
-                note.selected = 0;
-
-                if (!dm_note_add(p, note)) {
-                    ok = false;
-                    break;
-                }
-            }
-
-            patterns[at] = (Entry){hash, 1, 0, id};
-            stats->note_patterns++;
-        } else {
-            stats->linked_placements++;
+        if (next->note_rows[channel] < rows) {
+            next->note_rows[channel] = rows;
         }
 
         if (ok) {
             ok = dm_clip_add(next, (DmClip){.beat = origin,
                                             .pattern = id,
                                             .channel = channel,
-                                            .length = next->patterns[id].length});
+                                            .length = clip_length,
+                                            .row = row});
         }
 
         stats->notes += end - first;
         i += length;
     }
 
-    free(groups);
-    free(prefix);
-    free(powers);
-    free(best);
-    free(scores);
-    free(table);
+    grid_free(&best);
     return ok;
 }
 
@@ -491,18 +829,21 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
         }
 
         placed[clip.pattern] = true;
-        double length = dm_clip_length(source, clip);
+        double length = dm_clip_length(source, clip), shown = clip.offset + length;
         ends[clip.channel] = fmax(ends[clip.channel], clip.beat + length);
 
+        /* As playback reads a placement: its slice of the pattern, with notes crossing either
+           edge shortened to the visible part. */
         for (size_t j = 0; j < p->count; j++) {
             DmNote note = p->notes[j];
+            double start = fmax(note.beat, clip.offset), end = fmin(note.beat + note.length, shown);
 
-            if (note.beat >= length) {
+            if (note.beat >= shown || end <= start) {
                 continue;
             }
 
-            note.length = fmin(note.length, length - note.beat);
-            note.beat += clip.beat;
+            note.beat = clip.beat + start - clip.offset;
+            note.length = end - start;
 
             if (count >= 2000000 ||
                 !dm_reserve((void **)&flat, &capacity, count + 1, sizeof(*flat))) {
@@ -522,11 +863,19 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
         qsort(flat, count, sizeof(*flat), flat_compare);
     }
 
-    size_t slots = table_size(count + 1);
+    size_t slots = table_size(count + 1), bar_count = 0;
+    double song_end = 0;
+
+    for (int channel = 0; channel < 16; channel++) {
+        song_end = fmax(song_end, ends[channel]);
+    }
+
+    Bar *bars = NULL;
 
     if (ok) {
         table = calloc(slots, sizeof(*table));
-        ok = table != NULL;
+        bars = song_bars(source, song_end + 1e-6, &bar_count);
+        ok = table && (bars || !bar_count);
     }
 
     size_t first = 0;
@@ -545,8 +894,8 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
         size_t before = next.clip_count;
 
         if (end > first) {
-            ok = channel_patterns(&next, flat + first, end - first, channel, table, slots, hooks,
-                                  stats);
+            ok = channel_patterns(&next, flat + first, end - first, channel, bars, bar_count,
+                                  ends[channel], table, slots, hooks, stats);
         }
 
         if (ends[channel] > 0 && next.clip_count == before && ok) {
@@ -590,6 +939,7 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
     free(placed);
     free(flat);
     free(table);
+    free(bars);
     dm_project_free(&next);
     return ok;
 }

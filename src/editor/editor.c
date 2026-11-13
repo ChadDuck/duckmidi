@@ -34,6 +34,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->instrument_channel = -1;
     e->instrument_preview = false;
     e->selected_clip = -1;
+    e->select_anchor = -1;
     e->context_note = -1;
     e->capture = -1;
     e->gesture_capture = -1;
@@ -49,6 +50,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->channel_selected = true;
     e->midi_event_index = -1;
     e->song_event_channel = -1;
+    e->song_event_pick_anchor = -1;
     e->midi_split = 0; /* List and details share the MIDI Events window evenly at first. */
     e->ui_size = 1;
     e->status_time = 0;
@@ -64,6 +66,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->status_shown[0] = 0;
     e->os_cursor = false;
     e->repository_history = true;
+    e->modifier_select = true;
     e->midi_values = false;
     e->event_ruler_drag = false;
     e->midi_hex = true;
@@ -143,6 +146,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
         }
 
         dm_audio_monitor(audio, e->device < 0 || e->monitor);
+        ed_autosave_init(e, data);
     }
 }
 
@@ -169,6 +173,7 @@ void editor_free(Editor *e) {
     dm_bytes_free(&e->event_marquee_selection);
     dm_bytes_free(&e->record_original);
     dm_bytes_free(&e->midi_rows);
+    dm_bytes_free(&e->song_event_picks);
 
     for (int i = 0; i < ED_SONG_EVENT_ROWS; ++i) {
         dm_bytes_free(&e->song_event_groups[i].groups);
@@ -180,6 +185,7 @@ void editor_free(Editor *e) {
     dm_bytes_free(&e->clip_drag);
     dm_bytes_free(&e->pitch_controls);
     dm_project_free(&e->project);
+    ed_autosave_free(e);
 }
 
 static void footer(Editor *e, UiPoint origin, float body) {
@@ -223,12 +229,13 @@ void editor_background(Editor *e) {
                 ed_preference_save(e);
 
                 if (strcmp(e->project.soundfont, e->font_pending)) {
-                    ed_checkpoint(e);
-                    snprintf(e->project.soundfont, sizeof(e->project.soundfont), "%s",
-                             e->font_pending);
+                    if (ed_checkpoint(e)) {
+                        snprintf(e->project.soundfont, sizeof(e->project.soundfont), "%s",
+                                 e->font_pending);
 
-                    if (e->active) {
-                        ed_changed(e);
+                        if (e->active) {
+                            ed_changed(e);
+                        }
                     }
                 }
 

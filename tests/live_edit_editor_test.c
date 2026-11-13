@@ -53,16 +53,14 @@ int main(void) {
         e->project.clips[i].selected = 0;
     }
 
-    mouse = (UiMouse){.clicked = true, .shift = true};
+    mouse = (UiMouse){.clicked = true, .ctrl = true};
     ed_playlist_hit_click(e, mouse, 0, 0);
-    e->drag = DRAG_NONE;
     ed_playlist_hit_click(e, mouse, 1, 0);
-    e->drag = DRAG_NONE;
-    check(e->project.clips[0].selected && e->project.clips[1].selected,
-          "Shift click keeps additive playlist selection");
+    check(e->project.clips[0].selected && e->project.clips[1].selected && !e->drag,
+          "Ctrl click adds to the playlist selection without starting a drag");
     ed_playlist_hit_click(e, mouse, 0, 0);
     check(!e->project.clips[0].selected && e->project.clips[1].selected,
-          "Shift click toggles only the clicked playlist placement");
+          "Ctrl click toggles only the clicked playlist placement");
     ui_end();
     ui_render(r);
     printf("PASS live edit UI: %d checks\n", checks);

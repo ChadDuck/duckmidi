@@ -18,7 +18,7 @@ static void playlist_rows(Editor *e, UiRect r, View *v, float label, float row, 
                           int count, UiMouse mouse);
 static void playlist_events(Editor *e, UiRect grid, View *v, float row, float scale, int line,
                             int channel, const int *list, int count);
-static void clip_edit_begin(Editor *e);
+static bool clip_edit_begin(Editor *e);
 static int clip_row(DmClip clip, const int *list, int count);
 static void draw_playlist_clip(Editor *e, DmClip *clip, UiRect box, UiRect grid, float scale);
 static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale, float row,
@@ -122,7 +122,9 @@ bool ed_add_note_row(Editor *e, int channel) {
         return false;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return false;
+    }
     ++e->project.note_rows[channel];
     ed_commit(e);
     return true;
@@ -134,7 +136,10 @@ bool ed_remove_note_row(Editor *e, int channel) {
         return false;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return false;
+    }
+
     int bottom = e->project.note_rows[channel] - 1;
 
     for (size_t i = e->project.clip_count; i > 0; --i) {
@@ -202,7 +207,10 @@ int ed_place_pattern(Editor *e, int id, int encoded, double beat) {
         return -1;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return -1;
+    }
+
     int lane = placement_lane(e, id, encoded);
 
     if (!dm_clip_add(
@@ -258,15 +266,15 @@ static void pattern_drop(Editor *e, UiRect r, UiRect grid, View *v, float scale,
                  e->project.patterns[pattern_id].name);
 
     if (dropped >= 0) {
-        /* Only the new placement is selected, without highlighting the pattern's other copies. */
-        for (size_t i = 0; i < e->project.clip_count; ++i) {
-            e->project.clips[i].selected = 0;
-        }
-
         int placed = ed_place_pattern(e, pattern_id, list[line - 1], beat);
 
         if (placed < 0) {
             return;
+        }
+
+        /* Only the new placement is selected, without highlighting the pattern's other copies. */
+        for (size_t i = 0; i < e->project.clip_count; ++i) {
+            e->project.clips[i].selected = (int)i == placed;
         }
 
         ed_release_piano(e);
@@ -460,7 +468,10 @@ static bool channel_expander(Editor *e, UiRect r, float label, float row, int ch
 
     if (hovered && mouse.clicked) {
         if (!e->project.lane_count[channel]) {
-            ed_checkpoint(e);
+            if (!ed_checkpoint(e)) {
+                return false;
+            }
+
             e->project.lane_count[channel] = 1;
             ed_changed(e);
         }
@@ -520,8 +531,9 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
         ui_rect((UiRect){r.x, y, label - 18, height}, (e->accent & 0xffffffu) | 0x30000000u, 0);
     }
 
-    float text_y = y + (height - buttons - (sample ? 40 : 20)) * .5f;
-    ui_clip((UiRect){r.x, y, label - 20, height - buttons});
+    /* Row buttons sit at the top so they stay put as note rows are added or removed. */
+    float text_y = y + buttons + (height - buttons - (sample ? 40 : 20)) * .5f;
+    ui_clip((UiRect){r.x, y + buttons, label - 20, height - buttons});
     ui_label_fit((UiPoint){r.x + (lane ? 22 : 10), text_y}, label - (lane ? 36 : 34),
                  i ? TEXT : DIM, text);
 
@@ -538,25 +550,24 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
     bool controls_hovered = false;
 
     if (show_buttons) {
-        UiRect controls = {r.x, y + height - buttons, label - 18, buttons};
+        UiRect controls = {r.x, y, label - 18, buttons};
         bool multiple = e->project.note_rows[channel] > 1;
         float width = controls.w / (multiple ? 2 : 1);
         ui_id(channel);
+
+        if (multiple && ui_canvas_button(DM_TEXT_REMOVE_NOTE_ROW,
+                                         (UiRect){controls.x, controls.y, width, buttons})) {
+            request_remove_note_row(e, channel);
+        }
+
         ui_disabled(e->project.note_rows[channel] >= DM_NOTE_ROWS);
 
-        if (ui_canvas_button(DM_TEXT_ADD_NOTE_ROW,
-                             (UiRect){controls.x, controls.y, width, buttons})) {
+        if (ui_canvas_button(DM_TEXT_ADD_NOTE_ROW, (UiRect){controls.x + controls.w - width,
+                                                            controls.y, width, buttons})) {
             ed_add_note_row(e, channel);
         }
 
         ui_disabled_end();
-
-        if (multiple &&
-            ui_canvas_button(DM_TEXT_REMOVE_NOTE_ROW,
-                             (UiRect){controls.x + width, controls.y, width, buttons})) {
-            request_remove_note_row(e, channel);
-        }
-
         ui_pop_id();
 
         controls_hovered = ed_inside(mouse.pos, controls);
@@ -808,13 +819,22 @@ static void playlist_events(Editor *e, UiRect grid, View *v, float row, float sc
     }
 }
 
-static void clip_edit_begin(Editor *e) {
+static bool clip_edit_begin(Editor *e) {
     if (!e->clip_moved) {
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            e->drag = DRAG_NONE;
+            e->drag_index = -1;
+            e->drag_edge = 0;
+            e->copy_button = -1;
+            e->copy_pending = e->lone_click = false;
+            e->clip_drag.size = 0;
+            return false;
+        }
     }
 
     e->clip_moved = true;
     ed_changed(e);
+    return true;
 }
 
 void ed_resize_clip(Editor *e, DmClip *clip, double length) {
@@ -822,7 +842,10 @@ void ed_resize_clip(Editor *e, DmClip *clip, double length) {
         return;
     }
 
-    clip_edit_begin(e);
+    if (!clip_edit_begin(e)) {
+        return;
+    }
+
     clip->length = length;
 }
 
@@ -844,7 +867,10 @@ void ed_move_clip(Editor *e, DmClip *clip, int encoded, double beat) {
         return;
     }
 
-    clip_edit_begin(e);
+    if (!clip_edit_begin(e)) {
+        return;
+    }
+
     lane = placement_lane(e, clip->pattern, encoded);
     clip->beat = beat;
     clip->channel = channel;
@@ -860,7 +886,10 @@ void ed_move_clip(Editor *e, DmClip *clip, int encoded, double beat) {
 /* The copy gesture's first movement places linked copies of the selected placements over them,
    then drags the copies; the originals stay where they are. One undo step covers both. */
 static void make_placement_copies(Editor *e) {
-    clip_edit_begin(e);
+    if (!clip_edit_begin(e)) {
+        return;
+    }
+
     size_t originals = e->project.clip_count;
     int dragged = e->drag_index;
 
@@ -891,23 +920,115 @@ static void make_placement_copies(Editor *e) {
     }
 }
 
-/* A copy gesture released without moving acts like a Shift-click: it toggles the placement. */
-static void finish_copy_click(Editor *e) {
-    if (!e->copy_pending || !e->copy_was_selected || e->drag_index < 0 ||
-        (size_t)e->drag_index >= e->project.clip_count) {
-        return;
+/* A range click covers a rectangle: the rows from the anchor placement's row to the clicked
+   row, and the time from the earlier start to the later end of the anchor and the click. */
+typedef struct {
+    int list[ED_PLAYLIST_ROWS], count, first, last;
+    double start, end;
+} PlacementRange;
+
+/* The range from the anchor to row line (1-based) over [start, end). Without an anchor in the
+   shown rows there is no range, and a range click picks only the clicked placement. */
+static bool placement_range(Editor *e, int line, double start, double end, PlacementRange *r) {
+    int anchor = e->select_anchor;
+
+    if (anchor < 0 || (size_t)anchor >= e->project.clip_count) {
+        return false;
     }
 
-    e->project.clips[e->drag_index].selected = 0;
+    DmClip a = e->project.clips[anchor];
+    r->count = ed_playlist_channels(e, r->list);
+    int from = clip_row(a, r->list, r->count);
+
+    if (from < 0 || line < 1 || line > r->count) {
+        return false;
+    }
+
+    r->first = from < line ? from : line;
+    r->last = from < line ? line : from;
+    r->start = fmin(a.beat, start);
+    r->end = fmax(a.beat + dm_clip_length(&e->project, a), end);
+    return true;
+}
+
+static bool placement_in_range(Editor *e, const PlacementRange *r, size_t index) {
+    DmClip c = e->project.clips[index];
+    int at = clip_row(c, r->list, r->count);
+    return at >= r->first && at <= r->last && c.beat < r->end &&
+           c.beat + dm_clip_length(&e->project, c) > r->start;
+}
+
+/* The press position as a range target: the clicked placement, or the time under an empty
+   click. */
+static bool click_range(Editor *e, int hit, int line, double beat, PlacementRange *r) {
+    if (hit >= 0) {
+        DmClip c = e->project.clips[hit];
+        int count = ed_playlist_channels(e, r->list);
+        line = clip_row(c, r->list, count);
+        return placement_range(e, line, c.beat, c.beat + dm_clip_length(&e->project, c), r);
+    }
+
+    return placement_range(e, line, beat, beat + 1e-9, r);
+}
+
+static void focus_placement(Editor *e, int hit) {
+    DmClip *c = &e->project.clips[hit];
+    ed_release_piano(e);
+    ed_open_pattern(e, c->pattern, false);
+    e->linked_highlight = false;
+    e->selected_clip = hit;
+    e->pattern_channel = e->selected_channel = c->channel;
+    e->channel_selected = true;
+
+    if (!e->preview_override) {
+        ed_preview_channel(e, c->channel, true);
+    }
+}
+
+/* After a click changed the selection: a plain or toggle click moves the range anchor to the
+   clicked placement (a range click keeps it), and the clicked placement takes the focus. */
+static void placements_picked(Editor *e, SelectPick pick, int hit, bool ranged) {
     bool any = false;
 
     for (size_t i = 0; i < e->project.clip_count; ++i) {
         any |= e->project.clips[i].selected;
     }
 
-    if (!any) {
+    if (hit >= 0 && (pick == PICK_ONE || pick == PICK_TOGGLE || !ranged)) {
+        e->select_anchor = hit;
+    }
+
+    if (hit >= 0 && e->project.clips[hit].selected) {
+        focus_placement(e, hit);
+    } else if (!any) {
         ed_clear_pattern_selection(e);
     }
+}
+
+/* Applies a modifier click to every placement from the selection at the press (see
+   ed_pick_begin), with hit the clicked placement (-1 for empty space at row line and beat). */
+static void pick_placements(Editor *e, SelectPick pick, int hit, int line, double beat) {
+    PlacementRange range;
+    bool ranged =
+        (pick == PICK_RANGE || pick == PICK_ADD_RANGE) && click_range(e, hit, line, beat, &range);
+
+    for (size_t i = 0; i < e->project.clip_count; ++i) {
+        bool clicked = (int)i == hit;
+        bool in = ranged ? placement_in_range(e, &range, i) : clicked;
+        e->project.clips[i].selected = ed_pick_selects(pick, ed_picked_before(e, i), clicked, in);
+    }
+
+    placements_picked(e, pick, hit, ranged);
+}
+
+/* A copy gesture released without moving is a click with its modifiers (Shift by default:
+   a range click). */
+static void finish_copy_click(Editor *e) {
+    if (!e->copy_pending || e->drag_index < 0 || (size_t)e->drag_index >= e->project.clip_count) {
+        return;
+    }
+
+    pick_placements(e, e->pick, e->drag_index, -1, 0);
 }
 
 void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, const int *list,
@@ -985,6 +1106,10 @@ void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, cons
                         shift ? list[at - 1 + shift]
                               : ed_row_code(original[i].channel, original[i].lane, original[i].row);
                     ed_move_clip(e, &e->project.clips[i], encoded, original[i].beat + offset);
+
+                    if (e->drag == DRAG_NONE) {
+                        return;
+                    }
                 }
             }
         }
@@ -1027,47 +1152,40 @@ void ed_playlist_hit_click(Editor *e, UiMouse mouse, int hit, double beat) {
     DmClip *c = &e->project.clips[hit];
 
     if (e->tool == TOOL_DELETE) {
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            return;
+        }
+
         ed_remove_placement(e, (size_t)hit);
         ed_commit(e);
     } else if (e->tool == TOOL_SLICE) {
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            return;
+        }
+
         ed_split_clip(e, (size_t)hit, beat);
         ed_commit(e);
     } else {
-        if (ed_gesture_held(e, GESTURE_EXTEND, mouse) && c->selected) {
-            c->selected = 0;
-            bool any = false;
+        SelectPick pick = ed_select_pick(e, mouse);
 
-            for (size_t i = 0; i < e->project.clip_count; ++i) {
-                any |= e->project.clips[i].selected;
-            }
-
-            if (!any) {
-                ed_clear_pattern_selection(e);
+        /* A modifier click only changes the selection; a plain press also starts a drag. */
+        if (pick != PICK_ONE) {
+            if (ed_pick_begin(e, FOCUS_PLAYLIST, mouse, hit)) {
+                pick_placements(e, pick, hit, -1, 0);
             }
 
             return;
         }
 
-        e->lone_click = !ed_gesture_held(e, GESTURE_EXTEND, mouse) && c->selected;
+        e->lone_click = c->selected;
 
-        if (!ed_gesture_held(e, GESTURE_EXTEND, mouse) && !c->selected) {
+        if (!c->selected) {
             ed_deselect(e);
         }
 
-        ed_release_piano(e);
         c->selected = 1;
-        ed_open_pattern(e, c->pattern, false);
-        e->linked_highlight = false;
-        e->selected_clip = hit;
-        e->pattern_channel = e->selected_channel = c->channel;
-        e->channel_selected = true;
-
-        if (!e->preview_override) {
-            ed_preview_channel(e, c->channel, true);
-        }
-
+        e->select_anchor = hit;
+        focus_placement(e, hit);
         e->clip_moved = false;
         e->drag = e->drag_edge ? DRAG_CLIP_RESIZE : DRAG_CLIP_MOVE;
         e->drag_length = dm_clip_length(&e->project, *c);
@@ -1088,19 +1206,9 @@ void ed_playlist_hit_click(Editor *e, UiMouse mouse, int hit, double beat) {
    made once the mouse moves. */
 static void start_placement_copy(Editor *e, UiMouse mouse, int hit) {
     DmClip *c = &e->project.clips[hit];
-    e->copy_was_selected = c->selected;
+    ed_pick_begin(e, FOCUS_PLAYLIST, mouse, hit); /* A release without moving is a click. */
     c->selected = 1;
-    ed_release_piano(e);
-    ed_open_pattern(e, c->pattern, false);
-    e->linked_highlight = false;
-    e->selected_clip = hit;
-    e->pattern_channel = e->selected_channel = c->channel;
-    e->channel_selected = true;
-
-    if (!e->preview_override) {
-        ed_preview_channel(e, c->channel, true);
-    }
-
+    focus_placement(e, hit);
     e->clip_moved = false;
     e->drag = DRAG_CLIP_MOVE;
     e->drag_edge = 0;
@@ -1112,14 +1220,6 @@ static void start_placement_copy(Editor *e, UiMouse mouse, int hit) {
     e->copy_button = e->gestures[GESTURE_COPY_PLACEMENTS].button;
     e->copy_pending = true;
     e->clip_drag.size = 0;
-}
-
-/* A click on empty playlist space clears the placement selection and the pattern chosen in the
-   Patterns section, as Escape does, without changing whether the pattern editor is shown. */
-static void clear_playlist_selection(Editor *e) {
-    bool hidden = e->roll_auto_hidden;
-    ed_clear_pattern_selection(e);
-    e->roll_auto_hidden = hidden;
 }
 
 void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, float scale,
@@ -1150,7 +1250,7 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
 
     /* Ctrl starts a marquee on any row; event cards themselves are never selected. */
     if (marquee && (ed_gesture_held(e, GESTURE_MARQUEE, mouse) || !event_row)) {
-        ed_marquee_begin(e, FOCUS_PLAYLIST, mouse);
+        ed_marquee_begin(e, FOCUS_PLAYLIST, mouse, hit);
         return;
     }
 
@@ -1172,9 +1272,15 @@ void ed_playlist_click(Editor *e, UiRect r, UiRect grid, View *v, float row, flo
         ed_song_event_open_bar(e, beat, add, channel);
     } else if (hit >= 0) {
         ed_playlist_hit_click(e, mouse, hit, beat);
+    } else if (ed_select_pick(e, mouse) == PICK_RANGE ||
+               ed_select_pick(e, mouse) == PICK_ADD_RANGE) {
+        /* A range click on empty space selects up to the clicked row and time. */
+        if (ed_pick_begin(e, FOCUS_PLAYLIST, mouse, -1)) {
+            pick_placements(e, ed_select_pick(e, mouse), -1, line, position);
+        }
     } else {
         /* Patterns are placed by dragging their cards; a click only clears the selection. */
-        clear_playlist_selection(e);
+        ed_deselect_patterns(e);
     }
 }
 
@@ -1224,35 +1330,73 @@ static void draw_playlist_clip(Editor *e, DmClip *clip, UiRect box, UiRect grid,
     ui_unclip();
 }
 
+/* A placement's box in the playlist; false when its row is not shown. */
+static bool clip_box(Editor *e, DmClip clip, UiRect r, UiRect grid, View *v, float scale, float row,
+                     const int *list, int count, UiRect *box) {
+    int index = clip_row(clip, list, count);
+
+    if (index < 0) {
+        return false;
+    }
+
+    PlaylistRow layout = ed_playlist_row(list, count, index, row);
+    *box = (UiRect){grid.x + (float)clip.beat * scale - v->scroll_x,
+                    r.y + 28 + layout.top - v->scroll_y + 5,
+                    (float)dm_clip_length(&e->project, clip) * scale - 2, layout.height - 10};
+    return true;
+}
+
+/* A right-drag erases every placement its path crossed this frame (see ed_sweep). */
+static void erase_swept_placements(Editor *e, UiRect r, UiRect grid, View *v, float scale,
+                                   float row, const int *list, int count, UiMouse mouse) {
+    UiPoint from, to;
+    ed_sweep(e, mouse, &from, &to);
+    bool erased = false;
+
+    for (size_t i = e->project.clip_count; i > 0; --i) {
+        UiRect box;
+
+        if (clip_box(e, e->project.clips[i - 1], r, grid, v, scale, row, list, count, &box) &&
+            ed_sweep_hits(from, to, box)) {
+            if (!ed_erase_step(e)) {
+                return;
+            }
+
+            ed_remove_placement(e, i - 1);
+            erased = true;
+        }
+    }
+
+    if (erased) {
+        ed_commit(e);
+    }
+}
+
 static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale, float row,
                           const int *list, int count, UiMouse mouse) {
     int hit = -1;
     bool marquee = e->marquee && ed_selection_focus(e) == FOCUS_PLAYLIST;
     UiRect selection = ed_marquee_box(e, mouse);
+    /* A marquee press released without moving is a Ctrl click (see ed_marquee_selects). */
+    bool click = marquee && ed_pick_clicked(e, e->marquee_start, mouse);
+    PlacementRange range;
+    bool ranged = click && (e->pick == PICK_RANGE || e->pick == PICK_ADD_RANGE) &&
+                  click_range(e, e->pick_hit, -1, 0, &range);
 
     for (size_t i = 0; i < e->project.clip_count; ++i) {
         DmClip *clip = &e->project.clips[i];
-        int row_index = clip_row(*clip, list, count);
+        UiRect box = {0};
+        bool shown = clip_box(e, *clip, r, grid, v, scale, row, list, count, &box) &&
+                     ed_intersects(box, grid);
 
         if (marquee) {
-            clip->selected = ed_marquee_retains(e, i, ed_gesture_held(e, GESTURE_EXTEND, mouse));
+            bool in = ranged ? placement_in_range(e, &range, i) : (int)i == e->pick_hit;
+            clip->selected =
+                ed_marquee_selects(e, i, shown && ed_intersects(box, selection), in, mouse);
         }
 
-        if (row_index < 0) {
+        if (!shown) {
             continue;
-        }
-
-        PlaylistRow layout = ed_playlist_row(list, count, row_index, row);
-        UiRect box = {grid.x + (float)clip->beat * scale - v->scroll_x,
-                      r.y + 28 + layout.top - v->scroll_y + 5,
-                      (float)dm_clip_length(&e->project, *clip) * scale - 2, layout.height - 10};
-
-        if (!ed_intersects(box, grid)) {
-            continue;
-        }
-
-        if (marquee && ed_intersects(box, selection)) {
-            clip->selected = 1;
         }
 
         draw_playlist_clip(e, clip, box, grid, scale);
@@ -1269,6 +1413,10 @@ static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale
                 ui_resize_cursor(false);
             }
         }
+    }
+
+    if (click) {
+        placements_picked(e, e->pick, e->pick_hit, ranged);
     }
 
     return hit;
@@ -1302,7 +1450,10 @@ static bool playlist_label_resize(Editor *e, UiRect r, float *label, UiMouse mou
 }
 
 void ed_playlist_remove(Editor *e, int hit) {
-    ed_erase_step(e);
+    if (!ed_erase_step(e)) {
+        return;
+    }
+
     ed_remove_placement(e, (size_t)hit);
     ed_commit(e);
 }
@@ -1340,20 +1491,21 @@ static void playlist_context(Editor *e, int hit) {
     }
 
     if (ui_menu_item(DM_TEXT_MAKE_UNIQUE, NULL, true)) {
-        ed_checkpoint(e);
-        int id = dm_clip_make_unique(&e->project, (size_t)index);
+        if (ed_checkpoint(e)) {
+            int id = dm_clip_make_unique(&e->project, (size_t)index);
 
-        if (id >= 0) {
-            ed_open_pattern(e, id, false);
-            e->linked_highlight = false;
-            e->selected_clip = index;
-            e->pattern_channel = clip.channel;
+            if (id >= 0) {
+                ed_open_pattern(e, id, false);
+                e->linked_highlight = false;
+                e->selected_clip = index;
+                e->pattern_channel = clip.channel;
 
-            if (!e->preview_override) {
-                ed_preview_channel(e, clip.channel, true);
+                if (!e->preview_override) {
+                    ed_preview_channel(e, clip.channel, true);
+                }
+
+                ed_commit(e);
             }
-
-            ed_commit(e);
         }
     }
 
@@ -1450,12 +1602,11 @@ void ed_playlist(Editor *e, float width, float height) {
     /* A right click clears the placement selection; holding it erases placements. */
     if (hovered && mouse.right_clicked && !e->drag && ed_right_free(e, mouse) &&
         ed_inside(mouse.pos, grid)) {
-        clear_playlist_selection(e);
+        ed_deselect_patterns(e);
     }
 
-    if (hovered && mouse.right && hit >= 0 && ed_right_free(e, mouse) &&
-        ed_inside(mouse.pos, grid)) {
-        ed_playlist_remove(e, hit);
+    if (hovered && mouse.right && ed_right_free(e, mouse) && ed_inside(mouse.pos, grid)) {
+        erase_swept_placements(e, r, grid, v, scale, row, list, count, mouse);
     }
 
     ed_playlist_drag(e, r, v, row, scale, list, count, mouse);

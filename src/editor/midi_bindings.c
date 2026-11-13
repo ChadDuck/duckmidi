@@ -382,22 +382,19 @@ static void mixer_event(Editor *e, EdMidiBinding *binding, DmMidiInputEvent even
     uint64_t ns = event.ticks_ns;
     bool new_gesture = !continuous || !e->midi_mix_last ||
                        (ns >= e->midi_mix_last && ns - e->midi_mix_last >= MIX_GESTURE_NS);
-    bool checkpoint = false;
 
     if (new_gesture) {
         ed_midi_bindings_flush(e, ns);
 
-        if (!(e->recording_take && e->take_snapshot)) {
-            checkpoint = ed_checkpoint(e);
-
-            if (!checkpoint) {
-                return;
-            }
+        if (!ed_checkpoint(e)) {
+            return;
         }
     }
 
     if (!ed_mixer_apply(e, before, next)) {
-        ed_checkpoint_abandon(e, checkpoint);
+        if (new_gesture) {
+            ed_checkpoint_abandon(e);
+        }
         ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PORT_MIXER);
         return;
     }

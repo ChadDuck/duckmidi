@@ -206,10 +206,19 @@ static void channel_swap(Editor *e) {
     check(dm_pack(p, &restored) && original.size == restored.size &&
               !memcmp(original.data, restored.data, original.size),
           "one undo restores every byte of channel-owned project data");
+    check(e->selected_channel == 0 && e->pattern_channel == 0 && e->channel_expanded[0] &&
+              !e->channel_expanded[MIDI_DRUM_CHANNEL] && e->note_ports[0] == 2 &&
+              e->note_ports[MIDI_DRUM_CHANNEL] == 3 && e->reset_channels[0].program == 25 &&
+              e->lane_channel == 0 && e->song_event_channel == 0 &&
+              e->mixer_peaks[2 * MIDI_CHANNELS] == .75f,
+          "undo moves selection, expanded rows and per-channel editor state back");
     dm_bytes_free(&restored);
     ed_undo(e, true);
     check(p->clips[0].channel == MIDI_DRUM_CHANNEL && p->channels[0].drums,
           "redo restores the channel swap");
+    check(e->selected_channel == MIDI_DRUM_CHANNEL && e->channel_expanded[MIDI_DRUM_CHANNEL] &&
+              !e->channel_expanded[0] && e->note_ports[MIDI_DRUM_CHANNEL] == 2,
+          "redo moves per-channel editor state with the channel again");
     Binding down = e->bindings[ACT_CHANNEL_DOWN];
     e->bindings[ACT_CHANNEL_DOWN] =
         (Binding){.key = SDL_SCANCODE_DOWN, .mods = SDL_KMOD_CTRL | SDL_KMOD_ALT};

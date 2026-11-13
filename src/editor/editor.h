@@ -102,8 +102,16 @@ typedef enum {
     GESTURE_APPLY_ALL,                 /* an event lane button acts on every point */
     GESTURE_PORT_MENU,                 /* a click on a port colour offers to delete the port */
     GESTURE_PANIC,                     /* Stop also silences every MIDI note */
+    GESTURE_PICK_TOGGLE,               /* a click adds or removes one item; see SelectPick */
+    GESTURE_PICK_RANGE,                /* a click selects from the anchor to the item */
     GESTURE_COUNT
 } Gesture;
+
+/* What a left click does to a selection, as in file managers: a plain click picks one item,
+   the toggle modifier (Ctrl) adds or removes one, the range modifier (Shift) selects from the
+   anchor to the clicked item, and both together add that range. ed_select_pick reads it from
+   the modifiers held; the Modifier selection preference turns all but PICK_ONE off. */
+typedef enum { PICK_ONE, PICK_TOGGLE, PICK_RANGE, PICK_ADD_RANGE } SelectPick;
 
 /* MOUSE_BUTTONS counts the buttons a rebindable gesture can use; the two after it only describe
    fixed gestures. */
@@ -178,6 +186,14 @@ typedef enum { CLIPBOARD_COPY, CLIPBOARD_CUT, CLIPBOARD_PASTE } ClipboardAction;
 #define DM_MIDI_LATENCY_LIMIT_MS 1000
 #define ED_UNDO_LIMIT 64 /* Undo and redo steps kept, each. */
 
+/* One undo or redo step: the project on the other side of an edit, and the two channels whose
+   editor state that edit exchanged (both -1 when it exchanged none). Stepping either way through
+   a step exchanges them again. */
+typedef struct {
+    DmBytes project;
+    int swap[2];
+} EdHistory;
+
 enum { ED_SONG_EVENT_ROWS = 1 + 16 };
 
 typedef struct {
@@ -237,6 +253,7 @@ typedef struct {
     struct DmExportPlugins *export_plugins;
     struct DmEditorSamples *samples;
     struct DmSaveJob *save_job;
+    struct DmAutosave *autosave;
     struct DmPatternJob *pattern_job;
     bool generate_window;
     bool note_color_popup, pattern_color_popup;
@@ -262,6 +279,12 @@ typedef struct {
     bool preview_override, channel_selected, event_marquee, midi_events;
     int midi_event_kind, midi_event_index;
     uint64_t midi_selection_revision;
+    uint64_t song_event_selection_revision;
+    DmBytes song_event_picks;
+    int song_event_pick_anchor;
+    bool song_event_pick_automation;
+    float song_event_move_by;
+    double song_event_move_to;
     float midi_split, song_event_split; /* The event list's share of the panels' width. */
     double event_beat, song_event_anchor;
     int song_event_kind, song_event_channel;
@@ -273,6 +296,7 @@ typedef struct {
     bool event_free;           /* Alt was held when an event point or line was started. */
     bool event_connect;        /* Shift was held: the clicked point connects to the nearest one. */
     uint64_t event_press_tick; /* When the pending event-lane press began (drag 12). */
+    uint64_t key_time_ns; /* SDL time of the key event being handled, or 0 outside one. */
     bool midi_values, midi_hex;
     char midi_error[160];
     DmBytes midi_draft, midi_text;
@@ -281,7 +305,7 @@ typedef struct {
     UiPoint drop_position;
     UiRect preferences_rect, info_rect;
     UiPoint event_marquee_start;
-    UiPoint graph_last; /* Pointer on the previous frame of a graph paint or erase drag. */
+    UiPoint graph_last; /* Pointer on the previous frame of a graph paint drag. */
     DmBytes record_original, midi_rows;
     /* Playlist Events row: one group per occupied bar in the visible range, rebuilt only when
        the project or the range changes. */
@@ -365,10 +389,25 @@ typedef struct {
     int pitch_cache_pattern, pitch_cache_anchor;
     bool pitch_cache, pitch_cache_ready, pitch_cache_anchored;
     float sidebar, roll_height;
+    /* The note grid's height and vertical scroll at the end of the last frame, to keep the
+       view's middle pitch in place when the editor is resized. */
+    float roll_grid_height, roll_scroll_seen;
     View playlist_view, roll_view;
     UiPoint marquee_start;
     DmBytes marquee_selection, event_marquee_selection; /* Selection at mouse-down. */
     bool marquee;
+    /* A press that may end as a click (see ed_pick_begin): the item under it (-1 none), the
+       pick its modifiers chose, and whether the pointer has left the press position. */
+    int pick_hit;
+    SelectPick pick;
+    bool pick_moved;
+    UiPoint bend_press; /* Where a Shift press on a note began; the bend line starts snapped. */
+    /* A right-drag eraser's path (ed_sweep): where it started this frame, where the pointer
+       was last, and the frame that was. */
+    UiPoint sweep_from, sweep_last;
+    int sweep_frame;
+    bool modifier_select; /* Preference: Ctrl and Shift clicks toggle and range-select. */
+    int select_anchor;    /* Placement a playlist range click starts from, or -1. */
     int automation_cc;
     int bend_range;
     bool automation_open;
@@ -390,14 +429,18 @@ typedef struct {
     /* A copy drag: the button it uses (-1 none), and whether the copies are still to be made on
        the first movement. */
     int copy_button;
-    bool copy_pending, copy_was_selected;
+    bool copy_pending;
     /* A plain press on an item already in a selection: released without moving, it selects only
        that item. */
     bool lone_click;
-    DmBytes undo[ED_UNDO_LIMIT], redo[ED_UNDO_LIMIT], clipboard, event_selection;
+    EdHistory undo[ED_UNDO_LIMIT], redo[ED_UNDO_LIMIT];
+    DmBytes clipboard, event_selection;
     DmBytes event_clipboard; /* Event buttons keep their own fixed-position clipboard. */
     bool event_clipboard_all;
     int undo_count, redo_count;
+    /* The last ed_checkpoint added a new undo step, rather than joining a recording take's step;
+       ed_checkpoint_abandon only drops a step it added. */
+    bool checkpoint_pushed;
     int held[SDL_SCANCODE_COUNT];
     char recent[10][DM_PATH];
     int recent_count;

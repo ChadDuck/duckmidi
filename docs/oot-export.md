@@ -89,6 +89,6 @@ Hyrule Field's songs are parts driven by a controller sequence and cannot be rep
 
 ## Loop points
 
-**Loop song** repeats the song from the start. Add **M64 - Loop Start** and, optionally, **M64 - Loop End** song events (**Shift + E**) and enable **Use loop points** to play once and then repeat from Loop Start to Loop End, or to the song end. Notes sounding across Loop Start restart there on every repeat, and the tempo and controller values at Loop Start are restored.
+**Loop song** repeats the song from the start. Add **Loop Start** and, optionally, **Loop End** song events (**Shift + E**) and enable **Use loop points** to play once and then repeat from Loop Start to Loop End, or to the song end. Notes sounding across Loop Start restart there on every repeat, and the tempo and controller values at Loop Start are restored.
 
 For plugin development, see the [API reference](plugin-api.md).

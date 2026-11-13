@@ -243,9 +243,15 @@ static void bend_edits(Editor *e) {
     mouse = (UiMouse){
         .pos = ed_bend_point(e, moved, grid, &e->roll_view, 80), .clicked = true, .shift = true};
     old = e->project.automation_count;
-    check(ed_bend_mouse(e, grid, &e->roll_view, 80, mouse) && e->automation_node >= 0 &&
-              e->drag == DRAG_NONE,
-          "Shift click selects overlay point without dragging");
+    check(ed_bend_mouse(e, grid, &e->roll_view, 80, mouse) && e->drag == DRAG_BEND_POINT &&
+              e->project.automation_count == old,
+          "Shift click grabs overlay point without inserting");
+    mouse.clicked = false;
+    mouse.released = true;
+    ed_bend_mouse(e, grid, &e->roll_view, 80, mouse);
+    check(e->automation_node >= 0 && e->drag == DRAG_NONE &&
+              e->project.automation[e->automation_node].beat == moved.beat,
+          "Shift click release without moving keeps the point selected in place");
     key(e, SDL_SCANCODE_DELETE, 0);
     check(e->project.automation_count == old - 1 && ed_pattern(e)->count == notes,
           "Delete removes selected overlay point and preserves notes");

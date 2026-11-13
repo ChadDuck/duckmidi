@@ -69,6 +69,7 @@ UiPoint ui_window(void);
 UiPoint ui_scroll_value(void);
 UiMouse ui_mouse(void);
 float ui_delta_time(void);
+int ui_frame_number(void); /* Counts frames; consecutive frames differ by one. */
 void ui_same(void);
 /* Same line at the gap a field leaves before its own label, for a label drawn separately. */
 void ui_same_label(void);
@@ -101,6 +102,8 @@ void ui_mixer_wheel(void);
 void ui_piano_icon(UiRect rect);
 bool ui_frame_toggle(const char *label, bool *value);
 bool ui_button(const char *label, float w, float h);
+/* A drop target: centered text inside a dashed border. It is not a button and takes no clicks. */
+void ui_drop_zone(const char *text, float w, float h);
 int ui_button_pair(const char *left, const char *right, int selected, float width);
 
 typedef enum {

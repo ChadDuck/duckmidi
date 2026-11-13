@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 include("${CMAKE_CURRENT_LIST_DIR}/delivery-time.cmake")
 
-# Deliveries go to build/duckmidi-vVERSION-TYPE, replacing an earlier delivery of the same version
-# and type. Files are staged first, so a failed install leaves the earlier delivery in place.
+# Deliveries go to build/duckmidi-vVERSION-TYPE (TYPE-DEV for a development delivery, which keeps
+# debug symbols), replacing an earlier delivery of the same version and type. Files are staged first, so a failed install leaves the earlier delivery in place.
 # The version is the one set for the build, or its build time (tools/version.cmake).
 if(DEFINED VERSION_FILE AND EXISTS "${VERSION_FILE}")
   file(READ "${VERSION_FILE}" VERSION)
@@ -23,6 +23,12 @@ duck_delivery_stamp(STAMP "${EPOCH}")
 file(REAL_PATH "${SOURCE_DIR}/build" BUILD_ROOT)
 set(STAGING "${BUILD_ROOT}/development/delivery-staging-${STAMP}-v${VERSION}")
 set(DESTINATION "${BUILD_ROOT}/duckmidi-v${VERSION}-${DELIVERY_TYPE}")
+set(STRIP --strip)
+
+if(DEV)
+  string(APPEND DESTINATION "-DEV")
+  set(STRIP "")
+endif()
 
 foreach(PATH_TO_CHECK STAGING DESTINATION)
   cmake_path(IS_PREFIX BUILD_ROOT "${${PATH_TO_CHECK}}" NORMALIZE INSIDE_BUILD)
@@ -41,7 +47,7 @@ if(EXISTS "${DESTINATION}" OR IS_SYMLINK "${DESTINATION}")
 endif()
 
 execute_process(COMMAND "${CMAKE_COMMAND}" --install "${BUILD_DIR}" --config "${CONFIG}"
-  --prefix "${STAGING}" --strip RESULT_VARIABLE STATUS)
+  --prefix "${STAGING}" ${STRIP} RESULT_VARIABLE STATUS)
 
 if(NOT STATUS EQUAL 0)
   message(FATAL_ERROR "Package installation failed; staged files remain under build/development/.")

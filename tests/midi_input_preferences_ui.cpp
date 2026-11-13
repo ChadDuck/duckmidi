@@ -45,7 +45,10 @@ extern "C" void test_midi_input_preferences_ui(Editor *e, const char *label) {
     if (!strcmp(label, DM_TEXT_MIDI_CONFIGURATION)) {
         IM_ASSERT(e->input_preferences_open);
         IM_ASSERT(preferences->StateStorage.GetInt(id, 0) == 1);
+        /* Only Input opens with the MIDI section; the binding sections start collapsed. */
         IM_ASSERT(
-            !preferences->StateStorage.GetInt(preferences->GetID(DM_TEXT_MIDI_BIND_LIMITED), 1));
+            !preferences->StateStorage.GetInt(preferences->GetID(DM_TEXT_MIDI_BIND_CONTROLS), 1));
+        IM_ASSERT(
+            !preferences->StateStorage.GetInt(preferences->GetID(DM_TEXT_MIDI_BIND_EVENTS), 1));
     }
 }

@@ -241,7 +241,6 @@ void dm_audio_input_commands(DmAudio *a) {
         return;
     }
 
-    dm_audio_input_clock(a, false);
     unsigned routing = atomic_load_explicit(&a->input_route, memory_order_relaxed);
     unsigned route = routing & MIDI_CHANNEL_MASK;
     DmMidiInputEvent event;

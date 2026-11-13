@@ -239,13 +239,14 @@ void ed_percussion_save(Editor *e, bool project) {
     stop_listening(e);
 
     if (project) {
-        ed_checkpoint(e);
-        e->project.percussion_override = true;
-        memcpy(e->project.percussion_keys, e->percussion_draft, 128);
-        memcpy(e->project.percussion_midi, e->percussion_midi_draft, 128);
-        ed_commit(e);
-        snprintf(e->percussion_feedback, sizeof(e->percussion_feedback),
-                 DM_TEXT_SAVED_THIS_PROJECT_SAVE);
+        if (ed_checkpoint(e)) {
+            e->project.percussion_override = true;
+            memcpy(e->project.percussion_keys, e->percussion_draft, 128);
+            memcpy(e->project.percussion_midi, e->percussion_midi_draft, 128);
+            ed_commit(e);
+            snprintf(e->percussion_feedback, sizeof(e->percussion_feedback),
+                     DM_TEXT_SAVED_THIS_PROJECT_SAVE);
+        }
     } else {
         uint8_t keys[128], midi[128];
         memcpy(keys, e->percussion_global, 128);
@@ -412,12 +413,13 @@ void ed_percussion_dialog(Editor *e) {
         if (e->project.percussion_override &&
             ui_button(DM_TEXT_USE_GLOBAL_MAPPING_THIS, ui_available().x, 0)) {
             ed_release_piano(e);
-            ed_checkpoint(e);
-            e->project.percussion_override = false;
-            memset(e->project.percussion_keys, 0, 128);
-            memset(e->project.percussion_midi, 0, 128);
-            ed_commit(e);
-            ed_percussion_open(e);
+            if (ed_checkpoint(e)) {
+                e->project.percussion_override = false;
+                memset(e->project.percussion_keys, 0, 128);
+                memset(e->project.percussion_midi, 0, 128);
+                ed_commit(e);
+                ed_percussion_open(e);
+            }
         }
     }
 

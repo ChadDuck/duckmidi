@@ -315,8 +315,16 @@ static void midi_event_list(Editor *e, size_t count) {
         bool selected =
             e->midi_event_index == row.index && e->midi_event_kind == (int)row.automation;
 
+        if (e->song_event && !e->song_event_add && ed_song_event_pick_count(e)) {
+            selected = ed_song_event_picked(e, row);
+        }
+
         if (ui_select(label, selected, 0, 28)) {
-            ed_midi_select(e, row);
+            if (e->song_event && !e->song_event_add) {
+                ed_song_event_pick(e, i, ed_select_pick(e, ui_mouse()));
+            } else {
+                ed_midi_select(e, row);
+            }
         }
     }
 
@@ -743,7 +751,10 @@ bool ed_midi_apply_draft(Editor *e) {
         return false;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        dm_bytes_free(&copy);
+        return false;
+    }
 
     if (e->song_event) {
         dm_collapse_program_repeats(&e->project, e->midi_event_index, e->midi_event_kind);
@@ -792,13 +803,18 @@ bool ed_midi_apply_draft(Editor *e) {
 }
 
 static void midi_event_inspector(Editor *e) {
+    if (e->song_event && !e->song_event_add && ed_song_event_pick_count(e) > 1) {
+        ed_song_events_move_panel(e);
+        return;
+    }
+
     if (!midi_selection_valid(e)) {
         e->midi_event_index = -1;
         ui_dim(DM_TEXT_SELECT_MIDI_EVENT);
         return;
     }
 
-    ed_song_event_position(e, 0);
+    ed_song_event_position(e, &e->event_beat, DM_TEXT_BEAT, 0);
     ui_separator();
 
     if (e->song_event) {
@@ -836,13 +852,8 @@ static void midi_event_inspector(Editor *e) {
         ui_text(e->midi_error);
     }
 
+    /* Events keep their imported source track unchanged; it is not shown or edited. */
     if (!e->midi_event_kind) {
-        int track = e->midi_source_track + 1;
-
-        if (ui_int(DM_TEXT_SOURCE_TRACK, &track, 1, 65536)) {
-            e->midi_source_track = track - 1;
-        }
-
         if (!e->song_event) {
             ui_int(DM_TEXT_SOURCE_MIDI_PORT, &e->midi_source_port, 0, 255);
         }
@@ -859,27 +870,28 @@ static void midi_event_inspector(Editor *e) {
     }
 
     if (ui_button(DM_TEXT_DELETE_EVENT, 120, 0)) {
-        ed_checkpoint(e);
-        size_t i = (size_t)e->midi_event_index;
+        if (ed_checkpoint(e)) {
+            size_t i = (size_t)e->midi_event_index;
 
-        if (e->song_event) {
-            dm_collapse_program_repeats(&e->project, (int)i, e->midi_event_kind);
+            if (e->song_event) {
+                dm_collapse_program_repeats(&e->project, (int)i, e->midi_event_kind);
+            }
+
+            if (e->midi_event_kind) {
+                memmove(e->project.automation + i, e->project.automation + i + 1,
+                        (e->project.automation_count - i - 1) * sizeof(DmAutomation));
+                --e->project.automation_count;
+            } else {
+                dm_bytes_free(&e->project.events[i].message);
+                memmove(e->project.events + i, e->project.events + i + 1,
+                        (e->project.event_count - i - 1) * sizeof(DmEvent));
+                --e->project.event_count;
+            }
+
+            e->midi_error[0] = 0;
+            ed_commit(e);
+            e->midi_event_index = -1;
         }
-
-        if (e->midi_event_kind) {
-            memmove(e->project.automation + i, e->project.automation + i + 1,
-                    (e->project.automation_count - i - 1) * sizeof(DmAutomation));
-            --e->project.automation_count;
-        } else {
-            dm_bytes_free(&e->project.events[i].message);
-            memmove(e->project.events + i, e->project.events + i + 1,
-                    (e->project.event_count - i - 1) * sizeof(DmEvent));
-            --e->project.event_count;
-        }
-
-        e->midi_error[0] = 0;
-        ed_commit(e);
-        e->midi_event_index = -1;
     }
 }
 

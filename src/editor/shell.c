@@ -108,9 +108,10 @@ static void tempo_control(Editor *e) {
     editing = ui_hover() || ui_active();
 
     if (changed && e->active) {
-        ed_checkpoint(e);
-        e->project.bpm = bpm;
-        ed_commit(e);
+        if (ed_checkpoint(e)) {
+            e->project.bpm = bpm;
+            ed_commit(e);
+        }
     }
 
     bool variable = false;

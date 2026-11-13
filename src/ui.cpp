@@ -298,6 +298,10 @@ float ui_delta_time() {
     return ImMin(.05f, ImGui::GetIO().DeltaTime);
 }
 
+int ui_frame_number() {
+    return ImGui::GetFrameCount();
+}
+
 void ui_width(float width) {
     ImGui::SetNextItemWidth(width);
 }
@@ -461,6 +465,35 @@ void ui_piano_icon(UiRect r) {
 
 bool ui_button(const char *s, float w, float h) {
     return ImGui::Button(s, {w, h});
+}
+
+void ui_drop_zone(const char *text, float w, float h) {
+    ImVec2 a = ImGui::GetCursorScreenPos();
+    ImGui::Dummy({w, h});
+    ImVec2 b = {a.x + w, a.y + h};
+    ImDrawList *draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_FrameBg, .5f), 6);
+    ImU32 line = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+    const float dash = 8, gap = 6, inset = 1;
+    /* Each edge is drawn as dashes from its start; the corners stay open like a cut-out. */
+    auto edge = [&](ImVec2 from, ImVec2 to) {
+        float length = ImMax(ImFabs(to.x - from.x), ImFabs(to.y - from.y));
+        ImVec2 step = {(to.x - from.x) / length, (to.y - from.y) / length};
+
+        for (float at = 0; at < length; at += dash + gap) {
+            float end = ImMin(length, at + dash);
+            draw->AddLine({from.x + step.x * at, from.y + step.y * at},
+                          {from.x + step.x * end, from.y + step.y * end}, line, 1.5f);
+        }
+    };
+    ImVec2 lo = {a.x + inset, a.y + inset}, hi = {b.x - inset, b.y - inset};
+    edge(lo, {hi.x, lo.y});
+    edge({hi.x, lo.y}, hi);
+    edge(hi, {lo.x, hi.y});
+    edge({lo.x, hi.y}, lo);
+    ImVec2 size = ImGui::CalcTextSize(text);
+    draw->AddText({a.x + (w - size.x) * .5f, a.y + (h - size.y) * .5f},
+                  ImGui::GetColorU32(ImGuiCol_Text), text);
 }
 
 int ui_button_pair(const char *left, const char *right, int selected, float width) {
@@ -872,7 +905,8 @@ bool ui_mixer_value(int *value, float width) {
         }
 
         ImGui::SetNextItemWidth(120);
-        bool submit = ImGui::InputInt(DM_TEXT_VOLUME, &draft, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue);
+        bool submit =
+            ImGui::InputInt(DM_TEXT_VOLUME, &draft, 0, 0, ImGuiInputTextFlags_EnterReturnsTrue);
         parent->StateStorage.SetInt(key, draft);
 
         if (draft < 0 || draft > 127) {
@@ -1362,8 +1396,8 @@ static bool flexible_dialog(const char *s, bool *open, float w, float h, bool at
         needed = std::ceil(fit) + 2;
         minimum = ImMin(needed, view->WorkSize.y);
         bool sized = window->StateStorage.GetBool(ImHashStr(flex_sized_key), false);
-        float height = ImClamp(sized ? window->SizeFull.y : needed + want, minimum,
-                               view->WorkSize.y);
+        float height =
+            ImClamp(sized ? window->SizeFull.y : needed + want, minimum, view->WorkSize.y);
         requested = height;
         float width = ImMin(relayout ? w : window->SizeFull.x, max_width);
         float top =
@@ -1965,7 +1999,8 @@ void ui_channel_color_end() {
 }
 
 void ui_accent(bool on) {
-    uint32_t header = ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_HeaderActive]);
+    uint32_t header =
+        ImGui::ColorConvertFloat4ToU32(ImGui::GetStyle().Colors[ImGuiCol_HeaderActive]);
     ui_button_color(on ? (header == theme_header_active ? theme_accent_button : header) : 0);
 }
 
@@ -1976,10 +2011,8 @@ void ui_button_color(uint32_t color) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
                           color ? button : s.Colors[ImGuiCol_ButtonHovered]);
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, color ? button : s.Colors[ImGuiCol_ButtonActive]);
-    ImGui::PushStyleColor(ImGuiCol_Text,
-                          color ? ImGui::ColorConvertU32ToFloat4(
-                                      theme_accent == 0xff56eeffu ? 0xffffffffu : ui_text_on(color))
-                                : s.Colors[ImGuiCol_Text]);
+    ImGui::PushStyleColor(ImGuiCol_Text, color ? ImGui::ColorConvertU32ToFloat4(ui_text_on(color))
+                                               : s.Colors[ImGuiCol_Text]);
 }
 
 void ui_accent_end() {
@@ -2063,14 +2096,21 @@ void ui_theme(uint32_t accent, uint32_t background) {
     s.Colors[ImGuiCol_ChildBg] = ImGui::ColorConvertU32ToFloat4(ui_background_shade(14));
     s.Colors[ImGuiCol_FrameBg] = ImGui::ColorConvertU32ToFloat4(ui_background_shade(28));
     s.Colors[ImGuiCol_Button] = ImGui::ColorConvertU32ToFloat4(ui_background_shade(36));
-    s.Colors[ImGuiCol_ButtonHovered] = {c.x * .34f, c.y * .34f, c.z * .34f, 1};
-    s.Colors[ImGuiCol_ButtonActive] = {c.x * .48f, c.y * .48f, c.z * .48f, 1};
+    /* Accent surfaces use the application color itself, and hover and press states blend from
+       the background toward it; the text-surface pass below only shifts a surface as far as
+       its text needs to stay readable. */
+    ImVec4 back = ImGui::ColorConvertU32ToFloat4(background);
+    auto toward = [&](float t) {
+        return ImVec4{ImLerp(back.x, c.x, t), ImLerp(back.y, c.y, t), ImLerp(back.z, c.z, t), 1};
+    };
+    s.Colors[ImGuiCol_ButtonHovered] = toward(.5f);
+    s.Colors[ImGuiCol_ButtonActive] = toward(.75f);
     const int indices[] = {ImGuiCol_HeaderActive,     ImGuiCol_TitleBgActive,  ImGuiCol_SliderGrab,
                            ImGuiCol_SliderGrabActive, ImGuiCol_CheckMark,      ImGuiCol_NavCursor,
                            ImGuiCol_SeparatorHovered, ImGuiCol_SeparatorActive};
 
     for (int index : indices) {
-        s.Colors[index] = {c.x * .55f, c.y * .55f, c.z * .55f, 1};
+        s.Colors[index] = {c.x, c.y, c.z, 1};
     }
 
     theme_accent_button = ImGui::GetColorU32(ImGuiCol_HeaderActive);
@@ -2148,8 +2188,8 @@ bool ui_drag_pattern(int pattern, bool preview) {
     /* The dragged card keeps the spot that was clicked under the mouse, rather than hanging
        below and to the right of it. */
     if (preview) {
-        ImGui::SetNextWindowPos({g.IO.MousePos.x - g.ActiveIdClickOffset.x,
-                                 g.IO.MousePos.y - g.ActiveIdClickOffset.y});
+        ImGui::SetNextWindowPos(
+            {g.IO.MousePos.x - g.ActiveIdClickOffset.x, g.IO.MousePos.y - g.ActiveIdClickOffset.y});
     }
 
     if (!ImGui::BeginDragDropSource()) {

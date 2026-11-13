@@ -83,7 +83,10 @@ static void channel_switch(Editor *e, bool solo) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     DmPortMix mix =
         dm_port_mix(&e->project, e->note_ports[e->selected_channel], e->selected_channel);
 
@@ -395,7 +398,7 @@ static void action_navigation(Editor *e, int a) {
         break;
     case ACT_END:
         ed_seek(e, ed_context(e) == CONTEXT_ROLL && ed_pattern(e) ? ed_pattern_length(e)
-                                                               : dm_duration(&e->project));
+                                                                  : dm_duration(&e->project));
         break;
     default:
         break;
@@ -405,7 +408,8 @@ static void action_navigation(Editor *e, int a) {
 }
 
 void ed_action_zoom(Editor *e, int a) {
-    if (ed_context(e) == CONTEXT_ROLL && ed_pattern(e) && ed_pattern(e)->kind && ed_pattern(e)->mode) {
+    if (ed_context(e) == CONTEXT_ROLL && ed_pattern(e) && ed_pattern(e)->kind &&
+        ed_pattern(e)->mode) {
         return;
     }
 
@@ -637,6 +641,9 @@ void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
             return;
         }
 
+        /* A press that starts a waiting take lands on the take's start. */
+        bool starts_take = e->wait_armed && e->record && !dm_audio_playing(e->audio);
+
         if (!ed_record_start(e)) {
             return;
         }
@@ -649,9 +656,9 @@ void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
             dm_audio_preview(e->audio, e->piano_channel, note, 100, true);
         }
 
-        e->record_start[note] = e->record && dm_audio_playing(e->audio)
-                                    ? dm_seconds_beat(&e->project, dm_audio_position(e->audio))
-                                    : -1;
+        e->record_start[note] = !e->record || !dm_audio_playing(e->audio) ? -1
+                                : starts_take ? e->start_beat[e->pattern_mode]
+                                              : ed_heard_beat(e);
         e->record_origin[note] =
             e->record_start[note] >= 0 ? ed_record_origin(e, e->record_start[note]) : 0;
     }
@@ -1047,8 +1054,11 @@ void editor_event(Editor *e, const SDL_Event *event) {
         return;
     }
 
+    /* Recorded keys are timed at their event, not at the frame that handles it. */
     if (event->type == SDL_EVENT_KEY_DOWN) {
+        e->key_time_ns = event->key.timestamp;
         ed_shortcut(e, event->key.scancode, event->key.mod, event->key.repeat);
+        e->key_time_ns = 0;
     }
 
     if (event->type == SDL_EVENT_KEY_UP) {
@@ -1057,7 +1067,9 @@ void editor_event(Editor *e, const SDL_Event *event) {
         if (note >= 0) {
             dm_audio_preview(e->audio, e->held_channels[event->key.scancode], note, 0, false);
             e->held[event->key.scancode] = -1;
+            e->key_time_ns = event->key.timestamp;
             ed_record_note(e, note);
+            e->key_time_ns = 0;
         }
     }
 }

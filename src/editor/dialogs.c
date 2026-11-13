@@ -19,10 +19,11 @@ static void rename_dialog(Editor *e) {
         ui_input(DM_TEXT_NAME, e->rename_text, sizeof(e->rename_text));
 
         if (ui_button(DM_TEXT_RENAME, ui_available().x, 0) || ui_dialog_enter()) {
-            ed_checkpoint(e);
-            dm_pattern_name(&e->project, e->rename_pattern, e->rename_text);
-            ed_changed(e);
-            open = false;
+            if (ed_checkpoint(e)) {
+                dm_pattern_name(&e->project, e->rename_pattern, e->rename_text);
+                ed_changed(e);
+                open = false;
+            }
         }
     }
 
@@ -58,11 +59,12 @@ static void lane_dialog(Editor *e) {
         ui_disabled(e->project.lane_count[c] >= DM_LANES);
 
         if (ui_button(DM_TEXT_ADD_SUBROW, lane ? half : ui_available().x, 0)) {
-            ed_checkpoint(e);
-            ++e->project.lane_count[c];
-            e->channel_expanded[c] = true;
-            ed_changed(e);
-            e->lane_settings = false;
+            if (ed_checkpoint(e)) {
+                ++e->project.lane_count[c];
+                e->channel_expanded[c] = true;
+                ed_changed(e);
+                e->lane_settings = false;
+            }
         }
 
         ui_disabled_end();
@@ -76,44 +78,45 @@ static void lane_dialog(Editor *e) {
                 char automatic[64];
                 snprintf(automatic, sizeof(automatic), "%s%d", DM_TEXT_AUTOMATION_NUMBER_PREFIX, lane);
                 bool numbered = !strcmp(e->rename_text, automatic);
-                ed_checkpoint(e);
-                snprintf(e->project.lane_names[c][lane - 1], 64, "%s",
-                         numbered ? "" : e->rename_text);
-                ed_changed(e);
-                e->lane_settings = false;
+                if (ed_checkpoint(e)) {
+                    snprintf(e->project.lane_names[c][lane - 1], 64, "%s",
+                             numbered ? "" : e->rename_text);
+                    ed_changed(e);
+                    e->lane_settings = false;
+                }
             }
         }
 
         if (lane && ui_button(DM_TEXT_REMOVE_SUBROW, ui_available().x, 0)) {
-            ed_checkpoint(e);
+            if (ed_checkpoint(e)) {
+                for (size_t i = e->project.clip_count; i > 0; --i) {
+                    DmClip clip = e->project.clips[i - 1];
 
-            for (size_t i = e->project.clip_count; i > 0; --i) {
-                DmClip clip = e->project.clips[i - 1];
-
-                if (clip.channel == c && clip.lane == lane) {
-                    ed_remove_placement(e, i - 1);
+                    if (clip.channel == c && clip.lane == lane) {
+                        ed_remove_placement(e, i - 1);
+                    }
                 }
-            }
 
-            for (size_t i = 0; i < e->project.clip_count; ++i) {
-                DmClip *clip = &e->project.clips[i];
+                for (size_t i = 0; i < e->project.clip_count; ++i) {
+                    DmClip *clip = &e->project.clips[i];
 
-                if (clip->channel == c && clip->lane > lane) {
-                    --clip->lane;
+                    if (clip->channel == c && clip->lane > lane) {
+                        --clip->lane;
+                    }
                 }
+
+                memmove(e->project.lane_names[c][lane - 1], e->project.lane_names[c][lane],
+                        (e->project.lane_count[c] - lane) * 64);
+                --e->project.lane_count[c];
+
+                if (!e->project.lane_count[c]) {
+                    e->channel_expanded[c] = false;
+                }
+
+                e->project.lane_names[c][e->project.lane_count[c]][0] = 0;
+                e->lane_settings = false;
+                ed_commit(e);
             }
-
-            memmove(e->project.lane_names[c][lane - 1], e->project.lane_names[c][lane],
-                    (e->project.lane_count[c] - lane) * 64);
-            --e->project.lane_count[c];
-
-            if (!e->project.lane_count[c]) {
-                e->channel_expanded[c] = false;
-            }
-
-            e->project.lane_names[c][e->project.lane_count[c]][0] = 0;
-            e->lane_settings = false;
-            ed_commit(e);
         }
     }
 
@@ -419,6 +422,7 @@ void ed_dialogs(Editor *e) {
     ed_generate_dialog(e);
     ed_export_warning_dialog(e);
     ed_export_review_dialog(e);
+    ed_autosave_dialog(e);
 
     if (e->confirm) {
         static const char *const buttons[] = {DM_TEXT_SAVE, DM_TEXT_DISCARD, DM_TEXT_CANCEL};

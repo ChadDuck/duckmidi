@@ -8,7 +8,10 @@ static void pattern_browser_header(Editor *e);
 static void mixer_peak_update(Editor *e, uint64_t now);
 
 static void delete_pattern(Editor *e, size_t i) {
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     dm_pattern_remove(&e->project, (int)i);
     e->selected_pattern = e->project.pattern_count ? 0 : -1;
     ed_bind_pattern_channel(e);
@@ -89,7 +92,10 @@ void ed_duplicate_pattern(Editor *e, int pattern) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     int id = dm_pattern_copy(&e->project, pattern);
 
     if (id >= 0) {
@@ -195,11 +201,14 @@ static void create_pattern(Editor *e, bool automation) {
 
     char name[64];
     snprintf(name, sizeof(name), "%s%d", prefix, number);
-    bool pushed = ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     int id = dm_pattern_add(p, name);
 
     if (id < 0) {
-        ed_checkpoint_abandon(e, pushed);
+        ed_checkpoint_abandon(e);
         return;
     }
 
@@ -303,7 +312,10 @@ void ed_step_pattern(Editor *e, bool automation, int direction) {
     }
 
     free(used);
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     dm_pattern_remove(p, remove);
     remap_pattern_refs(e, remove, -1);
     const DmPattern *current = ed_pattern(e);
@@ -516,7 +528,10 @@ static void move_pattern_card(Editor *e, int dragged, int slot) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     dm_pattern_move(&e->project, dragged, before);
     remap_pattern_refs(e, dragged, to);
     e->pattern_drag = -1;
@@ -585,7 +600,7 @@ void ed_pattern_panel(Editor *e, float width, float height) {
     }
 
     if (ui_background_clicked()) {
-        ed_clear_pattern_selection(e);
+        ed_deselect_patterns(e);
     }
 
     ui_child_end();
@@ -614,10 +629,12 @@ bool ed_mixer_apply(Editor *e, DmPortMix before, DmPortMix mix) {
 }
 
 static void mixer_store(Editor *e, DmPortMix before, DmPortMix mix) {
-    bool checkpoint = ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
 
     if (!ed_mixer_apply(e, before, mix)) {
-        ed_checkpoint_abandon(e, checkpoint);
+        ed_checkpoint_abandon(e);
         ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PORT_MIXER);
         return;
     }
@@ -667,7 +684,9 @@ static void mixer_midi_learn(Editor *e, EdMidiTargetKind kind, int channel, int 
     ui_popup_end();
 }
 
-static void mixer_controls(Editor *e, int c, int port) {
+/* One route strip. labeled shows the route number and color above the fader; without it the
+   fader and meter take that space. */
+static void mixer_controls(Editor *e, int c, int port, bool labeled) {
     DmPortMix mix = dm_port_mix(&e->project, port, c), original = mix;
     DmPortMix reset = {port, c, 100, 64, false, false, original.program};
 
@@ -693,13 +712,19 @@ static void mixer_controls(Editor *e, int c, int port) {
     DmPortMix displayed = shown;
     char text[32];
     UiPoint start = ui_cursor(), area = ui_available();
-    float width = area.x, height = fmaxf(40, area.y - 110);
-    snprintf(text, sizeof(text), "%d", port);
-    ui_center_text(text);
-    snprintf(text, sizeof(text), DM_TEXT_PORT, port);
-    ui_tip(text);
-    ui_rect((UiRect){start.x + (width - 16) * .5f, start.y + 19, 16, 2}, ed_port_color(e, port), 1);
-    UiPoint v = {start.x + (width - 34) * .5f, start.y + 28};
+    float label = labeled ? 28 : 0;
+    float width = area.x, height = fmaxf(40, area.y - 110 + 28 - label);
+
+    if (labeled) {
+        snprintf(text, sizeof(text), "%d", port);
+        ui_center_text(text);
+        snprintf(text, sizeof(text), DM_TEXT_PORT, port);
+        ui_tip(text);
+        ui_rect((UiRect){start.x + (width - 16) * .5f, start.y + 19, 16, 2}, ed_port_color(e, port),
+                1);
+    }
+
+    UiPoint v = {start.x + (width - 34) * .5f, start.y + label};
     ui_position(v.x, v.y);
     ui_vslider("##volume", &shown.volume, height);
 
@@ -904,11 +929,12 @@ void ed_mixer(Editor *e, float width, float height) {
         }
 
         if (ui_item_middle()) {
-            ed_checkpoint(e);
-            e->project.channels[c] = e->reset_channels[c];
-            e->project.channels[c].enabled = true;
-            ed_sample_clear_route(&e->project, -1, c);
-            ed_commit(e);
+            if (ed_checkpoint(e)) {
+                e->project.channels[c] = e->reset_channels[c];
+                e->project.channels[c].enabled = true;
+                ed_sample_clear_route(&e->project, -1, c);
+                ed_commit(e);
+            }
         }
 
         ui_tip(dm_channel_drums(&e->project, c) ? DM_TEXT_GENERAL_MIDI_PERCUSSION
@@ -922,7 +948,8 @@ void ed_mixer(Editor *e, float width, float height) {
                 ui_position(row.x + column * 64, row.y);
                 ui_channel_color(ed_port_color(e, port));
                 ui_mixer_child("port strip", 64, strip_height - 40, false);
-                mixer_controls(e, c, port);
+                /* A channel playing only the default route needs no route number. */
+                mixer_controls(e, c, port, count > 1 || port != 0);
                 ui_child_end();
                 ui_channel_color_end();
                 ui_pop_id();

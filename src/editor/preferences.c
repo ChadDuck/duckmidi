@@ -116,7 +116,10 @@ static void source_settings(Editor *e) {
             e->midi_event_index = -1;
             e->song_event = false;
             ed_release_piano(e);
-            ed_checkpoint(e);
+            if (!ed_checkpoint(e)) {
+                return;
+            }
+
             dm_audio_transport(e->audio, false);
             e->record = false;
             e->recording_take = e->take_snapshot = false;
@@ -148,25 +151,28 @@ static void project_fields(Editor *e) {
     snprintf(name, sizeof(name), "%s", e->project.name);
 
     if (ui_input(DM_TEXT_NAME, name, sizeof(name))) {
-        ed_checkpoint(e);
-        snprintf(e->project.name, sizeof(e->project.name), "%s", name);
-        ed_changed(e);
+        if (ed_checkpoint(e)) {
+            snprintf(e->project.name, sizeof(e->project.name), "%s", name);
+            ed_changed(e);
+        }
     }
 
     float bpm = (float)e->project.bpm;
 
     if (ui_float(DM_TEXT_INITIAL_TEMPO, &bpm, DM_BPM_MIN, DM_BPM_MAX)) {
-        ed_checkpoint(e);
-        e->project.bpm = bpm;
-        ed_commit(e);
+        if (ed_checkpoint(e)) {
+            e->project.bpm = bpm;
+            ed_commit(e);
+        }
     }
 
     int numerator = e->project.numerator;
 
     if (ui_int(DM_TEXT_BEATS_PER_BAR, &numerator, 1, 255)) {
-        ed_checkpoint(e);
-        e->project.numerator = numerator;
-        ed_commit(e);
+        if (ed_checkpoint(e)) {
+            e->project.numerator = numerator;
+            ed_commit(e);
+        }
     }
 
     const char *denoms[] = {
@@ -178,9 +184,10 @@ static void project_fields(Editor *e) {
     if (ui_combo(DM_TEXT_BEAT_UNIT, d)) {
         for (int i = 0; i < 8; ++i) {
             if (ui_select(denoms[i], e->project.denominator == (1 << i), 0, 0)) {
-                ed_checkpoint(e);
-                e->project.denominator = 1 << i;
-                ed_commit(e);
+                if (ed_checkpoint(e)) {
+                    e->project.denominator = 1 << i;
+                    ed_commit(e);
+                }
             }
         }
 
@@ -456,11 +463,17 @@ bool ed_swap_channels(Editor *e, int a, int b) {
     ed_release_piano(e);
     ed_midi_input_finish(e, false);
 
-    if (!ed_checkpoint(e)) {
+    if (!ed_checkpoint_swap(e, a, b)) {
         return false;
     }
 
     dm_channel_swap(&e->project, a, b);
+    ed_swap_channel_state(e, a, b);
+    ed_commit_channels(e); /* The moved channels take their new instruments at once. */
+    return true;
+}
+
+void ed_swap_channel_state(Editor *e, int a, int b) {
     bool expanded = e->channel_expanded[a];
     e->channel_expanded[a] = e->channel_expanded[b];
     e->channel_expanded[b] = expanded;
@@ -499,8 +512,6 @@ bool ed_swap_channels(Editor *e, int a, int b) {
     e->midi_sample_source.key.channel =
         (uint8_t)dm_channel_swapped(e->midi_sample_source.key.channel, a, b);
     ed_keyboard_channel(e);
-    ed_commit(e);
-    return true;
 }
 
 bool ed_remove_channel(Editor *e, int channel) {
@@ -509,7 +520,10 @@ bool ed_remove_channel(Editor *e, int channel) {
     }
 
     ed_release_piano(e);
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return false;
+    }
+
     DmProject *p = &e->project;
 
     for (size_t i = p->clip_count; i > 0; --i) {
@@ -604,10 +618,12 @@ void ed_apply_instrument(Editor *e) {
     ed_close_instrument(e);
 
     if (midi_change || assign) {
-        bool pushed = ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            return;
+        }
 
         if (assign && !ed_sample_store_replacement(e, &source, inherit)) {
-            ed_checkpoint_abandon(e, pushed);
+            ed_checkpoint_abandon(e);
             return;
         }
 
@@ -625,7 +641,7 @@ void ed_apply_instrument(Editor *e) {
 
                 if (!dm_port_mix_set(&e->project, mix)) {
                     /* Undo the type and event changes already made for this channel. */
-                    ed_checkpoint_abandon(e, pushed);
+                    ed_checkpoint_abandon(e);
                     ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PORT_MIXER);
                     return;
                 }
@@ -635,9 +651,7 @@ void ed_apply_instrument(Editor *e) {
         }
 
         if (type_changed && dm_audio_playing(e->audio)) {
-            /* Replay channel setup at the current position so the new bank takes effect. */
-            ed_changed(e);
-            ed_transport_publish(e, dm_audio_position(e->audio), true);
+            ed_commit_channels(e); /* The new bank takes effect at once. */
         } else {
             ed_commit(e);
 
@@ -1205,7 +1219,10 @@ static bool midi_binding_row(Editor *e, EdMidiTarget target, EdMidiBinding *bind
     return clear;
 }
 
+/* Only Input opens by default; the binding sections start collapsed. */
 static void midi_controls(Editor *e) {
+    ui_section_default(false);
+
     if (!ui_section(DM_TEXT_MIDI_BIND_CONTROLS)) {
         return;
     }
@@ -1279,6 +1296,8 @@ static void midi_event_rows(Editor *e, EdMidiTargetKind first, EdMidiTargetKind 
 }
 
 static void midi_event_preferences(Editor *e) {
+    ui_section_default(false);
+
     if (!ui_section(DM_TEXT_MIDI_BIND_EVENTS)) {
         return;
     }
@@ -1379,6 +1398,10 @@ void ed_preferences(Editor *e) {
 
         if (ui_check(DM_TEXT_USE_DEFAULT_OS, &e->os_cursor)) {
             ui_custom_cursor(!e->os_cursor);
+            ed_preference_save(e);
+        }
+
+        if (ui_check(DM_TEXT_MODIFIER_SELECT, &e->modifier_select)) {
             ed_preference_save(e);
         }
 

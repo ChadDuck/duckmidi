@@ -316,6 +316,119 @@ static void song_program_repeats(Editor *e) {
     e->song_event = false;
 }
 
+static void song_event_selection_checks(Editor *e) {
+    fixture(e);
+    const uint8_t text[] = {MIDI_META, MIDI_META_TEXT, 1, 'A'};
+    DmBytes bytes = {(uint8_t *)text, sizeof(text), sizeof(text)};
+
+    for (int i = 0; i < 4; ++i) {
+        check(dm_event_add(&e->project, i * .5 + .5, 0, 0, &bytes), "create song selection rows");
+    }
+
+    ed_song_event_open_bar(e, 0, false, -1);
+    ed_song_event_pick(e, 2, PICK_TOGGLE);
+    check(ed_song_event_pick_count(e) == 2 &&
+              ed_song_event_picked(e, ((MidiRow *)e->midi_rows.data)[0]),
+          "Ctrl click seeds the current single selection");
+    ed_song_event_pick(e, 3, PICK_RANGE);
+    check(ed_song_event_pick_count(e) == 2 && e->song_event_pick_anchor == 2,
+          "Shift replaces with a range and preserves the Ctrl anchor");
+    ed_song_event_pick(e, 0, PICK_ADD_RANGE);
+    check(ed_song_event_pick_count(e) == 4 && e->song_event_pick_anchor == 2,
+          "Ctrl Shift adds a range and preserves its anchor");
+    ed_song_event_pick(e, 1, PICK_TOGGLE);
+    check(ed_song_event_pick_count(e) == 3 && e->song_event_pick_anchor == 1,
+          "Ctrl toggles a picked row off and moves the anchor");
+    ed_song_event_pick(e, 3, PICK_RANGE);
+    check(ed_song_event_pick_count(e) == 3 && e->song_event_pick_anchor == 1,
+          "a toggled-off row remains the range anchor");
+    ed_song_event_pick(e, 0, PICK_ONE);
+    check(ed_song_event_pick_count(e) == 1 && e->midi_event_index == 0,
+          "plain click replaces all picks with the single-event editor");
+    ed_song_event_pick(e, 0, PICK_TOGGLE);
+    check(!ed_song_event_pick_count(e) && e->midi_event_index == -1, "Ctrl can leave no selection");
+    ed_song_event_pick(e, 0, PICK_ONE);
+    ed_song_event_rows(e, 1, 4, -1);
+    ed_song_event_pick(e, 1, PICK_ADD_RANGE);
+    check(ed_song_event_pick_count(e) == 1 && e->midi_event_index == 2 &&
+              e->song_event_pick_anchor == 2,
+          "range without a visible anchor behaves as a plain click");
+    ++e->export_revision;
+    check(!ed_song_event_pick_count(e) && e->song_event_pick_anchor == -1,
+          "project revision invalidates picks and the anchor");
+    ed_song_event_open_bar(e, 0, false, -1);
+    ed_song_event_pick(e, 0, PICK_ONE);
+    ed_song_event_pick(e, 1, PICK_TOGGLE);
+    check(e->song_event_move_to == ((MidiRow *)e->midi_rows.data)[0].beat,
+          "Move to starts at the first picked event's beat");
+    int undo = e->undo_count;
+    check(ed_song_events_move(e, -20, false) && e->project.events[0].beat == 0 &&
+              e->project.events[1].beat == .5 && e->undo_count == undo + 1,
+          "relative group movement clamps at zero with one undo step");
+    check(ed_song_events_move(e, DM_MAX_BEAT * 2.0, false) &&
+              e->project.events[2].beat == DM_MAX_BEAT - .5 &&
+              e->project.events[3].beat == DM_MAX_BEAT &&
+              ed_song_event_picked(e, (MidiRow){DM_MAX_BEAT, 3, false}) &&
+              ed_song_event_picked(e, (MidiRow){DM_MAX_BEAT - .5, 2, false}),
+          "relative move clamps the latest event and retains picks after sorting");
+    check(ed_song_events_move(e, 1.75, true) && e->project.events[1].beat == 1.75 &&
+              e->project.events[2].beat == 1.75 && e->song_event_anchor == 1.75 &&
+              ed_song_event_pick_count(e) == 2,
+          "absolute move puts every pick on the target and follows the earliest move");
+    ed_undo(e, false);
+    check(e->project.events[2].beat == DM_MAX_BEAT - .5 &&
+              e->project.events[3].beat == DM_MAX_BEAT && !ed_song_event_pick_count(e),
+          "undo restores the whole move and invalidates picks");
+    ed_song_event_open_bar(e, 0, true, -1);
+    e->event_beat = DM_MAX_BEAT;
+    check(ed_song_event_position_valid(e), "last representable song event beat is accepted");
+    e->event_beat += 1;
+    check(!ed_song_event_position_valid(e), "song event beats beyond the MIDI limit are rejected");
+    ed_song_event_open_bar(e, 0, false, -1);
+    check(!ed_song_event_pick_count(e), "opening a bar clears group picks");
+    ed_song_event_pick(e, 1, PICK_RANGE);
+    check(ed_song_event_pick_count(e) == 2,
+          "Shift click ranges from the event the window opened on");
+    ed_song_event_open_bar(e, 0, false, -1);
+    e->song_event = false;
+    ed_song_event_pick(e, 0, PICK_TOGGLE);
+    check(!ed_song_event_pick_count(e), "MIDI Events never gains group picks");
+}
+
+static void song_event_group_programs(Editor *e) {
+    fixture(e);
+    const uint8_t patch[] = {MIDI_PROGRAM, 12};
+    DmBytes bytes = {(uint8_t *)patch, sizeof(patch), sizeof(patch)};
+    check(dm_event_add(&e->project, 1, 0, 0, &bytes) &&
+              dm_event_add(&e->project, 1, 0, 0, &bytes) &&
+              dm_event_add(&e->project, 2, 0, 0, &bytes) &&
+              dm_event_add(&e->project, 2, 0, 0, &bytes) &&
+              dm_event_add(&e->project, 3, 0, 0, &bytes),
+          "create source program repeats and an independent event");
+    DmAutomation a = {.beat = 1, .type = MIDI_PROGRAM, .a = 24, .pattern = -1};
+    check(dm_automation_add(&e->project, a) && dm_automation_add(&e->project, a),
+          "create automation program repeats");
+    ed_song_event_open_bar(e, 0, false, 0);
+    ed_song_event_pick(e, 0, PICK_ONE);
+    ed_song_event_pick(e, 1, PICK_TOGGLE);
+    ed_song_event_pick(e, 2, PICK_TOGGLE);
+    check(ed_song_event_pick_count(e) == 3, "pick source and automation program rows");
+    check(ed_song_events_move(e, 0, true) && e->project.event_count == 3 &&
+              e->project.automation_count == 1 && e->project.events[0].beat == 0 &&
+              e->project.events[1].beat == 0 && e->project.events[2].beat == 3 &&
+              e->project.automation[0].beat == 0 && e->project.channels[0].program == 24 &&
+              ed_song_event_pick_count(e) == 3 && ed_song_event_picked(e, (MidiRow){0, 0, false}) &&
+              ed_song_event_picked(e, (MidiRow){0, 1, false}) &&
+              ed_song_event_picked(e, (MidiRow){0, 0, true}),
+          "moving folded programs removes hidden repeats and applies initial values");
+    ed_undo(e, false);
+    check(e->project.event_count == 5 && e->project.automation_count == 2 &&
+              e->project.events[0].beat == 1 && e->project.events[1].beat == 1 &&
+              e->project.events[2].beat == 2 && e->project.events[3].beat == 2 &&
+              e->project.automation[0].beat == 1 && e->project.automation[1].beat == 1,
+          "one undo restores both program streams including their hidden repeats");
+}
+
 static void native_drop(Editor *e, const char *path) {
 #ifdef _WIN32
     wchar_t wide[DM_PATH];
@@ -455,6 +568,8 @@ int main(void) {
     event_checks(e);
     source_checks(e);
     song_program_repeats(e);
+    song_event_selection_checks(e);
+    song_event_group_programs(e);
     ui_end();
     ui_render(r);
     drop_checks(e);

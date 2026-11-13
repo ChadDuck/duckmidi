@@ -878,12 +878,12 @@ void ed_sample_program_source(Editor *e) {
     }
 
     if (e->midi_sample_dirty && ui_button(DM_TEXT_SAMPLE_APPLY_SOURCE, 0, 0)) {
-        ed_checkpoint(e);
-
-        if (ed_sample_store_replacement(e, &e->midi_sample_source, e->midi_sample_inherit)) {
-            ed_commit(e);
-            e->midi_selection_revision = e->export_revision;
-            e->midi_sample_dirty = false;
+        if (ed_checkpoint(e)) {
+            if (ed_sample_store_replacement(e, &e->midi_sample_source, e->midi_sample_inherit)) {
+                ed_commit(e);
+                e->midi_selection_revision = e->export_revision;
+                e->midi_sample_dirty = false;
+            }
         }
     }
 }
@@ -2180,9 +2180,7 @@ void ed_samples_draw(Editor *e) {
         }
 
         if (!count) {
-            if (ui_button(DM_TEXT_SAMPLE_DROP, ui_available().x, 140)) {
-                choose_samples(e, false);
-            }
+            ui_drop_zone(DM_TEXT_SAMPLE_DROP, ui_available().x, 140);
 
             float half = (ui_available().x - ui_item_spacing_x()) * .5f;
 

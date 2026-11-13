@@ -15,6 +15,7 @@ static UiPoint connection_point(Editor *e, DmAutomation a, UiRect lane, View *v,
 static bool curve_handle_action(Editor *e, size_t index, UiRect lane, UiPoint mid, UiMouse mouse,
                                 bool overlay, double origin, bool hovered);
 static void event_drag_begin(Editor *e, int hit);
+static void remove_node(Editor *e, int index);
 static void event_group_selection(Editor *e);
 static double event_group_delta(Editor *e, UiRect lane, UiMouse mouse, EventDragItem *items,
                                 size_t count, bool pitch);
@@ -301,7 +302,10 @@ bool ed_point_only_event(int cc) {
 
 static void choose_event_type(Editor *e, int value) {
     if (value != -3 && ed_pattern(e)->kind && ed_pattern(e)->event != value) {
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            return;
+        }
+
         ed_pattern(e)->event = value;
 
         if (ed_point_only_event(value)) {
@@ -944,7 +948,11 @@ static void curve_drag_update(Editor *e, UiRect lane, UiMouse mouse) {
 
     if (mouse.left && (e->curve_changed || fabsf(mouse.pos.y - e->curve_y) > 1)) {
         if (!e->curve_changed) {
-            ed_checkpoint(e);
+            if (!ed_checkpoint(e)) {
+                e->curve_drag = false;
+                return;
+            }
+
             e->curve_changed = true;
         }
 
@@ -1020,7 +1028,10 @@ static bool curve_handle_action(Editor *e, size_t index, UiRect lane, UiPoint mi
     if (mouse.middle_clicked) {
         ed_pitch_cache_end(e);
         e->pan_context = CONTEXT_NONE;
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            return false;
+        }
+
         e->project.automation[index].bend = 0;
         e->project.automation[index].ramp = true;
         e->project.automation[index].hold = false;
@@ -1204,6 +1215,29 @@ static void event_drag_begin(Editor *e, int hit) {
     }
 }
 
+/* Turns the selection into an explicit list of points that also holds point hit. */
+static void add_event_selection(Editor *e, int hit) {
+    DmBytes list = {0};
+    bool ok = true;
+
+    for (size_t i = 0; i < e->project.automation_count && ok; ++i) {
+        if ((int)i == hit || ed_event_selected(e, i)) {
+            ok = dm_bytes(&list, &e->project.automation[i], sizeof(DmAutomation));
+        }
+    }
+
+    if (!ok) {
+        dm_bytes_free(&list);
+        return;
+    }
+
+    qsort(list.data, list.size / sizeof(DmAutomation), sizeof(DmAutomation), event_identity);
+    dm_bytes_free(&e->event_selection);
+    e->event_selection = list;
+    e->automation_all = false;
+    e->automation_node = -1;
+}
+
 static void event_group_selection(Editor *e) {
     e->event_selection.size = 0;
     size_t count = e->event_drag.size / sizeof(EventDragItem);
@@ -1292,7 +1326,9 @@ static bool event_group_drag(Editor *e, UiRect lane, float scale, UiMouse mouse)
     EventDragItem *items = (EventDragItem *)e->event_drag.data;
 
     if (mouse.left && ed_gesture_moved(e, mouse)) {
-        ed_begin_edit_move(e);
+        if (!ed_begin_edit_move(e)) {
+            return true;
+        }
         double delta = ed_gesture_held(e, GESTURE_LOCK_TIME, mouse)
                            ? 0
                            : ed_snap(e->node_beat + (mouse.pos.x - e->marquee_start.x) / scale,
@@ -1368,7 +1404,10 @@ void ed_automation_node_drag(Editor *e, UiRect lane, View *v, float scale, UiMou
     DmAutomation *a = &e->project.automation[e->automation_node];
 
     if (mouse.left && ed_gesture_moved(e, mouse)) {
-        ed_begin_edit_move(e);
+        if (!ed_begin_edit_move(e)) {
+            return;
+        }
+
         DmAutomation edited =
             ed_gesture_held(e, GESTURE_LOCK_VALUE, mouse)
                 ? *a
@@ -1497,7 +1536,10 @@ bool ed_insert_lane_node(Editor *e, double beat) {
             continue;
         }
 
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            return false;
+        }
+
         detach_bend(e, a);
 
         if (ed_automation_raw(e)) {
@@ -1526,6 +1568,10 @@ static bool events_selected(Editor *e) {
 
 /* A standalone point at the cursor: a plain click, or Shift + click with no point to connect to. */
 static void add_cursor_point(Editor *e, UiRect lane, UiMouse mouse, double beat) {
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     int anchor =
         e->automation_cc == DM_EVENT_BEND ? ed_nearest_note(e, beat) : ed_curve_anchor(e, beat);
     DmAutomation point = ed_curve_node(e, beat, 0, e->automation_cc, 0, anchor);
@@ -1537,7 +1583,6 @@ static void add_cursor_point(Editor *e, UiRect lane, UiMouse mouse, double beat)
 
     ed_set_event_value(&point, ed_lane_value(e, lane, mouse.pos.y, point,
                                              ed_gesture_held(e, GESTURE_FREE, mouse)));
-    ed_checkpoint(e);
     dm_automation_add(&e->project, point);
     e->last_automation = point;
     e->last_automation_valid = true;
@@ -1609,7 +1654,10 @@ static void add_connected_point(Editor *e, UiRect lane, UiMouse mouse, double be
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     connect_point(e, lane, nearest, mouse.pos.y, beat, ed_gesture_held(e, GESTURE_FREE, mouse));
     ed_sort_automation(e);
     ed_commit(e);
@@ -1692,11 +1740,12 @@ static void point_menu(Editor *e, int hit) {
     int maximum = a->type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX;
 
     if (ui_slider(DM_TEXT_VALUE, &value, 0, maximum, 180)) {
-        ed_checkpoint(e);
-        a->bend_note = 0;
-        ed_pitch_edit_units(e, a, true);
-        ed_set_event_value(a, value);
-        ed_commit(e);
+        if (ed_checkpoint(e)) {
+            a->bend_note = 0;
+            ed_pitch_edit_units(e, a, true);
+            ed_set_event_value(a, value);
+            ed_commit(e);
+        }
     }
 
     /* Curve: Line moves smoothly to the next point; Hold keeps this value until it. */
@@ -1704,19 +1753,21 @@ static void point_menu(Editor *e, int hit) {
         bool line = dm_automation_curves(*a);
 
         if (ui_menu_check(DM_TEXT_CURVE_LINE, line) && !line) {
-            ed_checkpoint(e);
-            a->bend_note = 0;
-            a->ramp = !a->curve;
-            a->hold = false;
-            ed_commit(e);
+            if (ed_checkpoint(e)) {
+                a->bend_note = 0;
+                a->ramp = !a->curve;
+                a->hold = false;
+                ed_commit(e);
+            }
         }
 
         if (ui_menu_check(DM_TEXT_CURVE_HOLD, !line) && line) {
-            ed_checkpoint(e);
-            a->bend_note = 0;
-            a->ramp = false;
-            a->hold = a->curve > 0;
-            ed_commit(e);
+            if (ed_checkpoint(e)) {
+                a->bend_note = 0;
+                a->ramp = false;
+                a->hold = a->curve > 0;
+                ed_commit(e);
+            }
         }
 
         ui_menu_end();
@@ -1742,6 +1793,11 @@ void ed_automation_lane_click(Editor *e, UiRect lane, View *v, float scale, UiMo
     }
 
     if (hit >= 0) {
+        /* A Shift press adds the point to the selection and drags the group. */
+        if (ed_select_pick(e, mouse) != PICK_ONE && !ed_event_selected(e, (size_t)hit)) {
+            add_event_selection(e, hit);
+        }
+
         event_drag_begin(e, hit);
         e->lone_click = !ed_gesture_held(e, GESTURE_EXTEND, mouse);
         e->automation_all = false;
@@ -1771,7 +1827,10 @@ void ed_automation_lane_click(Editor *e, UiRect lane, View *v, float scale, UiMo
 
     /* Pedal events are ranges, so a press always draws one. */
     if (ed_pedal_event(e->automation_cc)) {
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            return;
+        }
+
         e->drag = DRAG_EVENT_LINE;
         return;
     }
@@ -1798,7 +1857,11 @@ void ed_automation_press(Editor *e, UiRect lane, View *v, float scale, UiMouse m
     float buffer = SDL_GetTicks() - e->event_press_tick < 250 ? 8.f : 4.f;
 
     if (moved > buffer && !discrete_event(e->automation_cc)) {
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            e->drag = DRAG_NONE;
+            return;
+        }
+
         e->drag = DRAG_EVENT_LINE; /* ed_automation_drag draws the line and places it on release. */
         return;
     }
@@ -1919,7 +1982,9 @@ void ed_automation_drag(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
     ed_commit(e);
 }
 
-static bool event_marquee_begin(Editor *e, UiMouse mouse) {
+/* hit is the point under the press: released without moving, the press is a modifier click on
+   it (see ed_event_box_select). */
+static bool event_marquee_begin(Editor *e, UiMouse mouse, int hit) {
     DmBytes *selection = &e->event_marquee_selection;
     selection->size = 0;
 
@@ -1942,6 +2007,9 @@ static bool event_marquee_begin(Editor *e, UiMouse mouse) {
     ed_deselect_events(e);
     e->event_marquee = true;
     e->event_marquee_start = mouse.pos;
+    e->pick = ed_select_pick(e, mouse);
+    e->pick_hit = hit;
+    e->pick_moved = false;
     e->drag = DRAG_NONE;
     e->curve_drag = false;
     return true;
@@ -1954,6 +2022,10 @@ void ed_event_box_select(Editor *e, UiRect lane, View *v, float scale, UiMouse m
     e->event_selection.size = 0;
     size_t bytes = e->project.automation_count * sizeof(DmAutomation);
     bool graph = ed_graph_resolution(e) != 0; /* Graph lanes select the bars the box touches. */
+    /* Until the pointer moves the press is a click: the points keep their selection, and the
+       release applies the click to the point under it. Points have no range, so a range click
+       adds the point. */
+    bool moved = ed_pick_moved(e, start, mouse), click = ed_pick_clicked(e, start, mouse);
 
     if (dm_reserve((void **)&e->event_selection.data, &e->event_selection.capacity, bytes, 1)) {
         for (size_t i = 0; i < e->project.automation_count; ++i) {
@@ -1963,14 +2035,19 @@ void ed_event_box_select(Editor *e, UiRect lane, View *v, float scale, UiMouse m
                 continue;
             }
 
-            bool selected = ed_gesture_held(e, GESTURE_EXTEND, mouse) &&
-                            event_selection_contains(&e->event_marquee_selection, a);
+            bool before = event_selection_contains(&e->event_marquee_selection, a);
+            bool clicked = (int)i == e->pick_hit, selected;
 
-            if (!selected && graph) {
+            if (!moved) {
+                selected =
+                    click ? ed_pick_selects(e->pick, before, clicked, before || clicked) : before;
+            } else if (ed_gesture_held(e, GESTURE_EXTEND, mouse) && before) {
+                selected = true;
+            } else if (graph) {
                 UiRect bar = ed_graph_bar(e, a, lane, v, scale, INFINITY);
                 selected = bar.x <= box.x + box.w && bar.x + bar.w >= box.x &&
                            bar.y <= box.y + box.h && bar.y + bar.h >= box.y;
-            } else if (!selected) {
+            } else {
                 selected = ed_inside(ed_automation_point(e, a, lane, v, scale), box);
             }
 
@@ -2059,7 +2136,10 @@ static void graph_input(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
         } else if (events_selected(e)) {
             ed_deselect_events(e);
         } else {
-            ed_checkpoint(e);
+            if (!ed_checkpoint(e)) {
+                return;
+            }
+
             e->graph_last = mouse.pos;
             e->event_free = ed_gesture_held(e, GESTURE_FREE, mouse);
             e->drag = DRAG_GRAPH_PAINT;
@@ -2080,7 +2160,10 @@ static void graph_input(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
 
     if (e->drag == DRAG_GRAPH_MOVE) {
         if (mouse.left && ed_gesture_moved(e, mouse)) {
-            ed_begin_edit_move(e);
+            if (!ed_begin_edit_move(e)) {
+                return;
+            }
+
             UiMouse values = mouse;
             /* The modifier chose this gesture; it does not hold the values. */
             ed_gesture_set(e, GESTURE_LOCK_VALUE, &values, false);
@@ -2105,21 +2188,57 @@ static void graph_input(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
             ed_deselect_events(e);
         }
 
-        e->graph_last = mouse.pos;
         e->drag = DRAG_GRAPH_ERASE;
     }
 
     if (e->drag == DRAG_GRAPH_ERASE) {
-        if (mouse.right && ed_graph_erase(e, lane, v, scale, e->graph_last, mouse.pos)) {
+        UiPoint from, to;
+        ed_sweep(e, mouse, &from, &to);
+
+        if (mouse.right && ed_graph_erase(e, lane, v, scale, from, to)) {
             ed_deselect_events(e);
             ed_commit(e);
         }
 
-        e->graph_last = mouse.pos;
         e->drag = mouse.right ? DRAG_GRAPH_ERASE : DRAG_NONE;
     }
 
     event_placement_tip(e, lane, mouse, hovered);
+}
+
+/* A right-drag erases every point its path crossed this frame (see ed_sweep); a point's box is
+   the area a click on it hits. Removing a point can remove the restoration points of its curve,
+   so the points are found again after each removal. */
+static void erase_swept_points(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse) {
+    UiPoint from, to;
+    ed_sweep(e, mouse, &from, &to);
+    bool erased = false;
+
+    for (int found = 0; found >= 0;) {
+        found = -1;
+
+        for (size_t i = 0; i < e->project.automation_count && found < 0; ++i) {
+            DmAutomation a = e->project.automation[i];
+
+            if (ed_automation_matches(e, a) && a.curve >= 0) {
+                UiPoint at = ed_automation_point(e, a, lane, v, scale);
+                found = ed_sweep_hits(from, to, (UiRect){at.x - 9, at.y - 9, 18, 18}) ? (int)i : -1;
+            }
+        }
+
+        if (found >= 0) {
+            if (!ed_erase_step(e)) {
+                return;
+            }
+
+            remove_node(e, found);
+            erased = true;
+        }
+    }
+
+    if (erased) {
+        ed_commit(e);
+    }
 }
 
 void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse, bool hovered,
@@ -2133,7 +2252,7 @@ void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse m
     bool start = hovered && ed_inside(mouse.pos, lane) && mouse.clicked &&
                  (ed_gesture_held(e, GESTURE_MARQUEE, mouse) || e->tool == TOOL_MARQUEE);
 
-    if (start && !event_marquee_begin(e, mouse)) {
+    if (start && !event_marquee_begin(e, mouse, hit)) {
         return;
     }
 
@@ -2164,10 +2283,10 @@ void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse m
     }
 
     /* Right-dragging erases points, like notes in the piano roll and playlist placements. */
-    if (hovered && ed_inside(mouse.pos, lane) && mouse.right && hit >= 0 && !e->drag &&
+    if (hovered && ed_inside(mouse.pos, lane) && mouse.right && !e->drag &&
         ed_right_free(e, mouse)) {
         ed_focus_edit(e, FOCUS_EVENTS);
-        ed_erase_node(e, hit);
+        erase_swept_points(e, lane, v, scale, mouse);
     }
 
     point_menu(e, hovered && ed_inside(mouse.pos, lane) && mouse.right_clicked &&
@@ -2246,7 +2365,10 @@ void ed_remove_selected_node(Editor *e) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     remove_node(e, index);
     ed_commit(e);
 }
@@ -2257,7 +2379,10 @@ void ed_erase_node(Editor *e, int index) {
         return;
     }
 
-    ed_erase_step(e);
+    if (!ed_erase_step(e)) {
+        return;
+    }
+
     remove_node(e, index);
     ed_commit(e);
 }
@@ -2283,7 +2408,10 @@ void ed_automation_clear(Editor *e) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        free(remove);
+        return;
+    }
 
     for (size_t i = count; i > 0; --i) {
         if (!remove[i - 1]) {
@@ -2786,9 +2914,7 @@ void ed_paste_event_lane(Editor *e) {
         return;
     }
 
-    bool pushed = ed_checkpoint(e);
-
-    if (!pushed) {
+    if (!ed_checkpoint(e)) {
         dm_project_free(&from);
         return;
     }
@@ -2820,7 +2946,7 @@ void ed_paste_event_lane(Editor *e) {
     if (ok) {
         ed_commit(e);
     } else {
-        ed_checkpoint_abandon(e, pushed);
+        ed_checkpoint_abandon(e);
     }
 
     dm_project_free(&from);
@@ -2847,7 +2973,11 @@ void ed_duplicate_events(Editor *e) {
     if (ed_copy_events(e, &copy)) {
         double span = ed_duplicate_span(e, first, end, true);
 
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            dm_project_free(&copy);
+            return;
+        }
+
         ed_paste_events(e, &copy, first + span);
         ed_commit(e);
     }
@@ -2867,7 +2997,11 @@ void ed_delete_events(Editor *e) {
         remove[i] = ed_event_selected(e, i);
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        free(remove);
+        return;
+    }
+
     ed_remove_events(e, remove, e->automation_cc);
     free(remove);
     e->event_selection.size = 0;

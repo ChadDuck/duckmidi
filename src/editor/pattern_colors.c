@@ -64,7 +64,9 @@ static void apply_color(Editor *e, unsigned color) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
 
     if (e->pattern_color_target >= 0) {
         e->project.patterns[e->pattern_color_target].color = (uint8_t)color;

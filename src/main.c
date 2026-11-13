@@ -1,4 +1,5 @@
 #include "editor/editor.h"
+#include "crash.h"
 #include "text/en.h"
 #include <SDL3/SDL_main.h>
 #include <stdio.h>
@@ -183,8 +184,23 @@ int main(int argc, char **argv) {
 #endif
     SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, "256");
 
+    const char *base = SDL_GetBasePath();
+#ifdef _WIN32
+    /* Windows builds are portable: preferences stay beside the executable. */
+    char *data = NULL;
+#else
+    /* App bundles and system installs are read-only, so use the per-user folder. */
+    char *data = SDL_GetPrefPath(NULL, "duckmidi");
+#endif
+    const char *settings = data ? data : (base ? base : "");
+
+    if (!smoke) {
+        dm_crash_install(settings);
+    }
+
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
         fprintf(stderr, DM_TEXT_SDL_VIDEO, SDL_GetError());
+        SDL_free(data);
         return 1;
     }
 
@@ -195,6 +211,7 @@ int main(int argc, char **argv) {
 
     if (!window) {
         fprintf(stderr, DM_TEXT_WINDOW, SDL_GetError());
+        SDL_free(data);
         SDL_Quit();
         return 1;
     }
@@ -209,20 +226,12 @@ int main(int argc, char **argv) {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, DM_TEXT_APP_NAME,
                                  DM_TEXT_HARDWARE_ACCELERATED_GRAPHICS, window);
         SDL_DestroyWindow(window);
+        SDL_free(data);
         SDL_Quit();
         return 1;
     }
 
     SDL_SetRenderVSync(renderer, 1);
-    const char *base = SDL_GetBasePath();
-#ifdef _WIN32
-    /* Windows builds are portable: preferences stay beside the executable. */
-    char *data = NULL;
-#else
-    /* App bundles and system installs are read-only, so use the per-user folder. */
-    char *data = SDL_GetPrefPath(NULL, "duckmidi");
-#endif
-    const char *settings = data ? data : (base ? base : "");
     char ini[DM_PATH];
     snprintf(ini, sizeof(ini), DM_TEXT_SDUCKMIDI_INI, settings);
 

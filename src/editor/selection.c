@@ -40,9 +40,10 @@ void ed_remove_placement(Editor *e, size_t index) {
     memmove(e->project.clips + index, e->project.clips + index + 1,
             (e->project.clip_count - index - 1) * sizeof(DmClip));
     --e->project.clip_count;
-    int *references[] = {&e->selected_clip, &e->playlist_context_clip, &e->drag_index};
+    int *references[] = {&e->selected_clip, &e->playlist_context_clip, &e->drag_index,
+                         &e->select_anchor};
 
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         if (*references[i] == (int)index) {
             *references[i] = -1;
         } else if (*references[i] > (int)index) {
@@ -56,7 +57,10 @@ static void delete_pattern_selection(Editor *e) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     dm_pattern_remove(&e->project, e->selected_pattern);
     e->selected_pattern = -1;
     e->pattern_mode = false;
@@ -103,7 +107,9 @@ void ed_delete_selection(Editor *e) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
 
     if (focus == FOCUS_NOTES) {
         DmPattern *p = ed_pattern(e);
@@ -207,7 +213,9 @@ void ed_duplicate_clips(Editor *e) {
     }
 
     double span = ed_duplicate_span(e, first, end, false);
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
 
     for (size_t i = 0; i < count; ++i) {
         DmClip c = e->project.clips[i];
@@ -256,7 +264,9 @@ void ed_duplicate_notes(Editor *e) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
 
     for (size_t i = 0; i < count; ++i) {
         if (!p->notes[i].selected) {
@@ -285,13 +295,42 @@ bool ed_deselect_notes(DmPattern *p) {
     return selected;
 }
 
-void ed_marquee_begin(Editor *e, EditFocus focus, UiMouse mouse) {
+SelectPick ed_select_pick(const Editor *e, UiMouse mouse) {
+    if (!e->modifier_select) {
+        return PICK_ONE;
+    }
+
+    bool toggle = ed_gesture_held(e, GESTURE_PICK_TOGGLE, mouse);
+
+    if (ed_gesture_held(e, GESTURE_PICK_RANGE, mouse)) {
+        return toggle ? PICK_ADD_RANGE : PICK_RANGE;
+    }
+
+    return toggle ? PICK_TOGGLE : PICK_ONE;
+}
+
+bool ed_pick_selects(SelectPick pick, bool before, bool clicked, bool ranged) {
+    switch (pick) {
+    case PICK_TOGGLE:
+        return before != clicked;
+    case PICK_RANGE:
+        return ranged;
+    case PICK_ADD_RANGE:
+        return before || ranged;
+    default:
+        return clicked;
+    }
+}
+
+/* Notes or placements, by focus: their selection is what a click or marquee starts from. */
+bool ed_pick_begin(Editor *e, EditFocus focus, UiMouse mouse, int hit) {
     const DmPattern *pattern = focus == FOCUS_PLAYLIST ? NULL : ed_pattern(e);
     size_t count = pattern ? pattern->count : e->project.clip_count;
     DmBytes *selection = &e->marquee_selection;
+    selection->size = 0;
 
     if (count && !dm_reserve((void **)&selection->data, &selection->capacity, count, 1)) {
-        return;
+        return false;
     }
 
     for (size_t i = 0; i < count; ++i) {
@@ -299,13 +338,93 @@ void ed_marquee_begin(Editor *e, EditFocus focus, UiMouse mouse) {
     }
 
     selection->size = count;
-    ed_focus_edit(e, focus);
-    e->marquee = true;
+    e->pick = ed_select_pick(e, mouse);
+    e->pick_hit = hit;
+    e->pick_moved = false;
     e->marquee_start = mouse.pos;
+    return true;
+}
+
+bool ed_pick_moved(Editor *e, UiPoint start, UiMouse mouse) {
+    e->pick_moved |= fabsf(mouse.pos.x - start.x) > 3 || fabsf(mouse.pos.y - start.y) > 3;
+    return e->pick_moved;
+}
+
+bool ed_pick_clicked(Editor *e, UiPoint start, UiMouse mouse) {
+    return !ed_pick_moved(e, start, mouse) && (mouse.released || !mouse.left);
+}
+
+bool ed_picked_before(const Editor *e, size_t index) {
+    return index < e->marquee_selection.size && e->marquee_selection.data[index];
+}
+
+void ed_marquee_begin(Editor *e, EditFocus focus, UiMouse mouse, int hit) {
+    if (ed_pick_begin(e, focus, mouse, hit)) {
+        ed_focus_edit(e, focus);
+        e->marquee = true;
+    }
+}
+
+void ed_sweep(Editor *e, UiMouse mouse, UiPoint *from, UiPoint *to) {
+    int frame = ui_frame_number();
+
+    if (e->sweep_frame != frame) {
+        bool continued = !mouse.right_clicked && e->sweep_frame == frame - 1;
+        e->sweep_from = continued ? e->sweep_last : mouse.pos;
+        e->sweep_last = mouse.pos;
+        e->sweep_frame = frame;
+    }
+
+    *from = e->sweep_from;
+    *to = mouse.pos;
+}
+
+/* Liang-Barsky clipping: the segment meets the box if some part of it lies inside every edge. */
+bool ed_sweep_hits(UiPoint from, UiPoint to, UiRect box) {
+    float dx = to.x - from.x, dy = to.y - from.y, enter = 0, leave = 1;
+    const float p[] = {-dx, dx, -dy, dy};
+    const float q[] = {from.x - box.x, box.x + box.w - from.x, from.y - box.y,
+                       box.y + box.h - from.y};
+
+    for (int i = 0; i < 4; ++i) {
+        if (p[i] == 0) {
+            if (q[i] < 0) {
+                return false;
+            }
+
+            continue;
+        }
+
+        float t = q[i] / p[i];
+
+        if (p[i] < 0) {
+            enter = fmaxf(enter, t);
+        } else {
+            leave = fminf(leave, t);
+        }
+
+        if (enter > leave) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 bool ed_marquee_retains(Editor *e, size_t index, bool shift) {
-    return shift && index < e->marquee_selection.size && e->marquee_selection.data[index];
+    return shift && ed_picked_before(e, index);
+}
+
+bool ed_marquee_selects(Editor *e, size_t index, bool inside, bool ranged, UiMouse mouse) {
+    bool before = ed_picked_before(e, index);
+
+    if (!ed_pick_moved(e, e->marquee_start, mouse)) {
+        return ed_pick_clicked(e, e->marquee_start, mouse)
+                   ? ed_pick_selects(e->pick, before, (int)index == e->pick_hit, ranged)
+                   : before;
+    }
+
+    return ed_marquee_retains(e, index, ed_gesture_held(e, GESTURE_EXTEND, mouse)) || inside;
 }
 
 void ed_deselect(Editor *e) {
@@ -318,7 +437,16 @@ void ed_deselect(Editor *e) {
     }
 }
 
+/* A click on empty space in the playlist or the Patterns section clears the placement selection
+   and the chosen pattern, as Escape does, without changing whether the pattern editor shows. */
+void ed_deselect_patterns(Editor *e) {
+    bool hidden = e->roll_auto_hidden;
+    ed_clear_pattern_selection(e);
+    e->roll_auto_hidden = hidden;
+}
+
 void ed_clear_pattern_selection(Editor *e) {
+    e->select_anchor = -1;
     e->pattern_highlight = false;
     e->linked_highlight = false;
     e->roll_auto_hidden = true;
@@ -363,7 +491,10 @@ static int transpose_delta(DmPattern *p, int steps) {
 }
 
 void ed_transpose(Editor *e, int steps) {
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     DmPattern *p = ed_pattern(e);
 
     if (ed_context(e) == CONTEXT_ROLL && p) {
@@ -429,7 +560,11 @@ void ed_quantize_notes(Editor *e) {
         memcpy(before, p->notes, p->count * sizeof(*before));
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        free(before);
+        return;
+    }
+
     dm_quantize(p, .25);
 
     for (size_t i = 0; i < p->count; ++i) {
@@ -769,7 +904,11 @@ void ed_paste(Editor *e) {
             }
         }
 
-        bool pushed = ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            dm_project_free(&from);
+            return;
+        }
+
         ed_deselect(e);
         double at = e->cursor_beat[ed_context(e) == CONTEXT_ROLL];
 
@@ -784,7 +923,7 @@ void ed_paste(Editor *e) {
             paste_notes(e, &from, at);
 
             if (from.automation_count && !ed_paste_note_bends(e, &from, at)) {
-                ed_checkpoint_abandon(e, pushed);
+                ed_checkpoint_abandon(e);
                 dm_project_free(&from);
                 return;
             }
@@ -816,10 +955,10 @@ void ed_clipboard(Editor *e, ClipboardAction action) {
 
     DmProject copy;
     dm_project_init(&copy);
-    bool ok = focus == FOCUS_EVENTS        ? ed_point_editing(e) && ed_copy_events(e, &copy)
-              : focus == FOCUS_PATTERNS    ? copy_pattern_card(e, &copy)
+    bool ok = focus == FOCUS_EVENTS           ? ed_point_editing(e) && ed_copy_events(e, &copy)
+              : focus == FOCUS_PATTERNS       ? copy_pattern_card(e, &copy)
               : ed_context(e) == CONTEXT_ROLL ? copy_notes(e, &copy)
-                                           : copy_clips(e, &copy);
+                                              : copy_clips(e, &copy);
 
     if (ok) {
         DmBytes bytes = {0};

@@ -4,11 +4,6 @@
 static void replace_recorded_overlap(Editor *e, DmPattern *p, unsigned port, double start,
                                      double end);
 
-/* A take keeps one undo step: true once it exists, false only when it cannot be saved. */
-static bool take_checkpoint(Editor *e) {
-    return (e->recording_take && e->take_snapshot) || ed_checkpoint(e);
-}
-
 void ed_cancel_wait(Editor *e) {
     if (e->wait_armed) {
         e->wait_armed = false;
@@ -114,7 +109,7 @@ bool ed_begin_record_take(Editor *e) {
 
     e->record_original.size = bytes;
 
-    if (!take_checkpoint(e)) {
+    if (!ed_checkpoint(e)) {
         return false;
     }
 
@@ -240,7 +235,7 @@ bool ed_record_insert(Editor *e, DmPattern *pattern, int key, int velocity, unsi
         return false;
     }
 
-    if (!take_checkpoint(e)) {
+    if (!ed_checkpoint(e)) {
         return false;
     }
 
@@ -248,6 +243,14 @@ bool ed_record_insert(Editor *e, DmPattern *pattern, int key, int velocity, unsi
     return ed_add_note(e, pattern,
                        (DmNote){start, fmax(1.0 / DM_PPQ, end - start), (uint8_t)key,
                                 (uint8_t)velocity, 0, (uint8_t)port});
+}
+
+/* The song beat that was audible when the key event being handled happened (now, outside a key
+   event), so computer-keyboard notes are timed like MIDI device notes: by when they were
+   played against what was heard, not by when a frame got to them. */
+double ed_heard_beat(Editor *e) {
+    uint64_t ns = e->key_time_ns ? e->key_time_ns : SDL_GetTicksNS();
+    return dm_seconds_beat(&e->project, dm_audio_heard_seconds(e->audio, ns));
 }
 
 void ed_record_note(Editor *e, int note) {
@@ -260,9 +263,8 @@ void ed_record_note(Editor *e, int note) {
         e->take_snapshot = false;
     }
 
-    ed_record_insert(
-        e, ed_pattern(e), note, ED_DEFAULT_VELOCITY, ed_note_port(e), e->record_start[note],
-        dm_seconds_beat(&e->project, dm_audio_position(e->audio)), e->record_origin[note]);
+    ed_record_insert(e, ed_pattern(e), note, ED_DEFAULT_VELOCITY, ed_note_port(e),
+                     e->record_start[note], ed_heard_beat(e), e->record_origin[note]);
     e->record_start[note] = -1;
     ed_commit(e);
 }

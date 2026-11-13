@@ -74,7 +74,10 @@ bool ed_delete_note_port(Editor *e, unsigned port) {
         return false;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return false;
+    }
+
     ed_release_piano(e);
     ed_sample_clear_route(project, (int)port, channel);
 
@@ -181,9 +184,10 @@ void ed_port_buttons(Editor *e) {
                 DmPattern *p = ed_pattern(e);
 
                 if (p && p->kind && p->port != (int)port) {
-                    ed_checkpoint(e);
-                    p->port = (int)port;
-                    ed_commit(e);
+                    if (ed_checkpoint(e)) {
+                        p->port = (int)port;
+                        ed_commit(e);
+                    }
                 }
 
                 e->automation_node = -1;
@@ -219,7 +223,9 @@ bool ed_color_notes(Editor *e, unsigned port) {
         return false;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return false;
+    }
 
     for (size_t i = 0; i < p->count; i++) {
         if (p->notes[i].selected) {

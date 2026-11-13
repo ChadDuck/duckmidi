@@ -11,6 +11,7 @@
 #define DM_LANES 32
 #define DM_NOTE_ROWS 16
 #define DM_PPQ 960
+#define DM_MAX_BEAT (0x0FFFFFFF / DM_PPQ)
 #define DM_PIANO_KEYS 37
 #define DM_PROJECT_SCHEMA 19
 #define DM_PROJECT_SCHEMA_OLDEST 9    /* Schema 9 (0.10.1) also loads, converted through 10. */
@@ -263,6 +264,7 @@ bool dm_event_add(DmProject *p, double beat, int track, int port, const DmBytes 
 int dm_project_program_repeat(DmProgramHistory history[DM_PORT_COMBINED][16], const DmProject *p,
                               int index, bool automation);
 bool dm_collapse_program_repeats(DmProject *p, int index, bool automation);
+void dm_collapse_marked_program_repeats(DmProject *p, bool *marks, bool automation);
 bool dm_message_valid(const DmBytes *message);
 bool dm_conductor(const DmBytes *message);
 double dm_duration(const DmProject *p);

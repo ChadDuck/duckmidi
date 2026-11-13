@@ -1,0 +1,54 @@
+# Builds, tests and packages duckmidi for Windows (x86_64, MSYS2 UCRT64) as a Full -DEV delivery.
+name: Windows
+
+on:
+  # Every push to dev builds, tests and uploads a downloadable build; other branches only on demand.
+  push:
+    branches: [dev]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the run still going for an older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja
+
+      # Debug symbols stay in the delivery so crash report addresses can be resolved.
+      - name: Configure
+        run: cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDUCKMIDI_PRODUCTION=ON -DDUCKMIDI_DELIVERY_TYPE=Full -DDUCKMIDI_DEV_DELIVERY=ON
+
+      - name: Build
+        run: cmake --build build/development/cmake
+
+      - name: Test
+        run: ctest --test-dir build/development/cmake --output-on-failure
+
+      - name: Package
+        run: cmake --build build/development/cmake --target deliver
+
+      - name: Name the build
+        shell: bash
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckmidi-windows-x86_64-DEV-${{ env.SHORT_SHA }}
+          path: build/duckmidi-v*-Full-DEV/
+          if-no-files-found: error
+          retention-days: 14

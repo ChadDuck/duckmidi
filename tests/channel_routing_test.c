@@ -488,6 +488,20 @@ static void programs(Editor *e) {
               recording_feedback_audio_preset(e->audio, 0, false) == before[0],
           "audition does not touch unrelated channel one");
     ed_close_instrument(e);
+    recording_feedback_audio_render(e->audio, 256);
+    position = dm_audio_position(e->audio);
+    check(ed_swap_channels(e, 3, 4), "move a channel while playing");
+    recording_feedback_audio_render(e->audio, 256);
+    check(dm_audio_playing(e->audio) && dm_audio_position(e->audio) >= position,
+          "moving a channel keeps the transport running from its position");
+    check(recording_feedback_audio_preset(e->audio, 3, false) == 4 &&
+              recording_feedback_audio_preset(e->audio, 4, false) == 40,
+          "moved channels play their new instruments without restarting playback");
+    ed_undo(e, false);
+    recording_feedback_audio_render(e->audio, 256);
+    check(recording_feedback_audio_preset(e->audio, 3, false) == 40 &&
+              recording_feedback_audio_preset(e->audio, 4, false) == 4,
+          "undoing a channel move restores the playing instruments");
     dm_audio_transport(e->audio, false);
 }
 

@@ -155,11 +155,12 @@ static void automation_value_input(Editor *e) {
 
     if (ui_int(DM_TEXT_VALUE, &value, 0,
                a->type == MIDI_PITCH_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX)) {
-        ed_checkpoint(e);
-        a->bend_note = 0;
-        ed_pitch_edit_units(e, a, true);
-        ed_set_event_value(a, value);
-        ed_commit(e);
+        if (ed_checkpoint(e)) {
+            a->bend_note = 0;
+            ed_pitch_edit_units(e, a, true);
+            ed_set_event_value(a, value);
+            ed_commit(e);
+        }
     }
 }
 
@@ -324,7 +325,10 @@ bool ed_transfer_automation(Editor *e) {
         return false;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return false;
+    }
+
     char name[64];
     snprintf(name, sizeof(name), DM_TEXT_48S_EVENTS, p->patterns[source].name);
     int id = dm_pattern_add(p, name);
@@ -459,7 +463,9 @@ static void lfo_controls(Editor *e, DmPattern *p) {
 
         if (ui_knob(names[i], &value, lows[i], highs[i], ed_defaults[i])) {
             if (!e->lfo_editing) {
-                ed_checkpoint(e);
+                if (!ed_checkpoint(e)) {
+                    return;
+                }
             }
 
             e->lfo_editing = true;
@@ -485,7 +491,10 @@ static void lfo_controls(Editor *e, DmPattern *p) {
     bool inverted = p->inverted;
 
     if (ui_frame_toggle(DM_TEXT_INVERT, &inverted)) {
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            return;
+        }
+
         p->inverted = inverted;
         ed_commit(e);
     }
@@ -558,8 +567,9 @@ static void ed_lfo_center_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mou
         double current = p->event == DM_EVENT_BEND ? p->pitch_center : p->center;
 
         if (value != current) {
-            if (!e->edit_moved) {
-                ed_checkpoint(e);
+            if (!e->edit_moved && !ed_checkpoint(e)) {
+                e->lfo_center_drag = false;
+                return;
             }
 
             e->edit_moved = true;
@@ -601,14 +611,14 @@ static void event_editor_header(Editor *e, DmPattern *p) {
     /* An automation pattern's controller is part of the pattern, so switching it is an undo
        step; a note pattern only remembers which lane is shown. */
     if (e->automation_cc != p->event) {
-        if (p->kind) {
-            ed_checkpoint(e);
-        }
+        if (p->kind && !ed_checkpoint(e)) {
+            e->automation_cc = p->event;
+        } else {
+            p->event = e->automation_cc;
 
-        p->event = e->automation_cc;
-
-        if (p->kind) {
-            ed_commit(e);
+            if (p->kind) {
+                ed_commit(e);
+            }
         }
     }
 
@@ -790,7 +800,10 @@ bool ed_note_velocity_wheel(Editor *e, DmPattern *p, UiRect r, View *v, float la
             continue;
         }
 
-        ed_checkpoint(e);
+        if (!ed_checkpoint(e)) {
+            return false;
+        }
+
         ed_velocity_delta(p, (int)i - 1, (int)roundf(mouse.wheel * 5), p->notes);
         ed_commit(e);
         ed_focus_edit(e, FOCUS_NOTES);
@@ -817,7 +830,10 @@ static void velocity_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse) {
             target = (int)lround(target / 10.0) * 10;
         }
 
-        ed_begin_edit_move(e);
+        if (!ed_begin_edit_move(e)) {
+            return;
+        }
+
         ed_velocity_delta(p, e->drag_index, target - e->node_value, e->drag_notes);
         ed_changed(e);
     }
@@ -836,9 +852,10 @@ static void velocity_select(Editor *e, DmPattern *p, UiRect lane, View *v, float
     UiRect box = ed_marquee_box(e, mouse);
 
     for (size_t i = 0; i < p->count; ++i) {
+        bool clicked = (int)i == e->pick_hit;
         p->notes[i].selected =
-            ed_marquee_retains(e, i, ed_gesture_held(e, GESTURE_EXTEND, mouse)) ||
-            ed_inside(velocity_point(p->notes[i], lane, v, scale), box);
+            ed_marquee_selects(e, i, ed_inside(velocity_point(p->notes[i], lane, v, scale), box),
+                               ed_picked_before(e, i) || clicked, mouse);
     }
 
     ui_border(box, e->accent, 0, 1);
@@ -853,7 +870,7 @@ static void velocity_input(Editor *e, DmPattern *p, UiMouse mouse, bool hovered,
         ed_focus_edit(e, FOCUS_EVENTS);
 
         if (ed_gesture_held(e, GESTURE_MARQUEE, mouse) || e->tool == TOOL_MARQUEE) {
-            ed_marquee_begin(e, FOCUS_EVENTS, mouse);
+            ed_marquee_begin(e, FOCUS_EVENTS, mouse, hit);
         } else if (hit >= 0) {
             if (!p->notes[hit].selected && !ed_gesture_held(e, GESTURE_EXTEND, mouse)) {
                 ed_deselect(e);

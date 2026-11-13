@@ -1,4 +1,5 @@
 #include "editor/internal.h"
+#include "crash.h"
 #include "text/en.h"
 
 /* Every rebindable action: its name (also its key in the preferences file), default shortcut,
@@ -94,7 +95,7 @@ const ActionInfo ed_actions[ACT_COUNT] = {
 };
 
 static void preview_open_pattern(Editor *e, int id);
-static bool push(DmBytes *stack, int *count, const DmProject *p);
+static bool push(EdHistory *stack, int *count, const DmProject *p, const int swap[2]);
 static void publish_loop(Editor *e);
 static int clip_identity(const void *left, const void *right);
 static void retain_note_selection(DmPattern *next, const DmPattern *live);
@@ -425,6 +426,8 @@ const GestureInfo ed_gestures[GESTURE_COUNT] = {
     [GESTURE_APPLY_ALL] = {"apply_all", {MOUSE_LEFT, SHIFT}},
     [GESTURE_PORT_MENU] = {"port_menu", {MOUSE_LEFT, SHIFT}},
     [GESTURE_PANIC] = {"panic", {MOUSE_LEFT, SHIFT}},
+    [GESTURE_PICK_TOGGLE] = {"toggle_selection", {MOUSE_LEFT, CTRL}},
+    [GESTURE_PICK_RANGE] = {"range_selection", {MOUSE_LEFT, SHIFT}},
 };
 #undef CTRL
 #undef SHIFT
@@ -541,6 +544,7 @@ void ed_defaults(Editor *e) {
 }
 
 void ed_message(Editor *e, const char *text) {
+    dm_crash_note(text);
     snprintf(e->status, sizeof(e->status), "%s", text);
     e->status_time = SDL_GetTicks();
 }
@@ -575,15 +579,15 @@ void ed_bind_pattern_channel(Editor *e) {
     }
 }
 
-void ed_clear_history(DmBytes *b, int *count) {
+void ed_clear_history(EdHistory *steps, int *count) {
     for (int i = 0; i < *count; ++i) {
-        dm_bytes_free(&b[i]);
+        dm_bytes_free(&steps[i].project);
     }
 
     *count = 0;
 }
 
-static bool push(DmBytes *stack, int *count, const DmProject *p) {
+static bool push(EdHistory *stack, int *count, const DmProject *p, const int swap[2]) {
     DmBytes bytes = {0};
 
     if (!dm_pack(p, &bytes)) {
@@ -593,37 +597,59 @@ static bool push(DmBytes *stack, int *count, const DmProject *p) {
     size_t total = bytes.size;
 
     for (int i = 0; i < *count; ++i) {
-        total += stack[i].size;
+        total += stack[i].project.size;
     }
 
     while (*count && (*count == ED_UNDO_LIMIT || total > 512u * 1024u * 1024u)) {
-        total -= stack[0].size;
-        dm_bytes_free(&stack[0]);
+        total -= stack[0].project.size;
+        dm_bytes_free(&stack[0].project);
         memmove(stack, stack + 1, (size_t)(*count - 1) * sizeof(*stack));
         --*count;
     }
 
-    stack[(*count)++] = bytes;
+    stack[(*count)++] = (EdHistory){bytes, {swap[0], swap[1]}};
     return true;
 }
 
+static const int no_swap[2] = {-1, -1};
+
 bool ed_checkpoint(Editor *e) {
     e->midi_mix_last = 0;
+    e->checkpoint_pushed = false;
 
+    /* A recording take is one undo step; its first checkpoint already holds the project from
+       before the take. */
     if (e->recording_take && e->take_snapshot) {
+        return true;
+    }
+
+    if (!push(e->undo, &e->undo_count, &e->project, no_swap)) {
+        /* Nothing was recorded, so the edit must not happen and redo stays available. */
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_UNDO);
         return false;
     }
 
-    bool pushed = push(e->undo, &e->undo_count, &e->project);
+    e->checkpoint_pushed = true;
 
-    if (!pushed) {
-        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_UNDO);
-    } else if (e->recording_take) {
+    if (e->recording_take) {
         e->take_snapshot = true;
     }
 
     ed_clear_history(e->redo, &e->redo_count);
-    return pushed;
+    return true;
+}
+
+bool ed_checkpoint_swap(Editor *e, int a, int b) {
+    if (!ed_checkpoint(e)) {
+        return false;
+    }
+
+    if (e->checkpoint_pushed) {
+        e->undo[e->undo_count - 1].swap[0] = a;
+        e->undo[e->undo_count - 1].swap[1] = b;
+    }
+
+    return true;
 }
 
 bool ed_right_free(const Editor *e, UiMouse mouse) {
@@ -631,20 +657,22 @@ bool ed_right_free(const Editor *e, UiMouse mouse) {
            e->copy_button < 0;
 }
 
-void ed_erase_step(Editor *e) {
-    if (!e->erase_active) {
-        ed_checkpoint(e);
+bool ed_erase_step(Editor *e) {
+    if (!e->erase_active && !ed_checkpoint(e)) {
+        return false;
     }
 
     e->erase_active = true;
+    return true;
 }
 
-void ed_checkpoint_abandon(Editor *e, bool pushed) {
-    if (!pushed || !e->undo_count) {
+void ed_checkpoint_abandon(Editor *e) {
+    if (!e->checkpoint_pushed || !e->undo_count) {
         return;
     }
 
-    DmBytes b = e->undo[--e->undo_count];
+    e->checkpoint_pushed = false;
+    DmBytes b = e->undo[--e->undo_count].project;
     DmProject saved;
     dm_project_init(&saved);
 
@@ -784,6 +812,32 @@ void ed_commit(Editor *e) {
     ed_publish(e);
 }
 
+/* Commits an edit that changes which instrument a channel plays. A live edit keeps the synth's
+   channel state, so during playback this replays the channel setup from the current position,
+   as a seek does. */
+void ed_commit_channels(Editor *e) {
+    if (!e->active || !dm_audio_playing(e->audio)) {
+        ed_commit(e);
+        return;
+    }
+
+    ed_changed(e);
+    ed_transport_publish(e, dm_audio_position(e->audio), true);
+}
+
+/* Whether the channel setup the synth holds differs: a channel's program or kit. */
+static bool channels_changed(const DmProject *a, const DmProject *b) {
+    for (int i = 0; i < 16; ++i) {
+        if (a->channels[i].enabled != b->channels[i].enabled ||
+            a->channels[i].program != b->channels[i].program ||
+            a->channels[i].drums != b->channels[i].drums) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 int ed_note_identity(const void *left, const void *right) {
     const DmNote *a = left, *b = right;
 
@@ -895,19 +949,21 @@ void ed_undo(Editor *e, bool redo) {
     e->recording_take = e->take_snapshot = false;
     char old_font[DM_PATH];
     snprintf(old_font, sizeof(old_font), "%s", e->project.soundfont);
-    DmBytes *from = redo ? e->redo : e->undo, *to = redo ? e->undo : e->redo;
+    EdHistory *from = redo ? e->redo : e->undo, *to = redo ? e->undo : e->redo;
     int *n = redo ? &e->redo_count : &e->undo_count, *m = redo ? &e->undo_count : &e->redo_count;
 
     if (!*n) {
         return;
     }
 
-    if (!push(to, m, &e->project)) {
+    /* The step on the other stack crosses the same edit, so it keeps the same channel swap. */
+    if (!push(to, m, &e->project, from[*n - 1].swap)) {
         ed_message(e, DM_TEXT_CANNOT_ALLOCATE_UNDO);
         return;
     }
 
-    DmBytes b = from[--*n];
+    EdHistory step = from[--*n];
+    DmBytes b = step.project;
     DmProject next;
     dm_project_init(&next);
 
@@ -920,9 +976,14 @@ void ed_undo(Editor *e, bool redo) {
             e->last_note_pattern_uid = 0;
         }
 
+        bool channels = channels_changed(&next, &e->project);
         dm_project_free(&e->project);
         e->project = next;
         dm_project_init(&next);
+
+        if (step.swap[0] >= 0) {
+            ed_swap_channel_state(e, step.swap[0], step.swap[1]);
+        }
 
         if ((size_t)e->selected_pattern >= e->project.pattern_count) {
             e->selected_pattern = -1;
@@ -936,7 +997,11 @@ void ed_undo(Editor *e, bool redo) {
             e->automation_cc = ed_pattern(e)->event;
         }
 
-        ed_commit(e);
+        if (channels) {
+            ed_commit_channels(e);
+        } else {
+            ed_commit(e);
+        }
 
         if (strcmp(old_font, e->project.soundfont)) {
             ed_request_font(e, e->project.soundfont);

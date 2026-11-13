@@ -221,16 +221,23 @@ void ed_defaults(Editor *e);
 void ed_message(Editor *e, const char *text);
 DmPattern *ed_pattern(Editor *e);
 void ed_bind_pattern_channel(Editor *e);
-void ed_clear_history(DmBytes *b, int *count);
+void ed_clear_history(EdHistory *steps, int *count);
+/* Records the project as an undo step before an edit. False when it could not be recorded: the
+   caller must then leave the project unchanged. During a recording take every edit joins the
+   take's step. */
 bool ed_checkpoint(Editor *e);
+/* ed_checkpoint for an edit that exchanges editor state kept per channel between channels a and
+   b; undo and redo exchange it back. */
+bool ed_checkpoint_swap(Editor *e, int a, int b);
 /* The right button may clear a selection or erase: Shift (context menus) is up and no loop,
    curve or copy drag is using the mouse. */
 bool ed_right_free(const Editor *e, UiMouse mouse);
-/* Before removing an item under a held right button: the whole stroke is one undo step. */
-void ed_erase_step(Editor *e);
+/* Before removing an item under a held right button: the whole stroke is one undo step.
+   False when the stroke's undo step could not be recorded: erase nothing. */
+bool ed_erase_step(Editor *e);
 /* Restores the project saved by the checkpoint just taken and drops it, for an edit that failed
-   before completing; pass ed_checkpoint's result. */
-void ed_checkpoint_abandon(Editor *e, bool pushed);
+   before completing. Does nothing when that checkpoint joined a recording take's step. */
+void ed_checkpoint_abandon(Editor *e);
 bool ed_add_note(Editor *e, DmPattern *p, DmNote note);
 double ed_pattern_length(Editor *e);
 bool ed_transport_publish(Editor *e, double seconds, bool playing);
@@ -239,6 +246,7 @@ void ed_publish(Editor *e);
 void ed_changed(Editor *e);
 void ed_request_font(Editor *e, const char *path);
 void ed_commit(Editor *e);
+void ed_commit_channels(Editor *e);
 int ed_note_identity(const void *left, const void *right);
 void ed_undo(Editor *e, bool redo);
 void ed_add_recent(Editor *e, const char *path);
@@ -250,6 +258,16 @@ void ed_save_poll(Editor *e);
 void ed_save_free(Editor *e);
 bool ed_save_busy(Editor *e);
 void ed_save_cancel(Editor *e);
+enum { ED_AUTOSAVE_INTERVAL_MS = 5 * 60 * 1000, ED_AUTOSAVE_KEEP = 5 };
+void ed_autosave_init(Editor *e, const char *settings_folder);
+/* The background poll supplies elapsed wall-clock milliseconds, independent of playback. */
+void ed_autosave_step(Editor *e, uint64_t now);
+bool ed_autosave_busy(const Editor *e);
+const char *ed_autosave_question(const Editor *e);
+bool ed_autosave_restore(Editor *e);
+void ed_autosave_dialog(Editor *e);
+void ed_autosave_free(Editor *e);
+bool ed_load_autosave(Editor *e, const char *path, const char *original);
 void ed_generate_start(Editor *e);
 void ed_generate_poll(Editor *e);
 void ed_generate_free(Editor *e);
@@ -286,6 +304,7 @@ void ed_duplicate_notes(Editor *e);
 void ed_deselect(Editor *e);
 bool ed_deselect_notes(DmPattern *p);
 void ed_clear_pattern_selection(Editor *e);
+void ed_deselect_patterns(Editor *e); /* Keeps the pattern editor shown or hidden. */
 bool ed_deselect_focused(Editor *e);
 int ed_piano_key(SDL_Scancode key);
 int ed_piano_index(SDL_Scancode key);
@@ -307,6 +326,7 @@ bool ed_percussion_midi_listen(Editor *e, DmMidiInputEvent event);
 bool ed_begin_record_take(Editor *e);
 double ed_recording_origin(Editor *e, double beat);
 void ed_record_note(Editor *e, int note);
+double ed_heard_beat(Editor *e);
 void ed_stop_edit_feedback(Editor *e);
 void ed_finish_edit_feedback(Editor *e);
 void ed_edit_feedback(Editor *e, float pitch);
@@ -375,8 +395,28 @@ int ed_place_pattern(Editor *e, int id, int encoded, double beat);
 void ed_split_note(DmPattern *p, size_t index, double at);
 void ed_split_clip(Editor *e, size_t index, double at);
 bool ed_intersects(UiRect a, UiRect b);
-void ed_marquee_begin(Editor *e, EditFocus focus, UiMouse mouse);
+/* Modifier clicks (see SelectPick). A press that may be a click calls ed_pick_begin, which keeps
+   the selection at the press; ed_pick_selects then decides each item from that selection,
+   whether the item is the one clicked, and whether it lies in the click's range from the
+   anchor. Items without an order to range over pass ranged as before || clicked, so a range
+   click adds them. */
+SelectPick ed_select_pick(const Editor *e, UiMouse mouse);
+bool ed_pick_selects(SelectPick pick, bool before, bool clicked, bool ranged);
+bool ed_pick_begin(Editor *e, EditFocus focus, UiMouse mouse, int hit);
+bool ed_pick_moved(Editor *e, UiPoint start, UiMouse mouse); /* Stays true once moved. */
+bool ed_pick_clicked(Editor *e, UiPoint start, UiMouse mouse); /* Released without moving. */
+bool ed_picked_before(const Editor *e, size_t index);
+/* A marquee press with hit the item under it: until the pointer moves it is a click, and the
+   items keep their selection until the release applies the click's pick. */
+void ed_marquee_begin(Editor *e, EditFocus focus, UiMouse mouse, int hit);
 bool ed_marquee_retains(Editor *e, size_t index, bool shift);
+bool ed_marquee_selects(Editor *e, size_t index, bool inside, bool ranged, UiMouse mouse);
+/* Right-drag erasing covers the pointer's whole path, not only where each frame lands it:
+   ed_sweep gives this frame's stretch, from where the pointer was on the previous frame (or
+   from here when the drag starts or did not continue through the previous frame), and each
+   surface erases the items whose boxes ed_sweep_hits. */
+void ed_sweep(Editor *e, UiMouse mouse, UiPoint *from, UiPoint *to);
+bool ed_sweep_hits(UiPoint from, UiPoint to, UiRect box);
 UiRect ed_marquee_box(Editor *e, UiMouse mouse);
 bool ed_black_key(int step);
 
@@ -428,6 +468,11 @@ const char *ed_event_label(const DmBytes *m);
 void ed_song_event_open_bar(Editor *e, double beat, bool add, int channel);
 double ed_song_event_bar(const Editor *e, double beat, double *start, double *end);
 size_t ed_song_event_rows(Editor *e, double start, double end, int channel);
+void ed_song_event_pick(Editor *e, size_t clicked, SelectPick pick);
+size_t ed_song_event_pick_count(Editor *e);
+bool ed_song_event_picked(Editor *e, MidiRow row);
+bool ed_song_events_move(Editor *e, double value, bool absolute);
+void ed_song_events_move_panel(Editor *e);
 void ed_resize_clip(Editor *e, DmClip *clip, double length);
 void ed_move_clip(Editor *e, DmClip *clip, int encoded, double beat);
 void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, const int *list,
@@ -457,7 +502,7 @@ void ed_follow_note_curves(Editor *e, int pattern, const DmNote *before, size_t 
                            double previous_offset);
 void ed_resize_note_group(Editor *e, DmPattern *p, double delta, bool free);
 bool ed_gesture_moved(Editor *e, UiMouse mouse);
-void ed_begin_edit_move(Editor *e);
+bool ed_begin_edit_move(Editor *e);
 bool ed_automation_matches(Editor *e, DmAutomation au);
 bool ed_same_event(DmAutomation a, DmAutomation b);
 bool ed_event_selected(Editor *e, size_t index);
@@ -569,6 +614,9 @@ void ed_apply_instrument(Editor *e);
 void ed_step_instrument(Editor *e, int direction);
 bool ed_remove_channel(Editor *e, int channel);
 bool ed_swap_channels(Editor *e, int a, int b);
+/* Exchanges the editor state kept per channel (expanded rows, note ports, mixer meters, channel
+   references) between channels a and b, without touching the project. */
+void ed_swap_channel_state(Editor *e, int a, int b);
 int ed_initial_bank(const DmProject *project, int port, int channel);
 const char *ed_sample_channel_name(Editor *e, int channel);
 void ed_instrument(Editor *e);
@@ -576,7 +624,7 @@ void ed_preferences(Editor *e);
 void ed_shortcuts(Editor *e);
 bool ed_song_event_add(Editor *e);
 bool ed_song_event_position_valid(Editor *e);
-void ed_song_event_position(Editor *e, float column);
+void ed_song_event_position(Editor *e, double *beat, const char *label, float column);
 void ed_song_event_dialog(Editor *e);
 size_t ed_midi_rows(Editor *e);
 size_t ed_midi_rows_between(Editor *e, double start, double end);

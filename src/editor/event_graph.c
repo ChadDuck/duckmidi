@@ -268,7 +268,11 @@ void ed_graph_mode(Editor *e, int mode, int graph) {
         }
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        free(points);
+        return;
+    }
+
     apply_points(e, points, count);
     p = ed_pattern(e);
     p->mode = mode;
@@ -358,7 +362,9 @@ void ed_graph_snap(Editor *e) {
         return;
     }
 
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
 
     for (size_t i = 0; i < count; ++i) {
         DmAutomation *a = &e->project.automation[i];
@@ -471,8 +477,9 @@ void ed_graph_paint(Editor *e, UiRect lane, View *v, float scale, UiPoint from, 
     }
 }
 
-/* Erases the bars whose cells the pointer's path crossed since the last frame. One undo step
-   covers a whole right-drag erase, as for points. Returns whether any point was removed. */
+/* Erases the bars the eraser's path from..to crossed (see ed_sweep). Bars are full-height
+   columns, so the path crosses exactly the bars whose cells its time span reaches. One undo
+   step covers a whole right-drag erase, as for points. Returns whether any point was removed. */
 bool ed_graph_erase(Editor *e, UiRect lane, View *v, float scale, UiPoint from, UiPoint to) {
     double cell = ed_event_snap(e);
     double low = lane_beat(lane, v, scale, fminf(from.x, to.x)) - cell + 1e-9;
@@ -482,7 +489,10 @@ bool ed_graph_erase(Editor *e, UiRect lane, View *v, float scale, UiPoint from, 
         return false;
     }
 
-    ed_erase_step(e);
+    if (!ed_erase_step(e)) {
+        return false;
+    }
+
     remove_range(e, low, high);
     return true;
 }

@@ -97,7 +97,7 @@ else()
 endif()
 add_executable(duckmidi src/main.c src/audio/audio.c src/audio/realtime.c src/audio/live.c
   src/audio/publish.c src/audio/audition.c src/audio/jobs.c src/export_plugins.c
-  src/update.c shared/pattern_generation.c
+  src/update.c src/crash.c shared/pattern_generation.c
   src/editor/browser.c src/editor/dialogs.c src/editor/editor.c src/editor/event_graph.c
   src/editor/event_view.c src/editor/events.c src/editor/export.c src/editor/export_ui.c
   src/editor/generate.c src/editor/input.c src/editor/midi_bindings.c src/editor/midi_input.c
@@ -113,7 +113,7 @@ add_custom_command(TARGET duckmidi POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_d
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:m64export>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:m64export>"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:ootexport>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:ootexport>"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:sampletool>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:sampletool>")
-target_link_libraries(duckmidi PRIVATE duckversion duckcore duckgui duckmidi_io duckmidi_input fluidsynth duckmedia ducksamplesynth)
+target_link_libraries(duckmidi PRIVATE duckversion duckcore duckgui duckmidi_io duckmidi_input fluidsynth duckmedia ducksamplesynth ${CMAKE_DL_LIBS})
 set_target_properties(duckmidi PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(duckmidi PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
 if(MINGW)
@@ -125,7 +125,7 @@ if(WIN32)
   set_target_properties(duckmidi PROPERTIES WIN32_EXECUTABLE TRUE)
   enable_language(RC)
   target_sources(duckmidi PRIVATE tools/app.rc)
-  target_link_libraries(duckmidi PRIVATE winhttp)
+  target_link_libraries(duckmidi PRIVATE winhttp dbghelp)
   target_include_directories(duckmidi PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 if(WIN32)
@@ -174,6 +174,18 @@ if(BUILD_TESTING)
     endforeach()
   endif()
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_executable(crash_helper tests/crash_helper.c src/crash.c)
+  target_include_directories(crash_helper PRIVATE src)
+  target_link_libraries(crash_helper PRIVATE duckversion duckcore SDL3::SDL3 ${CMAKE_DL_LIBS}
+    $<$<BOOL:${WIN32}>:dbghelp>)
+  if(WIN32)
+    add_custom_command(TARGET crash_helper POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:SDL3::SDL3>" "$<TARGET_FILE_DIR:crash_helper>")
+  endif()
+  add_test(NAME crash_reports COMMAND "${Python3_EXECUTABLE}" -I -B
+    "${PROJECT_SOURCE_DIR}/tests/crash_test.py" "$<TARGET_FILE:crash_helper>"
+    "${PROJECT_SOURCE_DIR}/agents/reports/crash-tests")
+  set_tests_properties(crash_reports PROPERTIES TIMEOUT 60)
   add_test(NAME repository_audio_discovery
     COMMAND "${Python3_EXECUTABLE}" -I -B "${PROJECT_SOURCE_DIR}/tests/repository_audio_scan_test.py")
   add_executable(repository_history_test tests/repository_history_test.c)

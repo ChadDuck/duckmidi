@@ -2,6 +2,7 @@
 #include "midi_input_fixture.h"
 
 void recording_feedback_audio_pause(DmAudio *audio);
+void recording_feedback_audio_clock(DmAudio *audio, uint64_t ns, double position, double latency);
 void recording_feedback_audio_render(DmAudio *audio, int frames);
 int recording_feedback_audio_port_cc(DmAudio *audio, unsigned port, int channel, int cc);
 int recording_feedback_audio_port_bend(DmAudio *audio, unsigned port, int channel);
@@ -367,6 +368,26 @@ int main(void) {
     }
 
     assert(midi && e->undo_count == 1);
+
+    /* Computer-keyboard notes are timed at their key events against the heard position, like
+       device notes: the clock reads 1 s, the output is 50 ms behind it, and the keys go down
+       250 ms and up 750 ms after the clock was written, however late the frame handles them. */
+    reset(e, false);
+    assert(ed_record_start(e)); /* The take's own publish restarts the clock first. */
+    uint64_t clock = SDL_GetTicksNS() - 2000000000ULL;
+    recording_feedback_audio_clock(audio, clock, 1, .05);
+    SDL_Event key = {.key = {.type = SDL_EVENT_KEY_DOWN,
+                             .timestamp = clock + 250000000ULL,
+                             .scancode = SDL_SCANCODE_Q,
+                             .down = true}};
+    editor_event(e, &key);
+    key.key.type = SDL_EVENT_KEY_UP;
+    key.key.timestamp = clock + 750000000ULL;
+    key.key.down = false;
+    editor_event(e, &key);
+    assert(ed_pattern(e)->count == 1);
+    note = ed_pattern(e)->notes[0];
+    assert(fabs(note.beat - 2.4) < 1e-6 && fabs(note.length - 1) < 1e-6);
 
     reset(e, false);
     send_at(e, 1.75, MIDI_NOTE_ON, 65, 92);

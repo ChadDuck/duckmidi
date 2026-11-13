@@ -64,6 +64,83 @@ static void mouse_frame(Editor *e, float x, float y, bool down, bool alt = false
     SDL_RenderPresent(e->renderer);
 }
 
+static float playlist_row_top(Editor *e, int index);
+
+/* Playlist modifier clicks on three placements in the first three channel rows: Shift + click
+   selects the rows from the anchor, Ctrl + click toggles, Ctrl + Shift + click adds a range. */
+static void modifier_clicks_ui(Editor *e, void (*check)(bool, const char *), ImGuiWindow *list) {
+    for (int c = 0; c < 16; ++c) {
+        e->channel_expanded[c] = false;
+    }
+
+    e->project.clip_count = 0;
+    e->playlist_view = {1, 0, 0, 0};
+    int rows[ED_PLAYLIST_ROWS], count = ed_playlist_channels(e, rows), placed = 0;
+
+    for (int i = 0; i < count && placed < 3; ++i) {
+        if (!ed_row_lane(rows[i]) && !ed_row_note(rows[i])) {
+            DmClip clip = {0, 0, ed_row_channel(rows[i]), 0, 2, 0, 0, 0};
+            check(dm_clip_add(&e->project, clip), "place a placement in a channel row");
+            ++placed;
+        }
+    }
+
+    check(placed == 3, "three channel rows hold a placement");
+    mouse_frame(e, 0, 0, false);
+    float top = list->WorkRect.Min.y + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
+    float label = ed_clampf(e->label_width, 45,
+                            fmaxf(45, (list->WorkRect.Max.x - list->WorkRect.Min.x) * .6f));
+    float x = list->WorkRect.Min.x + label + 40;
+    auto row_of = [&](int clip) {
+        int at[ED_PLAYLIST_ROWS], n = ed_playlist_channels(e, at);
+
+        for (int i = 0; i < n; ++i) {
+            if (at[i] == ed_row_code(e->project.clips[clip].channel, 0, 0)) {
+                return top + 28 + playlist_row_top(e, i + 1) + 32;
+            }
+        }
+
+        return 0.f;
+    };
+    auto click = [&](int clip, bool shift, bool ctrl) {
+        float y = row_of(clip);
+        mouse_frame(e, x, y, false, false, shift, ctrl);
+        mouse_frame(e, x, y, true, false, shift, ctrl);
+        mouse_frame(e, x, y, false, false, shift, ctrl);
+        mouse_frame(e, x, y, false);
+    };
+    auto picked = [&](bool a, bool b, bool c) {
+        return e->project.clips[0].selected == a && e->project.clips[1].selected == b &&
+               e->project.clips[2].selected == c && e->project.clip_count == 3;
+    };
+    click(0, false, false);
+    check(picked(true, false, false), "a plain click selects one placement");
+    click(2, true, false);
+    check(picked(true, true, true), "Shift + click selects every row from the anchor");
+    click(1, false, true);
+    check(picked(true, false, true), "Ctrl + click removes a placement from the selection");
+    click(1, false, true);
+    check(picked(true, true, true), "Ctrl + click adds a placement to the selection");
+    click(0, false, false);
+    click(1, false, true);
+    check(picked(true, true, false), "Ctrl + click adds without a range");
+    click(2, false, false);
+    click(0, true, true);
+    check(picked(true, true, true), "Ctrl + Shift + click adds the range to the selection");
+    e->modifier_select = false;
+    click(0, false, false);
+    click(2, true, false);
+    check(picked(false, false, true), "with modifier selection off, Shift + click picks one");
+    e->modifier_select = true;
+    /* A right-drag that jumps from the first row to the third in one frame erases the placement
+       on the row it passed over too. */
+    mouse_frame(e, x, row_of(0), false);
+    mouse_frame(e, x, row_of(0), false, false, false, false, 0, true);
+    mouse_frame(e, x, row_of(2), false, false, false, false, 0, true);
+    mouse_frame(e, x, row_of(2), false);
+    check(!e->project.clip_count, "a fast right-drag erases every placement it crossed");
+}
+
 extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) {
     auto *window = roll_window();
     check(window != nullptr, "piano roll window is rendered");
@@ -208,7 +285,8 @@ extern "C" void test_channel_row_ui(Editor *e, void (*check)(bool, const char *)
               e->undo_count == undo + 1,
           "Enter applies the chosen channel and kit with workspace focus");
     mouse_frame(e, 0, 0, false);
-    float x = playlist->WorkRect.Min.x + 24, y = playlist->WorkRect.Min.y + 216;
+    /* Below the hovered label's Add button, which takes the top of the label. */
+    float x = playlist->WorkRect.Min.x + 24, y = playlist->WorkRect.Min.y + 236;
     mouse_frame(e, x, y, false);
     mouse_frame(e, x, y, false, false, false, false, 0, true);
     mouse_frame(e, x, y, false);
@@ -262,7 +340,7 @@ extern "C" void test_channel_row_ui(Editor *e, void (*check)(bool, const char *)
     check(label_buttons(-1) && label_buttons(0) && label_buttons(1),
           "only the hovered channel label draws Add and moving away hides every Add button");
     mouse_frame(e, 0, 0, false);
-    float add_y = top + 2 * 64 - 10;
+    float add_y = top + 64 + 10;
     auto click = [&](float cx, float cy, bool right = false) {
         mouse_frame(e, cx, cy, false);
         mouse_frame(e, cx, cy, !right, false, false, false, 0, right);
@@ -298,8 +376,8 @@ extern "C" void test_channel_row_ui(Editor *e, void (*check)(bool, const char *)
     mouse_frame(e, grid_x + 150, second_y + 25, false);
     check(e->project.clips[0].selected,
           "marquee selection finds a placement on its actual note row");
-    float remove_x = label_x + (e->label_width - 18) * .75f;
-    float remove_y = add_y + 64;
+    float remove_x = label_x + (e->label_width - 18) * .25f;
+    float remove_y = add_y;
     click(remove_x, remove_y);
     check(e->remove_note_row && e->project.note_rows[0] == 2 && e->project.clip_count == 1,
           "Remove asks before deleting a populated bottom note row");
@@ -451,6 +529,8 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     e->project.automation_count = 0;
     e->roll_view.scroll_y = (127 - 70) * 20;
     e->roll_height = 320;
+    /* The scroll above equals the last frame's, so the resize would keep the old middle. */
+    e->roll_grid_height = 0;
     e->automation_open = false;
     dm_note_add(&p, {0, 2, 64, 100, 0});
     mouse_frame(e, 0, 0, false);
@@ -471,11 +551,13 @@ static void curve_edits(Editor *e, void (*check)(bool, const char *)) {
     direct_key(e, SDL_SCANCODE_Y, SDL_KMOD_CTRL);
     e->automation_open = false;
     mouse_frame(e, 0, 0, false);
-    float before = underlay_min_y(e);
+    float before = underlay_min_y(e), height = e->roll_grid_height;
     e->roll_height = 450;
     mouse_frame(e, 0, 0, false);
-    float after = underlay_min_y(e);
-    check(before < FLT_MAX && std::fabs(before - after) < .1f,
+    /* The resize keeps the view's middle pitch in place, so the overlay moves with its note by
+       half the change in height. */
+    float after = underlay_min_y(e), shift = (e->roll_grid_height - height) * .5f;
+    check(before < FLT_MAX && std::fabs(after - before - shift) < .1f,
           "pitch overlay stays at the same note pitch when the roll is resized");
     int endpoint = -1, id = 0;
 
@@ -1216,6 +1298,7 @@ static void edit_gestures_ui(Editor *e, void (*check)(bool, const char *)) {
               right ? "a right click on empty space in a channel row clears the pattern selection"
                     : "a left click on empty space in a channel row clears the pattern selection");
     }
+    modifier_clicks_ui(e, check, empty_area);
     mouse_frame(e, cx, cy, false);
     mouse_frame(e, cx, cy, true);
     mouse_frame(e, cx, cy, false);
@@ -1845,6 +1928,15 @@ extern "C" void test_channel_events_ui(Editor *e, void (*check)(bool, const char
               e->project.automation[1].channel == 0 &&
               e->project.automation[1].type == MIDI_PROGRAM && e->project.automation[1].a == 40,
           "channel dialog stores its program as song automation on the bound channel");
+    ed_song_event_open_bar(e, 4, false, 0);
+    mouse_frame(e, 0, 0, false);
+    ed_song_event_pick(e, 1, PICK_TOGGLE);
+    mouse_frame(e, 0, 0, false);
+    mouse_frame(e, 0, 0, false);
+    check(ed_song_event_pick_count(e) == 2 && !ImGui::FindWindowByName("Song event") &&
+              dialog->Active,
+          "two picked channel events show the group move panel");
+    capture_workspace_navigation(e, "agents/reports/channel-events-multi.bmp");
     ed_song_event_open_bar(e, 0, true, 0);
     mouse_frame(e, 0, 0, false);
     choose("Pan");
@@ -2129,7 +2221,12 @@ extern "C" void test_workspace_navigation_ui(Editor *e, void (*check)(bool, cons
         mouse_frame(e, blank_x, blank_y, false);
         mouse_frame(e, blank_x, blank_y, true);
         mouse_frame(e, blank_x, blank_y, false);
-        check(!roll_window(), "clicking the patterns background hides the piano roll");
+        check(roll_window() && !e->pattern_highlight,
+              "clicking the patterns background clears the selection but keeps the piano roll");
+        /* Clearing the pattern selection elsewhere (Escape) hides the editor until reopened. */
+        ed_clear_pattern_selection(e);
+        mouse_frame(e, 0, 0, false);
+        check(!roll_window(), "clearing the pattern selection hides the piano roll");
 
         if (i == 0) {
             direct_key(e, SDL_SCANCODE_E);
@@ -3287,7 +3384,35 @@ extern "C" void test_source_workflow_ui(Editor *e, void (*check)(bool, const cha
     e->preferences = false;
 }
 
+/* Opening a pattern centers the view on its notes' trimmed mean pitch, and growing the editor
+   keeps that pitch in the middle instead of extending the view downward. */
+static void roll_resize_ui(Editor *e, void (*check)(bool, const char *)) {
+    auto &p = e->project.patterns[0];
+    p.count = 0;
+
+    for (int i = 0; i < 9; ++i) {
+        dm_note_add(&p, {i * .5, .5, (uint8_t)(58 + i % 5), 100, 0});
+    }
+
+    dm_note_add(&p, {4, .5, 100, 100, 0});
+    e->automation_open = false;
+    e->roll_height = 300;
+    e->focus_pattern = true;
+    mouse_frame(e, 0, 0, false);
+    auto center = [e]() {
+        return 127 - (e->roll_view.scroll_y + e->roll_grid_height * .5f - 10) / 20;
+    };
+    check(std::fabs(center() - 60) < 1, "the view opens on the notes, not halfway to an outlier");
+    float before = center(), height = e->roll_grid_height;
+    e->roll_height = 520;
+    mouse_frame(e, 0, 0, false);
+    check(e->roll_grid_height > height + 100 && std::fabs(center() - before) < .01f,
+          "expanding the pattern editor keeps the middle pitch in the middle");
+    p.count = 0;
+}
+
 extern "C" void test_live_edit_ui(Editor *e, void (*check)(bool, const char *)) {
+    roll_resize_ui(e, check);
     e->roll_height = 480;
     e->automation_open = false;
     e->focus_pattern = false;
@@ -3332,6 +3457,70 @@ extern "C" void test_live_edit_ui(Editor *e, void (*check)(bool, const char *)) 
           "pitch-bend overlay point drag auditions its pitch");
     mouse_frame(e, grid.x + 40, y - 40, false);
     check(!e->edit_feedback, "pitch-bend audition ends on release");
+    auto bend_point = [&]() {
+        for (size_t i = 0; i < e->project.automation_count; ++i) {
+            if (e->project.automation[i].type == MIDI_PITCH_BEND) {
+                return (int)i;
+            }
+        }
+
+        return -1;
+    };
+    mouse_frame(e, grid.x + 40, y - 40, false, false, true);
+    mouse_frame(e, grid.x + 40, y - 40, true, false, true);
+    mouse_frame(e, grid.x + 40, y - 40, false, false, true);
+    check(e->automation_node == bend_point() && e->drag == DRAG_NONE &&
+              e->project.automation[bend_point()].beat == .5,
+          "Shift + click on a bend point selects it without moving it");
+    mouse_frame(e, grid.x + 40, y - 40, true, false, true);
+    mouse_frame(e, grid.x + 60, y, true, false, true);
+    check(e->drag == DRAG_BEND_POINT, "Shift + drag on a bend point moves it");
+    mouse_frame(e, grid.x + 60, y, false, false, true);
+    check(e->project.automation[bend_point()].beat == .75 &&
+              ed_automation_pitch(e, e->project.automation[bend_point()]) == 60,
+          "Shift + drag places the bend point at the release");
+    mouse_frame(e, grid.x + 60, y, true, false, true);
+    mouse_frame(e, grid.x + 80, y, true, false, true);
+    check(e->drag == DRAG_BEND_POINT,
+          "a bend point over a note takes Shift + drag before the note's bend gesture");
+    mouse_frame(e, grid.x + 80, y, false, false, true);
+    mouse_frame(e, grid.x + 80, y, false);
+    /* Note selection clicks: Shift adds without drawing a bend, Ctrl toggles. */
+    dm_note_add(&p, {2.5, 1, 60, 100, 0});
+    size_t points = e->project.automation_count;
+    auto note_click = [&](float x, bool shift, bool ctrl) {
+        mouse_frame(e, x, y, false, false, shift, ctrl);
+        mouse_frame(e, x, y, true, false, shift, ctrl);
+        mouse_frame(e, x, y, false, false, shift, ctrl);
+        mouse_frame(e, x, y, false);
+    };
+    note_click(grid.x + 100, false, false);
+    check(p.notes[0].selected && !p.notes[1].selected, "a plain click selects one note");
+    note_click(grid.x + 240, true, false);
+    check(p.notes[0].selected && p.notes[1].selected && e->project.automation_count == points &&
+              !e->drag,
+          "Shift + click adds a note to the selection without starting a pitch bend");
+    note_click(grid.x + 100, false, true);
+    check(!p.notes[0].selected && p.notes[1].selected && !e->marquee,
+          "Ctrl + click removes a note from the selection");
+    note_click(grid.x + 100, false, true);
+    check(p.notes[0].selected && p.notes[1].selected, "Ctrl + click adds a note to the selection");
+    /* A right-drag that jumps past several short notes in one frame erases all of them, and
+       leaves a note off its path. */
+    p.count = 0;
+    dm_note_add(&p, {2.25, .125, 60, 100, 0});
+    dm_note_add(&p, {2.75, .125, 60, 100, 0});
+    dm_note_add(&p, {3.25, .125, 60, 100, 0});
+    dm_note_add(&p, {2.75, .125, 64, 100, 0});
+    int erase_history = e->undo_count;
+    mouse_frame(e, grid.x + 170, y, false);
+    mouse_frame(e, grid.x + 170, y, false, false, false, false, 0, true);
+    mouse_frame(e, grid.x + 275, y, false, false, false, false, 0, true);
+    mouse_frame(e, grid.x + 275, y, false);
+    check(p.count == 1 && p.notes[0].key == 64 && e->undo_count == erase_history + 1,
+          "a fast right-drag erases every note it crossed in one undo step");
+    p.count = 0;
+    dm_note_add(&p, {0, 2, 60, 100, 0});
     size_t before = e->project.patterns[0].count;
     int history = e->undo_count;
     float nx = grid.x + 280, ny = y + 20;

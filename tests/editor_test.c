@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
+#include <windows.h>
 #define TEST_NAME "editor"
 #include "test_common.h"
 static int checks;
@@ -420,6 +422,177 @@ static void worker_saves(Editor *e) {
     puts("PASS worker save snapshots, newer edits, output failure and cancellation atomicity");
 }
 
+static void wait_autosave(Editor *e) {
+    uint64_t start = SDL_GetTicks();
+
+    while (ed_autosave_busy(e) && SDL_GetTicks() - start < 10000) {
+        ed_save_poll(e);
+        SDL_Delay(1);
+    }
+
+    check(!ed_autosave_busy(e), "autosave worker finishes");
+}
+
+static void autosaves(Editor *e) {
+    save_fixture(e);
+    SDL_Time time;
+    check(SDL_GetCurrentTime(&time), "autosave fixture timestamp");
+    char *cwd = SDL_GetCurrentDirectory();
+    char settings[DM_PATH], folder[DM_PATH], marker[DM_PATH], original[DM_PATH];
+    snprintf(settings, sizeof(settings), "%sagents/reports/autosave-%" PRId64, cwd, (int64_t)time);
+    SDL_free(cwd);
+    snprintf(folder, sizeof(folder), "%s/projects/auto", settings);
+    snprintf(marker, sizeof(marker), "%s/session.lock", folder);
+    snprintf(original, sizeof(original), "%s/original.duck", settings);
+    snprintf(e->path, sizeof(e->path), "%s", original);
+    ed_changed(e);
+    char recents[sizeof(e->recent)];
+    memcpy(recents, e->recent, sizeof(recents));
+    ed_autosave_init(e, settings);
+    check(e->autosave != NULL, "autosave initializes in isolated settings");
+    SDL_PathInfo info;
+    check(SDL_GetPathInfo(marker, &info), "session marker exists");
+    ed_autosave_step(e, SDL_GetTicks());
+    check(!ed_autosave_busy(e), "autosave waits until due");
+    uint64_t due = SDL_GetTicks() + ED_AUTOSAVE_INTERVAL_MS;
+    e->active = false;
+    ed_autosave_step(e, due);
+    check(!ed_autosave_busy(e), "closed project is not autosaved");
+    e->active = true;
+    e->dirty = false;
+    ed_autosave_step(e, due += ED_AUTOSAVE_INTERVAL_MS);
+    check(!ed_autosave_busy(e), "clean project is not autosaved");
+    e->dirty = true;
+    ed_autosave_step(e, due += ED_AUTOSAVE_INTERVAL_MS);
+    check(ed_autosave_busy(e) && !ed_save_busy(e), "autosave uses its own job slot");
+    wait_autosave(e);
+    check(e->dirty && !strcmp(e->path, original),
+          "autosave preserves dirty state and original path");
+    check(!memcmp(recents, e->recent, sizeof(recents)), "autosave preserves recent files");
+    int count = 0;
+    char **files = SDL_GlobDirectory(folder, "*.duck", 0, &count);
+    check(files && count == 1, "autosave lands in projects/auto");
+    char latest[DM_PATH], prefix[256];
+    snprintf(latest, sizeof(latest), "%s/%s", folder, files[0]);
+    size_t prefix_size = strlen(files[0]) - 25;
+    check(prefix_size < sizeof(prefix), "autosave has a timestamped name");
+    memcpy(prefix, files[0], prefix_size);
+    prefix[prefix_size] = 0;
+    SDL_free(files);
+    DmBytes data = {0};
+    char error[512];
+    check(dm_read(latest, &data, error, sizeof(error)), "autosave can be read");
+    DmProject copy;
+    dm_project_init(&copy);
+    check(dm_unpack(&copy, data.data, data.size, error, sizeof(error)) &&
+              copy.patterns[0].notes[0].velocity == 100,
+          "autosave contains the project snapshot");
+    dm_project_free(&copy);
+
+    for (int i = 1; i <= 7; ++i) {
+        char path[DM_PATH];
+        snprintf(path, sizeof(path), "%s/%s_2000-01-%02d_00-00-00.duck", folder, prefix, i);
+        check(dm_write(path, data.data, data.size, error, sizeof(error)), "seed old autosave");
+    }
+
+    dm_bytes_free(&data);
+    ed_autosave_step(e, due += ED_AUTOSAVE_INTERVAL_MS);
+    check(!ed_autosave_busy(e), "unchanged revision is not autosaved again");
+    e->project.patterns[0].notes[0].velocity = 47;
+    ed_changed(e);
+    ed_autosave_step(e, due += ED_AUTOSAVE_INTERVAL_MS);
+    check(ed_autosave_busy(e), "new revision starts an autosave");
+    check(ed_save_to(e, original), "manual save can start while autosave runs");
+    wait_autosave(e);
+    wait_save(e);
+    check(ed_save_to(e, original), "start independent manual save");
+    ed_changed(e);
+    ed_autosave_step(e, due += ED_AUTOSAVE_INTERVAL_MS);
+    check(ed_save_busy(e) && ed_autosave_busy(e), "autosave can start while manual save runs");
+    wait_autosave(e);
+    wait_save(e);
+    files = SDL_GlobDirectory(folder, "*.duck", 0, &count);
+    check(files && count == ED_AUTOSAVE_KEEP, "autosave pruning keeps the newest five");
+
+    for (int i = 0; i < count; ++i) {
+        char path[DM_PATH];
+        snprintf(path, sizeof(path), "%s/%s", folder, files[i]);
+
+        if (strcmp(path, latest) > 0) {
+            snprintf(latest, sizeof(latest), "%s", path);
+        }
+    }
+
+    SDL_free(files);
+    memcpy(recents, e->recent, sizeof(recents));
+    char oldest[DM_PATH];
+    snprintf(oldest, sizeof(oldest), "%s/%s_2000-01-01_00-00-00.duck", folder, prefix);
+    check(!SDL_GetPathInfo(oldest, &info), "autosave pruning removes oldest snapshots");
+    ed_autosave_free(e);
+    check(!SDL_GetPathInfo(marker, &info), "clean exit removes its marker");
+
+    char marker_text[DM_PATH * 2 + 128];
+    int n = snprintf(marker_text, sizeof(marker_text), "4294967295\n1\n%s\n%s\n", latest, original);
+    check(dm_write(marker, marker_text, (size_t)n, error, sizeof(error)),
+          "seed dead-session marker");
+    char logs[DM_PATH], crash[DM_PATH];
+    snprintf(logs, sizeof(logs), "%s/logs", settings);
+    check(SDL_CreateDirectory(logs), "create isolated crash logs");
+    snprintf(crash, sizeof(crash), "%s/crash-2026-11-12_00-00-00.txt", logs);
+    check(dm_write(crash, "generated crash fixture\n", 24, error, sizeof(error)),
+          "seed crash report");
+    ed_autosave_init(e, settings);
+    const char *question = ed_autosave_question(e);
+    check(question && strstr(question, "closed unexpectedly") &&
+              strstr(question, "original.duck") && strstr(question, crash),
+          "dead session offers recovery and includes the crash report path");
+    e->project.patterns[0].notes[0].velocity = 12;
+    check(ed_autosave_restore(e), "restore stale session autosave");
+    check(e->dirty && !strcmp(e->path, original) && e->project.patterns[0].notes[0].velocity == 47,
+          "restore loads snapshot, restores original path and marks project dirty");
+    check(!memcmp(recents, e->recent, sizeof(recents)),
+          "recovery does not add autosave to recents");
+    ed_autosave_free(e);
+
+    n = snprintf(marker_text, sizeof(marker_text), "%lu\n1\n%s\n%s\n",
+                 (unsigned long)GetCurrentProcessId(), latest, original);
+    check(dm_write(marker, marker_text, (size_t)n, error, sizeof(error)),
+          "seed live-session marker");
+    ed_autosave_init(e, settings);
+    check(!ed_autosave_question(e), "live session does not offer recovery");
+    ed_autosave_free(e);
+    check(dm_read(marker, &data, error, sizeof(error)) && data.size == (size_t)n &&
+              !memcmp(data.data, marker_text, (size_t)n),
+          "second instance leaves the live session marker intact");
+    dm_bytes_free(&data);
+    check(SDL_RemovePath(marker), "remove generated live-session fixture");
+
+    n = snprintf(marker_text, sizeof(marker_text), "4294967295\n1\n%s\n\n", latest);
+    check(dm_write(marker, marker_text, (size_t)n, error, sizeof(error)), "seed untitled recovery");
+    ed_autosave_init(e, settings);
+    check(ed_autosave_restore(e) && !*e->path && e->dirty,
+          "untitled recovery keeps an empty save path and is dirty");
+    ed_autosave_free(e);
+
+    char failed_settings[DM_PATH], failed_folder[DM_PATH], failed_marker[DM_PATH];
+    snprintf(failed_settings, sizeof(failed_settings), "%s/failure", settings);
+    snprintf(failed_folder, sizeof(failed_folder), "%s/projects/auto", failed_settings);
+    snprintf(failed_marker, sizeof(failed_marker), "%s/session.lock", failed_folder);
+    ed_autosave_init(e, failed_settings);
+    check(SDL_RemovePath(failed_marker) && SDL_RemovePath(failed_folder),
+          "isolate autosave destination failure");
+    check(dm_write(failed_folder, "blocked", 7, error, sizeof(error)),
+          "replace isolated autosave destination with a file");
+    ed_autosave_step(e, SDL_GetTicks() + ED_AUTOSAVE_INTERVAL_MS);
+    wait_autosave(e);
+    check(strstr(e->status, "Autosave failed") && e->dirty && !*e->path,
+          "autosave failure reports once and preserves the unsaved project");
+    uint64_t status_time = e->status_time;
+    ed_save_poll(e);
+    check(e->status_time == status_time, "finished autosave failure is not reported again");
+    ed_autosave_free(e);
+}
+
 int main(void) {
     Editor *e = test_editor_open("duckmidi validation", (TestDesktop){0});
     editor_smoke(e);
@@ -433,6 +606,7 @@ int main(void) {
     test_editor_updates(e, check);
     grid_shades(e);
     worker_saves(e);
+    autosaves(e);
     editor_smoke(e);
     frame(e);
     printf("PASS editor: %d checks (editing, clipboard, undo/redo, shortcut context, Escape, "

@@ -11,6 +11,12 @@ void recording_feedback_audio_pause(DmAudio *a) {
     SDL_PauseAudioStreamDevice(a->stream);
 }
 
+/* Sets the transport clock that input is timed against, as a rendered block would. */
+void recording_feedback_audio_clock(DmAudio *a, uint64_t ns, double position, double latency) {
+    dm_midi_clock_write(&a->clock, (DmMidiClockValue){ns, position, latency, a->input_transport,
+                                                      true, a->input_loop});
+}
+
 void recording_feedback_audio_render(DmAudio *a, int frames) {
     SDL_LockAudioStream(a->stream);
 

@@ -1,0 +1,29 @@
+# Text files are stored and checked out with LF on every platform, whatever core.autocrlf says.
+* text=auto eol=lf
+
+# cmd.exe needs CRLF to find labels reliably in batch files.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Visual Studio project files in vendored sources.
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.filters text eol=crlf
+
+*.a binary
+*.dll binary
+*.duck binary
+*.exe binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.jpg binary
+*.lib binary
+*.mid binary
+*.midi binary
+*.png binary
+*.sf2 binary
+*.ttf binary
+*.wav binary
+*.webp binary
+*.zip binary

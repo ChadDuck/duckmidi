@@ -1,5 +1,32 @@
 # duckmidi changelog
 
+# 0.12.7
+
+## Changes:
+
+1. Pitch bend points on the piano roll can be moved with Shift + left-drag; Shift + click still selects one.
+2. Moving a channel during playback no longer keeps the old instruments until playback restarts.
+3. Selections follow file-manager modifiers: Ctrl + click adds or removes an item, Shift + click selects a range (in the arrangement, every placement across the rows from the last one clicked), Ctrl + Shift + click adds a range. Can be turned off in Preferences.
+4. Shift + click on a note adds it to the selection instead of starting an unfinished pitch bend; Shift + drag still draws one.
+5. The Song and Channel events windows can select several events and move them together, by a number of beats or to one beat, within MIDI's limits.
+6. Generate Patterns rebuilt for current duckmidi: phrases are whole bars (or the song's own repeat length) instead of fragments of a note or two, exact repeats share a pattern, and it now reads slices and note rows correctly instead of failing or stacking placements.
+7. The Samples window's empty state is a drop zone instead of a button.
+8. Song event types are listed as Tempo, Meter, Program change, Volume, Pan, Loop Start, Loop End, then the text and marker events; the loop events drop their "M64 -" prefix, and the key signature field reads "Sharps".
+9. Accent-colored surfaces (window titles, active buttons, check marks) use the application color itself instead of a darkened shade.
+10. Preferences > MIDI opens with only Input expanded.
+11. The mixer hides the route number on channels that only use the default route; the fader and meter take its space.
+12. Clicking empty space in the Patterns section no longer closes the pattern editor.
+13. Notes recorded from the computer keyboard landed slightly late. They are now timed at the moment the key was pressed against what was heard, like notes from a MIDI keyboard.
+14. A fast right-drag now erases every note, placement or event point it passes over, not only the ones under the pointer when the screen redraws.
+15. Text on accent-colored buttons follows the same light-or-dark contrast rule everywhere; the default yellow no longer forces white text.
+16. Resizing the pattern editor keeps the pitch at the middle of the view in place, and opening a pattern centers on where most of its notes are instead of halfway to an outlying note.
+17. Unsaved projects are autosaved every five minutes, keeping five copies per project and offering recovery after an unexpected close.
+18. Crashes write a plain-text report with a stack trace and recent status messages in the settings folder's logs directory for attaching to GitHub issues.
+19. Undoing or redoing a channel move also moves the selection, expanded rows and mixer state back with the channel.
+20. When an edit cannot be recorded for undo, it is no longer applied, and the redo history is kept.
+21. Event editors no longer show the imported file's source track number, which only matters to the original MIDI file; events keep it unchanged.
+22. A channel label's note row buttons appear at the top of the label, Remove then Add, so they stay in place as rows are added or removed.
+
 # 0.12.6
 
 - **Multiple Channel Tracks**

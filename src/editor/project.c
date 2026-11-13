@@ -240,6 +240,7 @@ static void reset_regions(Editor *e) {
     e->wait_armed = e->take_started = false;
     e->event_selection.size = 0;
     e->selected_clip = -1;
+    e->select_anchor = -1;
     e->playlist_context_clip = -1;
     e->lfo_center_drag = false;
     memset(e->loop_enabled, 0, sizeof(e->loop_enabled));
@@ -312,7 +313,7 @@ void editor_open(Editor *e, const char *path) {
     ed_request(e, PENDING_PATH, path);
 }
 
-void ed_load(Editor *e, const char *path) {
+static bool load_project(Editor *e, const char *path, const char *original) {
     reset_regions(e);
     e->pattern_mode = false;
     e->automation_cc = DM_EVENT_BEND;
@@ -324,7 +325,7 @@ void ed_load(Editor *e, const char *path) {
     DmBytes b = {0};
 
     if (!dm_read(path, &b, e->status, sizeof(e->status))) {
-        return;
+        return false;
     }
 
     char import_message[512] = {0};
@@ -334,7 +335,7 @@ void ed_load(Editor *e, const char *path) {
     dm_bytes_free(&b);
 
     if (!ok) {
-        return;
+        return false;
     }
 
     e->last_note_pattern_uid = 0;
@@ -357,7 +358,7 @@ void ed_load(Editor *e, const char *path) {
     memset(e->start_beat, 0, sizeof(e->start_beat));
     memset(e->cursor_beat, 0, sizeof(e->cursor_beat));
     e->active = true;
-    e->dirty = !project;
+    e->dirty = original != NULL || !project;
     e->roll = true;
     e->selected_pattern = e->project.pattern_count ? 0 : dm_pattern_add(&e->project, NULL);
     e->pattern_channel = e->selected_channel = 0;
@@ -376,7 +377,7 @@ void ed_load(Editor *e, const char *path) {
     e->path[0] = 0;
 
     if (project) {
-        snprintf(e->path, sizeof(e->path), "%s", path);
+        snprintf(e->path, sizeof(e->path), "%s", original ? original : path);
     }
 
     ed_clear_history(e->undo, &e->undo_count);
@@ -389,11 +390,23 @@ void ed_load(Editor *e, const char *path) {
         ed_request_font(e, e->project.soundfont);
     }
 
-    ed_add_recent(e, path);
-    ed_preference_save(e);
+    if (!original) {
+        ed_add_recent(e, path);
+        ed_preference_save(e);
+    }
+
     ed_message(e, project           ? DM_TEXT_PROJECT_OPENED
                   : *import_message ? import_message
                                     : DM_TEXT_MIDI_IMPORTED_REVIEW);
+    return true;
+}
+
+void ed_load(Editor *e, const char *path) {
+    load_project(e, path, NULL);
+}
+
+bool ed_load_autosave(Editor *e, const char *path, const char *original) {
+    return load_project(e, path, original);
 }
 
 /* Original source ports are note ports 1..port_count-1 of a multi-port import. "All" also
@@ -460,7 +473,10 @@ static int ed_port_collisions(Editor *e, bool all, char *text, size_t capacity) 
 /* Moves the chosen ports' notes, controls and events to the default port. Undoable. */
 void ed_combine_source_ports(Editor *e, bool all) {
     DmProject *p = &e->project;
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return;
+    }
+
     ed_release_piano(e);
 
     for (size_t i = 0; i < p->pattern_count; ++i) {

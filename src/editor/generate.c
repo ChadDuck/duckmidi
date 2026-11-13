@@ -167,12 +167,16 @@ bool ed_generate_apply(Editor *e) {
     }
 
     ed_release_piano(e);
-    ed_checkpoint(e);
+    if (!ed_checkpoint(e)) {
+        return false;
+    }
+
     dm_project_free(&e->project);
     e->project = job->result;
     dm_project_init(&job->result);
     e->selected_pattern = -1;
     e->selected_clip = -1;
+    e->select_anchor = -1;
     e->drag = DRAG_NONE;
     e->automation_node = -1;
     e->clip_drag.size = 0;

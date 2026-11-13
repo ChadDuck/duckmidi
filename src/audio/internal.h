@@ -90,6 +90,9 @@ struct DmAudio {
     atomic_uint input_route, input_policy;
     atomic_ullong input_played, input_dropped;
     double input_latency;
+    /* The transport clock that input is timed against, kept whether or not a MIDI device is
+       open, so computer-keyboard notes are timed like device notes (dm_audio_heard_seconds). */
+    DmMidiClock clock;
     uint32_t input_transport, input_loop;
     bool input_reset, input_latency_auto;
     uint64_t input_discard_ns;

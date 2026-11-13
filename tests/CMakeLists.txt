@@ -3,7 +3,7 @@ if(NOT WIN32)
 endif()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(TEST_BIN "${CMAKE_CURRENT_BINARY_DIR}/bin")
-set(TEST_LIBRARIES duckversion duckcore duckgui duckmidi_io duckmidi_input fluidsynth duckmedia ducksamplesynth winhttp)
+set(TEST_LIBRARIES duckversion duckcore duckgui duckmidi_io duckmidi_input fluidsynth duckmedia ducksamplesynth winhttp dbghelp)
 
 function(test_dependencies TARGET)
   target_include_directories(${TARGET} PRIVATE "${PROJECT_SOURCE_DIR}/src"

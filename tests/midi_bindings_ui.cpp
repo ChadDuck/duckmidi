@@ -19,6 +19,8 @@ extern "C" void test_midi_binding_controls(Editor *e, EdMidiTarget target) {
     auto *window = ImGui::FindWindowByName(DM_TEXT_PREFERENCES);
     IM_ASSERT(window);
     window->StateStorage.SetInt(window->GetID(DM_TEXT_MIDI_CONFIGURATION), 1);
+    window->StateStorage.SetInt(window->GetID(DM_TEXT_MIDI_BIND_CONTROLS), 1);
+    window->StateStorage.SetInt(window->GetID(DM_TEXT_MIDI_BIND_EVENTS), 1);
     preferences_frame(e);
     char id[48];
     ed_midi_target_id(target, id, sizeof(id));
@@ -94,6 +96,7 @@ extern "C" void test_midi_binding_clear_all(Editor *e) {
     auto *window = ImGui::FindWindowByName(DM_TEXT_PREFERENCES);
     assert(window);
     window->StateStorage.SetInt(window->GetID(DM_TEXT_MIDI_BIND_EVENTS), 0);
+    window->StateStorage.SetInt(window->GetID(DM_TEXT_MIDI_BIND_CONTROLS), 1);
     ImGui::SetScrollY(window, window->ScrollMax.y);
     preferences_frame(e);
     auto confirm = [e, window](const char *choice) {

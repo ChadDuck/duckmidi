@@ -2,7 +2,16 @@
 name: Arch Linux
 
 on:
+  # Every push to dev builds, tests and uploads a downloadable build; other branches only on demand.
+  push:
+    branches: [dev]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_dispatch:
+
+# A newer push to the same branch cancels the run still going for an older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -23,10 +32,15 @@ jobs:
       - name: Test
         run: ctest --test-dir build/development/cmake --output-on-failure
 
+      - name: Name the build
+        if: always()
+        run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
       - name: Upload build
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: duckmidi-arch-x86_64
+          name: duckmidi-arch-x86_64-${{ env.SHORT_SHA }}
           path: build/development/cmake/bin/
           if-no-files-found: ignore
+          retention-days: 14

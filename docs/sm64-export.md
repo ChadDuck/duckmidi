@@ -128,7 +128,7 @@ Whole-song looping restores the initial tempo, instruments, and controller state
 
 ## Loop points
 
-Add **M64 - Loop Start** and, optionally, **M64 - Loop End** from the Song event dialog (**Shift + E**), or from a playlist click on the event row. Each song has one of each; adding another moves it. With **Use M64 loop points** enabled in the export window, the song plays once from the start and then repeats from Loop Start to Loop End, or to the song end without a Loop End. This overrides **Loop song**.
+Add **Loop Start** and, optionally, **Loop End** from the Song event dialog (**Shift + E**), or from a playlist click on the event row. Each song has one of each; adding another moves it. With **Use M64 loop points** enabled in the export window, the song plays once from the start and then repeats from Loop Start to Loop End, or to the song end without a Loop End. This overrides **Loop song**.
 
 Notes sounding across Loop Start are restarted there on every repeat, and notes crossing Loop End are cut at it. Tempo and controller values at Loop Start are restored on each repeat. Loop points are saved as `loopStart` and `loopEnd` marker events, so they survive MIDI export.
 

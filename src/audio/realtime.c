@@ -7,12 +7,13 @@ void dm_audio_input_clock(DmAudio *a, bool changed) {
         ++a->input_transport;
     }
 
+    DmMidiClockValue value = {SDL_GetTicksNS(),   a->position, a->input_latency,
+                              a->input_transport, a->playing,  a->input_loop};
+    dm_midi_clock_write(&a->clock, value);
     DmMidiInput *input = atomic_load_explicit(&a->input, memory_order_acquire);
 
     if (input) {
-        dm_midi_clock_write(dm_midi_input_clock(input),
-                            (DmMidiClockValue){SDL_GetTicksNS(), a->position, a->input_latency,
-                                               a->input_transport, a->playing, a->input_loop});
+        dm_midi_clock_write(dm_midi_input_clock(input), value);
     }
 }
 
@@ -927,6 +928,7 @@ static void run_block(DmAudio *a, float *out, int frames) {
 
     dm_audio_keyboard_configure(a);
     dm_audio_preview_commands(a);
+    dm_audio_input_clock(a, false); /* Each block restarts the clock from its position. */
     dm_audio_input_commands(a);
     dm_audio_feedback_commands(a);
     dm_audio_keyboard_configure(a);
