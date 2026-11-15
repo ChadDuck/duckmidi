@@ -387,6 +387,29 @@ void dm_project_free(DmProject *p) {
     memset(p, 0, sizeof(*p));
 }
 
+size_t dm_project_memory(const DmProject *p) {
+    size_t size = sizeof(*p) + p->pattern_capacity * sizeof(*p->patterns) +
+                  p->clip_capacity * sizeof(*p->clips) +
+                  p->automation_capacity * sizeof(*p->automation) +
+                  p->event_capacity * sizeof(*p->events) + p->view_capacity * sizeof(*p->views) +
+                  p->original.capacity + p->port_mix_capacity * sizeof(*p->port_mix) +
+                  p->patch_replacement_capacity * sizeof(*p->patch_replacements);
+
+    for (size_t i = 0; i < p->pattern_count; ++i) {
+        size += p->patterns[i].capacity * sizeof(*p->patterns[i].notes);
+    }
+
+    for (size_t i = 0; i < p->event_count; ++i) {
+        size += p->events[i].message.capacity;
+    }
+
+    for (size_t i = 0; i < p->view_count; ++i) {
+        size += p->views[i].state.capacity;
+    }
+
+    return size;
+}
+
 bool dm_project_copy(DmProject *destination, const DmProject *source) {
     DmProject next = *source;
     next.patterns = NULL;
@@ -572,13 +595,13 @@ int dm_pattern_add(DmProject *p, const char *name) {
     return (int)p->pattern_count++;
 }
 
-bool dm_note_add(DmPattern *p, DmNote n) {
-    if (p->kind) {
-        return false;
-    }
+bool dm_note_valid(DmNote n) {
+    return isfinite(n.beat) && isfinite(n.length) && n.beat >= 0 && n.length > 0 && n.key <= 127 &&
+           n.velocity && n.velocity <= 127 && n.selected <= 1 && n.port < DM_NOTE_PORTS;
+}
 
-    if (!isfinite(n.beat) || !isfinite(n.length) || n.beat < 0 || n.length <= 0 || n.key > 127 ||
-        !n.velocity || n.velocity > 127 || n.selected > 1 || n.port >= DM_NOTE_PORTS) {
+bool dm_note_add(DmPattern *p, DmNote n) {
+    if (p->kind || !dm_note_valid(n)) {
         return false;
     }
 
@@ -589,6 +612,18 @@ bool dm_note_add(DmPattern *p, DmNote n) {
     p->notes[p->count++] = n;
     p->length = fmax(p->length, n.beat + n.length);
     return true;
+}
+
+void dm_pattern_copy_settings(DmPattern *to, const DmPattern *from) {
+    DmPattern kept = *to;
+    *to = *from;
+    memcpy(to->name, kept.name, sizeof(to->name));
+    memcpy(to->base_name, kept.base_name, sizeof(to->base_name));
+    to->duplicate_index = kept.duplicate_index;
+    to->uid = kept.uid;
+    to->notes = kept.notes;
+    to->count = kept.count;
+    to->capacity = kept.capacity;
 }
 
 int dm_pattern_copy(DmProject *p, int source) {
@@ -644,23 +679,7 @@ int dm_pattern_copy(DmProject *p, int source) {
         }
     }
 
-    to->length = from->length;
-    to->kind = from->kind;
-    to->mode = from->mode;
-    memcpy(to->graph_lanes, from->graph_lanes, sizeof(to->graph_lanes));
-    to->event = from->event;
-    to->speed = from->speed;
-    to->tension = from->tension;
-    to->skew = from->skew;
-    to->pulse = from->pulse;
-    to->amount = from->amount;
-    to->center = from->center;
-    to->pitch_center = from->pitch_center;
-    to->reference = from->reference;
-    to->inverted = from->inverted;
-    to->control_scope = from->control_scope;
-    to->port = from->port;
-    to->color = from->color;
+    dm_pattern_copy_settings(to, from);
     size_t count = p->automation_count;
     DmAutomation *copy = malloc(count * sizeof(*copy));
 
@@ -1106,7 +1125,7 @@ int dm_lfo_value(const DmPattern *p, double beat) {
         fmax(0, fmin(p->event == DM_EVENT_BEND ? MIDI_BEND_MAX : MIDI_DATA_MAX, value)));
 }
 
-bool dm_clip_add(DmProject *p, DmClip c) {
+static bool clip_basic_valid(const DmProject *p, DmClip c) {
     if (!isfinite(c.length) || c.length < 0 || c.length > 10000000 || c.lane < 0 ||
         !isfinite(c.offset) || c.offset < 0 || c.offset > 10000000 || c.lane > DM_LANES) {
         return false;
@@ -1118,6 +1137,20 @@ bool dm_clip_add(DmProject *p, DmClip c) {
     }
 
     if (c.row < 0 || (c.lane ? c.row != 0 : c.row >= p->note_rows[c.channel])) {
+        return false;
+    }
+
+    return true;
+}
+
+bool dm_clip_valid(const DmProject *p, DmClip c) {
+    return clip_basic_valid(p, c) && c.lane <= p->lane_count[c.channel] &&
+           (p->patterns[c.pattern].kind != 0) == (c.lane > 0);
+}
+
+bool dm_clip_add(DmProject *p, DmClip c) {
+    /* Port merging and scheduling callers may not configure lane counts before insertion. */
+    if (!clip_basic_valid(p, c)) {
         return false;
     }
 
@@ -1152,6 +1185,39 @@ bool dm_automation_later(DmAutomation a, DmAutomation b) {
     }
 
     return a.curve < 0 && b.curve >= 0;
+}
+
+static bool curve_setup(DmAutomation a) {
+    return a.type == MIDI_CONTROL && (a.a == MIDI_CC_DATA || a.a == MIDI_CC_DATA_LSB ||
+                                      a.a == MIDI_CC_RPN_LSB || a.a == MIDI_CC_RPN_MSB);
+}
+
+int dm_automation_phase(const DmProject *p, DmAutomation a) {
+    if (a.curve < 0) {
+        return 2;
+    }
+
+    if (a.curve == 0 || curve_setup(a)) {
+        return 3;
+    }
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        DmAutomation next = p->automation[i];
+
+        if (next.pattern != a.pattern || next.curve != a.curve || next.type != a.type) {
+            continue;
+        }
+
+        if (a.type == MIDI_CONTROL && a.a != next.a) {
+            continue;
+        }
+
+        if (next.beat > a.beat) {
+            return 3;
+        }
+    }
+
+    return 1;
 }
 
 int dm_graph_lane(int event) {
@@ -1197,13 +1263,23 @@ bool dm_pattern_has_graph(const DmPattern *pattern) {
     return false;
 }
 
-bool dm_automation_add(DmProject *p, DmAutomation a) {
+bool dm_automation_valid(const DmProject *p, DmAutomation a) {
     if (a.pattern < -1 || (a.pattern >= 0 && (size_t)a.pattern >= p->pattern_count)) {
         return false;
     }
 
     if (!isfinite(a.beat) || a.beat < 0 || !automation_message_valid(a) || a.anchor < 0 ||
         a.anchor > 127 || a.curve == INT32_MIN || a.port >= DM_NOTE_PORTS) {
+        return false;
+    }
+
+    return true;
+}
+
+/* Inserts a point in dm_automation_later order. The readers of schemas 9-20 use it directly:
+   their song-level points (pattern -1) exist only until upgrade_20_to_21 converts them. */
+bool dm_automation_insert(DmProject *p, DmAutomation a) {
+    if (!dm_automation_valid(p, a)) {
         return false;
     }
 
@@ -1228,6 +1304,11 @@ bool dm_automation_add(DmProject *p, DmAutomation a) {
     }
 
     return true;
+}
+
+/* Song-level channel messages are DmEvents; every point belongs to a pattern. */
+bool dm_automation_add(DmProject *p, DmAutomation a) {
+    return a.pattern >= 0 && dm_automation_insert(p, a);
 }
 
 /* Whether a point curves toward the next point of its line; otherwise its value holds. */
@@ -1329,7 +1410,7 @@ void dm_pattern_fit(const DmProject *p, DmPattern *pattern) {
     for (size_t i = 0; i < p->automation_count; ++i) {
         DmAutomation a = p->automation[i];
 
-        if (a.pattern >= 0 && &p->patterns[a.pattern] == pattern) {
+        if (&p->patterns[a.pattern] == pattern) {
             end = fmax(end, ceil(a.beat - 1e-9));
         }
     }
@@ -1351,12 +1432,6 @@ double dm_duration(const DmProject *p) {
     for (size_t i = 0; i < p->clip_count; ++i) {
         const DmClip *c = &p->clips[i];
         end = fmax(end, c->beat + dm_clip_length(p, *c));
-    }
-
-    for (size_t i = 0; i < p->automation_count; ++i) {
-        if (p->automation[i].pattern < 0) {
-            end = fmax(end, p->automation[i].beat);
-        }
     }
 
     for (size_t i = 0; i < p->event_count; ++i) {
@@ -1383,15 +1458,14 @@ void dm_quantize(DmPattern *p, double grid) {
     }
 }
 
-/* Song beat of a channel's first note, or HUGE_VAL when it has none. */
-static double first_channel_note(const DmProject *p, int channel) {
+double dm_first_note(const DmProject *p, int channel) {
     double first = HUGE_VAL;
 
     for (size_t i = 0; i < p->clip_count; ++i) {
         DmClip clip = p->clips[i];
         const DmPattern *pattern = &p->patterns[clip.pattern];
 
-        if (clip.channel != channel || pattern->kind) {
+        if ((channel >= 0 && clip.channel != channel) || pattern->kind) {
             continue;
         }
 
@@ -1423,7 +1497,7 @@ bool dm_set_initial_program(DmProject *p, int channel, int program, bool apply) 
 
     /* Imported files often send their opening program change after beat 0. Every program change
        before the channel's first note sets its starting instrument, so it follows this choice. */
-    double first = first_channel_note(p, channel);
+    double first = dm_first_note(p, channel);
 
     for (size_t i = 0; i < p->event_count; ++i) {
         DmBytes *m = &p->events[i].message;

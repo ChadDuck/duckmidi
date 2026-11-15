@@ -140,7 +140,7 @@ static void source_settings(Editor *e) {
                 ed_changed(e);
                 memcpy(e->reset_channels, e->project.channels, sizeof(e->reset_channels));
                 e->pattern_mode = false;
-                dm_audio_publish(e->audio, &e->project, 0, false, e->status, sizeof(e->status));
+                ed_publish_song_start(e);
             }
         }
     }
@@ -448,12 +448,6 @@ static bool channel_has_content(Editor *e, int channel) {
         }
     }
 
-    for (size_t i = 0; i < p->automation_count; ++i) {
-        if (p->automation[i].pattern < 0 && p->automation[i].channel == channel) {
-            return true;
-        }
-    }
-
     return false;
 }
 
@@ -533,17 +527,6 @@ bool ed_remove_channel(Editor *e, int channel) {
     }
 
     size_t write = 0;
-
-    for (size_t i = 0; i < p->automation_count; ++i) {
-        DmAutomation point = p->automation[i];
-
-        if (point.pattern >= 0 || point.channel != channel) {
-            p->automation[write++] = point;
-        }
-    }
-
-    p->automation_count = write;
-    write = 0;
 
     for (size_t i = 0; i < p->port_mix_count; ++i) {
         if (p->port_mix[i].channel != channel) {
@@ -1401,10 +1384,6 @@ void ed_preferences(Editor *e) {
             ed_preference_save(e);
         }
 
-        if (ui_check(DM_TEXT_MODIFIER_SELECT, &e->modifier_select)) {
-            ed_preference_save(e);
-        }
-
         ui_separator();
         ui_text(DM_TEXT_SOUND_OUTPUT);
         ui_separator();
@@ -1492,7 +1471,9 @@ static void gesture_row(Editor *e, int i) {
     char label[128] = "";
     ed_gesture_format(e->gestures[i], label, sizeof(label));
 
-    if (ui_button(e->gesture_capture == i ? DM_TEXT_PRESS_MOUSE : label, 190, 0)) {
+    if (i >= GESTURE_REBINDABLE) {
+        ui_text(label);
+    } else if (ui_button(e->gesture_capture == i ? DM_TEXT_PRESS_MOUSE : label, 190, 0)) {
         e->capture = -1;
         e->gesture_capture = i;
         e->gesture_capture_armed = false;
@@ -1549,13 +1530,20 @@ void ed_shortcuts(Editor *e) {
         }
 
         ui_separator();
+        ui_dim(DM_TEXT_FIXED_MOUSE_GESTURES);
+
+        for (int i = GESTURE_REBINDABLE; i < GESTURE_COUNT; ++i) {
+            gesture_row(e, i);
+        }
+
+        ui_separator();
         ui_dim(DM_TEXT_FIXED_SHORTCUTS);
         ui_wrap(DM_TEXT_ESCAPE_CLOSE_UNFOCUS_ENTER);
         ui_wrap(DM_TEXT_CTRL_SELECT_ALL_DELETE);
         ui_wrap(DM_TEXT_CTRL_SAVE_CTRL_SHIFT);
         ui_wrap(DM_TEXT_CTRL_Z_Y_UNDO);
-        ui_wrap(DM_TEXT_ALT_DISABLE_SNAP_RIGHT);
-        ui_wrap(DM_TEXT_WHEEL_HORIZONTAL_SHIFT_WHEEL);
+        ui_wrap(DM_TEXT_RIGHT_DRAG_ERASE);
+        ui_wrap(DM_TEXT_WHEEL_SCROLL_RULER_ZOOM);
         ui_child_end();
     }
 

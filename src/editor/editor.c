@@ -1,4 +1,5 @@
 #include "editor/internal.h"
+#include "devtools/devtools.h"
 #include "update.h"
 #include "text/en.h"
 
@@ -34,6 +35,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->instrument_channel = -1;
     e->instrument_preview = false;
     e->selected_clip = -1;
+    e->heard_clip = -1;
     e->select_anchor = -1;
     e->context_note = -1;
     e->capture = -1;
@@ -66,7 +68,6 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->status_shown[0] = 0;
     e->os_cursor = false;
     e->repository_history = true;
-    e->modifier_select = true;
     e->midi_values = false;
     e->event_ruler_drag = false;
     e->midi_hex = true;
@@ -91,6 +92,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     dm_project_init(&e->project);
     ed_dialog_event = SDL_RegisterEvents(1);
     snprintf(e->settings_path, sizeof(e->settings_path), DM_TEXT_SDUCKMIDI_SETTINGS_INI, data);
+    dm_input_log_set_folder(data);
     ed_message(e, DM_TEXT_READY_OPEN_MIDI);
 
     if (!smoke) {
@@ -151,6 +153,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
 }
 
 void editor_free(Editor *e) {
+    dm_audio_update_cancel(e->audio);
     ed_generate_free(e);
     ed_save_free(e);
     ed_samples_free(e);
@@ -184,8 +187,15 @@ void editor_free(Editor *e) {
     dm_bytes_free(&e->event_drag);
     dm_bytes_free(&e->clip_drag);
     dm_bytes_free(&e->pitch_controls);
+    dm_bytes_free(&e->hold_cache);
+    dm_bytes_free(&e->heard_values);
     dm_project_free(&e->project);
     ed_autosave_free(e);
+#ifdef DM_DEVTOOLS
+    if (dm_input_log_recording()) {
+        dm_input_log_stop(NULL, 0);
+    }
+#endif
 }
 
 static void footer(Editor *e, UiPoint origin, float body) {
@@ -205,6 +215,7 @@ void editor_background(Editor *e) {
     ed_midi_input_frame(e);
     ed_generate_poll(e);
     ed_save_poll(e);
+    ed_publish_poll(e);
     ed_export_poll(e);
     ed_samples_poll(e);
 
@@ -272,7 +283,9 @@ static void ed_welcome(Editor *e, float body) {
 }
 
 static void finish_frame(Editor *e) {
-    if (!ui_mouse().left) {
+    UiMouse mouse = ui_mouse();
+
+    if (!mouse.left) {
         e->pattern_drag = -1;
         e->pattern_drag_on_playlist = false;
     }
@@ -282,10 +295,21 @@ static void finish_frame(Editor *e) {
         e->pending_save = false;
         ed_save(e, as);
     }
+
+    if (!mouse.left && !mouse.right && !mouse.middle && e->drag == DRAG_NONE && !e->marquee &&
+        !e->event_marquee && !e->curve_drag && !e->recording_take && !e->checkpoint_this_frame) {
+        ed_history_compact(e);
+    }
+
+    e->checkpoint_this_frame = false;
 }
 
 static void editor_pointer_state(Editor *e) {
     UiMouse pointer = ui_mouse();
+
+    if (!pointer.left) {
+        e->mixer_drag = false;
+    }
 
     if (!pointer.middle) {
         e->pan_context = CONTEXT_NONE;
@@ -336,6 +360,7 @@ static void right_workspace(Editor *e, float right, float body, UiPoint origin) 
 }
 
 void editor_frame(Editor *e, float width, float height) {
+    DM_PROFILE_BEGIN(UI_BUILD, profile_start);
     ui_custom_cursor(!e->os_cursor);
     ed_finish_edit_feedback(e);
     width /= ui_scale();
@@ -350,6 +375,9 @@ void editor_frame(Editor *e, float width, float height) {
     ui_clamp_windows();
     editor_background(e);
     e->hover[0] = 0;
+    e->hover_target = 0;
+    e->modifier_hint[0] = 0;
+    dm_gesture_inspector_begin();
     ed_menu(e);
     ui_root(27, height - 27);
     ed_toolbar(e);
@@ -416,6 +444,7 @@ void editor_frame(Editor *e, float width, float height) {
     }
 
     finish_frame(e);
+    DM_PROFILE_END(UI_BUILD, profile_start);
 }
 
 void editor_smoke(Editor *e) {

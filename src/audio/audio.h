@@ -47,11 +47,37 @@ bool dm_pattern_schedule(const DmProject *project, const DmPatternPreview *patte
 bool dm_audio_publish_pattern(DmAudio *audio, const DmProject *project,
                               const DmPatternPreview *pattern, double seconds, bool playing,
                               char *error, size_t cap);
+/* Moves playback to seconds on the schedule already published, without rebuilding it: the same
+   reset, chase and start as a publish there. project must be the one that schedule was built
+   from. Returns false, changing nothing, when there is no schedule or the project's samples
+   changed; the caller then publishes. */
+bool dm_audio_seek(DmAudio *audio, const DmProject *project, double seconds, bool playing);
 void dm_audio_loop(DmAudio *audio, bool enabled, double start, double end);
 /* Replace future events at the current audio position, retaining sounding note releases.
    pattern NULL plays the song. */
 bool dm_audio_update(DmAudio *audio, const DmProject *project, const DmPatternPreview *pattern,
                      char *error, size_t cap);
+/* Copy project and build its schedule on a background thread; dm_audio_update_poll publishes it
+   on the GUI thread. Returns false only on allocation or thread-creation failure. */
+bool dm_audio_update_async(DmAudio *audio, const DmProject *project,
+                           const DmPatternPreview *pattern, uint64_t session, uint64_t revision);
+
+/* A background build dm_audio_update_poll published: its request's revision and the project
+   snapshot it was built from, whose tempo map times what now plays. The caller frees project. */
+typedef struct {
+    uint64_t revision;
+    DmProject project;
+} DmAudioPublished;
+
+/* Poll for a completed background schedule of session, built for revision or an earlier request
+   (builds finish in request order, so it is newer than what plays). Returns 1 when published
+   (published, when not NULL, receives the build), 0 when nothing is ready (dropping another
+   session's results), or -1 on failure (error set when known). */
+int dm_audio_update_poll(DmAudio *audio, uint64_t session, uint64_t revision,
+                         DmAudioPublished *published, char *error, size_t cap);
+/* Drop any pending background schedule request and unpublished result. dm_audio_publish,
+   dm_audio_publish_pattern and dm_audio_update call it, so a synchronous publish always wins. */
+void dm_audio_update_cancel(DmAudio *audio);
 void dm_audio_transport(DmAudio *audio, bool playing);
 void dm_audio_panic(DmAudio *audio);
 double dm_audio_position(DmAudio *audio);

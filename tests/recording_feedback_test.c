@@ -188,10 +188,12 @@ static void preview_and_feedback(Editor *e) {
           "manual preview instrument sounds without changing playlist program");
     dm_note_add(ed_pattern(e), (DmNote){0, 1, 60, 100, 1});
     ed_delete_selection(e);
+    test_publish_wait(e);
     recording_feedback_audio_render(e->audio, 256);
     check(recording_feedback_audio_voice(e->audio, 0, 48) == voice,
           "deleting a note does not retrigger the held PC keyboard voice");
     ed_publish(e);
+    test_publish_wait(e);
     recording_feedback_audio_render(e->audio, 256);
     check(recording_feedback_audio_voice(e->audio, 0, 48) == voice,
           "ordinary edit publication does not replay held piano note-ons");
@@ -251,6 +253,7 @@ static void instrument_switching(Editor *e) {
     }
 
     ed_select_preview_instrument(e, ed_channel_program(e, 2));
+    test_publish_wait(e);
     recording_feedback_audio_render(e->audio, 4800);
     check(recording_feedback_audio_preset(e->audio, 0, true) == 33 &&
               recording_feedback_audio_preset(e->audio, 0, false) == 33,
@@ -356,6 +359,7 @@ static void waiting_backing_onset(Editor *e) {
     check(!recording_feedback_audio_live_voice(e->audio, 0, 60),
           "replaced take does not leak old beat-zero notes");
     ed_publish(e);
+    test_publish_wait(e);
     recording_feedback_audio_render(e->audio, 128);
     check(recording_feedback_audio_live_voice(e->audio, 1, 72),
           "first recording edit retains backing voice");

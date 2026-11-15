@@ -24,6 +24,7 @@ static inline void check(bool ok, const char *text) {
 }
 
 #ifdef DM_EDITOR_INTERNAL_H
+#include "publish_wait.h"
 #define TEST_SOUNDFONT "agents/reports/generated-programs.sf2"
 
 /* Stops the audio device so a test renders by hand; defined by tests/audio_probe.c. */
@@ -102,6 +103,22 @@ static inline Editor *test_editor_open(const char *title, TestDesktop setup) {
 }
 
 static inline void test_editor_close(Editor *e) {
+#ifdef DM_DEVTOOLS
+    if (e->devtools_invalid[0]) {
+        fprintf(stderr, "%s\n", e->devtools_invalid);
+    }
+
+    check(!e->devtools_invalid[0], "project remained valid after every edit");
+    char error[256];
+    bool valid = dm_project_check_edit(&e->project, error, sizeof(error));
+
+    if (!valid) {
+        fprintf(stderr, "%s\n", error);
+    }
+
+    check(valid, "final project is valid");
+#endif
+
     SDL_Window *window = e->window;
     SDL_Renderer *renderer = e->renderer;
     DmAudio *audio = e->audio;

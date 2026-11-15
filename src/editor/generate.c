@@ -303,6 +303,11 @@ void ed_generate_dialog(Editor *e) {
 
     if (ui_dialog(DM_TEXT_GENERATE_PATTERNS, &e->generate_window, dialog)) {
         ui_wrap(DM_TEXT_ANALYZE_SEPARATE_MIDI_ARRANGEMENT);
+
+        if (dm_generation_changes_sound(&e->project)) {
+            ui_wrap(DM_TEXT_GENERATE_EDITED_WARNING);
+        }
+
         bool busy = ed_generate_busy(e);
         ui_disabled(busy);
 

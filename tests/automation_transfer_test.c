@@ -30,6 +30,8 @@ static void modular_schedule(void) {
     dm_clip_add(&p, (DmClip){0, note, 0, 0, 0, 0});
     dm_clip_add(&p, (DmClip){0, a, 0, 0, 8, 1});
     dm_clip_add(&p, (DmClip){2, b, 0, 0, 2, 2});
+    /* A later note on channel 0 makes the beat-8 automation release audible. */
+    dm_clip_add(&p, (DmClip){9, note, 0, 0, 0, 0});
     dm_automation_add(&p, (DmAutomation){0, 0xb0, 0, 11, 40, a, 0, 0, 0, false});
     dm_automation_add(&p, (DmAutomation){0, 0xb0, 0, 11, 90, b, 0, 0, 0, false});
     dm_automation_add(&p, (DmAutomation){1, 0xb0, 0, 11, 100, note, 7, 0, 0, false});
@@ -103,6 +105,11 @@ static void bend_and_density(void) {
     p.lane_count[0] = 1;
     dm_clip_add(&p, (DmClip){0, note, 0, 0, 0, 0});
     dm_clip_add(&p, (DmClip){0, mod, 0, 0, 4, 1});
+    /* A later note keeps the range restored at beat 4 audible (a release after a channel's last
+       note is not written). */
+    int later = dm_pattern_add(&p, "Later note");
+    dm_note_add(&p.patterns[later], (DmNote){0, 1, 60, 100, 0});
+    dm_clip_add(&p, (DmClip){6, later, 0, 0, 0, 0});
     dm_automation_add(&p, (DmAutomation){0, 0xb0, 0, 101, 0, note, 1, 60, 0, false});
     dm_automation_add(&p, (DmAutomation){0, 0xb0, 0, 100, 0, note, 1, 60, 0, false});
     dm_automation_add(&p, (DmAutomation){0, 0xb0, 0, 6, 24, note, 1, 60, 0, false});
@@ -244,10 +251,15 @@ static void transfer_checks(Editor *e) {
     dm_automation_add(&e->project, (DmAutomation){0, 0xb0, 0, 11, 80, 0, 9, 0, 0, false});
     dm_automation_add(&e->project, (DmAutomation){2, 0xb0, 0, 11, 100, 0, 9, 0, 0, false});
     dm_automation_add(&e->project, (DmAutomation){2.001, 0xb0, 0, 11, 127, 0, -9, 0, 0, false});
+    ed_pattern(e)->graph_lanes[MIDI_CC_MODULATION] = DM_GRAPH_DEFAULT;
+    ed_pattern(e)->graph_hold[MIDI_CC_MODULATION] = true;
     check(ed_transfer_automation(e), "transfer succeeds");
     int id = e->selected_pattern;
     check(ed_pattern(e)->kind && ed_pattern(e)->event == 11 && !ed_pattern(e)->count,
           "transfer opens a standalone event pattern");
+    check(ed_pattern(e)->graph_lanes[MIDI_CC_MODULATION] == DM_GRAPH_DEFAULT &&
+              ed_pattern(e)->graph_hold[MIDI_CC_MODULATION],
+          "transferred events keep their Graph lanes and whether they hold");
     check(e->project.clip_count == clips + 4 && e->project.lane_count[0] == 1,
           "transfer adds matching copies beneath all four source placements");
     bool moved = true;

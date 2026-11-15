@@ -1,6 +1,7 @@
 /* Publishing a schedule to the audio thread: chase state, loop bounds, port synths, sample banks
    and the pattern preview schedule. */
 #include "audio/internal.h"
+#include "devtools/devtools.h"
 
 static void chase_note_off(DmAudio *a, int channel, int key) {
     a->state.held[channel][key] = 0;
@@ -477,9 +478,9 @@ static void DME_CALL live_sample_warning(void *user, uint32_t severity, uint32_t
     }
 }
 
-static bool publish_schedule(DmAudio *a, const DmProject *p, const DmPatternPreview *preview,
-                             DmSchedule next, double seconds, bool playing, bool editing,
-                             char *error, size_t cap) {
+static bool publish_schedule_now(DmAudio *a, const DmProject *p, const DmPatternPreview *preview,
+                                 DmSchedule next, double seconds, bool playing, bool editing,
+                                 char *error, size_t cap) {
     dm_audio_collect_sample_banks(a);
     int slot = a->sample_bank;
     DmLiveSampleBank *bank = slot < 0 ? NULL : a->sample_banks[slot], *fresh_bank = NULL;
@@ -690,20 +691,125 @@ static bool publish_schedule(DmAudio *a, const DmProject *p, const DmPatternPrev
     return true;
 }
 
+bool dm_audio_seek(DmAudio *a, const DmProject *p, double seconds, bool playing) {
+    if (!a || !p || !a->schedule.items || a->sample_bank_dirty) {
+        return false;
+    }
+
+    DmLiveSampleBank *bank = a->sample_bank < 0 ? NULL : a->sample_banks[a->sample_bank];
+
+    if (!dm_live_sample_bank_matches(bank, p)) {
+        return false;
+    }
+
+    /* Only the GUI thread replaces a->schedule, so it can be read here without the audio lock. */
+    DmAudio *scratch = calloc(1, sizeof(*scratch));
+
+    if (!scratch) {
+        return false;
+    }
+
+    prepare_chase(scratch, &a->schedule, seconds);
+    SDL_LockMutex(a->device_lock);
+
+    if (a->stream) {
+        SDL_LockAudioStream(a->stream);
+    }
+
+    bool was_playing = a->playing;
+    a->release_count = 0;
+    a->release_end = 0;
+    a->freewheel_click = a->schedule.next_beat;
+
+    if (seconds > a->freewheel_click) {
+        a->freewheel_click +=
+            ceil((seconds - a->freewheel_click) / a->freewheel_rate) * a->freewheel_rate;
+    }
+
+    a->cursor = scratch->cursor;
+    a->beat_cursor = scratch->beat_cursor;
+    SDL_SetAtomicInt(&a->midi.read, SDL_GetAtomicInt(&a->midi.write));
+    dm_audio_copy_part_rows(a->seek_end, scratch->seek_end, sizeof(a->seek_end[0]), a->used_ports);
+    dm_audio_copy_chase(&a->state, &scratch->state, a->used_ports);
+    dm_audio_mix_from_state(a);
+    a->chase = playing && scratch->chase;
+    a->position = seconds;
+    a->playing = playing;
+    a->reset = true;
+    a->loop_wait = a->loop_enabled && seconds >= a->loop_end;
+    a->input_reset |= !playing || !was_playing;
+    dm_audio_input_clock(a, true);
+    SDL_SetAtomicInt(&a->position_ms, (int)(seconds * 1000));
+    SDL_SetAtomicInt(&a->playing_flag, playing);
+
+    if (a->stream) {
+        SDL_UnlockAudioStream(a->stream);
+    }
+
+    dm_audio_free_retired(a);
+    SDL_UnlockMutex(a->device_lock);
+    free(scratch);
+    return true;
+}
+
+bool dm_audio_publish_schedule(DmAudio *a, const DmProject *p, const DmPatternPreview *preview,
+                               DmSchedule next, double seconds, bool playing, bool editing,
+                               char *error, size_t cap) {
+    DM_PROFILE_BEGIN(PUBLISH_SWAP, profile_start);
+    bool result = publish_schedule_now(a, p, preview, next, seconds, playing, editing, error, cap);
+    DM_PROFILE_END(PUBLISH_SWAP, profile_start);
+    return result;
+}
+
+bool dm_audio_build_schedule(const DmProject *p, const DmPatternPreview *preview, DmSchedule *next,
+                             char *error, size_t cap) {
+    if (!next) {
+        return false;
+    }
+
+    *next = (DmSchedule){0};
+
+    if (preview) {
+        if (!dm_pattern_schedule(p, preview, next)) {
+            if (error && cap) {
+                snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_PATTERN);
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    if (!dm_schedule(p, next)) {
+        if (error && cap) {
+            snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_PLAYBACK);
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
 bool dm_audio_publish(DmAudio *a, const DmProject *p, double seconds, bool playing, char *error,
                       size_t cap) {
     if (!a) {
         return false;
     }
 
+    dm_audio_update_cancel(a);
     DmSchedule next = {0};
 
-    if (!dm_schedule(p, &next)) {
-        snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_PLAYBACK);
+    DM_PROFILE_BEGIN(SCHEDULE, schedule_start);
+    bool scheduled = dm_audio_build_schedule(p, NULL, &next, error, cap);
+    DM_PROFILE_END(SCHEDULE, schedule_start);
+
+    if (!scheduled) {
         return false;
     }
 
-    return publish_schedule(a, p, NULL, next, seconds, playing, false, error, cap);
+    return dm_audio_publish_schedule(a, p, NULL, next, seconds, playing, false, error, cap);
 }
 
 void dm_audio_reload_samples(DmAudio *a) {
@@ -848,19 +954,7 @@ static bool preview_region(DmProject *view, const DmProject *p, const DmPatternP
     size_t automation = 0;
 
     for (size_t i = 0; i < p->automation_count; ++i) {
-        const DmAutomation *a = &p->automation[i];
-
-        if (a->pattern >= 0) {
-            view->automation[automation++] = *a;
-        } else if (a->channel != v->channel || a->beat > end) {
-            continue;
-        } else if (a->beat > origin) {
-            DmAutomation moved = *a;
-            moved.beat -= origin;
-            view->automation[automation++] = moved;
-        } else {
-            preview_remember(preview_chase_slot(chase, a->type, a->a), a->beat, NULL, a);
-        }
+        view->automation[automation++] = p->automation[i];
     }
 
     preview_apply_chase(view, chase, v, &automation);
@@ -930,16 +1024,20 @@ static bool publish_pattern(DmAudio *a, const DmProject *p, const DmPatternPrevi
         return false;
     }
 
-    if (!dm_pattern_schedule(p, v, &next)) {
-        snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_PATTERN);
+    DM_PROFILE_BEGIN(SCHEDULE, schedule_start);
+    bool scheduled = dm_audio_build_schedule(p, v, &next, error, cap);
+    DM_PROFILE_END(SCHEDULE, schedule_start);
+
+    if (!scheduled) {
         return false;
     }
 
-    return publish_schedule(a, p, v, next, seconds, playing, editing, error, cap);
+    return dm_audio_publish_schedule(a, p, v, next, seconds, playing, editing, error, cap);
 }
 
 bool dm_audio_publish_pattern(DmAudio *a, const DmProject *p, const DmPatternPreview *pattern,
                               double seconds, bool playing, char *error, size_t cap) {
+    dm_audio_update_cancel(a);
     return publish_pattern(a, p, pattern, seconds, playing, false, error, cap);
 }
 
@@ -949,6 +1047,7 @@ bool dm_audio_update(DmAudio *a, const DmProject *p, const DmPatternPreview *pat
         return false;
     }
 
+    dm_audio_update_cancel(a);
     double seconds = dm_audio_position(a);
     bool playing = dm_audio_playing(a);
 
@@ -958,9 +1057,13 @@ bool dm_audio_update(DmAudio *a, const DmProject *p, const DmPatternPreview *pat
 
     DmSchedule next = {0};
 
-    if (!dm_schedule(p, &next)) {
+    DM_PROFILE_BEGIN(SCHEDULE, schedule_start);
+    bool scheduled = dm_audio_build_schedule(p, NULL, &next, error, cap);
+    DM_PROFILE_END(SCHEDULE, schedule_start);
+
+    if (!scheduled) {
         return false;
     }
 
-    return publish_schedule(a, p, NULL, next, seconds, playing, true, error, cap);
+    return dm_audio_publish_schedule(a, p, NULL, next, seconds, playing, true, error, cap);
 }

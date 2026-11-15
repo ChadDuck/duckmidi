@@ -88,6 +88,74 @@ static void history(Editor *e) {
           "selecting and releasing a graph point stays silent and out of history");
 }
 
+static void check_project(Editor *e, const DmBytes *expected, const char *message) {
+    DmBytes actual = {0};
+    check(dm_pack(&e->project, &actual), "pack restored project");
+    check(actual.size == expected->size && !memcmp(actual.data, expected->data, actual.size),
+          message);
+    dm_bytes_free(&actual);
+}
+
+static void compact_history(Editor *e) {
+    for (int i = 0; i < e->undo_count + e->redo_count; ++i) {
+        ed_history_compact(e);
+    }
+
+    for (int i = 0; i < e->undo_count; ++i) {
+        check(!e->undo[i].copy, "undo step compacted before restoration");
+    }
+
+    for (int i = 0; i < e->redo_count; ++i) {
+        check(!e->redo[i].copy, "redo step compacted before restoration");
+    }
+}
+
+static void history_storage(Editor *e) {
+    for (int packed = 0; packed < 2; ++packed) {
+        editor_smoke(e);
+        ed_commit(e);
+        DmBytes before = {0}, edited = {0};
+        check(dm_pack(&e->project, &before), "pack pre-edit project");
+
+        for (int i = 0; i < 2; ++i) {
+            check(ed_checkpoint(e), "checkpoint edit");
+            ++e->project.channels[0].pan;
+            ++e->project.patterns[0].notes[0].key;
+            ed_commit(e);
+        }
+
+        check(dm_pack(&e->project, &edited), "pack edited project");
+
+        if (packed) {
+            compact_history(e);
+        }
+
+        ed_undo(e, false);
+        ed_undo(e, false);
+        check_project(e, &before, "undo restores exact pre-edit project");
+
+        if (packed) {
+            compact_history(e);
+        }
+
+        ed_undo(e, true);
+        ed_undo(e, true);
+        check_project(e, &edited, "redo restores exact edited project");
+        check(ed_checkpoint(e), "checkpoint abandoned edit");
+        ++e->project.channels[0].pan;
+        ++e->project.patterns[0].notes[0].key;
+
+        if (packed) {
+            compact_history(e);
+        }
+
+        ed_checkpoint_abandon(e);
+        check_project(e, &edited, "abandon restores exact checkpoint project");
+        dm_bytes_free(&before);
+        dm_bytes_free(&edited);
+    }
+}
+
 static void pattern_note_selection(Editor *e) {
     editor_smoke(e);
     DmPattern *first = &e->project.patterns[0], *second = &e->project.patterns[1];
@@ -177,6 +245,7 @@ int main(void) {
     Editor *e = test_editor_open("selection_history checks", (TestDesktop){0});
     editing_focus(e);
     history(e);
+    history_storage(e);
     pattern_note_selection(e);
     selection_visibility(e);
     copy_seeking(e);

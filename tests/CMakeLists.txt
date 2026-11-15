@@ -6,6 +6,7 @@ set(TEST_BIN "${CMAKE_CURRENT_BINARY_DIR}/bin")
 set(TEST_LIBRARIES duckversion duckcore duckgui duckmidi_io duckmidi_input fluidsynth duckmedia ducksamplesynth winhttp dbghelp)
 
 function(test_dependencies TARGET)
+  target_compile_definitions(${TARGET} PRIVATE DM_DEVTOOLS)
   target_include_directories(${TARGET} PRIVATE "${PROJECT_SOURCE_DIR}/src"
     "${PROJECT_SOURCE_DIR}/${IMGUI}" "${PROJECT_SOURCE_DIR}/${IMGUI}/backends" "${ICON_OUTPUT}")
   target_link_libraries(${TARGET} PRIVATE ${TEST_LIBRARIES})
@@ -20,7 +21,7 @@ get_target_property(EDITOR_SOURCES duckmidi SOURCES)
 set(AUDIO_ENGINE_SOURCES ${EDITOR_SOURCES})
 list(FILTER AUDIO_ENGINE_SOURCES INCLUDE REGEX "src/audio/[a-z_]+\\.c$")
 list(TRANSFORM AUDIO_ENGINE_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX "(src/main\\.c|src/audio/[a-z_]+\\.c|tools/app\\.rc)$")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX "(src/main\\.c|src/audio/[a-z_]+\\.c|src/devtools/[a-z_]+\\.c|tools/app\\.rc)$")
 list(TRANSFORM EDITOR_SOURCES PREPEND "${PROJECT_SOURCE_DIR}/")
 add_library(editor_test_objects OBJECT ${EDITOR_SOURCES})
 test_dependencies(editor_test_objects)
@@ -31,6 +32,11 @@ add_library(audio_probe_objects OBJECT audio_probe.c)
 test_dependencies(audio_probe_objects)
 add_library(editor_mouse_test_objects OBJECT editor_mouse_test.cpp)
 test_dependencies(editor_mouse_test_objects)
+# Desktop test objects always use DM_DEVTOOLS, even when the app option is OFF.
+add_library(devtools_test_objects OBJECT "${PROJECT_SOURCE_DIR}/src/devtools/profiler.c"
+  "${PROJECT_SOURCE_DIR}/src/devtools/gestures.c"
+  "${PROJECT_SOURCE_DIR}/src/devtools/input_log.c")
+test_dependencies(devtools_test_objects)
 
 # The DLLs and plugins every test runs beside, copied once.
 add_custom_target(test_runtime
@@ -44,6 +50,7 @@ if(EXISTS "${COMPILER_BIN}/libwinpthread-1.dll")
 endif()
 
 function(test_executable NAME)
+  target_sources(${NAME} PRIVATE $<TARGET_OBJECTS:devtools_test_objects>)
   set_target_properties(${NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${TEST_BIN}" LINKER_LANGUAGE CXX)
   test_dependencies(${NAME})
   if(MINGW)

@@ -58,6 +58,11 @@ typedef enum {
     ACT_CUT_NOTE_BENDS,
     ACT_CHANNEL_UP,
     ACT_CHANNEL_DOWN,
+#ifdef DM_DEVTOOLS
+    ACT_PROFILER,
+    ACT_GESTURE_INSPECTOR,
+    ACT_INPUT_RECORD,
+#endif
     ACT_COUNT
 } Action;
 
@@ -110,7 +115,7 @@ typedef enum {
 /* What a left click does to a selection, as in file managers: a plain click picks one item,
    the toggle modifier (Ctrl) adds or removes one, the range modifier (Shift) selects from the
    anchor to the clicked item, and both together add that range. ed_select_pick reads it from
-   the modifiers held; the Modifier selection preference turns all but PICK_ONE off. */
+   the modifiers held. */
 typedef enum { PICK_ONE, PICK_TOGGLE, PICK_RANGE, PICK_ADD_RANGE } SelectPick;
 
 /* MOUSE_BUTTONS counts the buttons a rebindable gesture can use; the two after it only describe
@@ -129,10 +134,38 @@ typedef struct {
     SDL_Keymod mods; /* Ctrl, Shift and Alt only. */
 } MouseBinding;
 
+typedef enum {
+    TARGET_NOTE = 1 << 0, /* A piano-roll note or its velocity bar. */
+    TARGET_PLACEMENT = 1 << 1,
+    TARGET_EVENT_POINT = 1 << 2, /* An event point or graph bar. */
+    TARGET_BEND = 1 << 3,
+    TARGET_EVENT_LANE = 1 << 4,
+    TARGET_CANVAS = 1 << 5,
+    TARGET_CHANNEL_LABEL = 1 << 6,
+    TARGET_TIMELINE = 1 << 7,
+    TARGET_EVENT_LIST = 1 << 8,
+    TARGET_PATTERN_CARD = 1 << 9,
+    TARGET_LANE_BUTTON = 1 << 10,
+    TARGET_PORT = 1 << 11,
+    TARGET_TRANSPORT = 1 << 12,
+    TARGET_SAMPLE = 1 << 13,
+} GestureTarget;
+
+typedef enum {
+    PHASE_PRESS = 1 << 0,
+    PHASE_CLICK = 1 << 1,
+    PHASE_DRAG = 1 << 2,
+    PHASE_WHEEL = 1 << 3,
+    PHASE_HELD = 1 << 4, /* A modifier read during another gesture's drag. */
+} GesturePhase;
+
 typedef struct {
     const char *name; /* preferences key */
     MouseBinding binding;
-    const char *label; /* Keyboard Shortcuts row; rebindable gestures only */
+    const char *label;     /* Keyboard Shortcuts and modifier hints. */
+    unsigned targets;      /* GestureTarget bits. */
+    unsigned phases;       /* GesturePhase bits. */
+    uint32_t alternatives; /* Gesture bits allowed to share a combination. */
 } GestureInfo;
 
 typedef struct {
@@ -188,13 +221,21 @@ typedef enum { CLIPBOARD_COPY, CLIPBOARD_CUT, CLIPBOARD_PASTE } ClipboardAction;
 
 /* One undo or redo step: the project on the other side of an edit, and the two channels whose
    editor state that edit exchanged (both -1 when it exchanged none). Stepping either way through
-   a step exchanges them again. */
+   a step exchanges them again. The project starts as an owned deep copy, then becomes packed
+   bytes during an idle frame; size counts either representation against the memory cap. */
 typedef struct {
-    DmBytes project;
+    DmProject *copy; /* Owned; NULL once packed. */
+    DmBytes project; /* dm_pack output; empty while copy is set. */
+    size_t size;     /* Bytes counted against the 512 MB cap. */
     int swap[2];
 } EdHistory;
 
 enum { ED_SONG_EVENT_ROWS = 1 + 16 };
+
+typedef struct {
+    double beat;
+    int value;
+} EdHeardPoint;
 
 typedef struct {
     DmBytes groups;
@@ -225,12 +266,19 @@ typedef struct {
     float event_lane_height; /* Last drawn event lane height, for its value rows (0 none yet). */
     bool graph_switch;
     DmProject project;
+#ifdef DM_DEVTOOLS
+    char devtools_invalid[256]; /* First failed project check, DEV builds. */
+    bool profiler;
+    bool gesture_inspector;
+#endif
     uint64_t mixer_peak_tick;
     float mixer_peaks[DM_PARTS];
     float mixer_peak_targets[DM_PARTS];
     /* Volume and pan the song is playing with, shown by the mixer during song playback. */
     uint8_t mixer_live_volume[DM_PARTS], mixer_live_pan[DM_PARTS];
     bool mixer_live;
+    bool mixer_drag;        /* A mixer fader drag has taken its undo step. */
+    int mixer_drag_control; /* That fader: part * 2, plus 1 for pan. */
     uint64_t spectrum_tick;
     float spectrum[DM_SPECTRUM_BANDS], spectrum_targets[DM_SPECTRUM_BANDS];
     float spectrum_top; /* Highest analyzer band edge; follows the sound's treble. */
@@ -260,6 +308,16 @@ typedef struct {
     int pattern_color_target; /* Pattern index, or -1 for the selected placements. */
     uint8_t note_ports[16];
     uint64_t export_revision;
+    uint64_t publish_revision;   /* Counts ed_publish calls; ed_publish_poll publishes a
+                                    background build for this or an earlier call. */
+    uint64_t published_revision; /* The publish_revision playback reflects: set by every
+                                    successful publish, so equal to publish_revision when no
+                                    build is pending. */
+    /* What the newest publish or request plays (the song, or a pattern preview), for
+       ed_transport_seek: a scrub step reuses the schedule only while this still holds. */
+    bool published_known, published_pattern;
+    uint64_t published_session;
+    DmPatternPreview published_preview;
     char export_source[DM_PATH];
     char dialog_suggested[DM_PATH];
     char audio_export_pending[DM_PATH], audio_exported[DM_PATH];
@@ -282,7 +340,6 @@ typedef struct {
     uint64_t song_event_selection_revision;
     DmBytes song_event_picks;
     int song_event_pick_anchor;
-    bool song_event_pick_automation;
     float song_event_move_by;
     double song_event_move_to;
     float midi_split, song_event_split; /* The event list's share of the panels' width. */
@@ -296,7 +353,7 @@ typedef struct {
     bool event_free;           /* Alt was held when an event point or line was started. */
     bool event_connect;        /* Shift was held: the clicked point connects to the nearest one. */
     uint64_t event_press_tick; /* When the pending event-lane press began (drag 12). */
-    uint64_t key_time_ns; /* SDL time of the key event being handled, or 0 outside one. */
+    uint64_t key_time_ns;      /* SDL time of the key event being handled, or 0 outside one. */
     bool midi_values, midi_hex;
     char midi_error[160];
     DmBytes midi_draft, midi_text;
@@ -386,8 +443,15 @@ typedef struct {
     /* Bend-range controllers of one pattern, kept while a pitch-bend drawing loop runs; see
        ed_pitch_cache_begin. */
     DmBytes pitch_controls;
+    DmBytes hold_cache;
     int pitch_cache_pattern, pitch_cache_anchor;
-    bool pitch_cache, pitch_cache_ready, pitch_cache_anchored;
+    bool pitch_cache, pitch_cache_ready, pitch_cache_anchored, hold_cache_ready;
+    /* Heard (pattern beat, value) changes for the selected placement's event lane. */
+    DmBytes heard_values;
+    uint64_t heard_revision;
+    int heard_clip, heard_cc;
+    unsigned heard_port;
+    bool heard_ready;
     float sidebar, roll_height;
     /* The note grid's height and vertical scroll at the end of the last frame, to keep the
        view's middle pitch in place when the editor is resized. */
@@ -406,14 +470,15 @@ typedef struct {
        was last, and the frame that was. */
     UiPoint sweep_from, sweep_last;
     int sweep_frame;
-    bool modifier_select; /* Preference: Ctrl and Shift clicks toggle and range-select. */
-    int select_anchor;    /* Placement a playlist range click starts from, or -1. */
+    int select_anchor; /* Placement a playlist range click starts from, or -1. */
     int automation_cc;
     int bend_range;
     bool automation_open;
     char path[DM_PATH], pending_path[DM_PATH], status[512], hover[256], settings_path[DM_PATH],
         font_pending[DM_PATH];
-    char status_shown[512];         /* Status text when it was last posted; see ed_info_box. */
+    char status_shown[512]; /* Status text when it was last posted; see ed_info_box. */
+    unsigned hover_target;  /* GestureTarget under the pointer this frame, 0 none. */
+    char modifier_hint[512];
     uint64_t status_time;           /* When the status was posted, in SDL ticks. */
     char base_path[DM_PATH];        /* Folder holding the executable, ending with a separator. */
     struct DmUpdate *update;        /* Update checker, created on first use; see editor/update.c. */
@@ -441,6 +506,7 @@ typedef struct {
     /* The last ed_checkpoint added a new undo step, rather than joining a recording take's step;
        ed_checkpoint_abandon only drops a step it added. */
     bool checkpoint_pushed;
+    bool checkpoint_this_frame; /* Defer history packing until a later idle frame. */
     int held[SDL_SCANCODE_COUNT];
     char recent[10][DM_PATH];
     int recent_count;

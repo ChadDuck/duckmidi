@@ -85,6 +85,8 @@ typedef struct RetiredSchedule {
     struct RetiredSchedule *next;
 } RetiredSchedule;
 
+typedef struct ScheduleJob ScheduleJob;
+
 struct DmAudio {
     _Atomic(DmMidiInput *) input;
     atomic_uint input_route, input_policy;
@@ -170,6 +172,7 @@ struct DmAudio {
     size_t loop_cursor, loop_beat_cursor;
     uint16_t preview_mask;
     bool chase;
+    ScheduleJob *schedule_job;
 };
 
 void dm_audio_input_clock(DmAudio *a, bool changed);
@@ -211,5 +214,11 @@ int dm_audio_midi_worker(void *userdata);
 void dm_audio_free_retired(DmAudio *a);
 void dm_audio_free_port_synths(Synth **ports);
 void dm_audio_collect_sample_banks(DmAudio *a);
+bool dm_audio_build_schedule(const DmProject *p, const DmPatternPreview *preview, DmSchedule *next,
+                             char *error, size_t cap);
+bool dm_audio_publish_schedule(DmAudio *a, const DmProject *p, const DmPatternPreview *preview,
+                               DmSchedule next, double seconds, bool playing, bool editing,
+                               char *error, size_t cap);
+void dm_audio_schedule_free(DmAudio *a);
 
 #endif

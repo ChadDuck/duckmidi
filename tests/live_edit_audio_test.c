@@ -197,11 +197,11 @@ static void routed_samples(DmAudio *a) {
     check(dm_note_add(&p.patterns[0], (DmNote){1, .5, 67, 100, 0}), "create ordinary note");
     check(dm_note_add(&p.patterns[0], (DmNote){2, 1, 69, 100, 0}), "create later sample note");
     check(dm_clip_add(&p, (DmClip){0, 0, 3, 0, 4}), "place routed pattern");
-    DmAutomation program = {.beat = 1, .type = MIDI_PROGRAM, .channel = 3, .a = 1, .pattern = -1};
-    check(dm_automation_add(&p, program), "switch program with sample voice held");
-    program.beat = 2;
-    program.a = 0;
-    check(dm_automation_add(&p, program), "switch back to sample");
+    uint8_t p1_bytes[] = {MIDI_PROGRAM | 3, 1}, p0_bytes[] = {MIDI_PROGRAM | 3, 0};
+    DmBytes p1 = {p1_bytes, sizeof(p1_bytes), sizeof(p1_bytes)};
+    DmBytes p0 = {p0_bytes, sizeof(p0_bytes), sizeof(p0_bytes)};
+    check(dm_event_add(&p, 1, 0, 0, &p1), "switch program with sample voice held");
+    check(dm_event_add(&p, 2, 0, 0, &p0), "switch back to sample");
     DmPatchReplacement assignment = {
         .key = {.channel = 3}, .generation = 1, .set_id = "live", .preset_id = "tone"};
     snprintf(assignment.locator, sizeof(assignment.locator), "%s", root);
@@ -500,6 +500,294 @@ static void live_patch_reset(DmAudio *a) {
     dm_project_free(&p);
 }
 
+/* Compares what dm_schedule writes; publishing then fills the note_* fields from the bank. */
+static bool schedules_equal(const DmSchedule *left, const DmSchedule *right) {
+    if (left->count != right->count || fabs(left->duration - right->duration) > 1e-9 ||
+        fabs(left->final_rate - right->final_rate) > 1e-9 ||
+        fabs(left->next_beat - right->next_beat) > 1e-9) {
+        return false;
+    }
+
+    for (size_t i = 0; i < left->count; ++i) {
+        const DmScheduled *x = &left->items[i];
+        const DmScheduled *y = &right->items[i];
+
+        if (fabs(x->seconds - y->seconds) > 1e-9 || x->status != y->status || x->a != y->a ||
+            x->b != y->b || x->port != y->port || x->sysex.size != y->sysex.size ||
+            (x->sysex.size && memcmp(x->sysex.data, y->sysex.data, x->sysex.size) != 0)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* One poll; published receives the revision of a build it published. */
+static int poll_revision(DmAudio *a, uint64_t session, uint64_t revision, uint64_t *published,
+                         char *error, size_t cap) {
+    DmAudioPublished build = {0};
+    int status = dm_audio_update_poll(a, session, revision, &build, error, cap);
+
+    if (status == 1) {
+        *published = build.revision;
+        dm_project_free(&build.project);
+    }
+
+    return status;
+}
+
+/* Polls until the build for revision is published (earlier builds may publish first, in order).
+   Returns 1, -1 on a failed publish, or 0 on timeout or an out-of-order publish. */
+static int poll_async_wait(DmAudio *a, uint64_t session, uint64_t revision, char *error,
+                           size_t cap) {
+    uint64_t start = SDL_GetTicks(), last = 0;
+
+    for (;;) {
+        uint64_t published = 0;
+        int status = poll_revision(a, session, revision, &published, error, cap);
+
+        if (status < 0) {
+            return status;
+        }
+
+        if (status == 1) {
+            if (published <= last || published > revision) {
+                return 0;
+            }
+
+            if (published == revision) {
+                return 1;
+            }
+
+            last = published;
+        }
+
+        if (SDL_GetTicks() - start >= 5000) {
+            return 0;
+        }
+
+        SDL_Delay(1);
+    }
+}
+
+static void async_schedule_updates(DmAudio *a) {
+    char error[512] = "";
+    DmProject p;
+    dm_project_init(&p);
+    dm_pattern_add(&p, "Async");
+    dm_clip_add(&p, (DmClip){0, 0, 0, 0, 0, 0});
+    check(dm_audio_publish(a, &p, 0, false, error, sizeof(error)), error);
+
+    /* (a) Several quick edits then polling until published: final schedule matches dm_schedule. */
+    for (uint64_t rev = 1; rev <= 4; ++rev) {
+        dm_note_add(&p.patterns[0], (DmNote){(double)(rev - 1), .5, (uint8_t)(60 + rev), 100, 0});
+        check(dm_audio_update_async(a, &p, NULL, 1, rev), "queue quick async update");
+    }
+
+    check(poll_async_wait(a, 1, 4, error, sizeof(error)) == 1, "final quick edit publishes");
+    DmSchedule expected = {0};
+    check(dm_schedule(&p, &expected), "build reference schedule");
+    check(schedules_equal(&a->schedule, &expected),
+          "published schedule matches dm_schedule of final project item by item");
+    dm_schedule_free(&expected);
+
+    /* (b) A finished build publishes although a newer edit was requested since; a build from
+       another project session never does. */
+    dm_note_add(&p.patterns[0], (DmNote){5, .5, 75, 100, 0});
+    check(dm_audio_update_async(a, &p, NULL, 1, 10), "queue older async update");
+    uint64_t published = 0, start = SDL_GetTicks();
+    int status = 0;
+
+    while (!status && SDL_GetTicks() - start < 5000) {
+        status = poll_revision(a, 1, 25, &published, error, sizeof(error));
+        SDL_Delay(1);
+    }
+
+    check(status == 1 && published == 10,
+          "an older finished build publishes while a newer edit is pending");
+    check(dm_schedule(&p, &expected), "build reference schedule for the older build");
+    check(schedules_equal(&a->schedule, &expected), "published older build matches its project");
+    dm_schedule_free(&expected);
+    DmProject other;
+    dm_project_init(&other);
+    dm_pattern_add(&other, "Other");
+    dm_clip_add(&other, (DmClip){0, 0, 0, 0, 0, 0});
+    check(dm_audio_update_async(a, &other, NULL, 3, 1), "queue another session's update");
+
+    for (int i = 0; i < 100; ++i) {
+        check(dm_audio_update_poll(a, 1, 99, NULL, error, sizeof(error)) == 0,
+              "another session's build is not published");
+        SDL_Delay(1);
+    }
+
+    dm_project_free(&other);
+
+    /* A published build hands back the project it was built from, so the editor times the loop
+       by the tempo of what plays, not by a newer edit still building. */
+    p.bpm = 120;
+    check(dm_audio_update_async(a, &p, NULL, 1, 30), "queue a build at 120 BPM");
+    p.bpm = 60;
+    DmAudioPublished build = {0};
+    status = 0;
+    start = SDL_GetTicks();
+
+    while (!status && SDL_GetTicks() - start < 5000) {
+        status = dm_audio_update_poll(a, 1, 31, &build, error, sizeof(error));
+        SDL_Delay(1);
+    }
+
+    check(status == 1 && build.revision == 30 &&
+              fabs(dm_beat_seconds(&build.project, 8) - 4) < 1e-9,
+          "a published build's project carries the tempo it was built with");
+    dm_project_free(&build.project);
+    p.bpm = 120;
+
+    dm_note_add(&p.patterns[0], (DmNote){6, .5, 77, 100, 0});
+    check(dm_audio_update_async(a, &p, NULL, 1, 11), "queue superseded async update");
+    dm_note_add(&p.patterns[0], (DmNote){7, .5, 79, 100, 0});
+    check(dm_audio_update_async(a, &p, NULL, 1, 12), "queue newer async update");
+    check(poll_async_wait(a, 1, 12, error, sizeof(error)) == 1, "newer async update publishes");
+    check(dm_schedule(&p, &expected), "build reference schedule for newer update");
+    check(schedules_equal(&a->schedule, &expected), "published schedule matches newer request");
+    dm_schedule_free(&expected);
+
+    /* (c) A transport publish during a pending build wins (cancels pending async build). */
+    DmProject sync_project;
+    dm_project_init(&sync_project);
+    dm_pattern_add(&sync_project, "Sync");
+    dm_clip_add(&sync_project, (DmClip){0, 0, 0, 0, 0, 0});
+    dm_note_add(&sync_project.patterns[0], (DmNote){0, 1, 48, 90, 0});
+
+    dm_note_add(&p.patterns[0], (DmNote){8, .5, 81, 100, 0});
+    check(dm_audio_update_async(a, &p, NULL, 2, 1), "queue async update before transport publish");
+    check(dm_audio_publish(a, &sync_project, 0, false, error, sizeof(error)),
+          "synchronous transport publish succeeds");
+
+    for (int i = 0; i < 30; ++i) {
+        check(dm_audio_update_poll(a, 2, 1, NULL, error, sizeof(error)) == 0,
+              "cancelled async update does not publish after transport publish");
+        SDL_Delay(1);
+    }
+
+    check(dm_schedule(&sync_project, &expected), "build reference schedule for sync transport");
+    check(schedules_equal(&a->schedule, &expected),
+          "transport publish schedule remains live after cancel");
+    dm_schedule_free(&expected);
+    dm_project_free(&sync_project);
+    dm_project_free(&p);
+}
+
+/* Edits arriving faster than a build (a fader drag on a large song): finished builds publish while
+   newer edits keep coming, in request order, and the last one equals a full rebuild. */
+/* A scrub step moves playback on the published schedule: it must leave the engine exactly as a
+   full publish at that position would, and still sound the notes under the playhead. */
+static void seek_matches_publish(DmAudio *a) {
+    char error[512] = "";
+    DmProject p;
+    dm_project_init(&p);
+    p.channels[0].program = 0;
+    dm_pattern_add(&p, "Scrub");
+    p.patterns[0].length = 16;
+    dm_note_add(&p.patterns[0], (DmNote){0, 1, 60, 100, 0});
+    dm_note_add(&p.patterns[0], (DmNote){4, 6, 64, 100, 0});
+    dm_note_add(&p.patterns[0], (DmNote){12, 2, 67, 100, 0});
+    dm_clip_add(&p, (DmClip){0, 0, 0, 0, 0, 0});
+    check(dm_automation_add(&p, (DmAutomation){.beat = 2,
+                                               .type = MIDI_CONTROL,
+                                               .a = MIDI_CC_EXPRESSION,
+                                               .b = 40,
+                                               .pattern = 0}),
+          "scrub fixture controller");
+    check(dm_automation_add(
+              &p, (DmAutomation){.beat = 6, .type = MIDI_PITCH_BEND, .a = 0, .b = 80, .pattern = 0}),
+          "scrub fixture bend");
+    check(dm_audio_publish(a, &p, 0, false, error, sizeof(error)), error);
+    dm_audio_loop(a, true, dm_beat_seconds(&p, 2), dm_beat_seconds(&p, 10));
+    const DmScheduled *items = a->schedule.items;
+    const double beats[] = {0, 1.5, 5, 7, 11, 13, 15.5};
+
+    for (size_t i = 0; i < sizeof(beats) / sizeof(*beats); ++i) {
+        double seconds = dm_beat_seconds(&p, beats[i]);
+        check(dm_audio_seek(a, &p, seconds, true), "seek on the published schedule");
+        check(a->schedule.items == items, "a seek keeps the published schedule");
+        DmAudio *sought = malloc(sizeof(*sought));
+        check(sought != NULL, "seek snapshot");
+        memcpy(sought, a, sizeof(*a));
+        check(dm_audio_publish(a, &p, seconds, true, error, sizeof(error)), error);
+        dm_audio_loop(a, true, dm_beat_seconds(&p, 2), dm_beat_seconds(&p, 10));
+        check(sought->cursor == a->cursor && sought->beat_cursor == a->beat_cursor &&
+                  sought->position == a->position && sought->playing == a->playing &&
+                  sought->chase == a->chase && sought->reset == a->reset &&
+                  sought->release_count == a->release_count &&
+                  sought->loop_wait == a->loop_wait &&
+                  sought->freewheel_click == a->freewheel_click &&
+                  !memcmp(&sought->state, &a->state, sizeof(a->state)) &&
+                  !memcmp(sought->seek_end, a->seek_end, sizeof(a->seek_end)),
+              "a seek leaves playback as a publish at that position does");
+        free(sought);
+        items = a->schedule.items;
+    }
+
+    /* The scrub sound: seeking into a held note starts it. */
+    check(dm_audio_seek(a, &p, dm_beat_seconds(&p, 5), true), "seek into a held note");
+    process(a, RATE / 20);
+    check(voice_id(&a->live, 0, 64, true) != UINT32_MAX && a->position > dm_beat_seconds(&p, 5),
+          "a seek plays the note under the playhead");
+    dm_audio_reload_samples(a);
+    check(!dm_audio_seek(a, &p, 0, true) && a->position > dm_beat_seconds(&p, 5),
+          "a seek is refused, changing nothing, when samples must be looked up again");
+    check(dm_audio_publish(a, &p, 0, false, error, sizeof(error)), error);
+    dm_audio_loop(a, false, 0, 0);
+    dm_project_free(&p);
+}
+
+static void continuous_edits_publish(DmAudio *a) {
+    char error[512] = "";
+    DmProject p;
+    dm_project_init(&p);
+    dm_pattern_add(&p, "Large");
+    p.patterns[0].length = 4096;
+
+    for (int i = 0; i < 20000; ++i) {
+        check(dm_note_add(&p.patterns[0], (DmNote){i * .2, .1, (uint8_t)(36 + i % 48), 100, 0}),
+              "large fixture note");
+    }
+
+    dm_clip_add(&p, (DmClip){0, 0, 0, 0, 0, 0});
+    check(dm_audio_publish(a, &p, 0, false, error, sizeof(error)), error);
+    size_t base = a->schedule.count;
+    uint64_t rev = 0, last = 0, intermediate = 0, start = SDL_GetTicks();
+
+    /* Each edit adds one note (two scheduled events); keep editing until two builds publish. */
+    while (intermediate < 2 && SDL_GetTicks() - start < 10000) {
+        p.patterns[0].notes[0].velocity = (uint8_t)(1 + rev % 126);
+        check(dm_note_add(&p.patterns[0], (DmNote){4000 + rev * .01, .005, 60, 100, 0}),
+              "edit note");
+        check(dm_audio_update_async(a, &p, NULL, 5, ++rev), "queue continuous edit");
+        uint64_t published = 0;
+        int status = poll_revision(a, 5, rev, &published, error, sizeof(error));
+        check(status >= 0, error);
+
+        if (status == 1) {
+            check(published > last && published <= rev && a->schedule.count == base + 2 * published,
+                  "builds publish in request order, each the schedule of its edit");
+            last = published;
+            intermediate += published < rev;
+        }
+
+        SDL_Delay(1);
+    }
+
+    check(intermediate >= 2, "builds publish while newer edits keep arriving");
+    check(poll_async_wait(a, 5, rev, error, sizeof(error)) == 1, "the last edit publishes");
+    DmSchedule expected = {0};
+    check(dm_schedule(&p, &expected), "build reference schedule for the last edit");
+    check(schedules_equal(&a->schedule, &expected),
+          "the last edit's schedule equals a full rebuild");
+    dm_schedule_free(&expected);
+    dm_project_free(&p);
+}
+
 int main(void) {
     SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "wasapi");
     check(SDL_Init(SDL_INIT_AUDIO), "SDL audio");
@@ -530,6 +818,9 @@ int main(void) {
     dm_audio_edit_preview(a, 0, 0, false);
     preparation_benchmark(a);
     live_patch_reset(a);
+    async_schedule_updates(a);
+    continuous_edits_publish(a);
+    seek_matches_publish(a);
     printf("PASS live edit: %d checks\n", checks);
     dm_project_free(&p);
     dm_audio_destroy(a);

@@ -296,10 +296,6 @@ bool ed_deselect_notes(DmPattern *p) {
 }
 
 SelectPick ed_select_pick(const Editor *e, UiMouse mouse) {
-    if (!e->modifier_select) {
-        return PICK_ONE;
-    }
-
     bool toggle = ed_gesture_held(e, GESTURE_PICK_TOGGLE, mouse);
 
     if (ed_gesture_held(e, GESTURE_PICK_RANGE, mouse)) {
@@ -598,24 +594,7 @@ static int copy_pattern_between(DmProject *to, const DmProject *from, int source
         }
     }
 
-    DmPattern *target = &to->patterns[id];
-    target->length = pat->length;
-    target->kind = pat->kind;
-    target->mode = pat->mode;
-    memcpy(target->graph_lanes, pat->graph_lanes, sizeof(target->graph_lanes));
-    target->event = pat->event;
-    target->speed = pat->speed;
-    target->tension = pat->tension;
-    target->skew = pat->skew;
-    target->pulse = pat->pulse;
-    target->amount = pat->amount;
-    target->center = pat->center;
-    target->pitch_center = pat->pitch_center;
-    target->reference = pat->reference;
-    target->inverted = pat->inverted;
-    target->control_scope = pat->control_scope;
-    target->port = pat->port;
-    target->color = pat->color;
+    dm_pattern_copy_settings(&to->patterns[id], pat);
 
     for (size_t i = 0; i < from->automation_count; ++i) {
         if (from->automation[i].pattern == source) {

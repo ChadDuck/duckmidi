@@ -337,13 +337,16 @@ bool ed_transfer_automation(Editor *e) {
         return false;
     }
 
-    p->patterns[id].kind = 1;
-    p->patterns[id].reference = p->patterns[source].count ? p->patterns[source].notes[0].key : 60;
-    p->patterns[id].pitch_center = p->patterns[id].reference;
-    p->patterns[id].event = event;
-    memcpy(p->patterns[id].graph_lanes, p->patterns[source].graph_lanes,
-           sizeof(p->patterns[id].graph_lanes));
-    p->patterns[id].length = p->patterns[source].length;
+    /* The new automation pattern takes over the source's events, so it keeps the source's
+       settings, its Graph lanes and their hold included. */
+    const DmPattern *from = &p->patterns[source];
+    DmPattern *target = &p->patterns[id];
+    dm_pattern_copy_settings(target, from);
+    target->kind = 1;
+    target->reference = from->count ? from->notes[0].key : 60;
+    target->pitch_center = target->reference;
+    target->event = event;
+    target->color = 0; /* A new events pattern starts in the application color. */
     int lanes[16] = {0};
 
     for (int c = 0; c < 16; ++c) {
@@ -541,6 +544,10 @@ static void lfo_plot(Editor *e, DmPattern *p, UiRect lane, View *v, float scale)
 }
 
 static void ed_lfo_center_drag(Editor *e, DmPattern *p, UiRect lane, UiMouse mouse, bool hovered) {
+    if (hovered && ed_inside(mouse.pos, lane)) {
+        e->hover_target = TARGET_EVENT_LANE;
+    }
+
     if (hovered && mouse.clicked && ed_inside(mouse.pos, lane)) {
         e->lfo_center_drag = true;
         e->edit_moved = false;
@@ -919,6 +926,12 @@ static void velocity_panel(Editor *e, UiRect lane, View *v, float scale, UiMouse
         }
     }
 
+    if (e->drag == DRAG_VELOCITY) {
+        e->hover_target = TARGET_NOTE;
+    } else if (hovered) {
+        e->hover_target = hit >= 0 ? TARGET_NOTE : TARGET_EVENT_LANE;
+    }
+
     /* Over a point only while nothing else holds the mouse. */
     if ((hovered && hit >= 0 && !e->drag && !e->marquee) || e->drag == DRAG_VELOCITY) {
         ui_gesture_cursor(true);
@@ -1002,8 +1015,12 @@ void ed_automation_panel(Editor *e, UiRect r, View *v, float scale, float label,
 
     scale = 80 * v->zoom;
 
-    if (hovered && mouse.pos.y < lane.y && (mouse.clicked || mouse.right_clicked)) {
-        e->event_ruler_drag = true;
+    if (hovered && mouse.pos.y < lane.y) {
+        e->hover_target = TARGET_TIMELINE;
+
+        if (mouse.clicked || mouse.right_clicked) {
+            e->event_ruler_drag = true;
+        }
     }
 
     if (e->event_ruler_drag) {

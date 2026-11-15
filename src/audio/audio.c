@@ -196,6 +196,8 @@ void dm_audio_destroy(DmAudio *a) {
         SDL_WaitThread(a->worker, NULL);
     }
 
+    dm_audio_schedule_free(a);
+
     if (a->stream) {
         SDL_DestroyAudioStream(a->stream);
     }

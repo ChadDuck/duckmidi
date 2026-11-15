@@ -1,5 +1,6 @@
 extern "C" {
 #include "editor/internal.h"
+#include "text/en.h"
 }
 #include "imgui.h"
 #include "imgui_impl_sdlrenderer3.h"
@@ -127,11 +128,6 @@ static void modifier_clicks_ui(Editor *e, void (*check)(bool, const char *), ImG
     click(2, false, false);
     click(0, true, true);
     check(picked(true, true, true), "Ctrl + Shift + click adds the range to the selection");
-    e->modifier_select = false;
-    click(0, false, false);
-    click(2, true, false);
-    check(picked(false, false, true), "with modifier selection off, Shift + click picks one");
-    e->modifier_select = true;
     /* A right-drag that jumps from the first row to the third in one frame erases the placement
        on the row it passed over too. */
     mouse_frame(e, x, row_of(0), false);
@@ -139,6 +135,83 @@ static void modifier_clicks_ui(Editor *e, void (*check)(bool, const char *), ImG
     mouse_frame(e, x, row_of(2), false, false, false, false, 0, true);
     mouse_frame(e, x, row_of(2), false);
     check(!e->project.clip_count, "a fast right-drag erases every placement it crossed");
+}
+
+static void direct_key(Editor *e, SDL_Scancode key, SDL_Keymod mods = SDL_KMOD_NONE) {
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = SDL_EVENT_KEY_DOWN;
+    event.key.down = true;
+    event.key.scancode = key;
+    event.key.mod = mods;
+    editor_event(e, &event);
+}
+
+static void mixer_drag_undo(Editor *e, void (*check)(bool, const char *)) {
+    mouse_frame(e, 0, 0, false);
+    ImGuiWindow *strip = nullptr;
+
+    for (auto *window : ImGui::GetCurrentContext()->Windows) {
+        if (window->Active && std::strstr(window->Name, "/port strip_") &&
+            (!strip || window->Pos.x < strip->Pos.x)) {
+            strip = window;
+        }
+    }
+
+    check(strip != nullptr, "mixer port strip is rendered");
+    ImGuiID volume_id = strip->GetID("##volume");
+    float vx = (strip->WorkRect.Min.x + strip->WorkRect.Max.x) * .5f - 5;
+    float top_y = -1, bottom_y = -1;
+
+    for (float probe = strip->WorkRect.Min.y + 4; probe < strip->WorkRect.Max.y; probe += 4) {
+        mouse_frame(e, vx, probe, false);
+
+        if (ImGui::GetCurrentContext()->HoveredId == volume_id) {
+            if (top_y < 0) {
+                top_y = probe;
+            }
+
+            bottom_y = probe;
+        }
+    }
+
+    check(top_y >= 0 && bottom_y - top_y >= 40, "mixer volume fader is reachable with the mouse");
+    float span = bottom_y - top_y;
+    float y0 = top_y + span * .25f, y1 = top_y + span * .5f, y2 = top_y + span * .75f,
+          y3 = top_y + span * .9f;
+    int original = dm_port_mix(&e->project, 0, 0).volume;
+    int undo_before = e->undo_count;
+    mouse_frame(e, vx, y0, false);
+    mouse_frame(e, vx, y0, true);
+    mouse_frame(e, vx, y1, true);
+    int mid = dm_port_mix(&e->project, 0, 0).volume;
+    check(mid != original && e->undo_count == undo_before + 1,
+          "first moved frame of a mixer volume drag pushes one undo step");
+    mouse_frame(e, vx, y2, true);
+    int later = dm_port_mix(&e->project, 0, 0).volume;
+    check(later != mid && e->undo_count == undo_before + 1,
+          "later frames of the same mixer drag update the project without extra undo steps");
+    mouse_frame(e, vx, y3, true);
+    mouse_frame(e, vx, y3, false);
+    int final_volume = dm_port_mix(&e->project, 0, 0).volume;
+    check(final_volume != later && e->undo_count == undo_before + 1,
+          "releasing a mixer volume drag keeps a single undo step");
+    direct_key(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
+    check(dm_port_mix(&e->project, 0, 0).volume == original && e->undo_count == undo_before,
+          "one undo after a mixer drag restores the pre-drag volume");
+    direct_key(e, SDL_SCANCODE_Y, SDL_KMOD_CTRL);
+    check(dm_port_mix(&e->project, 0, 0).volume == final_volume &&
+          e->undo_count == undo_before + 1,
+          "redo after undoing a mixer drag restores the final volume");
+    mouse_frame(e, vx, y3, false);
+    mouse_frame(e, vx, y3, true);
+    mouse_frame(e, vx, y1, true);
+    mouse_frame(e, vx, y1, false);
+    check(dm_port_mix(&e->project, 0, 0).volume != final_volume &&
+          e->undo_count == undo_before + 2,
+          "a second separate mixer drag adds one more undo step");
+    direct_key(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
+    direct_key(e, SDL_SCANCODE_Z, SDL_KMOD_CTRL);
 }
 
 extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) {
@@ -205,6 +278,7 @@ extern "C" void test_editor_mouse(Editor *e, void (*check)(bool, const char *)) 
     mouse_frame(e, bend_x + 80, bend_y - 40, false, false);
     check(e->project.automation_count > 0, "Shift drag creates pitch automation");
     e->automation_open = false;
+    mixer_drag_undo(e, check);
 }
 
 static ImGuiWindow *find_window(const char *part) {
@@ -221,16 +295,6 @@ static float playlist_row_top(Editor *e, int index) {
     int list[ED_PLAYLIST_ROWS];
     int count = ed_playlist_channels(e, list);
     return ed_playlist_row(list, count, index, 64).top;
-}
-
-static void direct_key(Editor *e, SDL_Scancode key, SDL_Keymod mods = SDL_KMOD_NONE) {
-    SDL_Event event;
-    SDL_zero(event);
-    event.type = SDL_EVENT_KEY_DOWN;
-    event.key.down = true;
-    event.key.scancode = key;
-    event.key.mod = mods;
-    editor_event(e, &event);
 }
 
 extern "C" void test_channel_row_ui(Editor *e, void (*check)(bool, const char *)) {
@@ -1699,7 +1763,96 @@ extern "C" void test_event_lanes_ui(Editor *e, void (*check)(bool, const char *)
     e->midi_events = false;
 }
 
+static void modifier_hints_ui(Editor *e, void (*check)(bool, const char *)) {
+    e->selected_pattern = e->pattern_channel = e->selected_channel = 0;
+    e->roll = e->automation_open = true;
+    e->roll_height = 480;
+    e->automation_height = 180;
+    e->automation_cc = 11;
+    e->focus_pattern = false;
+    e->roll_grid_height = 0;
+    e->roll_view = {1, 0, (127 - 70) * 20.f, 0};
+    e->playlist_view = {1, 0, 0, 0};
+    e->project.automation_count = e->project.clip_count = 0;
+    auto &pattern = e->project.patterns[0];
+    pattern.count = 0;
+    pattern.length = 4;
+    check(dm_note_add(&pattern, {1, 1, 68, 100, 0}), "modifier hint note fixture");
+    check(dm_clip_add(&e->project, {1, 0, 0, 0, 4, 0}), "modifier hint placement fixture");
+    DmAutomation point = {1, MIDI_CONTROL, 0, 11, 64, 0, 0, 0, 0, false};
+    check(dm_automation_add(&e->project, point), "modifier hint event fixture");
+    mouse_frame(e, 0, 0, false);
+    auto grid = roll_origin();
+    float nx = grid.x + 100, ny = grid.y + 50;
+    mouse_frame(e, nx, ny, false);
+    check(e->hover_target == TARGET_NOTE &&
+              std::strstr(e->modifier_hint, DM_TEXT_GESTURE_NOTE_BEND) &&
+              std::strstr(e->modifier_hint, DM_TEXT_GESTURE_PICK_TOGGLE),
+          "hovering a note lists its Shift bend and Ctrl selection gestures");
+    mouse_frame(e, nx, ny, false, false, true);
+    check(std::strstr(e->modifier_hint, "Shift:") && !std::strstr(e->modifier_hint, "Ctrl") &&
+              !std::strstr(e->modifier_hint, "Alt"),
+          "holding Shift shows only groups whose modifiers are held");
+    e->roll = false; /* Give the playlist enough height to show the placed channel row. */
+    mouse_frame(e, 0, 0, false);
+    auto *playlist = find_window("/Playlist_");
+    float px = playlist->WorkRect.Min.x + e->label_width + 60;
+    float py = playlist->WorkRect.Min.y + ImGui::GetFrameHeight() +
+               ImGui::GetStyle().ItemSpacing.y + 28 + playlist_row_top(e, 1) + 32;
+    mouse_frame(e, px, py, false);
+    check(e->hover_target == TARGET_PLACEMENT &&
+              std::strstr(e->modifier_hint, DM_TEXT_COPY_PLACEMENTS_DRAG) &&
+              !std::strstr(e->modifier_hint, DM_TEXT_GESTURE_NOTE_BEND),
+          "hovering a placement lists copying without note bending");
+    MouseBinding copy = e->gestures[GESTURE_COPY_PLACEMENTS];
+    e->gestures[GESTURE_COPY_PLACEMENTS] = {MOUSE_RIGHT, SDL_KMOD_CTRL | SDL_KMOD_ALT};
+    mouse_frame(e, px, py, false);
+    check(std::strstr(e->modifier_hint, "Ctrl+Alt+Right:") &&
+              std::strstr(e->modifier_hint, DM_TEXT_COPY_PLACEMENTS_DRAG),
+          "modifier hints use the current binding's modifier combination and button");
+    e->gestures[GESTURE_COPY_PLACEMENTS] = copy;
+    e->roll = true;
+    mouse_frame(e, 0, 0, false);
+    UiRect lane = pattern_event_lane();
+    UiPoint at = ed_automation_point(e, point, lane, &e->roll_view, 80);
+    mouse_frame(e, at.x, at.y, false);
+    check(e->hover_target == TARGET_EVENT_POINT &&
+              std::strstr(e->modifier_hint, DM_TEXT_GESTURE_EXTEND) &&
+              std::strstr(e->modifier_hint, DM_TEXT_GESTURE_PICK_TOGGLE) &&
+              !std::strstr(e->modifier_hint, DM_TEXT_GESTURE_LOCK_VALUE),
+          "hovering an event point lists its press gestures rather than drag modifiers");
+    mouse_frame(e, at.x, at.y, true);
+    check(e->drag != DRAG_NONE && std::strstr(e->modifier_hint, DM_TEXT_GESTURE_LOCK_VALUE) &&
+              std::strstr(e->modifier_hint, DM_TEXT_GESTURE_LOCK_TIME) &&
+              std::strstr(e->modifier_hint, DM_TEXT_GESTURE_FREE) &&
+              !std::strstr(e->modifier_hint, DM_TEXT_GESTURE_PICK_TOGGLE),
+          "an event point drag lists value, time and snapping modifiers");
+    mouse_frame(e, at.x + 120, at.y + 80, true);
+    check(e->drag == DRAG_EVENT_POINT && e->hover_target == TARGET_EVENT_POINT &&
+              std::strstr(e->modifier_hint, DM_TEXT_GESTURE_LOCK_VALUE) &&
+              std::strstr(e->modifier_hint, DM_TEXT_GESTURE_LOCK_TIME) &&
+              std::strstr(e->modifier_hint, DM_TEXT_GESTURE_FREE),
+          "dragging far from an event point keeps its held modifier hints");
+    mouse_frame(e, at.x, at.y, false);
+    ui_frame();
+    ui_root(27, 873);
+    e->hover[0] = 0;
+    ed_message(e, "Modifier hint status fixture");
+    ImGui::LogToBuffer();
+    ed_info_box(e);
+    const char *logged = ImGui::GetCurrentContext()->LogBuffer.c_str();
+    check(e->modifier_hint[0] && std::strstr(logged, e->modifier_hint) &&
+              std::strstr(logged, e->status),
+          "the status box renders the modifier hint alongside a recent status message");
+    ImGui::LogFinish();
+    ui_end();
+    ui_render(e->renderer);
+    mouse_frame(e, 0, 0, false);
+    check(!e->hover_target && !e->modifier_hint[0], "modifier hints clear when the pointer leaves");
+}
+
 extern "C" void test_toolbar_ui(Editor *e, void (*check)(bool, const char *)) {
+    modifier_hints_ui(e, check);
     for (const auto &shape : toolbar_geometry::toolbar_shapes) {
         int points = shape.count / 2;
 
@@ -1910,24 +2063,26 @@ extern "C" void test_channel_events_ui(Editor *e, void (*check)(bool, const char
           "channel volume draft starts with its mixer volume");
     e->midi_draft.data[2] = 50;
     activate(dialog, "Add event");
-    check(!e->song_event_add && e->project.automation_count == 1 &&
-              e->project.automation[0].pattern == -1 && e->project.automation[0].channel == 0 &&
-              e->project.automation[0].type == MIDI_CONTROL &&
-              e->project.automation[0].a == MIDI_CC_VOLUME && e->project.automation[0].b == 50 &&
-              e->project.automation[0].port == 0,
-          "channel dialog adds lasting volume automation and opens its bar for editing");
+    check(!e->song_event_add && !e->project.automation_count && e->project.event_count == 1 &&
+              e->project.events[0].beat == 4 && e->project.events[0].port == 0 &&
+              e->project.events[0].message.size == 3 &&
+              e->project.events[0].message.data[0] == (MIDI_CONTROL | 0) &&
+              e->project.events[0].message.data[1] == MIDI_CC_VOLUME &&
+              e->project.events[0].message.data[2] == 50,
+          "channel dialog adds lasting volume as a raw event and opens its bar for editing");
     capture_workspace_navigation(e, "agents/reports/channel-events-dialog.bmp");
     e->midi_draft.data[2] = 55;
-    check(ed_midi_apply_draft(e) && e->project.automation[0].b == 55,
+    check(ed_midi_apply_draft(e) && e->project.events[0].message.data[2] == 55,
           "channel dialog edits the stored volume");
     ed_song_event_open_bar(e, 5, true, 0);
     mouse_frame(e, 0, 0, false);
     e->midi_draft.data[1] = 40;
     activate(dialog, "Add event");
-    check(e->project.automation_count == 2 && e->project.automation[1].pattern == -1 &&
-              e->project.automation[1].channel == 0 &&
-              e->project.automation[1].type == MIDI_PROGRAM && e->project.automation[1].a == 40,
-          "channel dialog stores its program as song automation on the bound channel");
+    check(!e->project.automation_count && e->project.event_count == 2 &&
+              e->project.events[1].beat == 5 &&
+              e->project.events[1].message.data[0] == (MIDI_PROGRAM | 0) &&
+              e->project.events[1].message.data[1] == 40,
+          "channel dialog stores its program as a raw event on the bound channel");
     ed_song_event_open_bar(e, 4, false, 0);
     mouse_frame(e, 0, 0, false);
     ed_song_event_pick(e, 1, PICK_TOGGLE);
@@ -1937,6 +2092,18 @@ extern "C" void test_channel_events_ui(Editor *e, void (*check)(bool, const char
               dialog->Active,
           "two picked channel events show the group move panel");
     capture_workspace_navigation(e, "agents/reports/channel-events-multi.bmp");
+    check(ed_song_events_move(e, 1, false) && !e->project.automation_count &&
+              e->project.event_count == 2 && e->project.events[0].beat == 5 &&
+              e->project.events[1].beat == 6,
+          "moving selected channel events keeps them as raw events");
+    ed_song_event_open_bar(e, 0, true, 0);
+    mouse_frame(e, 0, 0, false);
+    choose("Volume");
+    e->midi_draft.data[2] = 66;
+    activate(dialog, "Add event");
+    check(e->project.channels[0].volume == 66 && e->project.event_count == 2 &&
+              !e->project.automation_count,
+          "beat-zero channel volume updates the mixer and stores no event");
     ed_song_event_open_bar(e, 0, true, 0);
     mouse_frame(e, 0, 0, false);
     choose("Pan");
@@ -1944,8 +2111,19 @@ extern "C" void test_channel_events_ui(Editor *e, void (*check)(bool, const char
           "channel pan draft starts with its mixer pan");
     e->midi_draft.data[2] = 80;
     activate(dialog, "Add event");
-    check(e->project.channels[0].pan == 80 && ed_song_event_rows(e, 0, 4, 0) == 1,
-          "beat-zero channel automation updates the mixer and remains in the channel row");
+    check(e->project.channels[0].pan == 80 && e->project.event_count == 2 &&
+              !e->project.automation_count && ed_song_event_rows(e, 0, 4, 0) == 0,
+          "beat-zero channel pan updates the mixer and stores no event");
+    ed_song_event_open_bar(e, 0, true, 0);
+    mouse_frame(e, 0, 0, false);
+    choose("Program change");
+    e->midi_draft.data[1] = 12;
+    activate(dialog, "Add event");
+    check(e->project.channels[0].program == 12 && e->project.event_count == 3 &&
+              !e->project.automation_count && e->project.events[0].beat == 0 &&
+              e->project.events[0].message.data[0] == (MIDI_PROGRAM | 0) &&
+              e->project.events[0].message.data[1] == 12,
+          "beat-zero program change adds a raw event and sets the mixer program");
     e->song_event = false;
     mouse_frame(e, 0, 0, false);
     ed_new_song_event(e);
@@ -1972,26 +2150,29 @@ extern "C" void test_channel_events_ui(Editor *e, void (*check)(bool, const char
     choose("Volume");
     check(e->midi_draft.data[0] == (MIDI_CONTROL | MIDI_DRUM_CHANNEL),
           "Song Events defaults a channel event to the selected channel");
+    e->event_beat = 4;
     e->midi_draft.data[0] = MIDI_CONTROL | 2;
     e->midi_draft.data[2] = 73;
-    size_t before = e->project.automation_count;
+    size_t before = e->project.event_count;
     activate(dialog, "Add event");
     bool saved = false;
 
-    for (size_t i = 0; i < e->project.automation_count; ++i) {
-        const DmAutomation &added = e->project.automation[i];
-        saved |= added.channel == 2 && added.pattern == -1 && added.port == 0 &&
-                 added.type == MIDI_CONTROL && added.a == MIDI_CC_VOLUME && added.b == 73;
+    for (size_t i = 0; i < e->project.event_count; ++i) {
+        const DmEvent &added = e->project.events[i];
+        saved |= added.port == 0 && added.message.size == 3 &&
+                 added.message.data[0] == (MIDI_CONTROL | 2) &&
+                 added.message.data[1] == MIDI_CC_VOLUME && added.message.data[2] == 73;
     }
 
-    check(e->project.automation_count == before + 1 && saved,
-          "Song Events adds Volume as lasting automation for the chosen channel");
+    check(e->project.event_count == before + 1 && !e->project.automation_count && saved,
+          "Song Events adds Volume as a raw event for the chosen channel");
     e->song_event = false;
     mouse_frame(e, 0, 0, false);
     capture_workspace_navigation(e, "agents/reports/channel-events-rows.bmp");
     ed_new_project(e);
-    dm_automation_add(&e->project,
-                      {.beat = 4, .type = MIDI_PROGRAM, .channel = 0, .a = 41, .pattern = -1});
+    uint8_t prog[] = {MIDI_PROGRAM | 0, 41};
+    DmBytes prog_msg = {prog, sizeof(prog), sizeof(prog)};
+    dm_event_add(&e->project, 4, 0, 0, &prog_msg);
     mouse_frame(e, 0, 0, false);
     check(e->song_event_groups[0].groups.size > 0,
           "collapsed channel program is drawn in Song Events");
@@ -2010,6 +2191,28 @@ extern "C" void test_channel_events_ui(Editor *e, void (*check)(bool, const char
     mouse_frame(e, x, y, false);
     check(!e->channel_expanded[0] && e->song_event_groups[0].groups.size > 0,
           "collapsing the channel restores its program to Song Events");
+
+    ed_new_project(e);
+    e->channel_expanded[0] = true;
+    e->project.lane_count[0] = 1;
+    uint8_t vol_cc[] = {MIDI_CONTROL | 0, MIDI_CC_VOLUME, 77};
+    DmBytes vol_msg = {vol_cc, sizeof(vol_cc), sizeof(vol_cc)};
+    dm_event_add(&e->project, 4, 0, 0, &vol_msg);
+    ed_song_event_open_bar(e, 4, false, 0);
+    mouse_frame(e, 0, 0, false);
+    ed_song_event_pick(e, 0, PICK_ONE);
+    mouse_frame(e, 0, 0, false);
+    check(ed_song_event_pick_count(e) == 1 && ed_song_events_move(e, 0, true) &&
+              e->project.channels[0].volume == 77 && !e->project.event_count &&
+              !ed_song_event_pick_count(e),
+          "moving channel volume to beat zero updates mixer and removes the event");
+    vol_cc[2] = 88;
+    dm_event_add(&e->project, 4, 0, 0, &vol_msg);
+    e->song_event = false;
+    ed_midi_select(e, {4, 0, false});
+    e->event_beat = 0;
+    check(ed_midi_apply_draft(e) && e->project.channels[0].volume == 88 && !e->project.event_count,
+          "editing channel volume to beat zero via MIDI draft updates mixer and removes event");
 }
 
 extern "C" void test_midi_browser_ui(Editor *e, void (*check)(bool, const char *)) {
@@ -2840,6 +3043,11 @@ extern "C" void test_event_clipboard_ui(Editor *e, void (*check)(bool, const cha
     e->project.automation_count = 0;
     auto &p = e->project.patterns[0];
     p.kind = 1;
+    p.count = 0;
+    auto &clip = e->project.clips[0];
+    clip.lane = 1;
+    clip.row = 0;
+    e->project.lane_count[clip.channel] = 1;
     p.mode = 0;
     p.event = DM_EVENT_BEND;
     e->selected_pattern = 0;
@@ -3031,6 +3239,17 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
 
     check(unsnapped, "Shift + Alt + click inserts an unsnapped connected event point");
     p.kind = 1;
+
+    for (size_t i = 0; i < e->project.clip_count; ++i) {
+        auto &clip = e->project.clips[i];
+
+        if (clip.pattern == 0) {
+            clip.lane = 1;
+            clip.row = 0;
+            e->project.lane_count[clip.channel] = 1;
+        }
+    }
+
     p.mode = 0;
     p.event = 11;
     p.count = 0;
@@ -3080,6 +3299,13 @@ extern "C" void test_recording_feedback_ui(Editor *e, void (*check)(bool, const 
     mouse_frame(e, x, y, false);
     check(!recording_feedback_tooltip(), "LFO knobs no longer show hover tooltips");
     p.kind = 0;
+
+    for (size_t i = 0; i < e->project.clip_count; ++i) {
+        if (e->project.clips[i].pattern == 0) {
+            e->project.clips[i].lane = 0;
+        }
+    }
+
     p.mode = 0;
     p.event = DM_EVENT_BEND;
     e->automation_cc = DM_EVENT_BEND;
@@ -3684,6 +3910,7 @@ extern "C" void test_pattern_workflow_ui(Editor *e, void (*check)(bool, const ch
     check(e->project.automation[1].b - e->project.automation[0].b == 30,
           "real event drag preserves relative MIDI values");
     capture_workspace_navigation(e, "agents/reports/pattern_workflow-event-group.bmp");
+    p.count = 0;
     p.kind = 1;
     p.mode = 0;
     p.event = 11;

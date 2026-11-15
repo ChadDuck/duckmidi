@@ -1,4 +1,5 @@
 #include "editor/internal.h"
+#include "devtools/devtools.h"
 #include "text/en.h"
 
 static int event_identity(const void *left, const void *right);
@@ -423,6 +424,231 @@ int ed_value_snap(Editor *e, int value, int step) {
     return (int)(snapped > lane_maximum(e) ? lane_maximum(e) : snapped < 0 ? 0 : snapped);
 }
 
+typedef struct {
+    int pattern, port, id, type, cc;
+    double beat;
+    size_t index;
+    bool restore;
+} HoldCacheEntry;
+
+static int hold_entry_compare(const void *left, const void *right) {
+    const HoldCacheEntry *a = left, *b = right;
+
+    if (a->pattern != b->pattern) {
+        return (a->pattern > b->pattern) - (a->pattern < b->pattern);
+    }
+
+    if (a->port != b->port) {
+        return (a->port > b->port) - (a->port < b->port);
+    }
+
+    if (a->id != b->id) {
+        return (a->id > b->id) - (a->id < b->id);
+    }
+
+    if (a->restore != b->restore) {
+        return (int)b->restore - (int)a->restore;
+    }
+
+    if (a->type != b->type) {
+        return (a->type > b->type) - (a->type < b->type);
+    }
+
+    if (a->cc != b->cc) {
+        return (a->cc > b->cc) - (a->cc < b->cc);
+    }
+
+    if (a->beat != b->beat) {
+        return a->beat < b->beat ? -1 : 1;
+    }
+
+    return (a->index > b->index) - (a->index < b->index);
+}
+
+static void build_hold_cache(Editor *e) {
+    e->hold_cache_ready = false;
+    size_t count = e->project.automation_count;
+    size_t curved = 0;
+
+    for (size_t i = 0; i < count; ++i) {
+        if (e->project.automation[i].curve) {
+            ++curved;
+        }
+    }
+
+    if (!curved) {
+        return;
+    }
+
+    if (!dm_reserve((void **)&e->hold_cache.data, &e->hold_cache.capacity, count, 1)) {
+        return;
+    }
+
+    HoldCacheEntry *entries = malloc(curved * sizeof(*entries));
+
+    if (!entries) {
+        return;
+    }
+
+    uint8_t *holds = e->hold_cache.data;
+    memset(holds, 0, count);
+    size_t n = 0;
+
+    for (size_t i = 0; i < count; ++i) {
+        DmAutomation a = e->project.automation[i];
+
+        if (!a.curve) {
+            continue;
+        }
+
+        entries[n++] = (HoldCacheEntry){
+            .pattern = a.pattern,
+            .port = a.port,
+            .id = abs(a.curve),
+            .type = a.type,
+            .cc = a.type == MIDI_CONTROL ? a.a : 0,
+            .beat = a.beat,
+            .index = i,
+            .restore = a.curve < 0,
+        };
+    }
+
+    qsort(entries, n, sizeof(*entries), hold_entry_compare);
+
+    for (size_t i = 0; i < n;) {
+        int pattern = entries[i].pattern, port = entries[i].port, id = entries[i].id;
+        bool has_restore = entries[i].restore;
+
+        while (i < n && entries[i].pattern == pattern && entries[i].port == port &&
+               entries[i].id == id) {
+            if (!has_restore) {
+                int type = entries[i].type, cc = entries[i].cc;
+                size_t last = entries[i].index;
+
+                while (i < n && entries[i].pattern == pattern && entries[i].port == port &&
+                       entries[i].id == id && entries[i].type == type && entries[i].cc == cc) {
+                    last = entries[i].index;
+                    ++i;
+                }
+
+                holds[last] = 1;
+            } else {
+                ++i;
+            }
+        }
+    }
+
+    free(entries);
+    e->hold_cache.size = count;
+    e->hold_cache_ready = true;
+}
+
+static bool is_line_end(const Editor *e, size_t index) {
+    if (index >= e->project.automation_count) {
+        return false;
+    }
+
+    DmAutomation a = e->project.automation[index];
+
+    if (a.curve <= 0) {
+        return false;
+    }
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        if (i == index) {
+            continue;
+        }
+
+        DmAutomation b = e->project.automation[i];
+
+        if (b.pattern == a.pattern && b.port == a.port && b.curve == a.curve && b.type == a.type &&
+            (a.type != MIDI_CONTROL || b.a == a.a) &&
+            (b.beat > a.beat || (b.beat == a.beat && i > index))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool ed_point_holds(const Editor *e, size_t index) {
+    if (index >= e->project.automation_count) {
+        return false;
+    }
+
+    DmAutomation a = e->project.automation[index];
+
+    if (a.curve <= 0) {
+        return a.curve == 0;
+    }
+
+    if (e->hold_cache_ready && index < e->hold_cache.size) {
+        return ((const uint8_t *)e->hold_cache.data)[index] != 0;
+    }
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation b = e->project.automation[i];
+
+        if (b.pattern != a.pattern || b.port != a.port) {
+            continue;
+        }
+
+        if (b.curve == -a.curve) {
+            return false;
+        }
+
+        if (i != index && b.curve == a.curve && b.type == a.type &&
+            (a.type != MIDI_CONTROL || b.a == a.a) &&
+            (b.beat > a.beat || (b.beat == a.beat && i > index))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool ed_restoration_value(Editor *e, size_t index, int *value) {
+    if (index >= e->project.automation_count) {
+        return false;
+    }
+
+    DmAutomation r = e->project.automation[index];
+
+    if (r.curve >= 0) {
+        return false;
+    }
+
+    int type = event_type_of(r);
+
+    if (type == INT32_MIN) {
+        return false;
+    }
+
+    bool line = false;
+
+    for (size_t i = 0; i < e->project.automation_count && !line; ++i) {
+        DmAutomation b = e->project.automation[i];
+        line = b.pattern == r.pattern && b.port == r.port && b.curve == -r.curve &&
+               event_type_of(b) == type;
+    }
+
+    if (!line) {
+        return false;
+    }
+
+    /* The value the pattern plays just before the Line's first node, in play order (as
+       playback's restoration does), so a section starting where another ends returns to what
+       that one returned to. */
+    int saved_pattern = e->selected_pattern;
+    uint8_t saved_port = e->note_ports[e->pattern_channel];
+    e->selected_pattern = r.pattern;
+    e->note_ports[e->pattern_channel] = r.port;
+    bool has = ed_pattern_value_before_line(e, -r.curve, type, value);
+    e->selected_pattern = saved_pattern;
+    e->note_ports[e->pattern_channel] = saved_port;
+    return has;
+}
+
 /* Drawing pitch bends asks for each point's bend range and anchor note, and each lookup scans the
    whole project. Between begin and end, lookups read a copy of the pattern's RPN and data entry
    controllers gathered once, and the anchor note is found once. The automation must not change
@@ -431,10 +657,12 @@ void ed_pitch_cache_begin(Editor *e) {
     e->pitch_cache = true;
     e->pitch_cache_ready = false;
     e->pitch_cache_anchored = false;
+    build_hold_cache(e);
 }
 
 void ed_pitch_cache_end(Editor *e) {
     e->pitch_cache = false;
+    e->hold_cache_ready = false;
 }
 
 static bool range_controller(DmAutomation a) {
@@ -661,25 +889,306 @@ static void dense_lane_flush(DenseLaneColumn *column, bool outline) {
             }
         }
     } else if (column->count <= 2) {
-        ui_circle(column->first, 5, column->color);
+        ui_square(column->first, 5, column->color);
 
         if (column->count == 2) {
             ui_line(column->first, (UiPoint){column->last.x, column->first.y}, column->color, 1.5f);
             ui_line((UiPoint){column->last.x, column->first.y}, column->last, column->color, 1.5f);
-            ui_circle(column->last, 5, column->color);
+            ui_square(column->last, 5, column->color);
         }
     } else {
         UiPoint low = {column->first.x, column->low}, high = {column->first.x, column->high};
         ui_line(low, high, column->color, 1.5f);
-        ui_circle(low, 5, column->color);
+        ui_square(low, 5, column->color);
 
         if (column->high != column->low) {
-            ui_circle(high, 5, column->color);
+            ui_square(high, 5, column->color);
         }
     }
 
     column->count = 0;
     column->hint = false;
+}
+
+/* The note-name view's height of a pitch, as ed_automation_point places bends. */
+static float bend_row_y(Editor *e, UiRect lane, float pitch) {
+    return lane.y + lane.h * .5f - (pitch - e->automation_center) * ED_LANE_STEP;
+}
+
+/* Draws a dim pitch-bend stretch from b0 to b1 (after a restoration or a held Line end) in the
+   note-name view: value is a bend relative to whatever note sounds, so the line follows the
+   reference note and steps where it changes inside (b0, b1). Returns the last y. Display only. */
+static float draw_bend_dim_stretch(Editor *e, const EdBendReferences *refs, UiRect lane, View *v,
+                                   float scale, DmAutomation start, int value, double b0, double b1,
+                                   float start_y, uint32_t color) {
+    float range = ed_automation_range(e, start);
+    float offset = (float)(value - MIDI_BEND_CENTER) * range / MIDI_BEND_CENTER;
+    float cur_x = lane.x + (float)b0 * scale - v->scroll_x;
+    float cur_y = bend_row_y(e, lane, (float)ed_bend_reference_at(refs, b0) + offset);
+
+    if (cur_y != start_y) {
+        ui_line((UiPoint){cur_x, start_y}, (UiPoint){cur_x, cur_y}, color, 1.5f);
+    }
+
+    if (b1 <= b0) {
+        return cur_y;
+    }
+
+    size_t low = 0, high = refs->count;
+
+    while (low < high) {
+        size_t mid = low + (high - low) / 2;
+
+        if (refs->beats[mid] <= b0) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+
+    for (size_t i = low; i < refs->count && refs->beats[i] < b1; ++i) {
+        double t = refs->beats[i];
+        float next_y = bend_row_y(e, lane, (float)refs->keys[i] + offset);
+
+        if (next_y != cur_y) {
+            float next_x = lane.x + (float)t * scale - v->scroll_x;
+            ui_line((UiPoint){cur_x, cur_y}, (UiPoint){next_x, cur_y}, color, 1.5f);
+            ui_line((UiPoint){next_x, cur_y}, (UiPoint){next_x, next_y}, color, 1.5f);
+            cur_x = next_x;
+            cur_y = next_y;
+        }
+    }
+
+    float end_x = lane.x + (float)b1 * scale - v->scroll_x;
+    ui_line((UiPoint){cur_x, cur_y}, (UiPoint){end_x, cur_y}, color, 1.5f);
+    return cur_y;
+}
+
+/* Settings whose dim stretches show what the selected placement hears: controllers (not pedals)
+   and channel pressure. A bend's line follows the sounding note instead (F7), and the poly
+   pressure lane mixes every key. */
+static bool heard_supported_cc(int cc) {
+    return (cc >= 0 && !ed_pedal_event(cc)) || cc == DM_EVENT_CHANNEL_PRESSURE;
+}
+
+static bool heard_context(const Editor *e, DmClip *clip_out) {
+    if (e->selected_clip < 0 || (size_t)e->selected_clip >= e->project.clip_count ||
+        !heard_supported_cc(e->automation_cc)) {
+        return false;
+    }
+
+    DmClip clip = e->project.clips[e->selected_clip];
+
+    if (clip.pattern != e->selected_pattern) {
+        return false;
+    }
+
+    if (clip_out) {
+        *clip_out = clip;
+    }
+
+    return true;
+}
+
+static void heard_cache_update(Editor *e, DmClip clip, unsigned port) {
+    if (e->drag != DRAG_NONE) {
+        return;
+    }
+
+    if (e->heard_ready && e->heard_revision == e->export_revision &&
+        e->heard_clip == e->selected_clip && e->heard_cc == e->automation_cc &&
+        e->heard_port == port) {
+        return;
+    }
+
+    e->heard_values.size = 0;
+    DmExportEvent *events = NULL;
+    size_t count = 0;
+    char error[128];
+
+    if (dm_export_channel(&e->project, clip.channel, &events, &count, error, sizeof(error))) {
+        for (size_t i = 0; i < count; ++i) {
+            DmExportEvent ev = events[i];
+
+            if (ev.port != port || ev.status >= MIDI_SYSTEM ||
+                (int)(ev.status & MIDI_CHANNEL_MASK) != clip.channel) {
+                continue;
+            }
+
+            uint32_t type = ev.status & MIDI_STATUS_MASK;
+            int value = -1;
+
+            if (e->automation_cc >= 0 && type == MIDI_CONTROL && (int)ev.a == e->automation_cc) {
+                value = (int)ev.b;
+            } else if (e->automation_cc == DM_EVENT_CHANNEL_PRESSURE &&
+                       type == MIDI_CHANNEL_PRESSURE) {
+                value = (int)ev.a;
+            }
+
+            if (value < 0) {
+                continue;
+            }
+
+            EdHeardPoint pt = {(double)ev.tick / DM_PPQ - clip.beat + clip.offset, value};
+            dm_bytes(&e->heard_values, &pt, sizeof(pt));
+        }
+
+        free(events);
+    }
+
+    e->heard_revision = e->export_revision;
+    e->heard_clip = e->selected_clip;
+    e->heard_cc = e->automation_cc;
+    e->heard_port = port;
+    e->heard_ready = true;
+}
+
+bool ed_heard_value(Editor *e, double beat, int *value) {
+    DmClip clip = {0};
+
+    if (!heard_context(e, &clip)) {
+        if (value) {
+            *value = ed_setting_default(e, e->automation_cc);
+        }
+
+        return false;
+    }
+
+    unsigned port = ed_note_port(e);
+    heard_cache_update(e, clip, port);
+
+    const EdHeardPoint *pts = (const EdHeardPoint *)e->heard_values.data;
+    size_t count = e->heard_values.size / sizeof(*pts);
+    int result = ed_setting_default(e, e->automation_cc);
+
+    if (e->heard_ready && count && pts[0].beat <= beat + 1e-9) {
+        size_t low = 0, high = count;
+
+        while (low + 1 < high) {
+            size_t mid = low + (high - low) / 2;
+
+            if (pts[mid].beat <= beat + 1e-9) {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+
+        result = pts[low].value;
+    }
+
+    if (value) {
+        *value = result;
+    }
+
+    return true;
+}
+
+/* The lane height of a heard value, mapped as the lane maps its own points. */
+static float heard_value_y(Editor *e, UiRect lane, View *v, float scale, int value) {
+    DmAutomation point = ed_curve_node(e, 0, value, e->automation_cc, 0, 0);
+    return ed_automation_point(e, point, lane, v, scale).y;
+}
+
+float ed_draw_heard_stretch(Editor *e, UiRect lane, View *v, float scale, double b0, double b1,
+                            float fallback_y, bool has_start, bool draw_outside, uint32_t color) {
+    DmClip clip = {0};
+
+    if (b1 <= b0) {
+        return fallback_y;
+    }
+
+    if (!heard_context(e, &clip)) {
+        if (draw_outside) {
+            float x0 = lane.x + (float)b0 * scale - v->scroll_x;
+            float x1 = lane.x + (float)b1 * scale - v->scroll_x;
+            ui_line((UiPoint){x0, fallback_y}, (UiPoint){x1, fallback_y}, color, 1.5f);
+        }
+
+        return fallback_y;
+    }
+
+    double win0 = clip.offset;
+    double win1 = clip.offset + dm_clip_length(&e->project, clip);
+    double in0 = fmax(b0, win0);
+    double in1 = fmin(b1, win1);
+
+    if (in1 <= in0) {
+        if (draw_outside) {
+            float x0 = lane.x + (float)b0 * scale - v->scroll_x;
+            float x1 = lane.x + (float)b1 * scale - v->scroll_x;
+            ui_line((UiPoint){x0, fallback_y}, (UiPoint){x1, fallback_y}, color, 1.5f);
+        }
+
+        return fallback_y;
+    }
+
+    float cur_x = lane.x + (float)b0 * scale - v->scroll_x;
+    float cur_y = fallback_y;
+
+    if (in0 > b0) {
+        float in0_x = lane.x + (float)in0 * scale - v->scroll_x;
+
+        if (draw_outside) {
+            ui_line((UiPoint){cur_x, cur_y}, (UiPoint){in0_x, cur_y}, color, 1.5f);
+        }
+
+        cur_x = in0_x;
+    }
+
+    int val = 0;
+    ed_heard_value(e, in0, &val);
+    float next_y = heard_value_y(e, lane, v, scale, val);
+
+    if (((in0 > b0 && draw_outside) || (in0 == b0 && has_start)) && next_y != cur_y) {
+        ui_line((UiPoint){cur_x, cur_y}, (UiPoint){cur_x, next_y}, color, 1.5f);
+    }
+
+    cur_y = next_y;
+    const EdHeardPoint *pts = (const EdHeardPoint *)e->heard_values.data;
+    size_t count = e->heard_values.size / sizeof(*pts);
+
+    if (e->heard_ready && count) {
+        size_t low = 0, high = count;
+
+        while (low < high) {
+            size_t mid = low + (high - low) / 2;
+
+            if (pts[mid].beat <= in0 + 1e-9) {
+                low = mid + 1;
+            } else {
+                high = mid;
+            }
+        }
+
+        for (size_t i = low; i < count && pts[i].beat < in1 - 1e-9; ++i) {
+            float py = heard_value_y(e, lane, v, scale, pts[i].value);
+
+            if (py != cur_y) {
+                float px = lane.x + (float)pts[i].beat * scale - v->scroll_x;
+                ui_line((UiPoint){cur_x, cur_y}, (UiPoint){px, cur_y}, color, 1.5f);
+                ui_line((UiPoint){px, cur_y}, (UiPoint){px, py}, color, 1.5f);
+                cur_x = px;
+                cur_y = py;
+            }
+        }
+    }
+
+    float in1_x = lane.x + (float)in1 * scale - v->scroll_x;
+    ui_line((UiPoint){cur_x, cur_y}, (UiPoint){in1_x, cur_y}, color, 1.5f);
+    cur_x = in1_x;
+
+    if (b1 > in1 && draw_outside) {
+        if (cur_y != fallback_y) {
+            ui_line((UiPoint){cur_x, cur_y}, (UiPoint){cur_x, fallback_y}, color, 1.5f);
+            cur_y = fallback_y;
+        }
+
+        float end_x = lane.x + (float)b1 * scale - v->scroll_x;
+        ui_line((UiPoint){cur_x, cur_y}, (UiPoint){end_x, cur_y}, color, 1.5f);
+    }
+
+    return cur_y;
 }
 
 int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse) {
@@ -688,22 +1197,41 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
     }
 
     UiPoint previous = {0};
-    bool has = false;
-    int hit = -1;
+    bool has = false, before_holds = false, before_visible = false;
+    int hit = -1, before_value = 0;
     DmAutomation before = {0};
     DenseLaneColumn dense = {.color = ed_point_color(e)};
     ed_pitch_cache_begin(e);
     size_t first = ed_automation_visible_first(e, (v->scroll_x - 8) / scale, false);
+    bool pedal = ed_pedal_event(e->automation_cc);
+    bool bend_pitch = e->automation_cc == DM_EVENT_BEND && !ed_automation_raw(e);
+    EdBendReferences bend_refs = {0};
+    bool has_bend_refs = bend_pitch && ed_bend_references(e, &bend_refs);
+    uint32_t dim_color = (ed_point_color(e) & 0xffffffu) | 0x66000000u;
 
     for (size_t i = first; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
 
-        if (!ed_automation_matches(e, a) || a.curve < 0) {
+        if (!ed_automation_matches(e, a) || (pedal && a.curve < 0)) {
             continue;
         }
 
-        UiPoint point = ed_automation_point(e, a, lane, v, scale);
-        bool pedal = ed_pedal_event(e->automation_cc);
+        bool restore = a.curve < 0;
+        bool restore_has = false;
+        DmAutomation display = a;
+
+        if (restore) {
+            int val = 0;
+            restore_has = ed_restoration_value(e, i, &val);
+            ed_set_event_value(&display,
+                               restore_has ? val : ed_value_before(e, -1, event_type_of(a)));
+
+            if (has_bend_refs) {
+                display.anchor = ed_bend_reference_at(&bend_refs, a.beat);
+            }
+        }
+
+        UiPoint point = ed_automation_point(e, display, lane, v, scale);
 
         /* Points are in time order. Off-screen points only matter as the start or end of a
            connection that crosses into view. */
@@ -717,9 +1245,13 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
             previous = point;
             has = true;
             before = a;
+            before_value = ed_event_value(display);
+            before_holds = ed_point_holds(e, i);
+            before_visible = !restore || restore_has;
             continue;
         }
 
+        bool holds = ed_point_holds(e, i);
         bool selected = ed_event_selected(e, i);
         bool raw = !pedal && !a.curve && !a.ramp && !selected;
         float column = floorf(point.x * ui_scale());
@@ -730,9 +1262,34 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
         }
 
         if (has && !joined) {
-            if (pedal) {
+            if (before.curve < 0 || (before.curve > 0 && before_holds)) {
+                if (pedal) {
+                    ui_line(previous, (UiPoint){point.x, previous.y}, dim_color, 4);
+                } else if (has_bend_refs) {
+                    float last_y =
+                        draw_bend_dim_stretch(e, &bend_refs, lane, v, scale, before, before_value,
+                                              before.beat, a.beat, previous.y, dim_color);
+
+                    if (!restore || restore_has) {
+                        ui_line((UiPoint){point.x, last_y}, point, dim_color, 1.5f);
+                    }
+                } else {
+                    float last_y =
+                        ed_draw_heard_stretch(e, lane, v, scale, before.beat, a.beat, previous.y,
+                                              before_visible, true, dim_color);
+
+                    if (!restore || restore_has) {
+                        ui_line((UiPoint){point.x, last_y}, point, dim_color, 1.5f);
+                    }
+                }
+            } else if (pedal) {
                 if (a.curve > 0 && a.curve == before.curve) {
                     ui_line(previous, point, ed_point_color(e), 4);
+                }
+            } else if (restore) {
+                if (restore_has) {
+                    ui_line(previous, (UiPoint){point.x, previous.y}, dim_color, 1.5f);
+                    ui_line((UiPoint){point.x, previous.y}, point, dim_color, 1.5f);
                 }
             } else {
                 ed_automation_connection(previous, point, before, a,
@@ -742,8 +1299,13 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
 
         bool end = pedal && has && a.curve > 0 && a.curve == before.curve;
         uint32_t color = selected ? TEXT : ed_point_color(e);
+        float size = selected ? 7 : 5;
 
-        if (raw) {
+        if (restore) {
+            if (restore_has) {
+                ui_circle(point, 5, dim_color);
+            }
+        } else if (raw) {
             if (!dense.count) {
                 dense.first = point;
                 dense.low = dense.high = point.y;
@@ -755,18 +1317,47 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
             dense.high = fmaxf(dense.high, point.y);
             ++dense.count;
         } else if (end) {
-            ui_circle_outline(point, selected ? 7 : 5, color);
+            if (holds) {
+                ui_square_outline(point, size, color);
+            } else {
+                ui_circle_outline(point, size, color);
+            }
+        } else if (holds) {
+            ui_square(point, size, color);
         } else {
-            ui_circle(point, selected ? 7 : 5, color);
+            ui_circle(point, size, color);
         }
 
-        if (fabsf(mouse.pos.x - point.x) < 9 && fabsf(mouse.pos.y - point.y) < 9) {
+        if (!restore && fabsf(mouse.pos.x - point.x) < 9 && fabsf(mouse.pos.y - point.y) < 9) {
             hit = (int)i;
         }
 
         previous = point;
         has = true;
         before = a;
+        before_value = ed_event_value(display);
+        before_holds = holds;
+        before_visible = !restore || restore_has;
+    }
+
+    if (has && (before.curve < 0 || (before.curve > 0 && before_holds))) {
+        float end_x = lane.x + (float)ed_pattern_length(e) * scale - v->scroll_x;
+
+        if (end_x > previous.x) {
+            if (pedal) {
+                ui_line(previous, (UiPoint){end_x, previous.y}, dim_color, 4);
+            } else if (has_bend_refs) {
+                draw_bend_dim_stretch(e, &bend_refs, lane, v, scale, before, before_value,
+                                      before.beat, ed_pattern_length(e), previous.y, dim_color);
+            } else {
+                ed_draw_heard_stretch(e, lane, v, scale, before.beat, ed_pattern_length(e),
+                                      previous.y, before_visible, true, dim_color);
+            }
+        }
+    }
+
+    if (has_bend_refs) {
+        ed_bend_references_free(&bend_refs);
     }
 
     dense_lane_flush(&dense, false);
@@ -774,18 +1365,38 @@ int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mou
     return hit;
 }
 
-void ed_sort_automation(Editor *e) {
+/* Insertion sort into dm_automation_later order; cheap when the array is nearly sorted, as after
+   moving a few points. When origin is not NULL (automation_count entries) it receives the old
+   index of the point now at each index. */
+static void sort_automation(Editor *e, size_t *origin) {
+    for (size_t i = 0; origin && i < e->project.automation_count; ++i) {
+        origin[i] = i;
+    }
+
     for (size_t i = 1; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
         size_t j = i;
 
         while (j && dm_automation_later(e->project.automation[j - 1], a)) {
             e->project.automation[j] = e->project.automation[j - 1];
+
+            if (origin) {
+                origin[j] = origin[j - 1];
+            }
+
             --j;
         }
 
         e->project.automation[j] = a;
+
+        if (origin) {
+            origin[j] = i;
+        }
     }
+}
+
+void ed_sort_automation(Editor *e) {
+    sort_automation(e, NULL);
 }
 
 int ed_lane_value(Editor *e, UiRect lane, float y, DmAutomation a, bool free) {
@@ -1014,6 +1625,10 @@ static bool curve_handle_action(Editor *e, size_t index, UiRect lane, UiPoint mi
     DmAutomation a = e->project.automation[index];
     bool hit = hovered && ed_inside(mouse.pos, lane) && fabsf(mouse.pos.x - mid.x) < 8 &&
                fabsf(mouse.pos.y - mid.y) < 8;
+
+    if (hit) {
+        e->hover_target = overlay ? TARGET_BEND : TARGET_EVENT_POINT;
+    }
 
     if (hit && !e->drag && !e->event_marquee) {
         ui_gesture_cursor(true);
@@ -1316,6 +1931,39 @@ static void event_group_values(Editor *e, UiRect lane, UiMouse mouse) {
     }
 }
 
+/* Restores the dragged lines' restoration positions and the array's beat order on a drag frame,
+   moving the indices the drag holds (its items and the focused node) with their points. */
+static void event_group_sort(Editor *e, EventDragItem *items, size_t count) {
+    size_t n = e->project.automation_count;
+    size_t *origin = malloc((n ? n : 1) * 2 * sizeof(size_t));
+
+    if (!origin) {
+        return; /* Left unsorted until release; DEV builds report the project check. */
+    }
+
+    size_t *moved = origin + n;
+
+    for (size_t i = 0; i < count; ++i) {
+        ed_curve_restore_position(e, items[i].original.curve);
+    }
+
+    sort_automation(e, origin);
+
+    for (size_t i = 0; i < n; ++i) {
+        moved[origin[i]] = i;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        items[i].index = moved[items[i].index];
+    }
+
+    if (e->automation_node >= 0 && (size_t)e->automation_node < n) {
+        e->automation_node = (int)moved[e->automation_node];
+    }
+
+    free(origin);
+}
+
 static bool event_group_drag(Editor *e, UiRect lane, float scale, UiMouse mouse) {
     size_t count = e->event_drag.size / sizeof(EventDragItem);
 
@@ -1351,6 +1999,7 @@ static bool event_group_drag(Editor *e, UiRect lane, float scale, UiMouse mouse)
         }
 
         event_group_values(e, lane, mouse);
+        event_group_sort(e, items, count);
         e->automation_all = false;
         event_group_selection(e);
 
@@ -1442,6 +2091,14 @@ void ed_automation_node_drag(Editor *e, UiRect lane, View *v, float scale, UiMou
             ed_edit_feedback(e, ed_automation_pitch(e, *a));
         }
 
+        /* Keep the line's restoration at its end and the array in beat order on every frame;
+           drawing and playback read later entries to find a line's next node. */
+        DmAutomation moved = *a;
+        ed_curve_restore_position(e, moved.curve);
+        ed_sort_automation(e);
+        e->automation_node = -1;
+        ed_select_edited_node(e, moved);
+        a = &e->project.automation[e->automation_node];
         ed_changed(e);
     }
 
@@ -1451,11 +2108,6 @@ void ed_automation_node_drag(Editor *e, UiRect lane, View *v, float scale, UiMou
     }
 
     if (mouse.released) {
-        DmAutomation edited = *a;
-        ed_curve_restore_position(e, a->curve);
-        ed_sort_automation(e);
-        e->automation_node = -1;
-        ed_select_edited_node(e, edited);
         dm_pattern_fit(&e->project, ed_pattern(e));
         e->drag = DRAG_NONE;
         ed_commit(e);
@@ -1593,6 +2245,36 @@ static void add_cursor_point(Editor *e, UiRect lane, UiMouse mouse, double beat)
 /* Adds a point at beat and the value at y, joined to the curve of the nearest point (index
    nearest), converting a discrete point into a curve with a restoration node. Returns the added
    point. The caller owns the undo step and sorts afterwards. */
+/* Adds the nodes that end Line `end` by returning to what played before it: the value
+   `baseline` and, for a pitch bend, the bend range `incoming`. The caller measures both from
+   before the Line starts; ed_curve_restore_position then moves the restoration to the end. */
+void ed_curve_add_restoration(Editor *e, DmAutomation end, int baseline, DmPitchState incoming) {
+    if (end.curve <= 0 || end.type == MIDI_PROGRAM) {
+        return;
+    }
+
+    double last = end.beat;
+
+    for (size_t i = 0; i < e->project.automation_count; i++) {
+        DmAutomation b = e->project.automation[i];
+
+        if (b.pattern == end.pattern && b.port == end.port && b.curve == end.curve &&
+            b.type == end.type && (end.type != MIDI_CONTROL || b.a == end.a)) {
+            last = fmax(last, b.beat);
+        }
+    }
+
+    DmAutomation restore = end;
+    restore.curve = -end.curve;
+    ed_set_event_value(&restore, baseline);
+    dm_automation_add(&e->project, restore);
+
+    if (end.type == MIDI_PITCH_BEND) {
+        ed_curve_range(e, last, incoming.range, incoming.cents, incoming.msb, incoming.lsb,
+                       -end.curve);
+    }
+}
+
 static DmAutomation connect_point(Editor *e, UiRect lane, int nearest, float y, double beat,
                                   bool free) {
     DmAutomation a = e->project.automation[nearest];
@@ -1600,7 +2282,6 @@ static DmAutomation connect_point(Editor *e, UiRect lane, int nearest, float y, 
     a.bend_note = 0;
     a.bend_root = DM_BEND_ROOT_NONE;
     bool raw = ed_automation_raw(e);
-    double original_beat = a.beat;
     bool converted = !a.curve && a.type != MIDI_PROGRAM;
     DmPitchState incoming = ed_pitch_state(e, fmin(a.beat, beat));
     int baseline = 0;
@@ -1629,15 +2310,7 @@ static DmAutomation connect_point(Editor *e, UiRect lane, int nearest, float y, 
     e->last_automation_valid = true;
 
     if (converted) {
-        DmAutomation restore = a;
-        restore.curve = -a.curve;
-        ed_set_event_value(&restore, baseline);
-        dm_automation_add(&e->project, restore);
-
-        if (a.type == MIDI_PITCH_BEND) {
-            ed_curve_range(e, fmax(a.beat, original_beat), incoming.range, incoming.cents,
-                           incoming.msb, incoming.lsb, -a.curve);
-        }
+        ed_curve_add_restoration(e, a, baseline, incoming);
     }
 
     ed_curve_restore_position(e, a.curve);
@@ -1771,6 +2444,59 @@ static void point_menu(Editor *e, int hit) {
         }
 
         ui_menu_end();
+    }
+
+    if (is_line_end(e, (size_t)index)) {
+        DmAutomation end = e->project.automation[index];
+        bool held = ed_point_holds(e, (size_t)index);
+
+        if (ui_menu_check(DM_TEXT_HOLD_UNTIL_PATTERN_END, held) && ed_checkpoint(e)) {
+            if (!held) {
+                size_t kept = 0;
+                int next_node = -1;
+                int next_context = -1;
+
+                for (size_t i = 0; i < e->project.automation_count; i++) {
+                    DmAutomation b = e->project.automation[i];
+
+                    if (b.pattern == end.pattern && b.port == end.port && b.curve == -end.curve) {
+                        continue;
+                    }
+
+                    if (e->automation_node == (int)i) {
+                        next_node = (int)kept;
+                    }
+
+                    if (e->context_point == (int)i) {
+                        next_context = (int)kept;
+                    }
+
+                    e->project.automation[kept++] = b;
+                }
+
+                e->project.automation_count = kept;
+                e->automation_node = next_node;
+                e->context_point = next_context;
+            } else {
+                /* Return to what played before the Line, measured before its first node. */
+                double start = end.beat;
+
+                for (size_t i = 0; i < e->project.automation_count; i++) {
+                    DmAutomation b = e->project.automation[i];
+
+                    if (b.pattern == end.pattern && b.port == end.port && b.curve == end.curve) {
+                        start = fmin(start, b.beat);
+                    }
+                }
+
+                int baseline = ed_value_before(e, fmax(0, start - 1e-8), event_type_of(end));
+                ed_curve_add_restoration(e, end, baseline, ed_pitch_state(e, start - 1e-8));
+                ed_curve_restore_position(e, end.curve);
+                ed_sort_automation(e);
+            }
+
+            ed_commit(e);
+        }
     }
 
     if (ui_menu_item(DM_TEXT_DELETE, NULL, true)) {
@@ -2116,6 +2842,26 @@ static void event_placement_tip(Editor *e, UiRect lane, UiMouse mouse, bool hove
     ui_placement_tip(text);
 }
 
+static void graph_menu(Editor *e, bool request) {
+    if (!ui_mouse_popup(DM_TEXT_GRAPH_LANE, request)) {
+        return;
+    }
+
+    int lane_index = dm_graph_lane(e->automation_cc);
+    DmPattern *pattern = ed_pattern(e);
+
+    if (pattern && lane_index >= 0) {
+        bool hold = pattern->graph_hold[lane_index];
+
+        if (ui_menu_check(DM_TEXT_HOLD_LAST_BAR, hold) && ed_checkpoint(e)) {
+            pattern->graph_hold[lane_index] = !hold;
+            ed_commit(e);
+        }
+    }
+
+    ui_popup_end();
+}
+
 /* Graph lanes: a left drag paints bars, Shift + drag on a selected bar moves the selected values,
    and a right drag erases the bars it crosses. A click while bars are selected only clears the
    selection, as in point lanes. */
@@ -2203,6 +2949,7 @@ static void graph_input(Editor *e, UiRect lane, View *v, float scale, UiMouse mo
         e->drag = mouse.right ? DRAG_GRAPH_ERASE : DRAG_NONE;
     }
 
+    graph_menu(e, inside && mouse.right_clicked && ed_gesture_held(e, GESTURE_MENU, mouse));
     event_placement_tip(e, lane, mouse, hovered);
 }
 
@@ -2241,8 +2988,14 @@ static void erase_swept_points(Editor *e, UiRect lane, View *v, float scale, UiM
     }
 }
 
-void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse, bool hovered,
-                         int hit) {
+static void automation_input_now(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse,
+                                 bool hovered, int hit) {
+    if (e->drag == DRAG_EVENT_POINT) {
+        e->hover_target = TARGET_EVENT_POINT;
+    } else if (hovered && ed_inside(mouse.pos, lane)) {
+        e->hover_target = hit >= 0 ? TARGET_EVENT_POINT : TARGET_EVENT_LANE;
+    }
+
     /* Over a point only while nothing else holds the mouse. */
     if ((hovered && hit >= 0 && !e->drag && !e->event_marquee && !e->curve_drag) ||
         e->drag == DRAG_EVENT_POINT || e->curve_drag) {
@@ -2301,6 +3054,13 @@ void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse m
 
     ed_automation_press(e, lane, v, scale, mouse);
     ed_automation_drag(e, lane, v, scale, mouse);
+}
+
+void ed_automation_input(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse, bool hovered,
+                         int hit) {
+    DM_PROFILE_BEGIN(GESTURES, profile_start);
+    automation_input_now(e, lane, v, scale, mouse, hovered, hit);
+    DM_PROFILE_END(GESTURES, profile_start);
 }
 
 static bool curve_displayed(Editor *e, DmAutomation a) {

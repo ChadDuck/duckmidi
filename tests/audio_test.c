@@ -99,11 +99,11 @@ static void render_sample_instrument(DmAudio *audio) {
     }
 
     check(dm_clip_add(&project, (DmClip){0, pattern, 0, 0}), "place sample arrangement");
-    DmAutomation program = {.beat = 2, .type = MIDI_PROGRAM, .a = 1, .pattern = -1};
-    check(dm_automation_add(&project, program), "switch to stock Program 1");
-    program.beat = 4;
-    program.a = 0;
-    check(dm_automation_add(&project, program), "return to replaced Program 0");
+    uint8_t stock[] = {MIDI_PROGRAM, 1}, replaced[] = {MIDI_PROGRAM, 0};
+    check(dm_event_add(&project, 2, 0, 0, &(DmBytes){stock, sizeof(stock), 0}),
+          "switch to stock Program 1");
+    check(dm_event_add(&project, 4, 0, 0, &(DmBytes){replaced, sizeof(replaced), 0}),
+          "return to replaced Program 0");
     DmPatchReplacement replacement = {.generation = 1, .set_id = "audio-test", .preset_id = "tone"};
     snprintf(replacement.locator, sizeof(replacement.locator), "%s", root);
     check(dm_patch_replacement_set(&project, &replacement), "set sample replacement");
@@ -168,18 +168,19 @@ static void pattern_region_programs(void) {
     int id = dm_pattern_add(&p, "Region");
     dm_note_add(&p.patterns[id], (DmNote){0, 4, 60, 100, 0});
     dm_clip_add(&p, (DmClip){8, id, 0, 0, 0, 0});
-    DmBytes before = {0}, volume = {0}, outside = {0};
+    DmBytes before = {0}, volume = {0}, inside = {0}, outside = {0};
     dm_bytes(&before, (uint8_t[]){0xc0, 40}, 2);
     dm_bytes(&volume, (uint8_t[]){0xb0, 7, 50}, 3);
+    dm_bytes(&inside, (uint8_t[]){0xc0, 56}, 2);
     dm_bytes(&outside, (uint8_t[]){0xc0, 90}, 2);
     check(dm_event_add(&p, 4, 1, 0, &before), "add program before region");
     check(dm_event_add(&p, 6, 1, 0, &volume), "add volume before region");
+    check(dm_event_add(&p, 10, 0, 0, &inside), "add song program inside region");
     check(dm_event_add(&p, 20, 1, 0, &outside), "add program after region");
     dm_bytes_free(&before);
     dm_bytes_free(&volume);
+    dm_bytes_free(&inside);
     dm_bytes_free(&outside);
-    check(dm_automation_add(&p, (DmAutomation){10, 0xc0, 0, 56, 0, -1, 0, 0, 0, false, 0, false}),
-          "add song program inside region");
     DmPatternPreview follow = {id, 0, 0, true, 8, 4};
     DmSchedule s = {0};
     check(dm_pattern_schedule(&p, &follow, &s), "schedule placed pattern");
@@ -406,7 +407,8 @@ int main(void) {
     check(dm_audio_peak(a, 0) < .001f, "instrument audition releases without GUI frames");
     uint8_t live_volume[DM_PARTS], live_pan[DM_PARTS];
     check(!dm_audio_mix_state(a, live_volume, live_pan), "stopped mixer shows channel settings");
-    check(dm_automation_add(&p, (DmAutomation){.25, 0xb0, 0, 10, 30, -1, 0, 0, 0, false, 0, false}),
+    uint8_t pan_change[] = {MIDI_CONTROL, MIDI_CC_PAN, 30};
+    check(dm_event_add(&p, .25, 0, 0, &(DmBytes){pan_change, sizeof(pan_change), 0}),
           "add song pan change");
     p.channels[0].pan = 64;
     check(dm_audio_publish(a, &p, 0, true, error, sizeof(error)), "play before the pan change");
@@ -416,7 +418,8 @@ int main(void) {
     SDL_Delay(250);
     check(dm_audio_mix_state(a, live_volume, live_pan) && live_pan[0] == 30,
           "mixer state follows a pan change as the song plays through it");
-    check(dm_automation_add(&p, (DmAutomation){.5, 0xb0, 0, 7, 40, -1, 0, 0, 0, false, 0, false}),
+    uint8_t volume_change[] = {MIDI_CONTROL, MIDI_CC_VOLUME, 40};
+    check(dm_event_add(&p, .5, 0, 0, &(DmBytes){volume_change, sizeof(volume_change), 0}),
           "add song volume change");
     check(dm_audio_publish(a, &p, 1, true, error, sizeof(error)), "seek after volume change");
     SDL_Delay(60);

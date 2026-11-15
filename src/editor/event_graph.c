@@ -44,9 +44,13 @@ static const DmAutomation *segment_end(const DmAutomation *items, size_t count, 
     return NULL;
 }
 
-static bool restored(const DmAutomation *items, size_t count, DmAutomation node) {
+/* Whether a Line node's value is replaced by its Line's restoration at the same beat, as playback
+   does when a section ends on its last node. A restoration later than the node (a stepped Line
+   converted from a Graph lane) leaves the node playing until then. */
+static bool restored_at(const DmAutomation *items, size_t count, DmAutomation node) {
     for (size_t i = 0; i < count; ++i) {
-        if (items[i].curve == -node.curve && same_lane(items[i], node)) {
+        if (items[i].curve == -node.curve && items[i].beat == node.beat &&
+            same_lane(items[i], node)) {
             return true;
         }
     }
@@ -122,24 +126,100 @@ static void sort_points(DmAutomation *items, size_t count) {
     }
 }
 
+static int automation_event_type(DmAutomation a) {
+    switch (a.type) {
+    case MIDI_PITCH_BEND:
+        return DM_EVENT_BEND;
+    case MIDI_PROGRAM:
+        return DM_EVENT_PROGRAM;
+    case MIDI_CHANNEL_PRESSURE:
+        return DM_EVENT_CHANNEL_PRESSURE;
+    case MIDI_KEY_PRESSURE:
+        return DM_EVENT_KEY_PRESSURE;
+    case MIDI_CONTROL:
+        return a.a;
+    default:
+        return INT32_MIN;
+    }
+}
+
+static bool find_last_bar(const DmAutomation *kept, size_t kept_count, const DmBytes *added,
+                          DmAutomation ref, int lane, DmAutomation *last) {
+    bool found = false;
+    const DmAutomation *added_items = (const DmAutomation *)added->data;
+    size_t added_count = added->size / sizeof(*added_items);
+
+    for (size_t i = kept_count; i > 0; --i) {
+        DmAutomation b = kept[i - 1];
+
+        if (b.pattern == ref.pattern && b.port == ref.port && dm_automation_graph_lane(b) == lane) {
+            *last = b;
+            found = true;
+            break;
+        }
+    }
+
+    for (size_t i = added_count; i > 0; --i) {
+        DmAutomation b = added_items[i - 1];
+
+        if (b.pattern == ref.pattern && b.port == ref.port && dm_automation_graph_lane(b) == lane) {
+            if (!found || dm_automation_later(b, *last)) {
+                *last = b;
+                found = true;
+            }
+
+            break;
+        }
+    }
+
+    return found;
+}
+
+static bool has_later_lane_point(const DmAutomation *items, size_t total, size_t index, int lane) {
+    DmAutomation a = items[index];
+
+    for (size_t j = index + 1; j < total; ++j) {
+        DmAutomation b = items[j];
+
+        if (b.pattern != a.pattern || b.port != a.port || dm_automation_graph_lane(b) != lane) {
+            continue;
+        }
+
+        if (b.curve > 0 && !segment_end(items, total, j) && restored_at(items, total, b)) {
+            continue;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
 /* The automation with the line sections and ramps of the selected Graph lanes of `pattern`
    replaced by discrete points: each node keeps its beat, and every cell start inside a curving
-   segment gets the value the segment plays there. A section's range setup and restoration points
-   become discrete points at their beats, so the pitch range and the value after the section are
-   unchanged. Sets *points to the new array of *count points, or NULL when nothing changes.
-   Returns false when memory runs out. */
+   segment gets the value the segment plays there. A section's range setup becomes a discrete point
+   at its beat; a restoration becomes a bar at its live return value, a bar at the default when it
+   releases mid-lane, or is dropped when it releases at the lane's end. `holds` (when non-NULL)
+   receives the resulting graph_hold state for converted lanes that have points. Sets *points to the
+   new array of *count points, or NULL when nothing changes. Returns false when memory runs out. */
 static bool graph_points(Editor *e, int pattern, const uint16_t *graphs, DmAutomation **points,
-                         size_t *count) {
+                         size_t *count, bool holds[DM_GRAPH_LANES]) {
     const DmAutomation *items = e->project.automation;
     size_t total = e->project.automation_count, id_count = 0, kept_count = 0;
     int *ids = malloc((total + 1) * sizeof(*ids));
     DmAutomation *kept = malloc((total + 1) * sizeof(*kept));
     DmBytes added = {0};
     bool ok = ids && kept, changed = false;
+    bool lane_seen[DM_GRAPH_LANES] = {false}, lane_hold[DM_GRAPH_LANES] = {false};
+
+    if (holds) {
+        memcpy(holds, e->project.patterns[pattern].graph_hold,
+               sizeof(e->project.patterns[pattern].graph_hold));
+    }
 
     for (size_t i = 0; ok && i < total; ++i) {
-        if (items[i].pattern == pattern && items[i].curve > 0 &&
-            items[i].type == MIDI_PITCH_BEND && graphs[DM_GRAPH_PITCH_LANE] > DM_GRAPH_POINT) {
+        if (items[i].pattern == pattern && items[i].curve > 0 && items[i].type == MIDI_PITCH_BEND &&
+            graphs[DM_GRAPH_PITCH_LANE] > DM_GRAPH_POINT) {
             ids[id_count++] = items[i].curve;
         }
     }
@@ -154,19 +234,56 @@ static bool graph_points(Editor *e, int pattern, const uint16_t *graphs, DmAutom
         int graph = a.pattern == pattern && lane >= 0 ? graphs[lane] : 0;
         bool convert = graph > DM_GRAPH_POINT;
         bool line = convert && a.curve > 0, ramp = convert && !a.curve && a.ramp;
-        bool pitch_setup = a.pattern == pattern && range_setup(a) &&
-                           converted_id(ids, id_count, a.curve);
+        bool pitch_setup =
+            a.pattern == pattern && range_setup(a) && converted_id(ids, id_count, a.curve);
 
-        if ((convert && a.curve < 0) || pitch_setup) {
-            kept[kept_count++] = discrete(a); /* Restoration or range setup of a section. */
+        if (convert && a.curve < 0) {
+            int value = 0;
+            changed = true;
+            lane_seen[lane] = true;
+
+            if (ed_restoration_value(e, i, &value)) {
+                DmAutomation bar = discrete(a);
+                ed_set_event_value(&bar, value);
+                kept[kept_count++] = bar;
+                lane_hold[lane] = true;
+            } else if (has_later_lane_point(items, total, i, lane)) {
+                DmAutomation bar = discrete(a);
+                ed_set_event_value(&bar, ed_value_before(e, -1, automation_event_type(a)));
+                kept[kept_count++] = bar;
+                lane_hold[lane] = true;
+            } else {
+                DmAutomation last;
+                double cell = 4.0 / graph;
+
+                if (find_last_bar(kept, kept_count, &added, a, lane, &last) &&
+                    a.beat - cell > last.beat + 1e-9) {
+                    DmAutomation end_bar = last;
+                    end_bar.beat = a.beat - cell;
+                    ok = dm_bytes(&added, &end_bar, sizeof(end_bar));
+                }
+
+                lane_hold[lane] = false;
+            }
+
+            continue;
+        }
+
+        if (pitch_setup) {
+            kept[kept_count++] = discrete(a); /* Range setup of a converted pitch section. */
             changed = true;
             continue;
         }
 
         if (!line && !ramp) {
-            if (convert && a.bend_root) {
-                a.bend_root = DM_BEND_ROOT_NONE;
-                changed = true;
+            if (convert) {
+                lane_seen[lane] = true;
+                lane_hold[lane] = holds && ed_point_holds(e, i);
+
+                if (a.bend_root) {
+                    a.bend_root = DM_BEND_ROOT_NONE;
+                    changed = true;
+                }
             }
 
             kept[kept_count++] = a;
@@ -177,8 +294,10 @@ static bool graph_points(Editor *e, int pattern, const uint16_t *graphs, DmAutom
         changed = true;
 
         /* Playback replaces a section's last value with its restoration at the same tick. */
-        if (!line || end || !restored(items, total, a)) {
+        if (!line || end || !restored_at(items, total, a)) {
             kept[kept_count++] = discrete(a);
+            lane_seen[lane] = true;
+            lane_hold[lane] = holds && ed_point_holds(e, i);
         }
 
         if (end && dm_automation_curves(a)) {
@@ -196,10 +315,102 @@ static bool graph_points(Editor *e, int pattern, const uint16_t *graphs, DmAutom
         ok = *points != NULL;
     }
 
+    if (ok && holds) {
+        for (int l = 0; l < DM_GRAPH_LANES; ++l) {
+            if (lane_seen[l]) {
+                holds[l] = lane_hold[l];
+            }
+        }
+    }
+
     free(ids);
     free(kept);
     dm_bytes_free(&added);
     return ok;
+}
+
+/* Converts a Graph lane back to Point mode: merges runs of equal bars, keeps them discrete when
+   `hold` is set, or turns them into one stepped Line ending in a releasing restoration one cell
+   after the last bar (clamped to the pattern length). */
+static bool points_from_graph(Editor *e, int pattern, int lane, int prev_graph, bool hold,
+                              DmAutomation **points, size_t *count) {
+    const DmAutomation *items = e->project.automation;
+    size_t total = e->project.automation_count, n = 0;
+    DmAutomation *out = malloc((total + DM_NOTE_PORTS + 1) * sizeof(*out));
+    *points = NULL;
+    *count = 0;
+
+    if (!out) {
+        return false;
+    }
+
+    int id = hold ? 0 : ed_curve_id(e);
+    bool has_last[DM_NOTE_PORTS] = {false};
+    DmAutomation last_bar[DM_NOTE_PORTS] = {0};
+    /* Each port's final bar, found once: a Graph lane holds only bars. */
+    size_t final[DM_NOTE_PORTS];
+
+    for (int port = 0; port < DM_NOTE_PORTS; ++port) {
+        final[port] = SIZE_MAX;
+    }
+
+    for (size_t i = 0; i < total; ++i) {
+        if (items[i].pattern == pattern && dm_automation_graph_lane(items[i]) == lane) {
+            final[items[i].port < DM_NOTE_PORTS ? items[i].port : 0] = i;
+        }
+    }
+
+    for (size_t i = 0; i < total; ++i) {
+        DmAutomation a = items[i];
+
+        if (a.pattern != pattern || dm_automation_graph_lane(a) != lane) {
+            out[n++] = a;
+            continue;
+        }
+
+        uint8_t port = a.port < DM_NOTE_PORTS ? a.port : 0;
+        bool last_for_port = !hold && final[port] == i;
+
+        if (!last_for_port && has_last[port] &&
+            ed_event_value(last_bar[port]) == ed_event_value(a) && last_bar[port].type == a.type &&
+            last_bar[port].a == a.a) {
+            last_bar[port] = a;
+            continue;
+        }
+
+        has_last[port] = true;
+        last_bar[port] = a;
+        DmAutomation point = discrete(a);
+
+        if (!hold) {
+            point.curve = id;
+            point.hold = true;
+        }
+
+        out[n++] = point;
+    }
+
+    if (!hold) {
+        double cell = 4.0 / prev_graph;
+        double length = ed_pattern_length(e);
+
+        for (int port = 0; port < DM_NOTE_PORTS; ++port) {
+            if (!has_last[port]) {
+                continue;
+            }
+
+            DmAutomation rest = discrete(last_bar[port]);
+            rest.beat = fmin(last_bar[port].beat + cell, length);
+            rest.curve = -id;
+            ed_set_event_value(&rest, ed_value_before(e, -1, automation_event_type(rest)));
+            out[n++] = rest;
+        }
+    }
+
+    sort_points(out, n);
+    *points = out;
+    *count = n;
+    return true;
 }
 
 static void apply_points(Editor *e, DmAutomation *points, size_t count) {
@@ -223,7 +434,7 @@ bool ed_graph_convert(Editor *e, int pattern) {
     size_t count = 0;
     DmAutomation *points;
 
-    if (!graph_points(e, pattern, p->graph_lanes, &points, &count)) {
+    if (!graph_points(e, pattern, p->graph_lanes, &points, &count, NULL)) {
         ed_message(e, DM_TEXT_CANNOT_ALLOCATE_AUTOMATION_EDIT);
         return false;
     }
@@ -257,12 +468,22 @@ void ed_graph_mode(Editor *e, int mode, int graph) {
 
     size_t count = 0;
     DmAutomation *points = NULL;
+    bool holds[DM_GRAPH_LANES];
+    memcpy(holds, p->graph_hold, sizeof(holds));
 
-    if (!mode && graph && p->graph_lanes[lane] <= DM_GRAPH_POINT && graph_lane_has_data(e, lane)) {
+    if (!mode && setting > DM_GRAPH_POINT && p->graph_lanes[lane] <= DM_GRAPH_POINT &&
+        graph_lane_has_data(e, lane)) {
         uint16_t graphs[DM_GRAPH_LANES] = {0};
-        graphs[lane] = (uint16_t)graph;
+        graphs[lane] = (uint16_t)setting;
 
-        if (!graph_points(e, e->selected_pattern, graphs, &points, &count)) {
+        if (!graph_points(e, e->selected_pattern, graphs, &points, &count, holds)) {
+            ed_message(e, DM_TEXT_CANNOT_ALLOCATE_AUTOMATION_EDIT);
+            return;
+        }
+    } else if (!mode && setting == DM_GRAPH_POINT && p->graph_lanes[lane] > DM_GRAPH_POINT &&
+               graph_lane_has_data(e, lane)) {
+        if (!points_from_graph(e, e->selected_pattern, lane, p->graph_lanes[lane],
+                               p->graph_hold[lane], &points, &count)) {
             ed_message(e, DM_TEXT_CANNOT_ALLOCATE_AUTOMATION_EDIT);
             return;
         }
@@ -279,6 +500,7 @@ void ed_graph_mode(Editor *e, int mode, int graph) {
 
     if (!mode) {
         p->graph_lanes[lane] = (uint16_t)setting;
+        memcpy(p->graph_hold, holds, sizeof(holds));
     }
 
     e->automation_node = -1;
@@ -307,6 +529,36 @@ void ed_graph_mode_request(Editor *e, int mode, int graph) {
     e->graph_switch_graph = graph;
 }
 
+const char *ed_graph_switch_message(Editor *e) {
+    int lane = dm_graph_lane(e->graph_switch_event);
+
+    /* Graph -> Point keeps bars as held points when the lane holds, else one releasing Line. */
+    if (!e->graph_switch_graph) {
+        const DmPattern *p = ed_pattern(e);
+        return p && lane >= 0 && p->graph_hold[lane] ? DM_TEXT_GRAPH_SWITCH_TO_POINT_HOLD
+                                                     : DM_TEXT_GRAPH_SWITCH_TO_POINT_RELEASE;
+    }
+
+    if (lane < 0) {
+        return DM_TEXT_GRAPH_SWITCH_TO_GRAPH;
+    }
+
+    const DmAutomation *items = e->project.automation;
+    size_t total = e->project.automation_count;
+
+    for (size_t i = 0; i < total; ++i) {
+        DmAutomation a = items[i];
+
+        if (a.pattern == e->selected_pattern && a.curve < 0 &&
+            dm_automation_graph_lane(a) == lane && !ed_restoration_value(e, i, NULL) &&
+            has_later_lane_point(items, total, i, lane)) {
+            return DM_TEXT_GRAPH_SWITCH_TO_GRAPH "\n" DM_TEXT_GRAPH_SWITCH_RELEASE_LOSS;
+        }
+    }
+
+    return DM_TEXT_GRAPH_SWITCH_TO_GRAPH;
+}
+
 void ed_graph_mode_dialog(Editor *e) {
     static const char *const buttons[] = {DM_TEXT_CANCEL, DM_TEXT_GRAPH_SWITCH_CONFIRM};
 
@@ -315,9 +567,7 @@ void ed_graph_mode_dialog(Editor *e) {
     }
 
     int choice = ui_confirm(DM_TEXT_GRAPH_SWITCH_TITLE, &e->graph_switch,
-                            e->graph_switch_graph ? DM_TEXT_GRAPH_SWITCH_TO_GRAPH
-                                                  : DM_TEXT_GRAPH_SWITCH_TO_POINT,
-                            buttons, 2);
+                            ed_graph_switch_message(e), buttons, 2);
     DmPattern *p = ed_pattern(e);
 
     if (choice == 1 && p && p->uid == e->graph_switch_uid &&
@@ -610,6 +860,19 @@ int ed_graph_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse) {
     }
 
     column_flush(&column);
+
+    if (previous != SIZE_MAX) {
+        DmPattern *pat = ed_pattern(e);
+        int graph_lane = dm_graph_lane(cc);
+        double release = e->project.automation[previous].beat + ed_event_snap(e);
+        double pat_end = ed_pattern_length(e);
+
+        if (pat && graph_lane >= 0 && !pat->graph_hold[graph_lane] && release < pat_end) {
+            uint32_t dim_color = (ed_graph_color(e) & 0xffffffu) | 0x66000000u;
+            ed_draw_heard_stretch(e, lane, v, scale, release, pat_end, 0, false, false, dim_color);
+        }
+    }
+
     return hit;
 }
 

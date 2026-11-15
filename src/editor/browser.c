@@ -628,19 +628,23 @@ bool ed_mixer_apply(Editor *e, DmPortMix before, DmPortMix mix) {
     return true;
 }
 
-static void mixer_store(Editor *e, DmPortMix before, DmPortMix mix) {
-    if (!ed_checkpoint(e)) {
-        return;
+static bool mixer_store(Editor *e, DmPortMix before, DmPortMix mix, bool checkpoint) {
+    if (checkpoint && !ed_checkpoint(e)) {
+        return false;
     }
 
     if (!ed_mixer_apply(e, before, mix)) {
-        ed_checkpoint_abandon(e);
+        if (checkpoint) {
+            ed_checkpoint_abandon(e);
+        }
+
         ed_message(e, DM_TEXT_CANNOT_ALLOCATE_PORT_MIXER);
-        return;
+        return false;
     }
 
     ed_midi_bindings_reset_pickup(e);
     ed_commit(e);
+    return true;
 }
 
 static void mixer_midi_learn(Editor *e, EdMidiTargetKind kind, int channel, int port) {
@@ -727,9 +731,11 @@ static void mixer_controls(Editor *e, int c, int port, bool labeled) {
     UiPoint v = {start.x + (width - 34) * .5f, start.y + label};
     ui_position(v.x, v.y);
     ui_vslider("##volume", &shown.volume, height);
+    bool volume_drag = ui_active();
 
     if (ui_item_middle()) {
         shown.volume = reset.volume;
+        volume_drag = false;
     }
 
     ui_tip(DM_TEXT_INITIAL_VOLUME_MIDDLE_CLICK);
@@ -770,9 +776,11 @@ static void mixer_controls(Editor *e, int c, int port, bool labeled) {
     mixer_midi_learn(e, ED_MIDI_SOLO, c, port);
     ui_position(start.x, v.y + height + 32);
     ui_mixer_pan(&shown.pan, width);
+    bool pan_drag = ui_active();
 
     if (ui_item_middle()) {
         shown.pan = reset.pan;
+        pan_drag = false;
     }
 
     snprintf(text, sizeof(text), DM_TEXT_PAN_MIDDLE_CLICK_RESET, shown.pan);
@@ -792,7 +800,15 @@ static void mixer_controls(Editor *e, int c, int port, bool labeled) {
 
     if (mix.volume != original.volume || mix.pan != original.pan || mix.mute != original.mute ||
         mix.solo != original.solo) {
-        mixer_store(e, original, mix);
+        int control = mix.volume != original.volume && volume_drag ? part * 2
+                      : mix.pan != original.pan && pan_drag      ? part * 2 + 1
+                                                                 : -1;
+        bool same_drag = control >= 0 && e->mixer_drag && e->mixer_drag_control == control;
+
+        if (mixer_store(e, original, mix, !same_drag)) {
+            e->mixer_drag = control >= 0;
+            e->mixer_drag_control = control;
+        }
     }
 }
 

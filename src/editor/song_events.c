@@ -65,13 +65,6 @@ static bool channel_event_type(int type, int a) {
 }
 
 static bool song_event_row(const Editor *e, MidiRow row, int channel) {
-    if (row.automation) {
-        DmAutomation a = e->project.automation[row.index];
-        return a.pattern < 0 &&
-               (channel >= 0 ? a.channel == channel : !e->channel_expanded[a.channel]) &&
-               channel_event_type(a.type, a.a);
-    }
-
     const DmBytes *m = &e->project.events[row.index].message;
 
     if (m->size && m->data[0] < MIDI_SYSTEM) {
@@ -106,9 +99,9 @@ size_t ed_song_event_rows(Editor *e, double start, double end, int channel) {
 
     for (size_t i = 0; i < count; ++i) {
         MidiRow row = rows[i];
-        int prior = dm_project_program_repeat(history, &e->project, row.index, row.automation);
 
-        if (prior < 0 && song_event_row(e, row, channel)) {
+        if (!row.automation && dm_project_program_repeat(history, &e->project, row.index) < 0 &&
+            song_event_row(e, row, channel)) {
             rows[selected++] = row;
         }
     }
@@ -136,8 +129,7 @@ size_t ed_song_event_pick_count(Editor *e) {
     for (size_t i = 0; i < count; ++i) {
         MidiRow row = picks[i];
 
-        if (row.index < 0 || (size_t)row.index >= (row.automation ? e->project.automation_count
-                                                                  : e->project.event_count)) {
+        if (row.index < 0 || (size_t)row.index >= e->project.event_count) {
             song_event_clear_picks(e);
             return 0;
         }
@@ -151,7 +143,7 @@ bool ed_song_event_picked(Editor *e, MidiRow row) {
     const MidiRow *picks = (const MidiRow *)e->song_event_picks.data;
 
     for (size_t i = 0; i < count; ++i) {
-        if (picks[i].index == row.index && picks[i].automation == row.automation) {
+        if (picks[i].index == row.index) {
             return true;
         }
     }
@@ -162,7 +154,7 @@ bool ed_song_event_picked(Editor *e, MidiRow row) {
 /* Before the first modifier click, the event open in the details panel counts as picked. */
 static bool song_event_single(const Editor *e, MidiRow row) {
     return e->midi_selection_revision == e->export_revision && e->midi_event_index == row.index &&
-           e->midi_event_kind == (int)row.automation;
+           e->midi_event_kind == 0;
 }
 
 /* After the picks change: one opens in the details panel; several start Move to at the beat
@@ -198,8 +190,7 @@ void ed_song_event_pick(Editor *e, size_t clicked, SelectPick pick) {
     size_t anchor = count, single = count;
 
     for (size_t i = 0; i < count; ++i) {
-        if (rows[i].index == e->song_event_pick_anchor &&
-            rows[i].automation == e->song_event_pick_automation) {
+        if (rows[i].index == e->song_event_pick_anchor) {
             anchor = i;
         }
 
@@ -240,7 +231,6 @@ void ed_song_event_pick(Editor *e, size_t clicked, SelectPick pick) {
 
     if (!range) {
         e->song_event_pick_anchor = rows[clicked].index;
-        e->song_event_pick_automation = rows[clicked].automation;
     }
 
     song_event_picked(e);
@@ -255,8 +245,7 @@ static bool song_event_move_bounds(Editor *e, double *earliest, double *latest) 
     for (size_t i = 0; i < count; ++i) {
         MidiRow row = picks[i];
 
-        double beat = row.automation ? e->project.automation[row.index].beat
-                                     : e->project.events[row.index].beat;
+        double beat = e->project.events[row.index].beat;
         *earliest = fmin(*earliest, beat);
         *latest = fmax(*latest, beat);
     }
@@ -265,70 +254,59 @@ static bool song_event_move_bounds(Editor *e, double *earliest, double *latest) 
 }
 
 /* Sorting carries the marks because event indices change when a moved row crosses another. */
-static void song_event_sort_marked(DmProject *p, bool *marks, bool automation) {
-    size_t count = automation ? p->automation_count : p->event_count;
+static void song_event_sort_marked(DmProject *p, bool *marks) {
+    size_t count = p->event_count;
 
     for (size_t i = 1; i < count; ++i) {
         size_t at = i;
         bool marked = marks[i];
+        DmEvent item = p->events[i];
 
-        if (automation) {
-            DmAutomation item = p->automation[i];
-
-            while (at && dm_automation_later(p->automation[at - 1], item)) {
-                p->automation[at] = p->automation[at - 1];
-                marks[at] = marks[at - 1];
-                --at;
-            }
-
-            p->automation[at] = item;
-        } else {
-            DmEvent item = p->events[i];
-
-            while (at && p->events[at - 1].beat > item.beat) {
-                p->events[at] = p->events[at - 1];
-                marks[at] = marks[at - 1];
-                --at;
-            }
-
-            p->events[at] = item;
+        while (at && p->events[at - 1].beat > item.beat) {
+            p->events[at] = p->events[at - 1];
+            marks[at] = marks[at - 1];
+            --at;
         }
 
+        p->events[at] = item;
         marks[at] = marked;
     }
 }
 
-static void song_event_move_marked(Editor *e, bool *marks, bool automation, double value,
-                                   bool absolute) {
+static void song_event_move_marked(Editor *e, bool *marks, double value, bool absolute) {
     DmProject *p = &e->project;
-    dm_collapse_marked_program_repeats(p, marks, automation);
-    size_t count = automation ? p->automation_count : p->event_count;
+    dm_collapse_marked_program_repeats(p, marks);
+    size_t count = p->event_count;
+    size_t kept = 0;
 
     for (size_t i = 0; i < count; ++i) {
         if (!marks[i]) {
+            p->events[kept] = p->events[i];
+            marks[kept++] = false;
             continue;
         }
 
-        double *beat = automation ? &p->automation[i].beat : &p->events[i].beat;
-        *beat = absolute ? value : *beat + value;
+        p->events[i].beat = absolute ? value : p->events[i].beat + value;
 
-        if (*beat == 0) {
-            if (!automation) {
-                ed_midi_apply_initial(e, p->events[i].message.data);
-            } else if (p->automation[i].pattern < 0) {
-                DmAutomation a = p->automation[i];
-                uint8_t bytes[] = {a.type | a.channel, a.a, a.b};
-                ed_midi_apply_initial(e, bytes);
+        if (p->events[i].beat == 0) {
+            ed_midi_apply_initial(e, p->events[i].message.data);
+
+            if (ed_midi_initial_mix(p->events[i].beat, &p->events[i].message)) {
+                dm_bytes_free(&p->events[i].message);
+                continue;
             }
         }
+
+        p->events[kept] = p->events[i];
+        marks[kept++] = true;
     }
 
-    song_event_sort_marked(p, marks, automation);
+    p->event_count = kept;
+    song_event_sort_marked(p, marks);
 
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < p->event_count; ++i) {
         if (marks[i]) {
-            double beat = automation ? p->automation[i].beat : p->events[i].beat;
-            MidiRow row = {beat, (int)i, automation};
+            MidiRow row = {p->events[i].beat, (int)i, false};
             dm_bytes(&e->song_event_picks, &row, sizeof(row));
         }
     }
@@ -345,11 +323,8 @@ bool ed_song_events_move(Editor *e, double value, bool absolute) {
     value = absolute ? fmax(0, fmin(DM_MAX_BEAT, value))
                      : fmax(-earliest, fmin(DM_MAX_BEAT - latest, value));
     bool *events = calloc(e->project.event_count + 1, sizeof(bool));
-    bool *automation = calloc(e->project.automation_count + 1, sizeof(bool));
 
-    if (!events || !automation) {
-        free(events);
-        free(automation);
+    if (!events) {
         return false;
     }
 
@@ -357,20 +332,17 @@ bool ed_song_events_move(Editor *e, double value, bool absolute) {
     MidiRow *picks = (MidiRow *)e->song_event_picks.data;
 
     for (size_t i = 0; i < count; ++i) {
-        (picks[i].automation ? automation : events)[picks[i].index] = true;
+        events[picks[i].index] = true;
     }
 
     if (!ed_checkpoint(e)) {
         free(events);
-        free(automation);
         return false;
     }
 
     e->song_event_picks.size = 0;
-    song_event_move_marked(e, events, false, value, absolute);
-    song_event_move_marked(e, automation, true, value, absolute);
+    song_event_move_marked(e, events, value, absolute);
     free(events);
-    free(automation);
     e->song_event_anchor = absolute ? value : earliest + value;
     e->song_event_pick_anchor = -1;
     e->midi_event_index = -1;
@@ -568,19 +540,8 @@ bool ed_song_event_add(Editor *e) {
         return false;
     }
 
-    bool saved;
-
-    if (m->data[0] < MIDI_SYSTEM && channel_event_type(m->data[0] & MIDI_STATUS_MASK, m->data[1])) {
-        DmAutomation a = {.beat = beat,
-                          .type = m->data[0] & MIDI_STATUS_MASK,
-                          .channel = m->data[0] & MIDI_CHANNEL_MASK,
-                          .a = m->data[1],
-                          .b = m->size > 2 ? m->data[2] : 0,
-                          .pattern = -1};
-        saved = dm_automation_add(&e->project, a);
-    } else {
-        saved = dm_event_add(&e->project, beat, 0, 0, m);
-    }
+    bool initial_mix = ed_midi_initial_mix(beat, m);
+    bool saved = initial_mix || dm_event_add(&e->project, beat, 0, 0, m);
 
     if (!saved) {
         ed_checkpoint_abandon(e);

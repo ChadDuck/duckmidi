@@ -29,6 +29,7 @@ pd/
 # Agents
 agents/
 AGENTS.md
+AGENTS-old.md
 CLAUDE.md
 tools/agents/
 tools/mcp/

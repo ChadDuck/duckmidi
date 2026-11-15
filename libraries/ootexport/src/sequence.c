@@ -1530,7 +1530,10 @@ static void write_head(Song *s, OotText *t, unsigned out, unsigned sec, const La
 
     if (drum) {
         emit(s, t, 2, "instr FONTANY_INSTR_DRUM");
-        emit(s, t, 2, "panweight %u", s->custom_pan[source] && s->has_pan[source] ? 128 : 0);
+        /* OoT initializes panChannelWeight to 128; panweight only accepts 0..127. */
+        if (!s->custom_pan[source] || !s->has_pan[source]) {
+            emit(s, t, 2, "panweight 0");
+        }
     } else if (s->preset_pan[source]) {
         emit(s, t, 2, "panweight 0");
     }

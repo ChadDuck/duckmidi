@@ -29,8 +29,97 @@ void ed_hover(Editor *e, const char *text) {
     snprintf(e->hover, sizeof(e->hover), "%s", text);
 }
 
+/* Append a whole entry, so a small buffer never ends in half a label or UTF-8 separator. */
+static bool modifier_hint_append(char *out, size_t cap, const char *prefix, const char *text) {
+    size_t used = strlen(out), extra = strlen(prefix) + strlen(text);
+
+    if (extra >= cap - used) {
+        return false;
+    }
+
+    memcpy(out + used, prefix, strlen(prefix));
+    memcpy(out + used + strlen(prefix), text, strlen(text) + 1);
+    return true;
+}
+
+void ed_modifier_hint(const Editor *e, UiMouse mouse, char *out, size_t cap) {
+    if (!cap) {
+        return;
+    }
+
+    out[0] = 0;
+    SDL_Keymod held =
+        (SDL_Keymod)((mouse.shift ? SDL_KMOD_SHIFT : 0) | (mouse.ctrl ? SDL_KMOD_CTRL : 0) |
+                     (mouse.alt ? SDL_KMOD_ALT : 0));
+    bool dragging = e->drag != DRAG_NONE || e->marquee || e->event_marquee || e->curve_drag;
+    unsigned phases = dragging ? PHASE_HELD : PHASE_PRESS | PHASE_CLICK | PHASE_DRAG | PHASE_WHEEL;
+    const SDL_Keymod groups[] = {SDL_KMOD_SHIFT,
+                                 SDL_KMOD_CTRL,
+                                 SDL_KMOD_ALT,
+                                 SDL_KMOD_SHIFT | SDL_KMOD_CTRL,
+                                 SDL_KMOD_SHIFT | SDL_KMOD_ALT,
+                                 SDL_KMOD_CTRL | SDL_KMOD_ALT,
+                                 SDL_KMOD_SHIFT | SDL_KMOD_CTRL | SDL_KMOD_ALT};
+
+    for (size_t group = 0; group < sizeof(groups) / sizeof(groups[0]); ++group) {
+        SDL_Keymod mods = groups[group];
+
+        if (held && (held & mods) != mods) {
+            continue;
+        }
+
+        for (int button = MOUSE_LEFT; button <= MOUSE_WHEEL; ++button) {
+            bool started = false;
+
+            for (int i = 0; i < GESTURE_COUNT; ++i) {
+                const GestureInfo *gesture = &ed_gestures[i];
+                MouseBinding binding = e->gestures[i];
+                int key_button = binding.button == MOUSE_ANY ? MOUSE_LEFT : binding.button;
+
+                if (!(gesture->targets & e->hover_target) || !(gesture->phases & phases) ||
+                    binding.mods != mods || key_button != button) {
+                    continue;
+                }
+
+                if (!started) {
+                    char key[96];
+                    snprintf(key, sizeof(key), "%s%s%s",
+                             mods & SDL_KMOD_SHIFT ? DM_TEXT_SHIFT_PLUS : "",
+                             mods & SDL_KMOD_CTRL ? DM_TEXT_CTRL_PLUS : "",
+                             mods & SDL_KMOD_ALT ? DM_TEXT_ALT_PLUS : "");
+                    const char *button_name = button == MOUSE_RIGHT    ? DM_TEXT_MOUSE_RIGHT_BUTTON
+                                              : button == MOUSE_MIDDLE ? DM_TEXT_MOUSE_MIDDLE_BUTTON
+                                              : button == MOUSE_WHEEL  ? DM_TEXT_MOUSE_WHEEL
+                                                                       : "";
+
+                    if (*button_name) {
+                        snprintf(key + strlen(key), sizeof(key) - strlen(key), "%s", button_name);
+                    } else {
+                        key[strlen(key) - 1] = 0; /* Drop the last '+' when no button is needed. */
+                    }
+
+                    char entry[256];
+                    snprintf(entry, sizeof(entry), DM_TEXT_MODIFIER_HINT_GROUP, key,
+                             gesture->label);
+
+                    if (!modifier_hint_append(out, cap, *out ? DM_TEXT_MODIFIER_HINT_SEPARATOR : "",
+                                              entry)) {
+                        return;
+                    }
+
+                    started = true;
+                } else if (!modifier_hint_append(out, cap, DM_TEXT_MODIFIER_HINT_LABEL_SEPARATOR,
+                                                 gesture->label)) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 void ed_info_box(Editor *e) {
     UiRect r = e->info_rect;
+    ed_modifier_hint(e, ui_mouse(), e->modifier_hint, sizeof(e->modifier_hint));
 
     if (r.w < 40) {
         return;
@@ -52,9 +141,17 @@ void ed_info_box(Editor *e) {
                        : recent              ? e->status
                                              : "";
 
-    if (*text) {
-        ui_label_fit((UiPoint){r.x + 12, r.y + (r.h - ui_font_size()) * .5f}, r.w - 24,
-                     *e->hover ? TEXT : DIM, text);
+    float font = ui_font_size();
+    float y = r.y + (r.h - font) * .5f;
+
+    if (*text && *e->modifier_hint && r.h >= font * 2) {
+        y = r.y + (r.h - font * 2) * .5f;
+        ui_label_fit((UiPoint){r.x + 12, y}, r.w - 24, *e->hover ? TEXT : DIM, text);
+        ui_label_fit((UiPoint){r.x + 12, y + font}, r.w - 24, DIM, e->modifier_hint);
+    } else if (*text) {
+        ui_label_fit((UiPoint){r.x + 12, y}, r.w - 24, *e->hover ? TEXT : DIM, text);
+    } else if (*e->modifier_hint) {
+        ui_label_fit((UiPoint){r.x + 12, y}, r.w - 24, DIM, e->modifier_hint);
     }
 }
 

@@ -284,7 +284,13 @@ double ed_pattern_region_origin(Editor *e) {
 void ed_scrub_publish(Editor *e, double beat, int context, bool playing) {
     double absolute = context == CONTEXT_ROLL && !e->pattern_mode ? e->scrub_origin + beat : beat;
     e->cursor_beat[e->pattern_mode] = e->start_beat[e->pattern_mode] = absolute;
-    ed_transport_publish(e, dm_beat_seconds(&e->project, absolute), playing);
+    double seconds = dm_beat_seconds(&e->project, absolute);
+
+    /* A step of a drag only moves playback when the schedule is still current; the release
+       (scrub already cleared) and anything else publishes the project afresh. */
+    if (!e->scrub || !ed_transport_seek(e, seconds, playing)) {
+        ed_transport_publish(e, seconds, playing);
+    }
 }
 
 static void timeline_begin(Editor *e, UiRect r, float label, int context, bool hovered,
@@ -372,6 +378,11 @@ void ed_timeline_drag(Editor *e, UiRect r, View *v, float scale, float label, in
                       bool hovered) {
     UiMouse mouse = ui_mouse();
     timeline_region(e, r, v, scale, label, context, hovered, mouse);
+
+    if (hovered && mouse.pos.y < r.y + 28 && mouse.pos.x >= r.x + label) {
+        e->hover_target = TARGET_TIMELINE;
+    }
+
     timeline_begin(e, r, label, context, hovered, mouse);
 
     if (!e->scrub || e->scrub_context != context) {

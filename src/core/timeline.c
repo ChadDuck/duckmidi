@@ -9,6 +9,7 @@ bool dm_midi_add_message(Midi *m, double beat, int track, const uint8_t *data, s
 
     Raw r = {0};
     r.tick = (uint64_t)llround(beat * DM_PPQ);
+    r.placed = r.tick;
     r.track = track;
 
     if (!dm_bytes(&r.bytes, data, size) || !dm_midi_raw_add(m, &r)) {
@@ -30,6 +31,18 @@ static bool muted(const DmProject *p, int c) {
 }
 
 static bool collect_channels(const DmProject *p, Midi *m) {
+    /* A song's own program change at beat 0 already plays the channel's program
+       (collect_source_events), after any bank select there; the setup does not send it twice. */
+    bool song_program[16] = {false};
+
+    for (size_t i = 0; i < p->event_count && p->events[i].beat == 0; ++i) {
+        const DmBytes *b = &p->events[i].message;
+
+        if (b->size == 2 && (b->data[0] & MIDI_STATUS_MASK) == MIDI_PROGRAM) {
+            song_program[b->data[0] & MIDI_CHANNEL_MASK] = true;
+        }
+    }
+
     for (int c = 0; c < 16; ++c) {
         if (p->channels[c].enabled) {
             uint8_t program[] = {
@@ -38,7 +51,7 @@ static bool collect_channels(const DmProject *p, Midi *m) {
             uint8_t vol[] = {MIDI_CONTROL | c, MIDI_CC_VOLUME, (uint8_t)p->channels[c].volume},
                     pan[] = {MIDI_CONTROL | c, MIDI_CC_PAN, (uint8_t)p->channels[c].pan};
 
-            if (!dm_midi_add_message(m, 0, c + 1, program, 2) ||
+            if ((!song_program[c] && !dm_midi_add_message(m, 0, c + 1, program, 2)) ||
                 !dm_midi_add_message(m, 0, c + 1, vol, 3) ||
                 !dm_midi_add_message(m, 0, c + 1, pan, 3)) {
                 return false;
@@ -49,6 +62,15 @@ static bool collect_channels(const DmProject *p, Midi *m) {
     }
 
     return true;
+}
+
+static bool sysex_reset(const DmBytes *message);
+
+/* A SysEx reset before the song's first note is part of the song's setup: it is sent at beat 0
+   with the opening SysEx, before the channel setup it would otherwise wipe (opening volume, pan
+   and program are sent at beat 0 too). */
+static bool opening_reset(const DmEvent *e, double first_note) {
+    return e->beat > 0 && e->beat < first_note && sysex_reset(&e->message);
 }
 
 static bool skip_source_event(const uint8_t *b, double beat) {
@@ -71,11 +93,13 @@ static bool skip_source_event(const uint8_t *b, double beat) {
 }
 
 static bool collect_source_events(const DmProject *p, Midi *m) {
+    double first_note = dm_first_note(p, -1);
+
     for (size_t i = 0; i < p->event_count; ++i) {
         const DmEvent *e = &p->events[i];
         const uint8_t *b = e->message.data;
 
-        if (skip_source_event(b, e->beat)) {
+        if (skip_source_event(b, e->beat) || opening_reset(e, first_note)) {
             continue;
         }
 
@@ -101,30 +125,16 @@ static bool collect_source_events(const DmProject *p, Midi *m) {
     return true;
 }
 
-static bool collect_song_automation(const DmProject *p, Midi *m) {
-    for (size_t i = 0; i < p->automation_count; ++i) {
-        DmAutomation a = p->automation[i];
-
-        if (a.pattern >= 0) {
-            continue;
-        }
-
-        uint8_t b[] = {a.type | a.channel, a.a, a.b};
-
-        if (!dm_midi_add_message(m, a.beat, a.channel + 1, b,
-                                 a.type == MIDI_PROGRAM || a.type == MIDI_CHANNEL_PRESSURE ? 2
-                                                                                           : 3)) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 /* Converts a pattern beat to a song beat. Controls before a placement's offset are sent at its
    start, in order, so the placement begins with the pattern's state at that point. */
 static double clip_time(const DmClip *clip, double beat) {
     return clip->beat + fmax(0, beat - clip->offset);
+}
+
+/* Raw.source: where a pattern message sits in its pattern, so messages a slice moves onto its
+   first tick keep the pattern's order. */
+static uint64_t pattern_tick(double beat) {
+    return (uint64_t)llround(fmax(0, beat) * DM_PPQ);
 }
 
 static double clip_end(const DmProject *p, const DmClip *clip) {
@@ -138,8 +148,14 @@ static bool curve_sample(Midi *m, const DmClip *clip, DmAutomation a, double bea
                                                                                 : a.a;
     uint8_t second = a.type == MIDI_PITCH_BEND ? (value >> 7) & MIDI_DATA_MASK : value;
     uint8_t message[] = {a.type | clip->channel, first, second};
-    return dm_midi_add_message(m, clip_time(clip, beat), clip->channel + 1, message,
-                               (a.type & MIDI_SHORT_MASK) == MIDI_PROGRAM ? 2 : 3);
+
+    if (!dm_midi_add_message(m, clip_time(clip, beat), clip->channel + 1, message,
+                             (a.type & MIDI_SHORT_MASK) == MIDI_PROGRAM ? 2 : 3)) {
+        return false;
+    }
+
+    m->items[m->count - 1].source = pattern_tick(beat);
+    return true;
 }
 
 typedef struct {
@@ -334,6 +350,7 @@ static bool curve_segment(const DmProject *p, Midi *m, const DmClip *clip, size_
     }
 
     int steps = (int)fmin(8192, fmax(1, ceil((b.beat - a.beat) * 48)));
+    uint64_t placed = (uint64_t)llround(clip_time(clip, a.beat) * DM_PPQ);
 
     for (int step = 1; step < steps; ++step) {
         double t = (double)step / steps, value = dm_curve_value(a, b, t);
@@ -343,42 +360,11 @@ static bool curve_segment(const DmProject *p, Midi *m, const DmClip *clip, size_
         if (!curve_sample(m, clip, a, a.beat + (b.beat - a.beat) * t, wheel)) {
             return false;
         }
+
+        m->items[m->count - 1].placed = placed;
     }
 
     return true;
-}
-
-static bool curve_setup(DmAutomation a) {
-    return a.type == MIDI_CONTROL && (a.a == MIDI_CC_DATA || a.a == MIDI_CC_DATA_LSB ||
-                                      a.a == MIDI_CC_RPN_LSB || a.a == MIDI_CC_RPN_MSB);
-}
-
-static int curve_phase(const DmProject *p, DmAutomation a) {
-    if (a.curve < 0) {
-        return 2;
-    }
-
-    if (a.curve == 0 || curve_setup(a)) {
-        return 3;
-    }
-
-    for (size_t i = 0; i < p->automation_count; ++i) {
-        DmAutomation next = p->automation[i];
-
-        if (next.pattern != a.pattern || next.curve != a.curve || next.type != a.type) {
-            continue;
-        }
-
-        if (a.type == MIDI_CONTROL && a.a != next.a) {
-            continue;
-        }
-
-        if (next.beat > a.beat) {
-            return 3;
-        }
-    }
-
-    return 1;
 }
 
 /* Authored glide sections own their enable switch; imported discrete CC5 stays literal. */
@@ -420,35 +406,21 @@ static bool collect_portamento_gate(const DmProject *p, Midi *m, const DmClip *c
     }
 
     m->items[m->count - 1].phase = 3;
+    m->items[m->count - 1].source = pattern_tick(a.beat);
 
     if (!dm_midi_add_message(m, clip_time(clip, end), clip->channel + 1, off, 3)) {
         return false;
     }
 
     m->items[m->count - 1].phase = 2;
+    m->items[m->count - 1].source = pattern_tick(end);
     return true;
-}
-
-/* What a graph lane returns to after its last bar: the values the editor starts a lane from
-   (ed_value_before), with no pitch bend. */
-static int graph_default(const DmProject *p, const DmClip *clip, int lane) {
-    switch (lane) {
-    case 128:
-        return MIDI_BEND_CENTER;
-    case MIDI_CC_VOLUME:
-        return p->channels[clip->channel].volume;
-    case MIDI_CC_PAN:
-        return p->channels[clip->channel].pan;
-    case MIDI_CC_EXPRESSION:
-        return 127;
-    default:
-        return lane >= 70 && lane <= 79 ? 64 : 0;
-    }
 }
 
 /* A graph lane's last played bar lasts one cell; then the lane returns to its default, as a Point
    section's restoration does, instead of holding for the rest of the song. Earlier bars hold
-   until the next bar. */
+   until the next bar. A lane set to hold (graph_hold) keeps its last bar until the placement
+   ends, where ownership releases it. */
 static bool graph_returns(const DmProject *p, Midi *m, const DmClip *clip) {
     const DmPattern *pat = &p->patterns[clip->pattern];
 
@@ -464,18 +436,23 @@ static bool graph_returns(const DmProject *p, Midi *m, const DmClip *clip) {
         int lane = dm_automation_graph_lane(a);
 
         if (a.pattern != clip->pattern || a.beat > end || lane < 0 ||
-            pat->graph_lanes[lane] <= DM_GRAPH_POINT || a.curve || a.port >= DM_NOTE_PORTS ||
-            seen[a.port][lane / 8] & (1u << lane % 8)) {
+            pat->graph_lanes[lane] <= DM_GRAPH_POINT || pat->graph_hold[lane] || a.curve ||
+            a.port >= DM_NOTE_PORTS || seen[a.port][lane / 8] & (1u << lane % 8)) {
             continue;
         }
 
         seen[a.port][lane / 8] |= (uint8_t)(1u << lane % 8);
         double cell = 4.0 / pat->graph_lanes[lane];
 
-        if (!curve_sample(m, clip, a, fmin(a.beat + cell, end), graph_default(p, clip, lane))) {
+        /* A release: the owner gives up the lane here (phase 2), so the last bar's value is only
+           a placeholder that nothing plays. */
+        int last = a.type == MIDI_PITCH_BEND ? a.a + (a.b << 7) : a.b;
+
+        if (!curve_sample(m, clip, a, fmin(a.beat + cell, end), last)) {
             return false;
         }
 
+        m->items[m->count - 1].placed = (uint64_t)llround(clip_time(clip, a.beat) * DM_PPQ);
         m->items[m->count - 1].phase = 2; /* Before a following placement's values. */
     }
 
@@ -521,7 +498,11 @@ static bool collect_pattern_automation(const DmProject *p, Midi *m, const DmClip
                                  (a.type & MIDI_SHORT_MASK) == MIDI_PROGRAM ? 2 : 3);
 
         if (ok) {
-            m->items[m->count - 1].phase = curve_phase(p, a);
+            Raw *raw = &m->items[m->count - 1];
+            raw->phase = dm_automation_phase(p, a);
+            raw->restores = a.curve < 0;
+            raw->line = abs(a.curve);
+            raw->source = pattern_tick(a.beat);
         }
     }
 
@@ -554,32 +535,17 @@ static bool collect_clip_notes(const DmProject *p, Midi *m, const DmClip *clip) 
     return true;
 }
 
-static bool collect_note_clips(const DmProject *p, Midi *m, bool mixer) {
-    for (size_t i = 0; i < p->clip_count; ++i) {
-        const DmClip *clip = &p->clips[i];
-
-        if (mixer && muted(p, clip->channel)) {
-            continue;
-        }
-
-        if (!collect_pattern_automation(p, m, clip) || !collect_clip_notes(p, m, clip)) {
-            return false;
-        }
-    }
-
-    return true;
-}
-
 /* Resolve modular automation once for both MIDI export and audible schedules. */
 typedef struct {
-    uint64_t tick;
-    int key, owner, value, priority;
+    uint64_t tick, placed;
+    int key, owner, value, priority, row;
     bool active;
     double start;
     size_t order;
     size_t source_index;
-    int rpn_msb, rpn_lsb;
     bool generated_default;
+    bool implicit; /* A bend range captured because a bend arrived without its own range. */
+    bool yields;   /* A pedal section's pedal-up: any newer message for the key beats it. */
 } ModEvent;
 
 typedef struct {
@@ -589,8 +555,65 @@ typedef struct {
 
 enum { MOD_PROGRAM = 258 };
 
+/* Keys: a channel's controllers, bend, pressures and program are channel * MOD_CONTROLS +
+   control; an RPN or NRPN parameter is MOD_PARAMS + channel * MOD_PARAM_CHANNEL + (NRPN ?
+   16384 : 0) + MSB * 128 + LSB, a setting of its own. */
+enum { MOD_CONTROLS = 260, MOD_PARAMS = 16 * MOD_CONTROLS, MOD_PARAM_CHANNEL = 32768 };
+
+static bool mod_param(int key) {
+    return key >= MOD_PARAMS;
+}
+
+static int mod_channel(int key) {
+    return mod_param(key) ? (key - MOD_PARAMS) / MOD_PARAM_CHANNEL : key / MOD_CONTROLS;
+}
+
+/* The controller, bend (128), pressure or program of a key; -1 for a parameter. */
+static int mod_control(int key) {
+    return mod_param(key) ? -1 : key % MOD_CONTROLS;
+}
+
+static int mod_param_key(int channel, bool nrpn, int msb, int lsb) {
+    return MOD_PARAMS + channel * MOD_PARAM_CHANNEL + (nrpn ? 16384 : 0) + msb * 128 + lsb;
+}
+
+/* Pitch bend range: RPN 0/0. */
+static int mod_range_key(int channel) {
+    return mod_param_key(channel, false, 0, 0);
+}
+
+static bool mod_range(int key) {
+    return mod_param(key) && key == mod_range_key(mod_channel(key));
+}
+
+/* Channel mode messages (all sound off, reset all controllers, all notes off, mono and poly mode,
+   ...) are commands, not settings: they are never owned or de-duplicated, and always sent. */
+static bool mod_command(const uint8_t *b) {
+    return (b[0] & MIDI_STATUS_MASK) == MIDI_CONTROL && b[1] >= MIDI_CC_SOUND_OFF;
+}
+
+/* A GS reset, XG System On, or GM/GM2 System On: the synth puts its parts back to defaults. */
+static bool sysex_reset(const DmBytes *message) {
+    if (message->size < 3 || message->data[0] != MIDI_SYSEX || message->data[1] & 0x80) {
+        return false;
+    }
+
+    const uint8_t *d = message->data + 2; /* After the status and a one-byte length. */
+    size_t n = message->size - 2;
+    bool gs = n >= 7 && d[0] == 0x41 && d[2] == 0x42 && d[3] == 0x12 && d[4] == 0x40 && !d[5] &&
+              d[6] == 0x7f;
+    bool xg = n >= 6 && d[0] == 0x43 && (d[1] & 0xf0) == 0x10 && d[2] == 0x4c && !d[3] && !d[4] &&
+              d[5] == 0x7e;
+    bool gm = n >= 4 && d[0] == 0x7e && d[2] == 0x09 && (d[3] == 1 || d[3] == 3);
+    return gs || xg || gm;
+}
+
 static int mod_key(const uint8_t *b) {
     int type = b[0] & MIDI_STATUS_MASK, control = -1;
+
+    if (mod_command(b)) {
+        return -1;
+    }
 
     if (type == MIDI_CONTROL) {
         if (b[1] == MIDI_CC_DATA || b[1] == MIDI_CC_DATA_LSB ||
@@ -617,7 +640,7 @@ static int mod_key(const uint8_t *b) {
         control = MOD_PROGRAM;
     }
 
-    return control < 0 ? -1 : (b[0] & MIDI_CHANNEL_MASK) * 260 + control;
+    return control < 0 ? -1 : (b[0] & MIDI_CHANNEL_MASK) * MOD_CONTROLS + control;
 }
 
 static int mod_value(const uint8_t *b) {
@@ -628,7 +651,7 @@ static int mod_value(const uint8_t *b) {
 }
 
 static bool mod_patch_key(int key) {
-    int cc = key % 260;
+    int cc = mod_control(key);
     return cc == MIDI_CC_BANK || cc == MIDI_CC_BANK_LSB || cc == MOD_PROGRAM;
 }
 
@@ -657,11 +680,15 @@ static int mod_compare(const void *a, const void *b) {
     return x->order < y->order ? -1 : x->order > y->order;
 }
 
+/* The value a setting falls back to when nothing plays it, or -1 when there is none to send (an
+   RPN or NRPN whose default the synth decides keeps its last value). */
 static int mod_default(const DmProject *p, int key) {
-    int cc = key % 260, c = key / 260;
+    int cc = mod_control(key), c = mod_channel(key);
 
-    if (cc == 259) {
-        return 2 * 128;
+    if (mod_param(key)) {
+        int number = (key - MOD_PARAMS) % MOD_PARAM_CHANNEL;
+        /* GM: bend range 2 semitones (RPN 0/0), fine and coarse tuning centred (0/1, 0/2). */
+        return number == 0 ? 2 * 128 : number == 1 || number == 2 ? 64 * 128 : -1;
     }
 
     if (cc >= 70 && cc <= 79) {
@@ -699,13 +726,22 @@ static int mod_default(const DmProject *p, int key) {
     return 0;
 }
 
-static bool mod_range_emit(Midi *m, ModEvent e, int value) {
-    const int controls[] = {
-        101, 100, 6, 38, e.rpn_msb >= 128 ? 99 : 101, e.rpn_msb >= 128 ? 98 : 100};
-    int values[] = {0, 0, value / 128, value % 128, e.rpn_msb & 127, e.rpn_lsb};
-    int c = e.key / 260;
+/* A parameter value as one complete message group: select, data entry (with its fine part for the
+   bend range or when it has one), then the null select, so no later data entry lands on it. */
+static bool mod_param_emit(Midi *m, ModEvent e, int value) {
+    int number = (e.key - MOD_PARAMS) % MOD_PARAM_CHANNEL, c = mod_channel(e.key);
+    bool nrpn = number >= 16384, fine = mod_range(e.key) || value % 128;
+    int msb_cc = nrpn ? MIDI_CC_NRPN_MSB : MIDI_CC_RPN_MSB,
+        lsb_cc = nrpn ? MIDI_CC_NRPN_LSB : MIDI_CC_RPN_LSB;
+    const int controls[] = {msb_cc,           lsb_cc,          MIDI_CC_DATA,
+                            MIDI_CC_DATA_LSB, MIDI_CC_RPN_MSB, MIDI_CC_RPN_LSB};
+    const int values[] = {(number >> 7) & 127, number & 127, value / 128, value % 128, 127, 127};
 
     for (int i = 0; i < 6; ++i) {
+        if (i == 3 && !fine) {
+            continue;
+        }
+
         uint8_t bytes[] = {MIDI_CONTROL | c, controls[i], values[i]};
 
         if (!dm_midi_add_message(m, (double)e.tick / DM_PPQ, c + 1, bytes, 3)) {
@@ -719,10 +755,10 @@ static bool mod_range_emit(Midi *m, ModEvent e, int value) {
 }
 
 static bool mod_emit(Midi *m, ModEvent e, int value) {
-    int cc = e.key % 260, c = e.key / 260, type = MIDI_CONTROL, a = cc, b = value;
+    int cc = mod_control(e.key), c = mod_channel(e.key), type = MIDI_CONTROL, a = cc, b = value;
 
-    if (cc == 259) {
-        return mod_range_emit(m, e, value);
+    if (mod_param(e.key)) {
+        return mod_param_emit(m, e, value);
     }
 
     if (cc == 128) {
@@ -764,6 +800,40 @@ static bool mod_emit(Midi *m, ModEvent e, int value) {
     return true;
 }
 
+/* Highest priority wins. Among automation patterns (priority 1), the most recently placed
+   point wins, then the higher row (smaller lane number), then later start, then higher owner. */
+static bool mod_beats(const ModEvent *a, const ModEvent *b) {
+    /* A pedal section's pedal-up lasts only until the next pedal message from anything, even a
+       lower-ranked owner such as a Channel Event; against older values the usual order holds. */
+    if (a->yields && b->tick > a->tick) {
+        return false;
+    }
+
+    if (b->yields && a->tick > b->tick) {
+        return true;
+    }
+
+    if (a->priority != b->priority) {
+        return a->priority > b->priority;
+    }
+
+    if (a->priority == 1) {
+        if (a->placed != b->placed) {
+            return a->placed > b->placed;
+        }
+
+        if (a->row != b->row) {
+            return a->row < b->row;
+        }
+    }
+
+    if (a->start != b->start) {
+        return a->start > b->start;
+    }
+
+    return a->owner > b->owner;
+}
+
 static ModEvent mod_winner(ModEvent *states, size_t used, ModEvent fallback) {
     ModEvent *winner = NULL;
 
@@ -774,10 +844,7 @@ static ModEvent mod_winner(ModEvent *states, size_t used, ModEvent fallback) {
             continue;
         }
 
-        if (!winner || v->priority > winner->priority ||
-            (v->priority == winner->priority &&
-             (v->start > winner->start ||
-              (v->start == winner->start && v->owner > winner->owner)))) {
+        if (!winner || mod_beats(v, winner)) {
             winner = v;
         }
     }
@@ -785,7 +852,117 @@ static ModEvent mod_winner(ModEvent *states, size_t used, ModEvent fallback) {
     return winner ? *winner : fallback;
 }
 
-static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events, size_t count) {
+/* A point after which the next value the song sends is sent even when it repeats: a reset the
+   synth applies (Reset All Controllers on channel, a SysEx reset on every channel), or the loop
+   start (channel -1 too), where a looped player jumps back to values the song re-sends. */
+typedef struct {
+    uint64_t tick;
+    int channel;
+    bool controllers; /* Reset All Controllers: only the settings it resets. */
+} ModForget;
+
+/* Whether Reset All Controllers resets key: not volume, pan, bank, program, effect depths or
+   sound controllers (MIDI RP-015). */
+static bool reset_controller(int key) {
+    int cc = mod_control(key); /* It resets the parameter selection, not parameters (-1). */
+    return !(cc < 0 || cc == MIDI_CC_VOLUME || cc == MIDI_CC_PAN || cc == MIDI_CC_BANK ||
+             cc == MIDI_CC_BANK_LSB || cc == MOD_PROGRAM || (cc >= 70 && cc <= 79) ||
+             (cc >= 91 && cc <= 95));
+}
+
+static int forget_compare(const void *a, const void *b) {
+    const ModForget *x = a, *y = b;
+    return x->tick < y->tick ? -1 : x->tick > y->tick;
+}
+
+/* The owner of a leading setting from tick on: the bend leads the bend range, the program leads
+   the bank. owner is -2 while nobody plays the setting. */
+typedef struct {
+    uint64_t tick;
+    int owner;
+} ModLead;
+
+/* The setting a follower key goes with, or -1: a bend range goes with its channel's bend, a bank
+   (MSB or LSB) with its program. */
+static int mod_leader_key(int key) {
+    int cc = mod_control(key), c = mod_channel(key);
+    return mod_range(key)                                 ? c * MOD_CONTROLS + 128
+           : cc == MIDI_CC_BANK || cc == MIDI_CC_BANK_LSB ? c * MOD_CONTROLS + MOD_PROGRAM
+                                                          : -1;
+}
+
+/* The winners of one key over time, as mod_resolve_key picks them. */
+static bool mod_leads(const ModEvent *events, size_t count, ModLead **out, size_t *lead_count) {
+    ModEvent *states = calloc(count + 1, sizeof(*states));
+    ModLead *leads = malloc((count + 1) * sizeof(*leads));
+    *out = NULL;
+    *lead_count = 0;
+
+    if (!states || !leads) {
+        free(states);
+        free(leads);
+        return false;
+    }
+
+    size_t used = 0, n = 0;
+    ModEvent none = {.owner = -2, .active = false};
+
+    for (size_t i = 0; i < count;) {
+        uint64_t tick = events[i].tick;
+
+        do {
+            ModEvent e = events[i++];
+            size_t k = 0;
+
+            while (k < used && states[k].owner != e.owner) {
+                ++k;
+            }
+
+            used += k == used;
+            states[k] = e;
+        } while (i < count && events[i].tick == tick);
+
+        int owner = mod_winner(states, used, none).owner;
+
+        if (!n || leads[n - 1].owner != owner) {
+            leads[n++] = (ModLead){tick, owner};
+        }
+    }
+
+    free(states);
+    *out = leads;
+    *lead_count = n;
+    return true;
+}
+
+/* The leader's owner at tick, or -2. */
+static int mod_lead_at(const ModLead *leads, size_t count, uint64_t tick) {
+    size_t low = 0, high = count;
+
+    while (low < high) {
+        size_t mid = low + (high - low) / 2;
+
+        if (leads[mid].tick <= tick) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+
+    return low ? leads[low - 1].owner : -2;
+}
+
+/* last_sound holds each channel's last note-off tick in this route (UINT64_MAX for a channel
+   without notes). A release to the song's own value or the default (the baseline, owner -1,
+   taking over because every placement owning the controller ended) at or after it is not
+   written: no note hears it, and a plain import would otherwise gain a reset per controller at
+   its end. Control passing to another playing placement is always written, and so are pedal
+   releases, since a held pedal keeps notes sounding. */
+/* With leads (the leading setting's owners over time), the follower plays the lead owner's own
+   value while it has one (an implicit bend range does not count); otherwise the usual winner. */
+static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events, size_t count,
+                            const uint64_t last_sound[16], const ModLead *leads, size_t lead_count,
+                            const ModForget *forget, size_t forget_count) {
     ModEvent *states = calloc(count + 1, sizeof(*states));
 
     if (!states) {
@@ -799,14 +976,26 @@ static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events,
     bool authored = false;
 
     for (size_t i = 0; i < count; i++) {
-        authored |= events[i].key % 260 == MIDI_CC_PAN && !events[i].generated_default;
+        authored |= mod_control(events[i].key) == MIDI_CC_PAN && !events[i].generated_default;
     }
 
-    for (size_t i = 0; i < count && ok;) {
-        size_t first = i;
-        uint64_t tick = events[i].tick;
+    size_t li = 0, fi = 0;
+    bool forgotten = false;
+    int channel = mod_channel(events[0].key);
 
-        do {
+    for (size_t i = 0; (i < count || li < lead_count) && ok;) {
+        size_t first = i;
+        /* A change of the lead's owner is a reason to choose again, with or without a message of
+           this key at that tick. */
+        uint64_t next_event = i < count ? events[i].tick : UINT64_MAX;
+        uint64_t next_lead = li < lead_count ? leads[li].tick : UINT64_MAX;
+        uint64_t tick = next_event < next_lead ? next_event : next_lead;
+
+        while (li < lead_count && leads[li].tick <= tick) {
+            ++li;
+        }
+
+        while (i < count && events[i].tick == tick) {
             ModEvent e = events[i++];
             size_t k = 0;
 
@@ -819,19 +1008,82 @@ static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events,
             }
 
             states[k] = e;
-        } while (i < count && events[i].tick == tick);
+        }
+
+        bool lead_only = first == i;
+
+        for (; fi < forget_count && forget[fi].tick <= tick; ++fi) {
+            forgotten |= (forget[fi].channel < 0 || forget[fi].channel == channel) &&
+                         (!forget[fi].controllers || reset_controller(events[0].key));
+        }
+
+        if (!used) {
+            continue; /* Nothing of this key has been placed yet. */
+        }
+
         ModEvent fallback = events[0];
         fallback.owner = -1;
         fallback.active = false;
         fallback.value = mod_default(p, events[0].key);
-        fallback.rpn_msb = fallback.rpn_lsb = 127;
         ModEvent chosen = mod_winner(states, used, fallback);
+        int lead = leads ? mod_lead_at(leads, lead_count, tick) : -2;
+
+        if (leads) {
+            /* The lead's own value; else, when the lead has none of its own, the usual winner
+               among owners that set one (an implicit bend range is not one). */
+            const ModEvent *own = NULL, *best = NULL;
+
+            for (size_t k = 0; k < used; ++k) {
+                const ModEvent *v = &states[k];
+
+                if (!v->active || v->implicit) {
+                    continue;
+                }
+
+                if (lead != -2 && v->owner == lead) {
+                    own = v;
+                }
+
+                if (!best || mod_beats(v, best)) {
+                    best = v;
+                }
+            }
+
+            if (own || best) {
+                chosen = own ? *own : *best;
+            }
+        }
+
+        /* Kept by its lead (a losing pattern's message at this tick, or the lead changing hands)
+           with nothing new to send. A song message at this tick still plays as written, so the
+           winner is then sent again after it, as below. */
+        bool song_message = false;
+
+        for (size_t j = first; j < i; ++j) {
+            song_message |= events[j].owner < 0;
+        }
+
+        /* After a reset or the loop start, a value the song sends again is sent again. */
+        bool resend = forgotten && chosen.active && chosen.tick == tick;
+        bool kept = chosen.owner == last.owner && chosen.value == last.value &&
+                    chosen.tick != tick && !song_message && !resend;
+
+        if ((lead_only || (leads && chosen.owner == lead)) && kept) {
+            continue;
+        }
+
         chosen.generated_default &= !authored;
+        bool authored_tick = chosen.tick == tick;
         bool patch_selection =
-            patch && ((chosen.active && chosen.tick == tick) || chosen.owner != last.owner);
+            patch && ((chosen.active && authored_tick) || chosen.owner != last.owner);
         chosen.tick = tick;
-        /* Reassert the winning transaction when source parameters change underneath it. */
-        bool range_changed = chosen.key % 260 == 259;
+        /* Reassert the winning transaction when source parameters change underneath it. An
+           implicit range (an owner's bends without a range of their own) is written only when it
+           differs from the range in effect, which starts at the device default. */
+        bool range_key = mod_range(chosen.key);
+        int range_now = last.value < 0 ? mod_default(p, chosen.key) : last.value;
+        bool range_unchanged = range_key && chosen.implicit && chosen.value == range_now;
+        bool range_changed = range_key && !range_unchanged;
         bool forwarded = false;
 
         if (patch) {
@@ -848,8 +1100,17 @@ static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events,
             }
         }
 
-        if (!forwarded && (chosen.value != last.value || range_changed || patch_selection)) {
+        int cc = mod_control(chosen.key);
+        bool silent = chosen.owner < 0 && !(chosen.active && authored_tick) &&
+                      tick >= last_sound[mod_channel(chosen.key)] && cc != MIDI_CC_SUSTAIN &&
+                      cc != MIDI_CC_SOSTENUTO;
+        /* A parameter with no default to fall back to keeps its last value. */
+        silent |= chosen.value < 0;
+
+        if (!forwarded && !silent && !range_unchanged &&
+            (chosen.value != last.value || range_changed || patch_selection || resend)) {
             ok = mod_emit(m, chosen, chosen.value);
+            forgotten = false;
         }
 
         last = chosen;
@@ -859,61 +1120,37 @@ static bool mod_resolve_key(const DmProject *p, Midi *m, const ModEvent *events,
     return ok;
 }
 
+/* A channel's parameter state in one owner's messages, in their order: the selected RPN or NRPN
+   (msb = lsb = 127 is none, the null select) and the bend range in effect (RPN 0/0, semitones *
+   128 + cents), which the owner's bends play at when it sets no range of its own. */
 typedef struct {
-    int msb, lsb, range, cents;
-    bool owned, nrpn;
-    int nrpn_msb, nrpn_lsb;
-} ModPitch;
+    bool nrpn;
+    int msb, lsb, range;
+    bool owned;         /* The owner has a bend range of its own, or one was taken for its bends. */
+    size_t pending[16]; /* Selects since the last data entry (indices into the capture's source). */
+    size_t pending_count;
+} ModParams;
 
-static void mod_parameter_select(ModPitch *state, int cc, int value) {
-    switch (cc) {
-    case MIDI_CC_RPN_MSB:
-        state->msb = value;
-        state->nrpn = false;
-        break;
-    case MIDI_CC_RPN_LSB:
-        state->lsb = value;
-        state->nrpn = false;
-        break;
-    case MIDI_CC_NRPN_MSB:
-        state->nrpn_msb = value;
-        state->nrpn = true;
-        break;
-    case MIDI_CC_NRPN_LSB:
-        state->nrpn_lsb = value;
-        state->nrpn = true;
-        break;
-    }
+static bool mod_param_message(const uint8_t *b) {
+    int cc = b[1];
+    return (b[0] & MIDI_STATUS_MASK) == MIDI_CONTROL &&
+           (cc == MIDI_CC_DATA || cc == MIDI_CC_DATA_LSB ||
+            (cc >= MIDI_CC_INCREMENT && cc <= MIDI_CC_RPN_MSB));
 }
 
-static bool mod_parameter(ModPitch *state, const uint8_t *bytes) {
-    if ((bytes[0] & MIDI_STATUS_MASK) != MIDI_CONTROL) {
-        return false;
+static void mod_param_select(ModParams *state, int cc, int value) {
+    bool nrpn = cc == MIDI_CC_NRPN_MSB || cc == MIDI_CC_NRPN_LSB;
+
+    if (nrpn != state->nrpn) {
+        state->nrpn = nrpn;
+        state->msb = state->lsb = 127;
     }
 
-    int cc = bytes[1], value = bytes[2];
-    mod_parameter_select(state, cc, value);
-
-    if (!state->nrpn && state->msb == 0 && state->lsb == 0) {
-        if (cc == MIDI_CC_DATA) {
-            state->range = value;
-        }
-
-        if (cc == MIDI_CC_DATA_LSB) {
-            state->cents = value;
-        }
-
-        if (cc == MIDI_CC_INCREMENT) {
-            state->range = state->range < 127 ? state->range + 1 : 127;
-        }
-
-        if (cc == MIDI_CC_DECREMENT) {
-            state->range = state->range > 0 ? state->range - 1 : 0;
-        }
+    if (cc == MIDI_CC_RPN_MSB || cc == MIDI_CC_NRPN_MSB) {
+        state->msb = value;
+    } else {
+        state->lsb = value;
     }
-
-    return cc == MIDI_CC_DATA || cc == MIDI_CC_DATA_LSB ||
-           (cc >= MIDI_CC_INCREMENT && cc <= MIDI_CC_RPN_MSB);
 }
 
 static bool mod_capture_event(ModList *list, ModEvent e, uint64_t boundary) {
@@ -930,10 +1167,9 @@ static bool mod_capture_event(ModList *list, ModEvent e, uint64_t boundary) {
     return mod_add(list, e);
 }
 
-static void mod_initial_pitch(const ModList *list, ModPitch *states, double start) {
+static void mod_initial_params(const ModList *list, ModParams *states, double start) {
     for (int c = 0; c < 16; ++c) {
-        states[c] =
-            (ModPitch){.msb = 127, .lsb = 127, .range = 2, .nrpn_msb = 127, .nrpn_lsb = 127};
+        states[c] = (ModParams){.msb = 127, .lsb = 127, .range = 2 * 128};
     }
 
     uint64_t tick = (uint64_t)llround(start * DM_PPQ);
@@ -941,92 +1177,298 @@ static void mod_initial_pitch(const ModList *list, ModPitch *states, double star
     for (size_t i = 0; i < list->baseline_count; ++i) {
         ModEvent e = list->items[i];
 
-        if (e.key % 260 != 259 || e.tick > tick) {
-            continue;
+        if (mod_range(e.key) && e.tick <= tick) {
+            states[mod_channel(e.key)].range = e.value;
         }
-
-        states[e.key / 260] = (ModPitch){.msb = e.rpn_msb & 127,
-                                         .lsb = e.rpn_lsb,
-                                         .range = e.value / 128,
-                                         .cents = e.value % 128,
-                                         .nrpn = e.rpn_msb >= 128,
-                                         .nrpn_msb = e.rpn_msb & 127,
-                                         .nrpn_lsb = e.rpn_lsb};
     }
 }
 
-static bool mod_capture_range(ModList *list, const Raw *r, int owner, int priority, double start,
-                              uint64_t boundary, ModPitch state, bool active) {
-    ModEvent e = {.tick = r->tick,
-                  .key = (r->bytes.data[0] & MIDI_CHANNEL_MASK) * 260 + 259,
-                  .owner = owner,
-                  .value = state.range * 128 + state.cents,
-                  .priority = priority,
-                  .active = active,
-                  .start = start,
-                  .rpn_msb = owner < 0 ? (state.nrpn ? state.nrpn_msb + 128 : state.msb) : 127,
-                  .rpn_lsb = owner < 0 ? (state.nrpn ? state.nrpn_lsb : state.lsb) : 127};
-    return mod_capture_event(list, e, boundary);
+/* The owner's last value for key among this capture's events (from first on), or -1. */
+static int mod_param_known(const ModList *list, size_t first, int key, uint64_t boundary) {
+    for (size_t i = list->count; i-- > first;) {
+        const ModEvent *e = &list->items[i];
+
+        if (e->key == key && e->tick < boundary) {
+            return e->active ? e->value : -1;
+        }
+    }
+
+    return -1;
 }
 
-static bool mod_capture(ModList *list, Midi *source, int owner, int priority, double start,
-                        double end) {
+/* The value a data entry, its fine part, an increment or a decrement gives the selected parameter
+   (current is its value in effect, -1 when unknown), or -1 when it cannot be known. */
+static int mod_param_value(int cc, int data, int current) {
+    switch (cc) {
+    case MIDI_CC_DATA:
+        return data * 128 + (current >= 0 ? current % 128 : 0);
+    case MIDI_CC_DATA_LSB:
+        return current >= 0 ? current / 128 * 128 + data : -1;
+    case MIDI_CC_INCREMENT:
+        return current >= 0 ? (current / 128 < 127 ? current + 128 : current) : -1;
+    case MIDI_CC_DECREMENT:
+        return current >= 0 ? (current / 128 > 0 ? current - 128 : current) : -1;
+    default:
+        return -1;
+    }
+}
+
+/* A parameter message duckmidi cannot resolve to a value plays as written: a data entry with
+   nothing selected, or an increment of a parameter whose value is not known (sent with its
+   select, then the null select). */
+static bool mod_param_pass(Midi *passed, const Raw *r, const ModParams *state) {
+    int c = r->bytes.data[0] & MIDI_CHANNEL_MASK;
+    bool selected = !(state->msb == 127 && state->lsb == 127);
+    int msb_cc = state->nrpn ? MIDI_CC_NRPN_MSB : MIDI_CC_RPN_MSB,
+        lsb_cc = state->nrpn ? MIDI_CC_NRPN_LSB : MIDI_CC_RPN_LSB;
+    const uint8_t group[][3] = {{MIDI_CONTROL | c, msb_cc, state->msb},
+                                {MIDI_CONTROL | c, lsb_cc, state->lsb},
+                                {r->bytes.data[0], r->bytes.data[1], r->bytes.data[2]},
+                                {MIDI_CONTROL | c, MIDI_CC_RPN_MSB, 127},
+                                {MIDI_CONTROL | c, MIDI_CC_RPN_LSB, 127}};
+    double beat = (double)r->tick / DM_PPQ;
+
+    for (int i = selected ? 0 : 2; i < (selected ? 5 : 3); ++i) {
+        if (!dm_midi_add_message(passed, beat, c + 1, group[i], 3)) {
+            return false;
+        }
+
+        passed->items[passed->count - 1].phase = 3;
+    }
+
+    return true;
+}
+
+/* The owner's value for key in effect before its section started: its latest event among the
+   events this capture added before index limit (from first on). False when that event released
+   the controller (an earlier restoration that released, a Graph return) or there is none. Events
+   at the boundary are the placement's end markers, not values. */
+static bool mod_before(const ModList *list, size_t first, size_t limit, int key, uint64_t boundary,
+                       ModEvent *out) {
+    for (size_t i = limit; i-- > first;) {
+        const ModEvent *e = &list->items[i];
+
+        if (e->key == key && e->tick < boundary) {
+            *out = *e;
+            return e->active;
+        }
+    }
+
+    return false;
+}
+
+/* Within one placement, messages on the same tick (all those a slice moves onto its first tick)
+   keep the order they have in the pattern. */
+static int mod_capture_compare(const void *a, const void *b) {
+    const Raw *x = a, *y = b;
+
+    if (x->tick != y->tick) {
+        return x->tick < y->tick ? -1 : 1;
+    }
+
+    if (x->source != y->source) {
+        return x->source < y->source ? -1 : 1;
+    }
+
+    return dm_midi_export_compare(a, b);
+}
+
+/* A Line's first message seen by mod_capture: how many events the capture had then, and its
+   tick, which its restoration's events carry as placed. */
+typedef struct {
+    int line;
+    size_t index;
+    uint64_t placed;
+} ModLine;
+
+/* Captures source's messages as owner's events. A data entry or step becomes a value of the
+   parameter its owner has selected, sent later as a whole message group with its select, so the
+   selects before it are not sent again; one that cannot be resolved goes to out as written. A
+   select no data entry follows plays as written, unless it leaves nothing selected (every group
+   already ends deselected). The song's own messages (owner < 0, source is out) that are sent
+   again are taken out of out. */
+static bool mod_capture(ModList *list, Midi *source, Midi *out, int owner, int priority, int row,
+                        double start, double end) {
     uint64_t boundary = (uint64_t)llround(end * DM_PPQ);
-    ModPitch states[16];
-    mod_initial_pitch(list, states, start);
-    qsort(source->items, source->count, sizeof(*source->items), dm_midi_export_compare);
+    size_t first = list->count;
+    ModParams states[16];
+    mod_initial_params(list, states, start);
+    Midi passed = {0};
+    qsort(source->items, source->count, sizeof(*source->items), mod_capture_compare);
+    ModLine *lines = NULL;
+    size_t line_count = 0, line_capacity = 0;
+    bool ok = true;
 
-    for (size_t j = 0; j < source->count; ++j) {
-        const Raw *r = &source->items[j];
+    for (size_t j = 0; ok && j < source->count; ++j) {
+        Raw r = source->items[j];
 
-        if (r->tick > boundary) {
+        if (r.tick > boundary || !r.bytes.size) { /* A command already passed through. */
             continue;
         }
 
-        const uint8_t *bytes = r->bytes.data;
-        int c = bytes[0] & MIDI_CHANNEL_MASK;
-        ModPitch *state = &states[c];
-        bool parameter = mod_parameter(state, bytes);
-        bool active = r->persistent || (r->phase != 2 && (owner < 0 || r->tick < boundary));
+        /* A restoration returns to what the owner played before its Line's first message, in
+           this capture's order, and ranks by that message's tick. */
+        size_t limit = list->count;
 
-        if (parameter && (owner < 0 || bytes[1] == MIDI_CC_DATA || bytes[1] == MIDI_CC_DATA_LSB)) {
-            state->owned = true;
+        if (r.line > 0) {
+            size_t at = 0;
 
-            if (!mod_capture_range(list, r, owner, priority, start, boundary, *state, active)) {
-                return false;
+            while (at < line_count && lines[at].line != r.line) {
+                ++at;
             }
+
+            if (at < line_count && r.restores) {
+                limit = lines[at].index;
+                r.placed = lines[at].placed;
+            } else if (at == line_count && !r.restores) {
+                if (!dm_reserve((void **)&lines, &line_capacity, line_count + 1, sizeof(*lines))) {
+                    ok = false;
+                    break;
+                }
+
+                lines[line_count++] = (ModLine){r.line, list->count, r.placed};
+            }
+        }
+
+        const uint8_t *bytes = r.bytes.data;
+        int c = bytes[0] & MIDI_CHANNEL_MASK;
+        ModParams *state = &states[c];
+        /* Phase 2 is a release (a Graph return, a glide gate closing): the owner gives up the
+           controller. A restoration ends a section: it returns to the owner's value from before
+           the section and keeps owning the controller, or releases it when the owner had no value
+           before. A pedal section always ends with the pedal up: its restoration keeps its own
+           value (0). */
+        bool pedal = (bytes[0] & MIDI_STATUS_MASK) == MIDI_CONTROL &&
+                     (bytes[1] == MIDI_CC_SUSTAIN || bytes[1] == MIDI_CC_SOSTENUTO);
+        bool restoration = r.restores && owner >= 0 && !pedal;
+        bool active = (r.phase != 2 || r.restores) && (owner < 0 || r.tick < boundary);
+        ModEvent range = {0};
+        bool range_before =
+            restoration && mod_before(list, first, limit, mod_range_key(c), boundary, &range);
+
+        if (mod_param_message(bytes)) {
+            int cc = bytes[1];
+
+            if (cc >= MIDI_CC_NRPN_LSB) {
+                mod_param_select(state, cc, bytes[2]);
+
+                if (state->pending_count < 16) {
+                    state->pending[state->pending_count++] = j;
+                }
+
+                continue;
+            }
+
+            /* This data entry's group carries its select; the song's own copy is sent as that. */
+            for (size_t k = 0; owner < 0 && k < state->pending_count; ++k) {
+                dm_bytes_free(&source->items[state->pending[k]].bytes);
+            }
+
+            state->pending_count = 0;
+
+            if (owner < 0) {
+                dm_bytes_free(&source->items[j].bytes);
+            }
+
+            bool selected = !(state->msb == 127 && state->lsb == 127);
+            int pkey = selected ? mod_param_key(c, state->nrpn, state->msb, state->lsb) : -1;
+            int current = pkey < 0          ? -1
+                          : mod_range(pkey) ? state->range
+                                            : mod_param_known(list, first, pkey, boundary);
+            int value = pkey < 0 ? -1 : mod_param_value(cc, bytes[2], current);
+
+            if (value < 0) {
+                ok = mod_param_pass(&passed, &r, state);
+                continue;
+            }
+
+            /* A Line's range restoration returns to the owner's range from before the section. */
+            bool returns = restoration && mod_range(pkey);
+
+            if (mod_range(pkey)) {
+                state->range = returns && range_before ? range.value : value;
+                state->owned = true;
+            }
+
+            ModEvent e = {.tick = r.tick,
+                          .placed = r.placed,
+                          .key = pkey,
+                          .owner = owner,
+                          .value = returns && range_before ? range.value : value,
+                          .priority = priority,
+                          .row = row,
+                          .active = active && (!returns || range_before),
+                          .start = start,
+                          .source_index = j};
+            ok = mod_capture_event(list, e, boundary);
+            continue;
         }
 
         int key = mod_key(bytes);
 
-        if (key < 0) {
+        if (!ok || key < 0) {
             continue;
         }
 
-        if (key % 260 == 128 && !state->owned) {
+        if (mod_control(key) == 128 && !state->owned) {
+            /* Bends without a range of their own play at the range in effect (implicit). */
             state->owned = true;
-
-            if (!mod_capture_range(list, r, owner, priority, start, boundary, *state, active)) {
-                return false;
-            }
+            ModEvent e = {.tick = r.tick,
+                          .placed = r.placed,
+                          .key = mod_range_key(c),
+                          .owner = owner,
+                          .value = range_before ? range.value : state->range,
+                          .priority = priority,
+                          .row = row,
+                          .active = active && (!restoration || range_before),
+                          .start = start,
+                          .source_index = j,
+                          .implicit = true};
+            ok = mod_capture_event(list, e, boundary);
         }
 
-        ModEvent e = {.tick = r->tick,
+        ModEvent previous = {0};
+        bool before = restoration && mod_before(list, first, limit, key, boundary, &previous);
+        ModEvent e = {.tick = r.tick,
+                      .placed = r.placed,
                       .key = key,
                       .owner = owner,
-                      .value = mod_value(bytes),
+                      .value = before ? previous.value : mod_value(bytes),
                       .priority = priority,
-                      .active = active,
+                      .row = row,
+                      .active = active && (!restoration || before),
                       .start = start,
                       .source_index = j,
-                      .generated_default = r->generated_default};
+                      .generated_default = r.generated_default,
+                      .yields = r.restores && pedal && owner >= 0};
+        ok = ok && mod_capture_event(list, e, boundary);
+    }
 
-        if (!mod_capture_event(list, e, boundary)) {
-            return false;
+    /* Selects no data entry followed. */
+    for (int c = 0; ok && c < 16; ++c) {
+        const ModParams *state = &states[c];
+        bool none = state->msb == 127 && state->lsb == 127;
+
+        for (size_t k = 0; ok && k < state->pending_count; ++k) {
+            Raw *r = &source->items[state->pending[k]];
+
+            if (owner < 0 && none) {
+                dm_bytes_free(&r->bytes);
+            } else if (owner >= 0 && !none) {
+                ok = dm_midi_add_message(&passed, (double)r->tick / DM_PPQ, c + 1, r->bytes.data,
+                                         r->bytes.size);
+            }
         }
     }
 
-    return true;
+    for (size_t i = 0; ok && i < passed.count; ++i) {
+        ok = dm_midi_raw_add(out, &passed.items[i]);
+        passed.items[i].bytes = (DmBytes){0};
+    }
+
+    dm_midi_free(&passed);
+    free(lines);
+    return ok;
 }
 
 static bool mod_lfo(const DmProject *p, Midi *m, const DmClip *clip) {
@@ -1065,12 +1507,18 @@ static bool mod_lfo(const DmProject *p, Midi *m, const DmClip *clip) {
                       false,
                       (uint8_t)pat->port};
 
+    uint64_t placed = (uint64_t)llround(clip->beat * DM_PPQ);
+
     for (int i = 0; i < steps; ++i) {
         double beat = clip->offset + length * i / steps;
         int value = dm_lfo_value(pat, beat);
 
-        if (value != last && !curve_sample(m, clip, a, beat, value)) {
-            return false;
+        if (value != last) {
+            if (!curve_sample(m, clip, a, beat, value)) {
+                return false;
+            }
+
+            m->items[m->count - 1].placed = placed;
         }
 
         last = value;
@@ -1085,8 +1533,21 @@ static bool collect_mod_clip(const DmProject *p, Midi *m, ModList *list, size_t 
     Midi temp = {0};
     bool ok = pat->kind && pat->mode ? mod_lfo(p, &temp, clip)
                                      : collect_pattern_automation(p, &temp, clip);
-    ok = ok && mod_capture(list, &temp, (int)index, !pat->kind || pat->control_scope == 1 ? 2 : 1,
-                           clip->beat, clip->beat + dm_clip_length(p, *clip));
+    uint64_t boundary = (uint64_t)llround((clip->beat + dm_clip_length(p, *clip)) * DM_PPQ);
+
+    /* Commands play as written while the placement plays. */
+    for (size_t i = 0; ok && i < temp.count; ++i) {
+        Raw *r = &temp.items[i];
+
+        if (r->bytes.size && mod_command(r->bytes.data) && r->tick <= boundary) {
+            ok = dm_midi_raw_add(m, r);
+            r->bytes = (DmBytes){0};
+        }
+    }
+    /* Note patterns outrank automation patterns; among automation patterns the newest placed
+       point wins, then the higher row (mod_beats). */
+    ok = ok && mod_capture(list, &temp, m, (int)index, !pat->kind ? 2 : 1, clip->lane, clip->beat,
+                           clip->beat + dm_clip_length(p, *clip));
     dm_midi_free(&temp);
 
     if (!ok) {
@@ -1096,49 +1557,16 @@ static bool collect_mod_clip(const DmProject *p, Midi *m, ModList *list, size_t 
     return collect_clip_notes(p, m, clip);
 }
 
+/* Every placement owns its pattern's values until it ends (one rule set): the baseline is the
+   song's own messages and channel setup, captured first; each placement's values then compete
+   with it and with each other per controller (mod_winner). */
 static bool collect_clips(const DmProject *p, Midi *m, bool mixer) {
-    bool modular = false;
-
-    for (size_t i = 0; i < p->automation_count; ++i) {
-        DmAutomation a = p->automation[i];
-        modular |=
-            a.pattern >= 0 && a.curve != 0 && a.type == MIDI_CONTROL &&
-            (a.a == MIDI_CC_PORTAMENTO_TIME || a.a == MIDI_CC_SUSTAIN || a.a == MIDI_CC_SOSTENUTO);
-    }
-
-    for (size_t i = 0; i < p->clip_count; ++i) {
-        modular |= p->patterns[p->clips[i].pattern].kind != 0 || p->clips[i].length > 0 ||
-                   p->clips[i].offset > 0;
-    }
-
-    if (!modular) {
-        return collect_note_clips(p, m, mixer);
-    }
-
     ModList list = {0};
-    /* Detached controls from an unscoped source retain their original latch
-       behavior, even when note extraction introduces trimmed placements. */
-    for (size_t i = 0; i < p->clip_count; i++) {
-        const DmClip *clip = &p->clips[i];
-
-        if (p->patterns[clip->pattern].control_scope == 2 && (!mixer || !muted(p, clip->channel))) {
-            size_t first = m->count;
-
-            if (!collect_pattern_automation(p, m, clip)) {
-                return false;
-            }
-
-            for (size_t j = first; j < m->count; j++) {
-                m->items[j].persistent = true;
-            }
-        }
-    }
-
-    bool ok = mod_capture(&list, m, -1, 0, 0, 1e12);
+    bool ok = mod_capture(&list, m, m, -1, 0, 0, 0, 1e12);
     list.baseline_count = list.count;
 
     for (size_t i = 0; i < m->count; ++i) {
-        int key = mod_key(m->items[i].bytes.data);
+        int key = m->items[i].bytes.size ? mod_key(m->items[i].bytes.data) : -1;
 
         if (key >= 0 && !mod_patch_key(key)) {
             dm_bytes_free(&m->items[i].bytes);
@@ -1146,13 +1574,58 @@ static bool collect_clips(const DmProject *p, Midi *m, bool mixer) {
     }
 
     for (size_t i = 0; i < p->clip_count && ok; ++i) {
-        if (p->patterns[p->clips[i].pattern].control_scope == 2) {
-            continue;
-        }
-
         if (!mixer || !muted(p, p->clips[i].channel)) {
             ok = collect_mod_clip(p, m, &list, i);
         }
+    }
+
+    /* A channel without notes never drops a release: it may drive external MIDI gear. */
+    uint64_t last_sound[16];
+
+    for (int c = 0; c < 16; ++c) {
+        last_sound[c] = UINT64_MAX;
+    }
+
+    for (size_t i = 0; i < m->count; ++i) {
+        const DmBytes *b = &m->items[i].bytes;
+        int type = b->size ? b->data[0] & MIDI_STATUS_MASK : 0;
+
+        if (type == MIDI_NOTE_OFF || (type == MIDI_NOTE_ON && b->size > 2 && !b->data[2])) {
+            int c = b->data[0] & MIDI_CHANNEL_MASK;
+            last_sound[c] = last_sound[c] == UINT64_MAX || m->items[i].tick > last_sound[c]
+                                ? m->items[i].tick
+                                : last_sound[c];
+        }
+    }
+
+    ModForget *forget = malloc((m->count + 2) * sizeof(*forget));
+    size_t forget_count = 0;
+    double loop_start = -1, loop_end = -1;
+    ok = ok && forget;
+
+    /* Nothing is sent before beat 0, so a reset or loop start there forgets nothing. */
+    for (size_t i = 0; ok && i < m->count; ++i) {
+        const DmBytes *b = &m->items[i].bytes;
+
+        if (!m->items[i].tick) {
+            continue;
+        }
+
+        if (b->size >= 2 && (b->data[0] & MIDI_STATUS_MASK) == MIDI_CONTROL &&
+            b->data[1] == MIDI_CC_RESET) {
+            forget[forget_count++] =
+                (ModForget){m->items[i].tick, b->data[0] & MIDI_CHANNEL_MASK, true};
+        } else if (sysex_reset(b)) {
+            forget[forget_count++] = (ModForget){m->items[i].tick, -1, false};
+        }
+    }
+
+    if (ok && dm_loop_points(p, &loop_start, &loop_end) && loop_start > 0) {
+        forget[forget_count++] = (ModForget){(uint64_t)llround(loop_start * DM_PPQ), -1, false};
+    }
+
+    if (ok) {
+        qsort(forget, forget_count, sizeof(*forget), forget_compare);
     }
 
     qsort(list.items, list.count, sizeof(*list.items), mod_compare);
@@ -1164,10 +1637,41 @@ static bool collect_clips(const DmProject *p, Midi *m, bool mixer) {
             ++end;
         }
 
-        ok = mod_resolve_key(p, m, list.items + i, end - i);
+        /* A follower (bend range, bank) goes with whoever plays its leading setting. */
+        int leader = mod_leader_key(list.items[i].key);
+        ModLead *leads = NULL;
+        size_t lead_count = 0;
+
+        if (leader >= 0) {
+            size_t low = 0, high = list.count;
+
+            while (low < high) {
+                size_t mid = low + (high - low) / 2;
+
+                if (list.items[mid].key < leader) {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+
+            size_t lead_end = low;
+
+            while (lead_end < list.count && list.items[lead_end].key == leader) {
+                ++lead_end;
+            }
+
+            ok =
+                lead_end == low || mod_leads(list.items + low, lead_end - low, &leads, &lead_count);
+        }
+
+        ok = ok && mod_resolve_key(p, m, list.items + i, end - i, last_sound, leads, lead_count,
+                                   forget, forget_count);
+        free(leads);
         i = end;
     }
 
+    free(forget);
     free(list.items);
     size_t write = 0;
 
@@ -1182,16 +1686,14 @@ static bool collect_clips(const DmProject *p, Midi *m, bool mixer) {
 }
 
 static bool collect_initial_sysex(const DmProject *p, Midi *m) {
+    double first_note = dm_first_note(p, -1);
+
     for (size_t i = 0; i < p->event_count; ++i) {
         const DmEvent *e = &p->events[i];
-
-        if (e->beat != 0) {
-            break;
-        }
-
         uint8_t status = e->message.data[0];
 
-        if (status == MIDI_SYSEX || status == MIDI_SYSEX_END) {
+        if ((e->beat == 0 && (status == MIDI_SYSEX || status == MIDI_SYSEX_END)) ||
+            opening_reset(e, first_note)) {
             if (!dm_midi_add_message(m, 0, 0, e->message.data, e->message.size)) {
                 return false;
             }
@@ -1279,10 +1781,6 @@ static bool collect_single(const DmProject *p, Midi *m, bool mixer) {
         return false;
     }
 
-    if (!collect_song_automation(p, m)) {
-        return false;
-    }
-
     if (!collect_clips(p, m, mixer)) {
         return false;
     }
@@ -1345,7 +1843,7 @@ bool dm_midi_collect(const DmProject *p, Midi *m, bool mixer) {
             return false;
         }
 
-        if (a.pattern < 0 || ((size_t)a.pattern < p->pattern_count && placed[a.pattern])) {
+        if (a.pattern >= 0 && (size_t)a.pattern < p->pattern_count && placed[a.pattern]) {
             used[a.port] = true;
             colored |= a.port != 0;
         }
@@ -1595,11 +2093,15 @@ unsigned dm_export_authored_pan(const DmProject *p) {
     return mask;
 }
 
-bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *count,
+static bool export_midi(const DmProject *p, int channel, DmExportEvent **events, size_t *count,
                         uint64_t *duration, char *error, size_t cap) {
     *events = NULL;
     *count = 0;
-    *duration = 0;
+
+    if (duration) {
+        *duration = 0;
+    }
+
     Midi m = {0};
     bool ok = dm_midi_collect(p, &m, true);
     DmExportEvent *out = ok && m.count ? calloc(m.count, sizeof(*out)) : NULL;
@@ -1610,11 +2112,16 @@ bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *coun
 
     if (ok) {
         qsort(m.items, m.count, sizeof(*m.items), dm_midi_export_compare);
-        *duration = (uint64_t)llround(dm_duration(p) * DM_PPQ);
+        uint64_t end = (uint64_t)llround(dm_duration(p) * DM_PPQ);
 
         for (size_t i = 0; i < m.count; ++i) {
             Raw *r = &m.items[i];
             const uint8_t *b = r->bytes.data;
+
+            if (channel >= 0 && b[0] < MIDI_SYSTEM && (b[0] & MIDI_CHANNEL_MASK) != channel) {
+                continue;
+            }
+
             DmExportEvent e = {0};
             e.tick = r->tick;
             e.source_id = i + 1;
@@ -1635,9 +2142,13 @@ bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *coun
 
             out[(*count)++] = e;
 
-            if (e.tick > *duration) {
-                *duration = e.tick;
+            if (e.tick > end) {
+                end = e.tick;
             }
+        }
+
+        if (duration) {
+            *duration = end;
         }
     }
 
@@ -1646,10 +2157,77 @@ bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *coun
     if (!ok) {
         free(out);
         *count = 0;
-        snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_EXPORT_TIMELINE);
+
+        if (duration) {
+            *duration = 0;
+        }
+
+        if (error && cap) {
+            snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_EXPORT_TIMELINE);
+        }
+
         return false;
     }
 
     *events = out;
     return true;
+}
+
+bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *count,
+                        uint64_t *duration, char *error, size_t cap) {
+    return export_midi(p, -1, events, count, duration, error, cap);
+}
+
+bool dm_export_channel(const DmProject *p, int channel, DmExportEvent **events, size_t *count,
+                       char *error, size_t cap) {
+    *events = NULL;
+    *count = 0;
+
+    if (!p || channel < 0 || channel >= 16) {
+        if (error && cap) {
+            snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_EXPORT_TIMELINE);
+        }
+
+        return false;
+    }
+
+    DmProject route = *p;
+    route.clips = p->clip_count ? malloc(p->clip_count * sizeof(*route.clips)) : NULL;
+    route.events = p->event_count ? malloc(p->event_count * sizeof(*route.events)) : NULL;
+
+    if ((p->clip_count && !route.clips) || (p->event_count && !route.events)) {
+        free(route.clips);
+        free(route.events);
+
+        if (error && cap) {
+            snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_EXPORT_TIMELINE);
+        }
+
+        return false;
+    }
+
+    route.clip_count = 0;
+
+    for (size_t i = 0; i < p->clip_count; ++i) {
+        if (p->clips[i].channel == channel) {
+            route.clips[route.clip_count++] = p->clips[i];
+        }
+    }
+
+    route.event_count = 0;
+
+    for (size_t i = 0; i < p->event_count; ++i) {
+        const DmEvent *e = &p->events[i];
+        const uint8_t *b = e->message.data;
+        bool is_channel = e->message.size && b[0] < MIDI_SYSTEM;
+
+        if (!is_channel || dm_conductor(&e->message) || (b[0] & MIDI_CHANNEL_MASK) == channel) {
+            route.events[route.event_count++] = *e;
+        }
+    }
+
+    bool ok = export_midi(&route, channel, events, count, NULL, error, cap);
+    free(route.clips);
+    free(route.events);
+    return ok;
 }

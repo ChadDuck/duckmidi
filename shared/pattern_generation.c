@@ -81,6 +81,94 @@ static Entry *lookup(Entry *table, size_t size, uint64_t key) {
     return &table[at];
 }
 
+/* The Controls pattern a point goes to: one per controller, bend, program, pressure, poly
+   pressure, and PARAMETERS for RPN and NRPN messages other than the bend range (selects, data
+   entries, steps). The bend range (RPN 0/0) stays with the bends, as playback pairs them. */
+enum { PARAMETERS = 132, GROUPS };
+
+static bool parameter_message(DmAutomation a) {
+    return a.type == MIDI_CONTROL && (a.a == MIDI_CC_DATA || a.a == MIDI_CC_DATA_LSB ||
+                                      (a.a >= MIDI_CC_INCREMENT && a.a <= MIDI_CC_RPN_MSB));
+}
+
+/* One pattern, port and channel's RPN/NRPN selection while its points are read in order, and the
+   selects since its last data entry, which go where that data entry goes. */
+typedef struct {
+    uint64_t key;
+    bool used, nrpn;
+    int msb, lsb;
+    size_t pending[16], pending_count;
+} SelectState;
+
+/* groups[i]: the group of point i when it is an RPN/NRPN message: the bend range's (128) for RPN
+   0/0, else PARAMETERS. Other points are left alone. */
+static bool parameter_groups(const DmProject *p, const bool *placed, int *groups) {
+    size_t size = table_size(p->automation_count + 1);
+    SelectState *states = calloc(size, sizeof(*states));
+
+    if (!states) {
+        return false;
+    }
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        DmAutomation a = p->automation[i];
+
+        if (a.pattern < 0 || !placed[a.pattern] || p->patterns[a.pattern].kind ||
+            !parameter_message(a)) {
+            continue;
+        }
+
+        if (a.curve) {
+            groups[i] = 128; /* A Line's bend-range setup. */
+            continue;
+        }
+
+        uint64_t key =
+            ((uint64_t)(unsigned)a.pattern << 16) | ((uint64_t)a.port << 8) | (unsigned)a.channel;
+        size_t at = (size_t)(mix(key) % size);
+
+        while (states[at].used && states[at].key != key) {
+            at = (at + 1) % size;
+        }
+
+        SelectState *st = &states[at];
+
+        if (!st->used) {
+            *st = (SelectState){.key = key, .used = true, .msb = 127, .lsb = 127};
+        }
+
+        if (a.a >= MIDI_CC_NRPN_LSB) {
+            bool nrpn = a.a == MIDI_CC_NRPN_MSB || a.a == MIDI_CC_NRPN_LSB;
+
+            if (nrpn != st->nrpn) {
+                st->nrpn = nrpn;
+                st->msb = st->lsb = 127;
+            }
+
+            *(a.a == MIDI_CC_RPN_MSB || a.a == MIDI_CC_NRPN_MSB ? &st->msb : &st->lsb) = a.b;
+            groups[i] = PARAMETERS;
+
+            if (st->pending_count < 16) {
+                st->pending[st->pending_count++] = i;
+            }
+
+            continue;
+        }
+
+        int group = !st->nrpn && !st->msb && !st->lsb ? 128 : PARAMETERS;
+        groups[i] = group;
+
+        for (size_t k = 0; k < st->pending_count; ++k) {
+            groups[st->pending[k]] = group;
+        }
+
+        st->pending_count = 0;
+    }
+
+    free(states);
+    return true;
+}
+
 static int control_group(DmAutomation a) {
     if (a.type == MIDI_PITCH_BEND) {
         return 128;
@@ -100,7 +188,7 @@ static int control_group(DmAutomation a) {
 
     if (a.a == MIDI_CC_DATA || a.a == MIDI_CC_DATA_LSB ||
         (a.a >= MIDI_CC_INCREMENT && a.a <= MIDI_CC_RPN_MSB)) {
-        return 128;
+        return a.curve ? 128 : PARAMETERS;
     }
 
     return a.a == MIDI_CC_PORTAMENTO ? MIDI_CC_PORTAMENTO_TIME : a.a;
@@ -108,30 +196,20 @@ static int control_group(DmAutomation a) {
 
 static bool separate_controls(const DmProject *source, DmProject *next, const bool *placed,
                               const DmGenerationHooks *hooks, DmGenerationStats *stats) {
-    bool modular = false;
-
-    for (size_t i = 0; i < source->clip_count; i++) {
-        modular |= source->patterns[source->clips[i].pattern].kind || source->clips[i].length > 0;
-    }
-
-    for (size_t i = 0; i < source->automation_count; i++) {
-        DmAutomation a = source->automation[i];
-        modular |=
-            a.pattern >= 0 && a.curve && a.type == MIDI_CONTROL &&
-            (a.a == MIDI_CC_PORTAMENTO_TIME || a.a == MIDI_CC_SUSTAIN || a.a == MIDI_CC_SOSTENUTO);
-    }
-
     size_t size = table_size(source->automation_count + 1), count = 0;
     Entry *table = calloc(size, sizeof(*table));
     AutoGroup *groups = calloc(source->automation_count + 1, sizeof(*groups));
     int *heads = malloc((source->pattern_count + 1) * sizeof(int)),
-        *tails = malloc((source->pattern_count + 1) * sizeof(int));
+        *tails = malloc((source->pattern_count + 1) * sizeof(int)),
+        *param_groups = malloc((source->automation_count + 1) * sizeof(int));
 
-    if (!table || !groups || !heads || !tails) {
+    if (!table || !groups || !heads || !tails || !param_groups ||
+        !parameter_groups(source, placed, param_groups)) {
         free(table);
         free(groups);
         free(heads);
         free(tails);
+        free(param_groups);
         return false;
     }
 
@@ -140,7 +218,7 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
     }
 
     bool ok = true;
-    int lanes[16][132] = {{0}};
+    int lanes[16][GROUPS] = {{0}};
 
     for (size_t i = 0; i < source->automation_count && ok; i++) {
         if (!(i % 1024) && cancelled(hooks)) {
@@ -154,7 +232,7 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
             continue;
         }
 
-        int event = control_group(a);
+        int event = parameter_message(a) ? param_groups[i] : control_group(a);
         uint64_t key =
             ((uint64_t)(unsigned)a.pattern << 15) | ((uint64_t)a.port << 8) | (unsigned)event;
         Entry *entry = lookup(table, size, key);
@@ -162,11 +240,12 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
         if (!entry->count) {
             char name[64];
             snprintf(name, sizeof(name), "Controls %zu - %s", count + 1,
-                     event == 128   ? "Pitch bend"
-                     : event == 129 ? "Program"
-                     : event == 130 ? "Pressure"
-                     : event == 131 ? "Poly pressure"
-                                    : "Controller");
+                     event == 128          ? "Pitch bend"
+                     : event == 129        ? "Program"
+                     : event == 130        ? "Pressure"
+                     : event == 131        ? "Poly pressure"
+                     : event == PARAMETERS ? "Parameters"
+                                           : "Controller");
             int id = dm_pattern_add(next, name);
 
             if (id < 0) {
@@ -176,14 +255,22 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
 
             DmPattern *p = &next->patterns[id];
             p->kind = 1;
-            p->control_scope = modular ? 1 : 2;
-            p->event = event == 128   ? -2
-                       : event == 129 ? -1
-                       : event == 130 ? -4
-                       : event == 131 ? -5
-                                      : event;
+            p->event = event == 128          ? -2
+                       : event == 129        ? -1
+                       : event == 130        ? -4
+                       : event == 131        ? -5
+                       : event == PARAMETERS ? MIDI_CC_DATA
+                                             : event;
             p->length = source->patterns[a.pattern].length;
             p->port = a.port;
+            /* A Graph lane plays its bars as the source did: same cells, same hold. */
+            int lane = dm_graph_lane(p->event);
+
+            if (lane >= 0) {
+                p->graph_lanes[lane] = source->patterns[a.pattern].graph_lanes[lane];
+                p->graph_hold[lane] = source->patterns[a.pattern].graph_hold[lane];
+            }
+
             p->reference = source->patterns[a.pattern].count
                                ? source->patterns[a.pattern].notes[0].key
                                : source->patterns[a.pattern].reference;
@@ -259,6 +346,7 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
     free(groups);
     free(heads);
     free(tails);
+    free(param_groups);
     return ok;
 }
 
@@ -942,4 +1030,131 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
     free(bars);
     dm_project_free(&next);
     return ok;
+}
+
+/* The setting groups (control_group) a pattern's points use, and their port (MIXED_PORT when
+   they differ). */
+typedef struct {
+    uint64_t words[3];
+    int port;
+} ControlBits;
+
+enum { MIXED_PORT = -2 };
+
+typedef struct {
+    double start, end;
+    int channel, pattern;
+} ClipSpan;
+
+static int clip_span_compare(const void *a, const void *b) {
+    const ClipSpan *x = a, *y = b;
+
+    if (x->channel != y->channel) {
+        return x->channel - y->channel;
+    }
+
+    if (x->start != y->start) {
+        return x->start < y->start ? -1 : 1;
+    }
+
+    return x->end < y->end ? -1 : x->end > y->end;
+}
+
+static void bits_add(ControlBits *bits, int group, int port) {
+    if (group < 0 || group >= GROUPS) {
+        return;
+    }
+
+    bits->words[group >> 6] |= UINT64_C(1) << (group & 63);
+    bits->port = bits->port == -1 || bits->port == port ? port : MIXED_PORT;
+}
+
+/* Two placements compete for a setting when they share a group on the same port. */
+static bool bits_compete(ControlBits a, ControlBits b) {
+    bool shared =
+        (a.words[0] & b.words[0]) || (a.words[1] & b.words[1]) || (a.words[2] & b.words[2]);
+    return shared && (a.port == b.port || a.port == MIXED_PORT || b.port == MIXED_PORT);
+}
+
+/* True when the project holds what a plain MIDI import never has and Generate Patterns cannot
+   keep exactly: a bend attached to a note in a placed note pattern (it follows that note, and the
+   generated controls have none), or a placed note pattern's controls overlapping another
+   placement on the same channel and setting (today the note pattern's rank decides; once they
+   are generated automation patterns, the newest point does). */
+bool dm_generation_changes_sound(const DmProject *p) {
+    if (!p || !p->clip_count) {
+        return false;
+    }
+
+    bool *placed = calloc(p->pattern_count + 1, sizeof(bool));
+    ControlBits *bits = calloc(p->pattern_count + 1, sizeof(*bits));
+    ClipSpan *spans = calloc(p->clip_count, sizeof(*spans));
+    bool changed = false;
+
+    if (!placed || !bits || !spans) {
+        free(placed);
+        free(bits);
+        free(spans);
+        return false;
+    }
+
+    for (size_t i = 0; i < p->pattern_count; i++) {
+        bits[i].port = -1;
+    }
+
+    for (size_t i = 0; i < p->clip_count; i++) {
+        placed[p->clips[i].pattern] = true;
+    }
+
+    for (size_t i = 0; i < p->automation_count && !changed; i++) {
+        DmAutomation a = p->automation[i];
+
+        if (a.pattern < 0 || !placed[a.pattern]) {
+            continue;
+        }
+
+        changed = !p->patterns[a.pattern].kind && (a.bend_note || a.bend_root != DM_BEND_ROOT_NONE);
+        bits_add(&bits[a.pattern], control_group(a), a.port);
+    }
+
+    /* An LFO pattern has no points; its setting is the pattern's event. */
+    for (size_t i = 0; i < p->pattern_count; i++) {
+        const DmPattern *pattern = &p->patterns[i];
+
+        if (placed[i] && pattern->kind && pattern->mode) {
+            int event = pattern->event;
+            bits_add(&bits[i],
+                     event == DM_EVENT_BEND               ? 128
+                     : event == DM_EVENT_PROGRAM          ? 129
+                     : event == DM_EVENT_CHANNEL_PRESSURE ? 130
+                     : event == DM_EVENT_KEY_PRESSURE     ? 131
+                                                          : event,
+                     pattern->port);
+        }
+    }
+
+    size_t span_count = 0;
+
+    for (size_t i = 0; i < p->clip_count; i++) {
+        DmClip clip = p->clips[i];
+        spans[span_count++] =
+            (ClipSpan){clip.beat, clip.beat + dm_clip_length(p, clip), clip.channel, clip.pattern};
+    }
+
+    qsort(spans, span_count, sizeof(*spans), clip_span_compare);
+
+    for (size_t i = 0; i < span_count && !changed; i++) {
+        for (size_t j = i + 1; j < span_count && !changed && spans[j].channel == spans[i].channel &&
+                               spans[j].start < spans[i].end - 1e-9;
+             j++) {
+            int x = spans[i].pattern, y = spans[j].pattern;
+            changed =
+                (!p->patterns[x].kind || !p->patterns[y].kind) && bits_compete(bits[x], bits[y]);
+        }
+    }
+
+    free(placed);
+    free(bits);
+    free(spans);
+    return changed;
 }

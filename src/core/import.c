@@ -517,66 +517,38 @@ static int program_repeat(DmProgramHistory history[16], double position, int tra
 }
 
 int dm_project_program_repeat(DmProgramHistory history[DM_PORT_COMBINED][16], const DmProject *p,
-                              int index, bool automation) {
-    if (!automation) {
-        const DmEvent *event = &p->events[index];
-        return program_repeat(history[event->port], event->beat, event->track, index,
-                              event->message.data, event->message.size);
-    }
-
-    const DmAutomation *a = &p->automation[index];
-
-    if (a->pattern >= 0) {
-        return -1;
-    }
-
-    if (a->type == MIDI_PROGRAM &&
-        (a->curve || a->anchor || a->bend || a->ramp || a->hold || a->b)) {
-        history[a->port][a->channel].program_plus_one = 0;
-        return -1;
-    }
-
-    const uint8_t message[] = {a->type | a->channel, a->a, a->b};
-    size_t size = a->type == MIDI_PROGRAM || a->type == MIDI_CHANNEL_PRESSURE ? 2 : 3;
-    return program_repeat(history[a->port], a->beat, -1, index, message, size);
+                              int index) {
+    const DmEvent *event = &p->events[index];
+    return program_repeat(history[event->port], event->beat, event->track, index,
+                          event->message.data, event->message.size);
 }
 
 /* Index -1 collapses the entire stream. A selected row collapses only its own copies. */
-bool dm_collapse_program_repeats(DmProject *p, int index, bool automation) {
+bool dm_collapse_program_repeats(DmProject *p, int index) {
     DmProgramHistory history[DM_PORT_COMBINED][16] = {0};
-    size_t *count = automation ? &p->automation_count : &p->event_count;
     size_t first = index < 0 ? 0 : (size_t)index;
 
-    if (first >= *count) {
+    if (first >= p->event_count) {
         return false;
     }
 
-    double start = automation ? p->automation[first].beat : p->events[first].beat;
+    double start = p->events[first].beat;
     size_t write = first, i = first;
 
-    for (; i < *count; ++i) {
-        double beat = automation ? p->automation[i].beat : p->events[i].beat;
-
-        if (index >= 0 && beat != start) {
+    for (; i < p->event_count; ++i) {
+        if (index >= 0 && p->events[i].beat != start) {
             break;
         }
 
-        int prior = dm_project_program_repeat(history, p, (int)i, automation);
+        int prior = dm_project_program_repeat(history, p, (int)i);
 
         if (prior >= 0 && (index < 0 || prior == index)) {
-            if (!automation) {
-                dm_bytes_free(&p->events[i].message);
-            }
-
+            dm_bytes_free(&p->events[i].message);
             continue;
         }
 
         if (write != i) {
-            if (automation) {
-                p->automation[write] = p->automation[i];
-            } else {
-                p->events[write] = p->events[i];
-            }
+            p->events[write] = p->events[i];
         }
 
         ++write;
@@ -586,33 +558,26 @@ bool dm_collapse_program_repeats(DmProject *p, int index, bool automation) {
         return false;
     }
 
-    if (i < *count) {
-        if (automation) {
-            memmove(p->automation + write, p->automation + i, (*count - i) * sizeof(DmAutomation));
-        } else {
-            memmove(p->events + write, p->events + i, (*count - i) * sizeof(DmEvent));
-        }
+    if (i < p->event_count) {
+        memmove(p->events + write, p->events + i, (p->event_count - i) * sizeof(DmEvent));
     }
 
-    *count -= i - write;
+    p->event_count -= i - write;
     return true;
 }
 
 /* Keep the original indices in the history until the scan finishes. Marks follow the
    compacted stream, while the history carries whether each original prior was picked. */
-void dm_collapse_marked_program_repeats(DmProject *p, bool *marks, bool automation) {
+void dm_collapse_marked_program_repeats(DmProject *p, bool *marks) {
     DmProgramHistory history[DM_PORT_COMBINED][16] = {0};
     bool picked[DM_PORT_COMBINED][16] = {0};
-    size_t *count = automation ? &p->automation_count : &p->event_count;
     size_t write = 0;
 
-    for (size_t i = 0; i < *count; ++i) {
-        int prior = dm_project_program_repeat(history, p, (int)i, automation);
-        int port = automation ? p->automation[i].port : p->events[i].port;
-        const DmBytes *message = automation ? NULL : &p->events[i].message;
-        int channel = automation      ? p->automation[i].channel
-                      : message->size ? message->data[0] & MIDI_CHANNEL_MASK
-                                      : 0;
+    for (size_t i = 0; i < p->event_count; ++i) {
+        int prior = dm_project_program_repeat(history, p, (int)i);
+        int port = p->events[i].port;
+        const DmBytes *message = &p->events[i].message;
+        int channel = message->size ? message->data[0] & MIDI_CHANNEL_MASK : 0;
         DmProgramHistory *last = &history[port][channel];
         bool remove = prior >= 0 && picked[port][channel];
 
@@ -621,28 +586,19 @@ void dm_collapse_marked_program_repeats(DmProject *p, bool *marks, bool automati
         }
 
         if (remove) {
-            if (!automation) {
-                dm_bytes_free(&p->events[i].message);
-            }
-
+            dm_bytes_free(&p->events[i].message);
             continue;
         }
 
-        if (automation) {
-            p->automation[write] = p->automation[i];
-        } else {
-            p->events[write] = p->events[i];
-        }
-
+        p->events[write] = p->events[i];
         marks[write++] = marks[i];
     }
 
-    *count = write;
+    p->event_count = write;
 }
 
 static bool collapse_restored_programs(DmProject *p, char *error, size_t cap) {
-    dm_collapse_program_repeats(p, -1, false);
-    dm_collapse_program_repeats(p, -1, true);
+    dm_collapse_program_repeats(p, -1);
 
     for (size_t i = 0; i < p->view_count; ++i) {
         DmBytes *state = &p->views[i].state;
@@ -650,20 +606,15 @@ static bool collapse_restored_programs(DmProject *p, char *error, size_t cap) {
         dm_project_init(&view);
         bool ok = dm_unpack(&view, state->data, state->size, error, cap);
 
-        if (ok) {
-            bool source = dm_collapse_program_repeats(&view, -1, false);
-            bool automation = dm_collapse_program_repeats(&view, -1, true);
+        if (ok && dm_collapse_program_repeats(&view, -1)) {
+            DmBytes packed = {0};
+            ok = dm_pack(&view, &packed);
 
-            if (source || automation) {
-                DmBytes packed = {0};
-                ok = dm_pack(&view, &packed);
-
-                if (ok) {
-                    dm_bytes_free(state);
-                    *state = packed;
-                } else {
-                    snprintf(error, cap, DM_TEXT_CANNOT_ALLOCATE_MIDI);
-                }
+            if (ok) {
+                dm_bytes_free(state);
+                *state = packed;
+            } else {
+                snprintf(error, cap, DM_TEXT_CANNOT_ALLOCATE_MIDI);
             }
         }
 

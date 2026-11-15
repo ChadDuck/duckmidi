@@ -241,6 +241,7 @@ void native_decode_oot(const char *text, NativeDecodedSequence *sequence) {
 
         if (weight && (!end || weight < end)) {
             assert(sscanf(weight, "panweight %u", &d.weight) == 1);
+            assert(d.weight <= 127);
         }
 
         d.tick = d.transpose = 0;

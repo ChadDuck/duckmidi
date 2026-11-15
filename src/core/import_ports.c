@@ -30,32 +30,18 @@ static int copy_pattern(DmProject *to, const DmPattern *from, uint8_t port) {
     }
 
     DmPattern *target = &to->patterns[id];
-    target->kind = from->kind;
-    target->mode = from->mode;
-    memcpy(target->graph_lanes, from->graph_lanes, sizeof(target->graph_lanes));
-    target->event = from->event;
-    target->speed = from->speed;
-    target->tension = from->tension;
-    target->skew = from->skew;
-    target->pulse = from->pulse;
-    target->amount = from->amount;
-    target->center = from->center;
-    target->pitch_center = from->pitch_center;
-    target->reference = from->reference;
-    target->inverted = from->inverted;
-    target->control_scope = from->control_scope;
-    target->port = from->kind ? port : 0;
 
     for (size_t n = 0; n < from->count; ++n) {
         DmNote note = from->notes[n];
         note.port = port;
 
-        if (!dm_note_add(&to->patterns[id], note)) {
+        if (!dm_note_add(target, note)) {
             return -1;
         }
     }
 
-    to->patterns[id].length = from->length;
+    dm_pattern_copy_settings(target, from);
+    target->port = from->kind ? port : 0;
     return id;
 }
 
@@ -117,11 +103,11 @@ static bool merge_port(DmProject *to, const DmProject *from, uint8_t port) {
     for (size_t i = 0; i < from->automation_count && ok; ++i) {
         DmAutomation a = from->automation[i];
 
-        if (a.pattern >= 0 && map[a.pattern] < 0) {
+        if (map[a.pattern] < 0) {
             continue;
         }
 
-        a.pattern = a.pattern >= 0 ? map[a.pattern] : -1;
+        a.pattern = map[a.pattern];
         a.port = port;
         ok = dm_automation_add(to, a);
     }

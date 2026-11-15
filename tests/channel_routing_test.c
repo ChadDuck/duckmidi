@@ -474,6 +474,7 @@ static void programs(Editor *e) {
         }
     }
 
+    test_publish_wait(e);
     recording_feedback_audio_render(e->audio, 60000);
     check(recording_feedback_audio_preset(e->audio, 3, false) == 40,
           "later scheduled notes retain the chosen instrument without restart");

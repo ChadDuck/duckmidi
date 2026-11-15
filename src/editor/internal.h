@@ -168,7 +168,10 @@ typedef enum {
 enum {
     ACTION_REPEATS = 1,   /* Runs again while its key is held. */
     ACTION_WORKSPACE = 2, /* Acts on the playlist or pattern editor: off while a window is open. */
-    ACTION_PIANO_OFF = 4  /* Only while the computer keyboard piano is off. */
+    ACTION_PIANO_OFF = 4, /* Only while the computer keyboard piano is off. */
+#ifdef DM_DEVTOOLS
+    ACTION_DEVTOOLS = 8 /* Session-only binding, never written to shared preferences. */
+#endif
 };
 
 typedef struct {
@@ -189,6 +192,7 @@ bool ed_gesture_held(const Editor *e, Gesture gesture, UiMouse mouse);
 /* Makes a copy of the mouse state report the gesture's modifiers as held or released. */
 void ed_gesture_set(const Editor *e, Gesture gesture, UiMouse *mouse, bool held);
 bool ed_gesture_capture(Editor *e, UiMouse mouse);
+bool ed_gesture_conflict(const MouseBinding *bindings, int a, int b);
 bool ed_gesture_format(MouseBinding binding, char *out, size_t cap);
 bool ed_gesture_parse(const char *text, MouseBinding *binding);
 void ed_focus_edit(Editor *e, EditFocus focus);
@@ -222,6 +226,7 @@ void ed_message(Editor *e, const char *text);
 DmPattern *ed_pattern(Editor *e);
 void ed_bind_pattern_channel(Editor *e);
 void ed_clear_history(EdHistory *steps, int *count);
+void ed_history_compact(Editor *e);
 /* Records the project as an undo step before an edit. False when it could not be recorded: the
    caller must then leave the project unchanged. During a recording take every edit joins the
    take's step. */
@@ -241,6 +246,13 @@ void ed_checkpoint_abandon(Editor *e);
 bool ed_add_note(Editor *e, DmPattern *p, DmNote note);
 double ed_pattern_length(Editor *e);
 bool ed_transport_publish(Editor *e, double seconds, bool playing);
+/* Moves playback on the schedule already playing, without rebuilding it. Returns false, doing
+   nothing, when that schedule may not be the current project and view (an edit still building,
+   another project, pattern or preview); the caller then uses ed_transport_publish. */
+bool ed_transport_seek(Editor *e, double seconds, bool playing);
+/* Publishes the song synchronously from its start, stopped, without changing the loop: for a
+   project just opened, reset or reloaded. */
+bool ed_publish_song_start(Editor *e);
 double ed_transport_length(Editor *e);
 void ed_publish(Editor *e);
 void ed_changed(Editor *e);
@@ -255,10 +267,14 @@ void ed_preference_load(Editor *e);
 void ed_dialog(Editor *e, int kind);
 bool ed_save_to(Editor *e, const char *path);
 void ed_save_poll(Editor *e);
+/* 1 a background build was published, 0 nothing ready, -1 it failed (reported in status). */
+int ed_publish_poll(Editor *e);
 void ed_save_free(Editor *e);
 bool ed_save_busy(Editor *e);
 void ed_save_cancel(Editor *e);
+
 enum { ED_AUTOSAVE_INTERVAL_MS = 5 * 60 * 1000, ED_AUTOSAVE_KEEP = 5 };
+
 void ed_autosave_init(Editor *e, const char *settings_folder);
 /* The background poll supplies elapsed wall-clock milliseconds, independent of playback. */
 void ed_autosave_step(Editor *e, uint64_t now);
@@ -349,6 +365,7 @@ float ed_clampf(float n, float lo, float hi);
 double ed_snap(double beat, double grid, bool free);
 void ed_hover(Editor *e, const char *text);
 void ed_info_box(Editor *e);
+void ed_modifier_hint(const Editor *e, UiMouse mouse, char *out, size_t cap);
 void ed_toggle_record(Editor *e);
 void ed_new_song_event(Editor *e);
 void ed_action_tip(Editor *e, const char *name, Action ed_action);
@@ -403,7 +420,7 @@ bool ed_intersects(UiRect a, UiRect b);
 SelectPick ed_select_pick(const Editor *e, UiMouse mouse);
 bool ed_pick_selects(SelectPick pick, bool before, bool clicked, bool ranged);
 bool ed_pick_begin(Editor *e, EditFocus focus, UiMouse mouse, int hit);
-bool ed_pick_moved(Editor *e, UiPoint start, UiMouse mouse); /* Stays true once moved. */
+bool ed_pick_moved(Editor *e, UiPoint start, UiMouse mouse);   /* Stays true once moved. */
 bool ed_pick_clicked(Editor *e, UiPoint start, UiMouse mouse); /* Released without moving. */
 bool ed_picked_before(const Editor *e, size_t index);
 /* A marquee press with hit the item under it: until the pointer moves it is a click, and the
@@ -487,11 +504,34 @@ DmPitchState ed_pattern_pitch_state(const DmProject *p, int pattern_id, double b
 DmPitchState ed_pitch_state(Editor *e, double beat);
 int ed_curve_id(Editor *e);
 int ed_nearest_note(Editor *e, double beat);
+
+/* The note a neutral bend sits on in the pitch lane's note-name view, by beat: the sounding note;
+   in a chord the one a bend Line is attached to, else the lowest; in a gap the previous
+   reference; before the first note the first one. keys[i] holds from beats[i] on. */
+typedef struct {
+    double *beats;
+    int *keys;
+    size_t count;
+    int fallback; /* With no notes on the port. */
+} EdBendReferences;
+
+/* Builds the shown pattern's references on the note port; false when memory runs out. */
+bool ed_bend_references(Editor *e, EdBendReferences *out);
+int ed_bend_reference_at(const EdBendReferences *r, double beat);
+void ed_bend_references_free(EdBendReferences *r);
 int ed_curve_anchor(Editor *e, double beat);
 int ed_event_value(DmAutomation a);
 void ed_set_event_value(DmAutomation *a, int value);
 DmAutomation ed_curve_node(Editor *e, double beat, int value, int cc, int id, int anchor);
+/* The selected pattern's value for cc in effect at beat, as playback resolves it: a restoration
+   returns to the state before its Line or releases; a pedal restoration keeps its own value.
+   False when the pattern has no value there; *value is then the setting's default. */
+bool ed_pattern_value_at(Editor *e, double beat, int cc, int *value);
+/* The selected pattern's state for cc just before Line line's first node, in play order. */
+bool ed_pattern_value_before_line(Editor *e, int line, int cc, int *value);
+/* ed_pattern_value_at's value, or the setting's default. */
 int ed_value_before(Editor *e, double beat, int cc);
+int ed_setting_default(Editor *e, int cc);
 void ed_curve_range(Editor *e, double beat, int range, int cents, int msb, int lsb, int id);
 void ed_automation_line(Editor *e, double start, double end, int first, int last, int cc);
 void ed_note_bend_line(Editor *e, double start, double end, int value, DmNote *note);
@@ -517,6 +557,7 @@ bool ed_graph_convert(Editor *e, int pattern);
 void ed_graph_mode(Editor *e, int mode, int graph);
 /* Asks before a switch to or from Graph when the pattern has events it would change. */
 void ed_graph_mode_request(Editor *e, int mode, int graph);
+const char *ed_graph_switch_message(Editor *e);
 void ed_graph_mode_dialog(Editor *e);
 void ed_graph_snap(Editor *e);
 void ed_graph_paint(Editor *e, UiRect lane, View *v, float scale, UiPoint from, UiPoint to,
@@ -547,6 +588,13 @@ UiPoint ed_automation_point(Editor *e, DmAutomation a, UiRect lane, View *v, flo
 float ed_curve_units(Editor *e, DmAutomation a, UiRect lane, bool overlay);
 void ed_automation_connection(UiPoint previous, UiPoint point, DmAutomation before, DmAutomation a,
                               float units, uint32_t color);
+/* The setting's heard value at pattern beat in the selected placement's context, or false when
+   there is no placement context or the event type is out of scope (setting *value to default). */
+bool ed_heard_value(Editor *e, double beat, int *value);
+/* Draws a dim stretch over [b0, b1], stepped at heard values inside the placement window and flat
+   at fallback_y outside when draw_outside is set. Returns the final y. */
+float ed_draw_heard_stretch(Editor *e, UiRect lane, View *v, float scale, double b0, double b1,
+                            float fallback_y, bool has_start, bool draw_outside, uint32_t color);
 int ed_automation_plot(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse);
 void ed_sort_automation(Editor *e);
 int ed_lane_value(Editor *e, UiRect lane, float y, DmAutomation a, bool free);
@@ -555,6 +603,9 @@ bool ed_connection_pair(Editor *e, DmAutomation a, DmAutomation b, bool overlay)
 bool ed_curve_handles(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse, bool overlay,
                       bool hovered);
 void ed_curve_restore_position(Editor *e, int id);
+void ed_curve_add_restoration(Editor *e, DmAutomation end, int baseline, DmPitchState incoming);
+bool ed_point_holds(const Editor *e, size_t index);
+bool ed_restoration_value(Editor *e, size_t index, int *value);
 void ed_select_edited_node(Editor *e, DmAutomation edited);
 void ed_automation_node_drag(Editor *e, UiRect lane, View *v, float scale, UiMouse mouse);
 int ed_closest_node(Editor *e, double beat);
@@ -636,6 +687,7 @@ bool ed_midi_replace_payload(Editor *e, const uint8_t *payload, size_t size);
 void ed_midi_event_fields(Editor *e);
 /* The list and details panels, height tall; 0 fills the rest of the window. */
 void ed_midi_event_panels(Editor *e, size_t count, float *split, float height);
+bool ed_midi_initial_mix(double beat, const DmBytes *message);
 void ed_midi_apply_initial(Editor *e, const uint8_t *message);
 bool ed_midi_apply_draft(Editor *e);
 void ed_midi_event_window(Editor *e);

@@ -18,9 +18,7 @@ static void removal(Editor *e) {
               ed_place_pattern(e, 0, 0, 0) >= 0,
           "note and automation placements share a channel");
     DmAutomation point = {
-        .channel = 2, .type = MIDI_CONTROL, .a = MIDI_CC_MODULATION, .b = 60, .pattern = -1};
-    check(dm_automation_add(&e->project, point), "channel automation fixture");
-    point.pattern = lane;
+        .channel = 2, .type = MIDI_CONTROL, .a = MIDI_CC_MODULATION, .b = 60, .pattern = lane};
     check(dm_automation_add(&e->project, point), "pattern automation fixture");
     uint8_t cc[] = {MIDI_CONTROL | 2, MIDI_CC_MODULATION, 70};
     DmBytes message = {cc, sizeof(cc), sizeof(cc)};
@@ -66,17 +64,12 @@ static void channel_swap(Editor *e) {
     check(dm_clip_add(p, (DmClip){.pattern = 0, .channel = 0, .row = 2}) &&
               dm_clip_add(p, (DmClip){.pattern = lane, .channel = MIDI_DRUM_CHANNEL, .lane = 1}),
           "swap placements on both channels");
-    check(dm_automation_add(p, (DmAutomation){.pattern = -1,
-                                              .channel = 0,
+    check(dm_automation_add(p, (DmAutomation){.pattern = lane,
+                                              .channel = MIDI_DRUM_CHANNEL,
                                               .type = MIDI_CONTROL,
-                                              .a = MIDI_CC_VOLUME,
-                                              .b = 70}) &&
-              dm_automation_add(p, (DmAutomation){.pattern = lane,
-                                                  .channel = MIDI_DRUM_CHANNEL,
-                                                  .type = MIDI_CONTROL,
-                                                  .a = MIDI_CC_PAN,
-                                                  .b = 40}),
-          "swap song and pattern automation");
+                                              .a = MIDI_CC_PAN,
+                                              .b = 40}),
+          "swap pattern automation");
 
     for (int status = MIDI_NOTE_OFF; status < MIDI_SYSTEM; status += MIDI_CHANNELS) {
         for (int i = 0; i < 2; ++i) {
@@ -168,9 +161,8 @@ static void channel_swap(Editor *e) {
               !strcmp(p->lane_names[0][0], "Drum lane"),
           "channel rows, lane names and mixes swap");
     check(p->clips[0].channel == MIDI_DRUM_CHANNEL && p->clips[0].row == 2 &&
-              p->clips[1].channel == 0 && p->clips[1].lane == 1 &&
-              p->automation[0].channel == MIDI_DRUM_CHANNEL && p->automation[1].channel == 0,
-          "clips and both automation scopes keep their owning channel");
+              p->clips[1].channel == 0 && p->clips[1].lane == 1 && p->automation[0].channel == 0,
+          "clips and pattern automation keep their owning channel");
 
     for (size_t i = 0; i + 1 < p->event_count; ++i) {
         const DmEvent *event = &p->events[i];
@@ -497,12 +489,9 @@ static void channel_events(Editor *e) {
           "volume automation occupies bars three and four");
     e->project.clips[1].length = 8;
     e->project.channels[0].volume = 100;
-    check(dm_automation_add(&e->project, (DmAutomation){.beat = 4,
-                                                        .type = MIDI_CONTROL,
-                                                        .channel = 0,
-                                                        .a = MIDI_CC_VOLUME,
-                                                        .b = 50,
-                                                        .pattern = -1}) &&
+    uint8_t cc7[] = {MIDI_CONTROL | 0, MIDI_CC_VOLUME, 50};
+    DmBytes cc7_msg = {cc7, sizeof(cc7), sizeof(cc7)};
+    check(dm_event_add(&e->project, 4, 0, 0, &cc7_msg) &&
               dm_automation_add(&e->project, (DmAutomation){.type = MIDI_CONTROL,
                                                             .channel = 0,
                                                             .a = MIDI_CC_VOLUME,
@@ -549,9 +538,8 @@ static void channel_events(Editor *e) {
     e->playlist_view.scroll_x = e->playlist_view.scroll_y = 0;
     ed_playlist_click(e, area, grid, &e->playlist_view, 64, 40, rows, row_count,
                       (UiMouse){.pos = {360, 176}, .clicked = true}, -1);
-    check(e->song_event && e->song_event_channel == 0 && !e->song_event_add &&
-              e->event_beat == 4 && e->midi_draft.data[1] == MIDI_CC_VOLUME &&
-              e->midi_draft.data[2] == 50,
+    check(e->song_event && e->song_event_channel == 0 && !e->song_event_add && e->event_beat == 4 &&
+              e->midi_draft.data[1] == MIDI_CC_VOLUME && e->midi_draft.data[2] == 50,
           "clicking a populated channel bar opens that channel in Edit mode");
     ed_playlist_click(e, area, grid, &e->playlist_view, 64, 40, rows, row_count,
                       (UiMouse){.pos = {1000, 176}, .clicked = true}, -1);
@@ -567,6 +555,35 @@ static void channel_events(Editor *e) {
           "channel event label cannot open lane settings or instrument editing");
 }
 
+static void uniform_channel_events(Editor *e) {
+    ed_new_project(e);
+    check(dm_note_add(&e->project.patterns[0], (DmNote){4, 1, 60, 100, 0}) &&
+              dm_clip_add(&e->project, (DmClip){.pattern = 0, .channel = 0}),
+          "uniform channel event note fixture");
+    ed_song_event_open_bar(e, 2, true, 0);
+    uint8_t prog[] = {MIDI_PROGRAM | 0, 15};
+    e->midi_draft.size = 0;
+    check(dm_bytes(&e->midi_draft, prog, sizeof(prog)) && ed_song_event_add(e),
+          "add opening program change through Channel Events window");
+    check(dm_set_initial_program(&e->project, 0, 24, true) &&
+              e->project.channels[0].program == 24 && e->project.event_count == 1 &&
+              e->project.events[0].message.data[1] == 24,
+          "dm_set_initial_program updates a window-added program before the first note");
+
+    ed_song_event_open_bar(e, 1, true, -1);
+    uint8_t bank[] = {MIDI_CONTROL | MIDI_DRUM_CHANNEL, MIDI_CC_BANK, 120};
+    e->midi_draft.size = 0;
+    check(dm_bytes(&e->midi_draft, bank, sizeof(bank)) && ed_song_event_add(e) &&
+              e->project.event_count == 2,
+          "add drum bank CC0 through Song Events window");
+    ed_open_instrument(e, MIDI_DRUM_CHANNEL, false);
+    e->instrument_drums = false;
+    ed_apply_instrument(e);
+    check(!e->project.channels[MIDI_DRUM_CHANNEL].drums && e->project.event_count == 1 &&
+              e->project.events[0].message.data[0] == (MIDI_PROGRAM | 0),
+          "Melody-Drums switch removes a window-added drum CC0 event like an imported one");
+}
+
 int main(void) {
     Editor *e = test_editor_open("channel rows",
                                  (TestDesktop){.soundfont = TEST_SOUNDFONT, .paused = true});
@@ -576,6 +593,7 @@ int main(void) {
     channel_swap(e);
     channel_swap_drums(e);
     channel_events(e);
+    uniform_channel_events(e);
     parallel_rows(e);
     new_project_channels(e);
     test_channel_row_ui(e, check);

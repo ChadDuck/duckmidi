@@ -207,10 +207,9 @@ static void source_checks(Editor *e) {
         check(dm_event_add(&e->project, fixtures[i].beat, 2, 1, &bytes), "add event fixture");
     }
 
-    check(
-        dm_automation_add(
-            &e->project, (DmAutomation){.beat = 1.5, .type = MIDI_PROGRAM, .a = 40, .pattern = -1}),
-        "add song-level instrument change");
+    const uint8_t prog40[] = {MIDI_PROGRAM, 40};
+    bytes = (DmBytes){(uint8_t *)prog40, sizeof(prog40), sizeof(prog40)};
+    check(dm_event_add(&e->project, 1.5, 0, 0, &bytes), "add song-level instrument change");
     double start, end;
     check(ed_song_event_bar(e, 1, &start, &end) == 1 && start == 0 && end == change,
           "a meter change ends the preceding bar at its exact beat");
@@ -280,9 +279,22 @@ static void source_checks(Editor *e) {
               e->project.events[index].message.data[5] == 36,
           "meter edit changes the bar length and preserves metronome ticks");
     e->song_event = false;
-    check(dm_automation_add(&e->project, (DmAutomation){.type = MIDI_PROGRAM, .pattern = -1}),
-          "add initial instrument fixture");
-    ed_midi_select(e, (MidiRow){0, 0, true});
+    const uint8_t prog0[] = {MIDI_PROGRAM, 0};
+    bytes = (DmBytes){(uint8_t *)prog0, sizeof(prog0), sizeof(prog0)};
+    check(dm_event_add(&e->project, 0, 0, 0, &bytes), "add initial instrument fixture");
+    int init_index = -1;
+
+    for (size_t i = 0; i < e->project.event_count; ++i) {
+        const DmEvent *ev = &e->project.events[i];
+
+        if (ev->beat == 0 && ev->message.size == 2 && ev->message.data[0] == MIDI_PROGRAM &&
+            ev->message.data[1] == 0) {
+            init_index = (int)i;
+        }
+    }
+
+    check(init_index >= 0, "locate initial instrument fixture");
+    ed_midi_select(e, (MidiRow){0, init_index, false});
     e->midi_draft.data[1] = 24;
     check(ed_midi_apply_draft(e) && e->project.channels[0].program == 24,
           "initial program editing changes the channel's effective instrument");
@@ -295,23 +307,22 @@ static void song_program_repeats(Editor *e) {
     DmBytes program = {(uint8_t *)patch, sizeof(patch), sizeof(patch)};
     check(dm_event_add(&e->project, 1, 0, 0, &program) &&
               dm_event_add(&e->project, 1, 0, 0, &program) &&
+              dm_event_add(&e->project, 1, 0, 0, &program) &&
+              dm_event_add(&e->project, 1, 0, 0, &program) &&
               dm_event_add(&e->project, 1, 1, 0, &program) &&
               dm_event_add(&e->project, 1, 1, 1, &program) &&
               dm_event_add(&e->project, 2, 0, 0, &program),
           "create repeated programs and independent track, port and time fixtures");
     program = (DmBytes){(uint8_t *)other_channel, sizeof(other_channel), sizeof(other_channel)};
     check(dm_event_add(&e->project, 1, 0, 0, &program), "create independent channel fixture");
-    DmAutomation a = {.beat = 1, .type = MIDI_PROGRAM, .a = 4, .pattern = -1};
-    check(dm_automation_add(&e->project, a) && dm_automation_add(&e->project, a),
-          "create repeated song-level program automation");
-    check(ed_midi_rows(e) == 8 && ed_song_event_rows(e, 0, 4, -1) == 6 &&
-              ed_song_event_rows(e, 0, 4, 0) == 5,
+    check(ed_midi_rows(e) == 8 && ed_song_event_rows(e, 0, 4, -1) == 5 &&
+              ed_song_event_rows(e, 0, 4, 0) == 4,
           "Channel event folds duplicate programs without changing the underlying project");
     ed_song_event_open_bar(e, 1, false, 0);
     e->midi_draft.data[1] = 12;
     check(ed_midi_apply_draft(e) && e->project.event_count == 5 &&
               e->project.events[0].message.data[1] == 12 &&
-              e->project.events[1].message.data[1] == 4 && ed_song_event_rows(e, 0, 4, 0) == 5,
+              e->project.events[1].message.data[1] == 4 && ed_song_event_rows(e, 0, 4, 0) == 4,
           "editing a folded row replaces its copies and keeps the independent programs");
     e->song_event = false;
 }
@@ -398,35 +409,36 @@ static void song_event_selection_checks(Editor *e) {
 static void song_event_group_programs(Editor *e) {
     fixture(e);
     const uint8_t patch[] = {MIDI_PROGRAM, 12};
+    const uint8_t alt[] = {MIDI_PROGRAM, 24};
     DmBytes bytes = {(uint8_t *)patch, sizeof(patch), sizeof(patch)};
+    DmBytes alt_bytes = {(uint8_t *)alt, sizeof(alt), sizeof(alt)};
     check(dm_event_add(&e->project, 1, 0, 0, &bytes) &&
               dm_event_add(&e->project, 1, 0, 0, &bytes) &&
-              dm_event_add(&e->project, 2, 0, 0, &bytes) &&
-              dm_event_add(&e->project, 2, 0, 0, &bytes) &&
+              dm_event_add(&e->project, 1, 1, 0, &bytes) &&
+              dm_event_add(&e->project, 1, 1, 0, &bytes) &&
+              dm_event_add(&e->project, 2, 0, 0, &alt_bytes) &&
+              dm_event_add(&e->project, 2, 0, 0, &alt_bytes) &&
               dm_event_add(&e->project, 3, 0, 0, &bytes),
           "create source program repeats and an independent event");
-    DmAutomation a = {.beat = 1, .type = MIDI_PROGRAM, .a = 24, .pattern = -1};
-    check(dm_automation_add(&e->project, a) && dm_automation_add(&e->project, a),
-          "create automation program repeats");
     ed_song_event_open_bar(e, 0, false, 0);
     ed_song_event_pick(e, 0, PICK_ONE);
     ed_song_event_pick(e, 1, PICK_TOGGLE);
     ed_song_event_pick(e, 2, PICK_TOGGLE);
-    check(ed_song_event_pick_count(e) == 3, "pick source and automation program rows");
-    check(ed_song_events_move(e, 0, true) && e->project.event_count == 3 &&
-              e->project.automation_count == 1 && e->project.events[0].beat == 0 &&
-              e->project.events[1].beat == 0 && e->project.events[2].beat == 3 &&
-              e->project.automation[0].beat == 0 && e->project.channels[0].program == 24 &&
+    check(ed_song_event_pick_count(e) == 3, "pick folded program rows");
+    check(ed_song_events_move(e, 0, true) && e->project.event_count == 4 &&
+              !e->project.automation_count && e->project.events[0].beat == 0 &&
+              e->project.events[1].beat == 0 && e->project.events[2].beat == 0 &&
+              e->project.events[3].beat == 3 && e->project.channels[0].program == 24 &&
               ed_song_event_pick_count(e) == 3 && ed_song_event_picked(e, (MidiRow){0, 0, false}) &&
               ed_song_event_picked(e, (MidiRow){0, 1, false}) &&
-              ed_song_event_picked(e, (MidiRow){0, 0, true}),
+              ed_song_event_picked(e, (MidiRow){0, 2, false}),
           "moving folded programs removes hidden repeats and applies initial values");
     ed_undo(e, false);
-    check(e->project.event_count == 5 && e->project.automation_count == 2 &&
+    check(e->project.event_count == 7 && !e->project.automation_count &&
               e->project.events[0].beat == 1 && e->project.events[1].beat == 1 &&
-              e->project.events[2].beat == 2 && e->project.events[3].beat == 2 &&
-              e->project.automation[0].beat == 1 && e->project.automation[1].beat == 1,
-          "one undo restores both program streams including their hidden repeats");
+              e->project.events[2].beat == 1 && e->project.events[3].beat == 1 &&
+              e->project.events[4].beat == 2 && e->project.events[5].beat == 2,
+          "one undo restores program repeats and their hidden copies");
 }
 
 static void native_drop(Editor *e, const char *path) {

@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 project(duckmidi LANGUAGES C CXX)
+option(DUCKMIDI_DEVTOOLS "Developer tools in the editor (DEV builds)" OFF)
 # The version is set for each build, as build-menu.bat and the release workflow do. Without one,
 # the build is named after its UTC build time (YYYY.MM.DD.HHMM); tools/version.cmake writes it
 # before every build. Nothing in the source names a version.
@@ -38,7 +39,9 @@ target_include_directories(duckversion PRIVATE "${DUCKMIDI_GENERATED}" src)
 add_dependencies(duckversion duckmidi_version)
 add_library(duckcore STATIC shared/spectrum.c src/core/core.c src/core/files.c src/core/midi.c
   src/core/import.c src/core/timeline.c src/core/schedule.c src/core/import_ports.c
-  src/core/project.c src/core/project_compat.c src/core/compress.c src/core/instruments.c)
+  src/core/project.c src/core/project_codec.c src/core/project_checks.c
+  src/core/project_legacy.c src/core/project_fields.c src/core/validate.c src/core/project_compat.c src/core/compress.c
+  src/core/instruments.c)
 add_subdirectory(libraries/export_support)
 add_subdirectory(libraries/m64export)
 add_subdirectory(libraries/ootexport)
@@ -96,7 +99,8 @@ else()
   target_link_libraries(duckmidi_io PRIVATE ALSA::ALSA Threads::Threads)
 endif()
 add_executable(duckmidi src/main.c src/audio/audio.c src/audio/realtime.c src/audio/live.c
-  src/audio/publish.c src/audio/audition.c src/audio/jobs.c src/export_plugins.c
+  src/audio/publish.c src/audio/audition.c src/audio/jobs.c src/audio/schedule_job.c
+  src/export_plugins.c
   src/update.c src/crash.c shared/pattern_generation.c
   src/editor/browser.c src/editor/dialogs.c src/editor/editor.c src/editor/event_graph.c
   src/editor/event_view.c src/editor/events.c src/editor/export.c src/editor/export_ui.c
@@ -107,6 +111,11 @@ add_executable(duckmidi src/main.c src/audio/audio.c src/audio/realtime.c src/au
   src/editor/samples.c src/editor/save.c
   src/editor/selection.c src/editor/shell.c src/editor/song_events.c src/editor/state.c
   src/editor/timeline.c src/editor/transport.c src/editor/update.c)
+if(DUCKMIDI_DEVTOOLS)
+  target_compile_definitions(duckmidi PRIVATE DM_DEVTOOLS)
+  target_sources(duckmidi PRIVATE src/devtools/profiler.c src/devtools/gestures.c
+    src/devtools/input_log.c)
+endif()
 add_dependencies(duckmidi m64export ootexport sampletool)
 add_custom_command(TARGET duckmidi POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:duckmidi>/plugins"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:duck_export_support>" "$<TARGET_FILE_DIR:duckmidi>/plugins/"
@@ -188,6 +197,8 @@ if(BUILD_TESTING)
   set_tests_properties(crash_reports PROPERTIES TIMEOUT 60)
   add_test(NAME repository_audio_discovery
     COMMAND "${Python3_EXECUTABLE}" -I -B "${PROJECT_SOURCE_DIR}/tests/repository_audio_scan_test.py")
+  add_test(NAME input_to_test
+    COMMAND "${Python3_EXECUTABLE}" -I -B "${PROJECT_SOURCE_DIR}/tests/input_to_test_test.py")
   add_executable(repository_history_test tests/repository_history_test.c)
   add_executable(native_sample_test tests/native_sample_test.c)
   target_link_libraries(native_sample_test PRIVATE duck_export_support)
@@ -268,6 +279,10 @@ if(BUILD_TESTING)
   add_executable(core_test tests/core_test.c)
   target_link_libraries(core_test PRIVATE duckcore)
   add_test(NAME midi_project_core COMMAND core_test)
+  add_executable(import_fidelity_test tests/import_fidelity_test.c)
+  target_link_libraries(import_fidelity_test PRIVATE duckcore)
+  add_test(NAME import_fidelity COMMAND import_fidelity_test)
+  set_tests_properties(import_fidelity PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
   add_executable(spectrum_test tests/spectrum_test.c)
   target_link_libraries(spectrum_test PRIVATE duckcore)
   add_test(NAME spectrum_analysis COMMAND spectrum_test)
@@ -292,7 +307,7 @@ if(BUILD_TESTING)
   target_link_libraries(update_test PRIVATE duckcore SDL3::SDL3 $<$<BOOL:${WIN32}>:winhttp>)
   add_test(NAME update_check COMMAND update_test)
   set_tests_properties(midi_project_core PROPERTIES WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-  foreach(TEST_TARGET audio_export_test sample_tool_test sample_synth_test m64export_api_test m64_coopdx_test m64_install_test oot_export_test oot_install_test core_test spectrum_test ports_test project_compat_test release_export_test update_test)
+  foreach(TEST_TARGET audio_export_test sample_tool_test sample_synth_test m64export_api_test m64_coopdx_test m64_install_test oot_export_test oot_install_test core_test import_fidelity_test spectrum_test ports_test project_compat_test release_export_test update_test)
     if(MSVC)
       target_compile_options(${TEST_TARGET} PRIVATE /UNDEBUG)
     else()

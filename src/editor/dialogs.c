@@ -1,4 +1,5 @@
 #include "editor/internal.h"
+#include "devtools/devtools.h"
 #include "text/en.h"
 
 static void rename_dialog(Editor *e);
@@ -76,7 +77,8 @@ static void lane_dialog(Editor *e) {
                 /* The position-based default name is stored as no name, so it keeps
                    following the subrow's position. */
                 char automatic[64];
-                snprintf(automatic, sizeof(automatic), "%s%d", DM_TEXT_AUTOMATION_NUMBER_PREFIX, lane);
+                snprintf(automatic, sizeof(automatic), "%s%d", DM_TEXT_AUTOMATION_NUMBER_PREFIX,
+                         lane);
                 bool numbered = !strcmp(e->rename_text, automatic);
                 if (ed_checkpoint(e)) {
                     snprintf(e->project.lane_names[c][lane - 1], 64, "%s",
@@ -368,7 +370,259 @@ static void about_spectrum(Editor *e) {
     ui_spectrum(e->spectrum, DM_SPECTRUM_BANDS, 100, e->accent);
 }
 
+#ifdef DM_DEVTOOLS
+static void profiler_dialog(Editor *e) {
+    if (!e->profiler) {
+        return;
+    }
+
+    if (ui_dialog(DM_TEXT_FRAME_PROFILER, &e->profiler, (UiDialog){.width = 600, .tool = true})) {
+        enum { WINDOW_SECONDS = 2 };
+
+        struct {
+            double average, worst;
+            int calls;
+        } stats[DM_PROFILE_COUNT];
+
+        int frames = dm_profile_frames(WINDOW_SECONDS);
+
+        for (int i = 0; i < DM_PROFILE_COUNT; ++i) {
+            dm_profile_stats(i, WINDOW_SECONDS, &stats[i].average, &stats[i].worst,
+                             &stats[i].calls);
+        }
+
+        double frame_ms = stats[DM_PROFILE_FRAME].average * frames;
+        double fps = frame_ms > 0 ? stats[DM_PROFILE_FRAME].calls * 1000 / frame_ms : 0;
+        char text[128];
+        snprintf(text, sizeof(text), DM_TEXT_PROFILER_FPS, fps);
+        ui_text(text);
+        ui_dim(DM_TEXT_PROFILER_INCLUSIVE);
+        ui_separator();
+        ui_group_begin();
+        ui_text(DM_TEXT_PROFILER_SECTION);
+
+        for (int i = 0; i < DM_PROFILE_COUNT; ++i) {
+            ui_text(dm_profile_name(i));
+        }
+
+        ui_group_end();
+        ui_same();
+        ui_group_begin();
+        ui_text(DM_TEXT_PROFILER_AVERAGE);
+
+        for (int i = 0; i < DM_PROFILE_COUNT; ++i) {
+            snprintf(text, sizeof(text), "%.3f", stats[i].average);
+            ui_text(text);
+        }
+
+        ui_group_end();
+        ui_same();
+        ui_group_begin();
+        ui_text(DM_TEXT_PROFILER_WORST);
+
+        for (int i = 0; i < DM_PROFILE_COUNT; ++i) {
+            snprintf(text, sizeof(text), "%.3f", stats[i].worst);
+            ui_text(text);
+        }
+
+        ui_group_end();
+        ui_same();
+        ui_group_begin();
+        ui_text(DM_TEXT_PROFILER_CALLS);
+
+        for (int i = 0; i < DM_PROFILE_COUNT; ++i) {
+            snprintf(text, sizeof(text), "%.2f", frames ? (double)stats[i].calls / frames : 0);
+            ui_text(text);
+        }
+
+        ui_group_end();
+    }
+
+    ui_dialog_end();
+}
+
+static void format_targets(unsigned targets, char *out, size_t cap) {
+    static const struct {
+        unsigned bit;
+        const char *name;
+    } names[] = {
+        {TARGET_NOTE, "Note"},
+        {TARGET_PLACEMENT, "Placement"},
+        {TARGET_EVENT_POINT, "Event point"},
+        {TARGET_BEND, "Bend"},
+        {TARGET_EVENT_LANE, "Event lane"},
+        {TARGET_CANVAS, "Grid"},
+        {TARGET_CHANNEL_LABEL, "Channel label"},
+        {TARGET_TIMELINE, "Ruler"},
+        {TARGET_EVENT_LIST, "Event list"},
+        {TARGET_PATTERN_CARD, "Pattern card"},
+        {TARGET_LANE_BUTTON, "Lane button"},
+        {TARGET_PORT, "Port"},
+        {TARGET_TRANSPORT, "Transport"},
+        {TARGET_SAMPLE, "Sample"},
+    };
+
+    out[0] = 0;
+
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        if (!(targets & names[i].bit)) {
+            continue;
+        }
+
+        size_t len = strlen(out);
+        snprintf(out + len, cap - len, "%s%s", len ? ", " : "", names[i].name);
+    }
+
+    if (!out[0]) {
+        snprintf(out, cap, "%s", DM_TEXT_INSPECTOR_NONE);
+    }
+}
+
+static void append_token(char *out, size_t cap, const char *sep, const char *token) {
+    size_t len = strlen(out);
+    snprintf(out + len, cap - len, "%s%s", len ? sep : "", token);
+}
+
+static void inspector_row(const Editor *e, const DmGestureRecord *rec) {
+    char binding[64] = {0};
+    ed_gesture_format(e->gestures[rec->gesture], binding, sizeof(binding));
+    const char *helper =
+        rec->helper == DM_GESTURE_HELD ? DM_TEXT_INSPECTOR_HELD : DM_TEXT_INSPECTOR_PRESSED;
+    char count[16] = {0};
+
+    if (rec->count > 1) {
+        snprintf(count, sizeof(count), " x%d", rec->count);
+    }
+
+    char line[256];
+
+    if (rec->result) {
+        snprintf(line, sizeof(line), "  %s (%s) [%s]%s", ed_gestures[rec->gesture].label, binding,
+                 helper, count);
+    } else {
+        snprintf(line, sizeof(line), "  %s (%s) [%s]%s - %s", ed_gestures[rec->gesture].label,
+                 binding, helper, count, rec->reason);
+    }
+
+    ui_text(line);
+}
+
+static void gesture_inspector_dialog(Editor *e) {
+    if (!e->gesture_inspector) {
+        return;
+    }
+
+    if (ui_dialog(DM_TEXT_GESTURE_INSPECTOR, &e->gesture_inspector,
+                  (UiDialog){.width = 600, .tool = true})) {
+        UiMouse m = ui_mouse();
+        char target[160], mods[64] = {0}, buttons[64] = {0}, line[256];
+        format_targets(e->hover_target, target, sizeof(target));
+
+        if (m.ctrl) {
+            append_token(mods, sizeof(mods), "+", "Ctrl");
+        }
+
+        if (m.shift) {
+            append_token(mods, sizeof(mods), "+", "Shift");
+        }
+
+        if (m.alt) {
+            append_token(mods, sizeof(mods), "+", "Alt");
+        }
+
+        if (!mods[0]) {
+            snprintf(mods, sizeof(mods), "%s", DM_TEXT_INSPECTOR_NONE);
+        }
+
+        if (m.left) {
+            append_token(buttons, sizeof(buttons), ", ", "Left");
+        }
+
+        if (m.right) {
+            append_token(buttons, sizeof(buttons), ", ", "Right");
+        }
+
+        if (m.middle) {
+            append_token(buttons, sizeof(buttons), ", ", "Middle");
+        }
+
+        if (m.wheel != 0) {
+            append_token(buttons, sizeof(buttons), ", ", "Wheel");
+        }
+
+        if (!buttons[0]) {
+            snprintf(buttons, sizeof(buttons), "%s", DM_TEXT_INSPECTOR_NONE);
+        }
+
+        snprintf(line, sizeof(line), DM_TEXT_INSPECTOR_HOVER, target);
+        ui_text(line);
+        snprintf(line, sizeof(line), DM_TEXT_INSPECTOR_MODIFIERS, mods);
+        ui_text(line);
+        snprintf(line, sizeof(line), DM_TEXT_INSPECTOR_BUTTONS, buttons);
+        ui_text(line);
+        ui_separator();
+        ui_text(DM_TEXT_INSPECTOR_WON);
+        int count = dm_gesture_inspector_count();
+        bool any = false;
+
+        for (int i = 0; i < count; ++i) {
+            DmGestureRecord rec;
+
+            if (dm_gesture_inspector_entry(i, &rec) && rec.result) {
+                inspector_row(e, &rec);
+                any = true;
+            }
+        }
+
+        if (!any) {
+            ui_dim(DM_TEXT_INSPECTOR_NONE);
+        }
+
+        ui_separator();
+        ui_text(DM_TEXT_INSPECTOR_LOST);
+        any = false;
+
+        for (int i = 0; i < count; ++i) {
+            DmGestureRecord rec;
+
+            if (dm_gesture_inspector_entry(i, &rec) && !rec.result) {
+                inspector_row(e, &rec);
+                any = true;
+            }
+        }
+
+        if (!any) {
+            ui_dim(DM_TEXT_INSPECTOR_NONE);
+        }
+
+        ui_separator();
+        ui_text(DM_TEXT_INSPECTOR_NOT_ASKED);
+        any = false;
+
+        for (int i = 0; i < GESTURE_COUNT; ++i) {
+            if ((ed_gestures[i].targets & e->hover_target) && !dm_gesture_inspector_queried(i)) {
+                char binding[64] = {0};
+                ed_gesture_format(e->gestures[i], binding, sizeof(binding));
+                snprintf(line, sizeof(line), "  %s (%s)", ed_gestures[i].label, binding);
+                ui_text(line);
+                any = true;
+            }
+        }
+
+        if (!any) {
+            ui_dim(DM_TEXT_INSPECTOR_NONE);
+        }
+    }
+
+    ui_dialog_end();
+}
+#endif
+
 void ed_dialogs(Editor *e) {
+#ifdef DM_DEVTOOLS
+    profiler_dialog(e);
+    gesture_inspector_dialog(e);
+#endif
     dm_audio_analyzer_enable(e->audio, e->about && dm_audio_playing(e->audio));
 
     if (!e->about) {

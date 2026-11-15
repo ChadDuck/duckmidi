@@ -30,7 +30,7 @@ jobs:
 
       # Debug symbols stay in the delivery so crash report addresses can be resolved.
       - name: Configure
-        run: cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDUCKMIDI_PRODUCTION=ON -DDUCKMIDI_DELIVERY_TYPE=Full -DDUCKMIDI_DEV_DELIVERY=ON
+        run: cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DDUCKMIDI_PRODUCTION=ON -DDUCKMIDI_DELIVERY_TYPE=Full -DDUCKMIDI_DEV_DELIVERY=ON -DDUCKMIDI_DEVTOOLS=ON
 
       - name: Build
         run: cmake --build build/development/cmake

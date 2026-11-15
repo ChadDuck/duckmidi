@@ -226,6 +226,7 @@ void ed_open_file_location(Editor *e, const char *source) {
 
 static void reset_regions(Editor *e) {
     ed_close_instrument(e);
+    dm_audio_update_cancel(e->audio);
     ++e->export_revision;
     ++e->project_session;
     ed_export_reset_results(e);
@@ -305,7 +306,7 @@ void ed_new_project(Editor *e) {
     ed_clear_history(e->undo, &e->undo_count);
     ed_clear_history(e->redo, &e->redo_count);
     dm_audio_reload_samples(e->audio);
-    dm_audio_publish(e->audio, &e->project, 0, false, e->status, sizeof(e->status));
+    ed_publish_song_start(e);
     reset_percussion(e);
 }
 
@@ -383,7 +384,7 @@ static bool load_project(Editor *e, const char *path, const char *original) {
     ed_clear_history(e->undo, &e->undo_count);
     ed_clear_history(e->redo, &e->redo_count);
     dm_audio_reload_samples(e->audio);
-    dm_audio_publish(e->audio, &e->project, 0, false, e->status, sizeof(e->status));
+    ed_publish_song_start(e);
     reset_percussion(e);
 
     if (*e->project.soundfont) {

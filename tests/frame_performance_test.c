@@ -73,17 +73,72 @@ static void measure_audio(Editor *e) {
     start = now();
 
     for (int i = 0; i < 10; ++i) {
+        check(dm_audio_update(audio, &e->project, NULL, error, sizeof(error)), "sync update");
+    }
+
+    double update_sync = (now() - start) / 10;
+    double update_async_enqueue = 0, update_async_land = 0, update_async_publish = 0;
+    /* Background updates are measured as during a fader drag: playing, with a loop, which each
+       publish re-prepares (ed_publish_poll). */
+    dm_audio_loop(audio, true, 1, 30);
+    dm_audio_transport(audio, true);
+
+    for (uint64_t rev = 1; rev <= 10; ++rev) {
+        double t0 = now();
+        check(dm_audio_update_async(audio, &e->project, NULL, 1, rev), "async update");
+        double t1 = now();
+        update_async_enqueue += t1 - t0;
+
+        for (;;) {
+            double poll_start = now();
+            int polled = dm_audio_update_poll(audio, 1, rev, NULL, error, sizeof(error));
+            check(polled >= 0, "async update poll");
+
+            if (polled == 1) {
+                /* The GUI-thread share of a background update: publishing the finished build
+                   and resetting the loop for it. */
+                dm_audio_loop(audio, true, 1, 30);
+                update_async_publish += now() - poll_start;
+                break;
+            }
+
+            SDL_Delay(1);
+        }
+
+        update_async_land += now() - t0;
+    }
+
+    update_async_enqueue /= 10;
+    update_async_land /= 10;
+    update_async_publish /= 10;
+    dm_audio_transport(audio, false);
+    dm_audio_loop(audio, false, 0, 0);
+    start = now();
+
+    for (int i = 0; i < 10; ++i) {
         dm_audio_loop(audio, true, 1, 30);
     }
 
     double loop = (now() - start) / 10;
     dm_audio_loop(audio, false, 0, 0);
+    /* A scrub step: moving playback on the published schedule, spread over the song. */
+    double song_seconds = dm_beat_seconds(&e->project, dm_duration(&e->project));
+    start = now();
+
+    for (int i = 0; i < 10; ++i) {
+        check(dm_audio_seek(audio, &e->project, song_seconds * (i + 1) / 11, true), "scrub seek");
+    }
+
+    double seek = (now() - start) / 10;
+    dm_audio_transport(audio, false);
     double cpu = cpu_ms();
     SDL_Delay(2000);
     cpu = cpu_ms() - cpu;
     printf("audio: engine_bytes=%zu publish_ms=%.2f (schedule build %.2f) loop_set_ms=%.2f "
-           "idle_cpu_ms_per_2s=%.1f driver=%s\n",
-           audio_probe_engine_size(), publish, build, loop, cpu, dm_audio_driver(audio));
+           "update_sync_ms=%.2f update_async_enqueue_ms=%.2f update_async_land_ms=%.2f "
+           "update_async_publish_ms=%.2f scrub_seek_ms=%.2f idle_cpu_ms_per_2s=%.1f driver=%s\n",
+           audio_probe_engine_size(), publish, build, loop, update_sync, update_async_enqueue,
+           update_async_land, update_async_publish, seek, cpu, dm_audio_driver(audio));
     dm_audio_destroy(audio);
 }
 
@@ -149,11 +204,28 @@ int main(void) {
     check(compared > 0, "pitch bends compared");
     double start = now();
     ed_checkpoint(e);
+    double checkpoint = now() - start;
     ed_commit(e);
     double edit = now() - start;
+    start = now();
+    ed_history_compact(e);
+    double history_pack = now() - start;
+    /* Loading the same project from its packed form, as opening a file or undoing does. */
+    DmBytes packed = {0};
+    DmProject loaded;
+    char error[256];
+    dm_project_init(&loaded);
+    check(dm_pack(&e->project, &packed), "pack the arrangement");
+    start = now();
+    check(dm_unpack(&loaded, packed.data, packed.size, error, sizeof(error)),
+          "load the packed arrangement");
+    double load = now() - start;
+    dm_project_free(&loaded);
+    dm_bytes_free(&packed);
     printf("notes=%zu automation=%zu frame_ms=%.2f events_frame_ms=%.2f bends_frame_ms=%.2f "
-           "edit_ms=%.2f\n",
-           notes, e->project.automation_count, arrangement, events, bends, edit);
+           "edit_ms=%.2f (checkpoint %.2f) history_pack_ms=%.2f load_ms=%.2f\n",
+           notes, e->project.automation_count, arrangement, events, bends, edit, checkpoint,
+           history_pack, load);
     check(arrangement < 20 && events < 20 && bends < 20, "frames stay under 20 ms");
     measure_scans(e);
     measure_audio(e);

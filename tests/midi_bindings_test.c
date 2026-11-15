@@ -1,5 +1,6 @@
 #include "editor/internal.h"
 #include "midi_input_fixture.h"
+#include "publish_wait.h"
 
 void recording_feedback_audio_pause(DmAudio *audio);
 void recording_feedback_audio_render(DmAudio *audio, int frames);
@@ -104,6 +105,7 @@ static void mixer(Editor *e) {
     assert(recording_feedback_audio_port_cc(e->audio, 0, 0, MIDI_CC_VOLUME) == 119);
     assert(transport(e) == generation);
     ed_midi_bindings_flush(e, e->midi_mix_last + 250 * SDL_NS_PER_MS);
+    test_publish_wait(e);
     assert(transport(e) == generation + 1);
     ed_midi_bindings_flush(e, e->midi_mix_last + 500 * SDL_NS_PER_MS);
     assert(transport(e) == generation + 1);

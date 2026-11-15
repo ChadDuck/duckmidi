@@ -213,7 +213,7 @@ void ed_midi_select(Editor *e, MidiRow row) {
         return;
     }
 
-    if (row.beat == 0 && (!row.automation || e->project.automation[row.index].pattern < 0)) {
+    if (row.beat == 0 && !row.automation) {
         uint8_t *m = e->midi_draft.data;
         int c = m[0] & MIDI_CHANNEL_MASK;
 
@@ -690,6 +690,11 @@ void ed_midi_event_fields(Editor *e) {
     }
 }
 
+bool ed_midi_initial_mix(double beat, const DmBytes *m) {
+    return beat == 0 && m->size >= 3 && (m->data[0] & MIDI_STATUS_MASK) == MIDI_CONTROL &&
+           (m->data[1] == MIDI_CC_VOLUME || m->data[1] == MIDI_CC_PAN);
+}
+
 void ed_midi_apply_initial(Editor *e, const uint8_t *m) {
     int type = m[0] & MIDI_STATUS_MASK;
 
@@ -738,16 +743,17 @@ bool ed_midi_apply_draft(Editor *e) {
 
     const uint8_t *m = draft->data;
     int type = m[0] & MIDI_STATUS_MASK;
-    bool initial = !e->midi_event_kind || e->project.automation[e->midi_event_index].pattern < 0;
+    bool initial = !e->midi_event_kind;
 
     if (e->midi_event_kind && (type < MIDI_KEY_PRESSURE || type > MIDI_PITCH_BEND)) {
         snprintf(e->midi_error, sizeof(e->midi_error), DM_TEXT_AUTOMATION_REQUIRES_CONTROLLER);
         return false;
     }
 
+    bool drop_initial = !e->midi_event_kind && ed_midi_initial_mix(e->event_beat, draft);
     DmBytes copy = {0};
 
-    if (!e->midi_event_kind && !dm_bytes(&copy, draft->data, draft->size)) {
+    if (!e->midi_event_kind && !drop_initial && !dm_bytes(&copy, draft->data, draft->size)) {
         return false;
     }
 
@@ -756,8 +762,8 @@ bool ed_midi_apply_draft(Editor *e) {
         return false;
     }
 
-    if (e->song_event) {
-        dm_collapse_program_repeats(&e->project, e->midi_event_index, e->midi_event_kind);
+    if (e->song_event && !e->midi_event_kind) {
+        dm_collapse_program_repeats(&e->project, e->midi_event_index);
     }
 
     if (e->midi_event_kind) {
@@ -768,6 +774,12 @@ bool ed_midi_apply_draft(Editor *e) {
         a->a = m[1];
         a->b = draft->size > 2 ? m[2] : 0;
         ed_sort_automation(e);
+    } else if (drop_initial) {
+        size_t i = (size_t)e->midi_event_index;
+        dm_bytes_free(&e->project.events[i].message);
+        memmove(e->project.events + i, e->project.events + i + 1,
+                (e->project.event_count - i - 1) * sizeof(DmEvent));
+        --e->project.event_count;
     } else {
         DmEvent *event = &e->project.events[e->midi_event_index];
         dm_bytes_free(&event->message);
@@ -859,10 +871,9 @@ static void midi_event_inspector(Editor *e) {
         }
     } else {
         DmAutomation a = e->project.automation[e->midi_event_index];
-
-        if (a.pattern >= 0) {
-            ui_dim(e->project.patterns[a.pattern].name);
-        }
+        ui_dim(e->project.patterns[a.pattern].name);
+        ui_dim(ed_point_holds(e, (size_t)e->midi_event_index) ? DM_TEXT_POINT_HOLDS
+                                                              : DM_TEXT_POINT_RETURNS);
     }
 
     if (ui_button(DM_TEXT_APPLY_EVENT, 120, 0) && ed_midi_apply_draft(e)) {
@@ -873,8 +884,9 @@ static void midi_event_inspector(Editor *e) {
         if (ed_checkpoint(e)) {
             size_t i = (size_t)e->midi_event_index;
 
-            if (e->song_event) {
-                dm_collapse_program_repeats(&e->project, (int)i, e->midi_event_kind);
+            /* Song rows are raw events; deleting one also removes its folded copies. */
+            if (e->song_event && !e->midi_event_kind) {
+                dm_collapse_program_repeats(&e->project, (int)i);
             }
 
             if (e->midi_event_kind) {

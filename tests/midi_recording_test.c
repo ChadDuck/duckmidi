@@ -1,5 +1,6 @@
 #include "editor/internal.h"
 #include "midi_input_fixture.h"
+#include "publish_wait.h"
 
 void recording_feedback_audio_pause(DmAudio *audio);
 void recording_feedback_audio_clock(DmAudio *audio, uint64_t ns, double position, double latency);
@@ -348,6 +349,7 @@ int main(void) {
     /* Recorded notes lie behind the playhead: no rebuild until recording stops while playing. */
     assert(!recording_feedback_audio_event(audio, MIDI_NOTE_ON, 60, 97));
     ed_toggle_record(e);
+    test_publish_wait(e);
     assert(recording_feedback_audio_event(audio, MIDI_NOTE_ON, 60, 97));
 
     reset(e, false);
@@ -573,6 +575,7 @@ int main(void) {
     send_at(e, .3, MIDI_CONTROL, MIDI_CC_EXPRESSION, 90);
     ed_midi_input_frame(e);
     ed_midi_input_flush(e);
+    test_publish_wait(e);
     unsigned first_pass = 0, second_pass = 0;
 
     for (size_t i = 0; i < e->project.automation_count; ++i) {

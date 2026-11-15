@@ -291,8 +291,9 @@ static void placed_instrument(Editor *e) {
     ed_open_pattern(e, clip.pattern, false);
     ed_select_placement_route(e, index);
     double change = clip.beat + clip.offset + 1;
-    check(dm_automation_add(&e->project, (DmAutomation){change, MIDI_PROGRAM, clip.channel, 113, 0,
-                                                        -1, 0, 0, 0, false, 0, false}),
+    uint8_t prog[] = {(uint8_t)(MIDI_PROGRAM | clip.channel), 113};
+    DmBytes msg = {prog, sizeof(prog), sizeof(prog)};
+    check(dm_event_add(&e->project, change, 0, 0, &msg),
           "add song program change inside the placement");
     e->pattern_mode = false;
     e->cursor_beat[0] = change - .5;
@@ -304,13 +305,15 @@ static void placed_instrument(Editor *e) {
     check(ed_placed_program(e) == 113, "instrument follows the program change in pattern playback");
     e->pattern_mode = false;
 
-    for (size_t i = 0; i < e->project.automation_count; ++i) {
-        DmAutomation a = e->project.automation[i];
+    for (size_t i = 0; i < e->project.event_count; ++i) {
+        DmEvent ev = e->project.events[i];
 
-        if (a.pattern < 0 && a.type == MIDI_PROGRAM && a.a == 113 && a.beat == change) {
-            memmove(e->project.automation + i, e->project.automation + i + 1,
-                    (e->project.automation_count - i - 1) * sizeof(DmAutomation));
-            --e->project.automation_count;
+        if (ev.beat == change && ev.message.size == 2 &&
+            ev.message.data[0] == (MIDI_PROGRAM | clip.channel) && ev.message.data[1] == 113) {
+            dm_bytes_free(&e->project.events[i].message);
+            memmove(e->project.events + i, e->project.events + i + 1,
+                    (e->project.event_count - i - 1) * sizeof(DmEvent));
+            --e->project.event_count;
             break;
         }
     }

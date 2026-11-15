@@ -7,4 +7,5 @@
 #include "../src/audio/publish.c"
 #include "../src/audio/audition.c"
 #include "../src/audio/jobs.c"
+#include "../src/audio/schedule_job.c"
 #endif

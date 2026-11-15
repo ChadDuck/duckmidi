@@ -1,0 +1,55 @@
+# Builds duckmidi with clang's AddressSanitizer and UndefinedBehaviorSanitizer on Arch Linux and
+# runs the tests without the exporter suites. MinGW has no AddressSanitizer, so memory errors are
+# caught here with a stack trace.
+name: Sanitizers
+
+on:
+  # Every push to dev; other branches only on demand.
+  push:
+    branches: [dev]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the run still going for an older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  asan-ubsan:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      # LeakSanitizer stops the process's threads with ptrace to scan for leaks.
+      options: --cap-add=SYS_PTRACE
+    env:
+      CC: clang
+      CXX: clang++
+      SANITIZE: -fsanitize=address,undefined -fno-omit-frame-pointer
+    steps:
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm --needed base-devel git cmake ninja pkgconf python clang compiler-rt llvm sdl3 fluidsynth alsa-lib ffmpeg
+
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build/development/cmake -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          "-DCMAKE_C_FLAGS=$SANITIZE" "-DCMAKE_CXX_FLAGS=$SANITIZE"
+          "-DCMAKE_EXE_LINKER_FLAGS=$SANITIZE" "-DCMAKE_SHARED_LINKER_FLAGS=$SANITIZE"
+          "-DCMAKE_MODULE_LINKER_FLAGS=$SANITIZE"
+
+      # Build-time helpers (the icon baker) are sanitized too; leak checking, on by default on
+      # Linux, must not fail the build. The tests run with it on.
+      - name: Build
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: cmake --build build/development/cmake
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: >
+          ctest --test-dir build/development/cmake --output-on-failure
+          -E "export_plugins|export_registry|release_export|m64|oot"

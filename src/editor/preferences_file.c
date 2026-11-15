@@ -359,17 +359,6 @@ static bool application(Ini *ini, const char *key, const char *s) {
         return true;
     }
 
-    if (!strcmp(key, "modifier_select")) {
-        uint32_t on;
-
-        if (!number(s, &on) || on > 1) {
-            return false;
-        }
-
-        e->modifier_select = on != 0;
-        return true;
-    }
-
     if (!strcmp(key, "os_cursor")) {
         uint32_t on;
 
@@ -1069,12 +1058,18 @@ bool dm_preferences_save(Editor *e) {
     snprintf(head, sizeof(head), DM_TEXT_INI_APPLICATION_SECTION, e->accent, e->background,
              e->monitor ? 1 : 0, e->ui_size, e->os_cursor ? 1 : 0, e->update_mode,
              e->update_prompted ? 1 : 0, (unsigned long long)e->sample_hash,
-             e->repository_history ? 1 : 0, e->modifier_select ? 1 : 0);
+             e->repository_history ? 1 : 0);
     bool ok =
         text(&b, head) && fields(&b, e) && midi_input_fields(&b, e) && midi_binding_fields(&b, e);
     ok = ok && text(&b, DM_TEXT_SHORTCUTS_SECTION);
 
     for (int i = 0; i < ACT_COUNT && ok; ++i) {
+#ifdef DM_DEVTOOLS
+        if (ed_actions[i].flags & ACTION_DEVTOOLS) {
+            continue;
+        }
+#endif
+
         char binding[160], label[160];
         setting_label(ed_actions[i].name, label, sizeof(label));
         ok = dm_binding_format(e->bindings[i], binding, sizeof(binding)) &&

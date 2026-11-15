@@ -51,7 +51,7 @@ Every copy of a pattern shares the same notes, so editing one changes them all. 
 
 In the arrangement, **Shift + drag** a placement to make a linked copy, drag its edge to change its length, or use the slice tool to split it.
 
-Selections work as in a file manager: **Ctrl + click** adds or removes a placement, **Shift + click** selects every placement from the last one clicked to the clicked spot, across the rows between them, and **Ctrl + Shift + click** adds that range. In the piano roll, **Shift + click** and **Ctrl + click** add notes, and **Ctrl + click** on a selected note removes it. Turn this off in **Preferences**.
+Selections work as in a file manager: **Ctrl + click** adds or removes a placement, **Shift + click** selects every placement from the last one clicked to the clicked spot, across the rows between them, and **Ctrl + Shift + click** adds that range. In the piano roll, **Shift + click** and **Ctrl + click** add notes, and **Ctrl + click** on a selected note removes it.
 
 > **Tip:** **Keypad +** jumps to the next pattern, or makes a new empty one. **Keypad −** goes back or removes the newest empty one.
 

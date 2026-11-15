@@ -123,7 +123,8 @@ static void upgrade_16_to_17(DmProject *p) {
 
 /* Schema 17 retained the original note identity on attached roots, but did not record input
    units on detached sections. The old piano-roll tool used ranges 12–126 for ordinary bends.
-   A regular Events line used 127 for both input modes, so leave those ambiguous sections literal. */
+   A regular Events line used 127 for both input modes, so leave those ambiguous sections literal.
+ */
 static void upgrade_17_to_18(DmProject *p) {
     for (size_t i = 0; i < p->automation_count; ++i) {
         if (p->automation[i].bend_note) {
@@ -176,6 +177,85 @@ static void upgrade_18_to_19(DmProject *p) {
     }
 }
 
+/* Schema 20 changes the body's layout to tagged records (project_fields.c), not the meaning of
+   anything stored, so there is nothing to convert. */
+static void upgrade_19_to_20(DmProject *p) {
+    (void)p;
+}
+
+/* Schema 21 stores song-level channel messages only as raw events. Each automation point with
+   pattern -1 becomes the channel message it played:
+   - program, CC7 or CC10 at beat 0 sets the channel mixer (note port 0) or that port's mixer
+     entry: playback emits the mixer's values at tick 0 and skips raw beat-0 volume and pan (and
+     plays a raw beat-0 program as the mixer's), while it played the point after the mixer, so
+     its value is the one that was heard. A program keeps its event as well (played as the
+     mixer program in its place, after a beat-0 bank select), and so does any point on another
+     note port, so the port still counts as used and receives its channel setup. Beat-0 volume
+     and pan on a disabled channel are no longer sent: the mixer only plays enabled channels;
+   - anything else becomes an event at the same beat and note port, after the events already at
+     that beat, as playback collected raw events before song-level points.
+   Fields song-level playback never read (curve, ramp, hold, bend, anchor) are dropped. A point
+   that cannot be converted (no memory) stays, and the load then fails validation. */
+static bool song_point_message(DmAutomation a, DmBytes *message) {
+    uint8_t bytes[] = {(uint8_t)(a.type | a.channel), (uint8_t)a.a, (uint8_t)a.b};
+    size_t size = a.type == MIDI_PROGRAM || a.type == MIDI_CHANNEL_PRESSURE ? 2 : 3;
+    return dm_bytes(message, bytes, size);
+}
+
+static void song_point_mixer(DmProject *p, DmAutomation a) {
+    bool program = a.type == MIDI_PROGRAM;
+    bool volume = a.type == MIDI_CONTROL && a.a == MIDI_CC_VOLUME;
+
+    if (!a.port) {
+        DmChannel *channel = &p->channels[a.channel];
+        *(program  ? &channel->program
+          : volume ? &channel->volume
+                   : &channel->pan) = program ? a.a : a.b;
+        return;
+    }
+
+    DmPortMix mix = dm_port_mix(p, a.port, a.channel);
+    *(program ? &mix.program : volume ? &mix.volume : &mix.pan) = program ? a.a + 1 : a.b;
+    dm_port_mix_set(p, mix);
+}
+
+static void upgrade_20_to_21(DmProject *p) {
+    size_t kept = 0;
+
+    for (size_t i = 0; i < p->automation_count; ++i) {
+        DmAutomation a = p->automation[i];
+
+        if (a.pattern >= 0) {
+            p->automation[kept++] = a;
+            continue;
+        }
+
+        bool setup = a.beat == 0 &&
+                     (a.type == MIDI_PROGRAM ||
+                      (a.type == MIDI_CONTROL && (a.a == MIDI_CC_VOLUME || a.a == MIDI_CC_PAN)));
+        DmBytes message = {0};
+        bool converted = true;
+
+        if (setup) {
+            song_point_mixer(p, a);
+        }
+
+        /* A program keeps its event too: playback plays it as the mixer program in its place
+           among the raw events, after a beat-0 bank select that precedes it. */
+        if (!setup || a.port || a.type == MIDI_PROGRAM) {
+            converted =
+                song_point_message(a, &message) && dm_event_add(p, a.beat, 0, a.port, &message);
+            dm_bytes_free(&message);
+        }
+
+        if (!converted) {
+            p->automation[kept++] = a;
+        }
+    }
+
+    p->automation_count = kept;
+}
+
 void dm_project_upgrade(DmProject *p, uint32_t schema) {
     if (schema <= 9) {
         upgrade_9_to_10(p);
@@ -216,4 +296,18 @@ void dm_project_upgrade(DmProject *p, uint32_t schema) {
     if (schema <= 18) {
         upgrade_18_to_19(p);
     }
+
+    if (schema <= 19) {
+        upgrade_19_to_20(p);
+    }
+
+    if (schema <= 20) {
+        upgrade_20_to_21(p);
+    }
+
+    /* Schemas 22 and 23 rewrite nothing. Schema 22 turned a pattern's control scope 2 into 1, and
+       schema 23 drops the scope: the patterns Generate Patterns separated a note pattern's
+       controls into rank like every other automation pattern (newest placed point, then higher
+       row). The readers take the retired field from older files and discard it
+       (project_fields.c PATTERN_CONTROL_SCOPE, project_legacy.c). */
 }

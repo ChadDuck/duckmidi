@@ -1,4 +1,5 @@
 #include "editor/internal.h"
+#include "text/en.h"
 #define TEST_NAME "event graph"
 #include "test_common.h"
 static const UiRect lane = {100, 200, 800, 200};
@@ -107,7 +108,8 @@ static void converter(Editor *e) {
     held.hold = true;
     add(e, held);
     add(e, cc_point(3, MIDI_CC_MODULATION, 40, 1));
-    add(e, cc_point(3, MIDI_CC_MODULATION, 10, -1));
+    /* Section starts at beat 0 with nothing before it, so the editor stores channel default 0. */
+    add(e, cc_point(3, MIDI_CC_MODULATION, 0, -1));
     DmAutomation ramp = cc_point(1, MIDI_CC_EXPRESSION, 20, 0);
     ramp.ramp = true;
     add(e, ramp);
@@ -164,7 +166,7 @@ static void converter(Editor *e) {
     check(dm_schedule(&e->project, &after), "schedule the graph lanes");
     double seconds = 60 / e->project.bpm;
 
-    /* Through each lane's last bar; after its cell a graph lane returns to its default. */
+    /* Through each lane's last bar; CC1 releases at 3 while CC11 holds. */
     for (double beat = 0; beat <= 3; beat += .25) {
         check(scheduled(&before, MIDI_CONTROL, 1, beat * seconds) ==
                   scheduled(&after, MIDI_CONTROL, 1, beat * seconds),
@@ -180,20 +182,22 @@ static void converter(Editor *e) {
               "the bend range is unchanged");
     }
 
-    check(scheduled(&after, MIDI_CONTROL, 1, 3.2 * seconds) == 10 &&
-              scheduled(&after, MIDI_CONTROL, 11, 3.2 * seconds) == 127 &&
+    /* Modulation's last bar ends at 3 and releases to 0; CC11's discrete end holds at 100. */
+    check(scheduled(&after, MIDI_CONTROL, 1, 3.2 * seconds) == 0 &&
+              scheduled(&after, MIDI_CONTROL, 11, 3.2 * seconds) == 100 &&
               scheduled(&after, MIDI_CONTROL, 1, 3.3 * seconds) == 0,
-          "each Graph lane returns to its default after its own cell");
+          "CC1 releases after its last bar while CC11 holds its discrete end");
     dm_schedule_free(&before);
     dm_schedule_free(&after);
-    check(lane_point(e, 2, 127) && !lane_point(e, 2.5, 127) && lane_point(e, 3, 10) &&
-              !lane_point(e, 3, 40),
-          "a held node is one bar, and the section ends at its restoration value");
+    check(lane_point(e, 2, 127) && lane_point(e, 2.75, 127) && !lane_point(e, 3, 0) &&
+              !lane_point(e, 3, 40) && !ed_pattern(e)->graph_hold[MIDI_CC_MODULATION],
+          "a held node ends one cell before its releasing restoration, with graph_hold off");
 
     ed_graph_mode(e, 0, 0);
-    check(!ed_graph_resolution(e) && only_discrete(e, 0) &&
+    check(!ed_graph_resolution(e) && !only_discrete(e, 0) &&
               dm_graph_resolution(ed_pattern(e), MIDI_CC_EXPRESSION) == 32,
-          "To Point keeps the bars and the other lane's Graph setting");
+          "To Point converts an unheld Graph lane to a stepped Line and keeps the other lane's "
+          "Graph setting");
     ed_undo(e, false);
     ed_undo(e, false);
     ed_undo(e, false);
@@ -312,9 +316,11 @@ static void returns(Editor *e) {
           "a bar holds until the next bar, and only the last bar returns");
     dm_schedule_free(&s);
     ed_graph_mode(e, 0, 0);
-    check(dm_schedule(&e->project, &s), "schedule the same points in Point mode");
-    check(scheduled(&s, MIDI_PITCH_BEND, 0, 3 * seconds) == 11000,
-          "Point mode playback is unchanged");
+    check(dm_schedule(&e->project, &s), "schedule the converted Point lane");
+    check(scheduled(&s, MIDI_PITCH_BEND, 0, .3 * seconds) == 13312 &&
+              scheduled(&s, MIDI_PITCH_BEND, 0, 2.1 * seconds) == 11000 &&
+              scheduled(&s, MIDI_PITCH_BEND, 0, 3 * seconds) == MIDI_BEND_CENTER,
+          "To Point keeps the release after the last bar when graph_hold is off");
     dm_schedule_free(&s);
 }
 
@@ -381,10 +387,49 @@ static void selection_and_clipboard(Editor *e) {
     ed_copy_event_lane(e, false);
     e->selected_pattern = 0;
     ed_graph_mode(e, 0, 16);
+    DmPattern *p0 = ed_pattern(e);
+    p0->graph_hold[MIDI_CC_MODULATION] = false;
+    p0->graph_lanes[MIDI_CC_EXPRESSION] = 16;
+    p0->graph_hold[MIDI_CC_EXPRESSION] = false;
+    add(e, cc_point(0, MIDI_CC_EXPRESSION, 80, 0));
+    p0->graph_lanes[MIDI_CC_PAN] = 16;
+    p0->graph_hold[MIDI_CC_PAN] = true;
     size_t before = lane_points(e);
     ed_paste_event_lane(e);
     check(only_discrete(e, 0) && lane_points(e) == before + 5 && lane_point(e, .5, 64),
           "a pasted line becomes bars in a Graph pattern");
+    check(!p0->graph_hold[MIDI_CC_MODULATION],
+          "pasting a line leaves the target Graph lane releasing");
+    check(!p0->graph_hold[MIDI_CC_EXPRESSION] && p0->graph_hold[MIDI_CC_PAN],
+          "pasting a line leaves other Graph lanes' graph_hold settings untouched");
+    DmSchedule s = {0};
+    check(dm_schedule(&e->project, &s), "schedule pattern after pasting line");
+    double seconds = 60.0 / e->project.bpm;
+    check(scheduled(&s, MIDI_CONTROL, MIDI_CC_MODULATION, 1.05 * seconds) == 127 &&
+              scheduled(&s, MIDI_CONTROL, MIDI_CC_MODULATION, 1.3 * seconds) == 0,
+          "modulation releases after the last bar of the pasted line");
+    dm_schedule_free(&s);
+
+    /* Pasting discrete points also leaves Graph lane hold settings untouched. */
+    e->selected_pattern = 1;
+    e->project.automation_count = 0;
+    add(e, cc_point(2, MIDI_CC_MODULATION, 90, 0));
+    e->project.automation[0].pattern = 1;
+    ed_sort_automation(e);
+    ed_copy_event_lane(e, false);
+    e->selected_pattern = 0;
+    ed_paste_event_lane(e);
+    check(only_discrete(e, 0) && lane_point(e, 2, 90),
+          "discrete points paste into a Graph pattern");
+    check(!p0->graph_hold[MIDI_CC_MODULATION],
+          "pasting discrete points leaves the target Graph lane releasing");
+    check(!p0->graph_hold[MIDI_CC_EXPRESSION] && p0->graph_hold[MIDI_CC_PAN],
+          "pasting discrete points leaves other Graph lanes' graph_hold settings untouched");
+    check(dm_schedule(&e->project, &s), "schedule pattern after pasting discrete points");
+    check(scheduled(&s, MIDI_CONTROL, MIDI_CC_MODULATION, 2.05 * seconds) == 90 &&
+              scheduled(&s, MIDI_CONTROL, MIDI_CC_MODULATION, 2.3 * seconds) == 0,
+          "modulation releases after the last bar of the pasted discrete points");
+    dm_schedule_free(&s);
 }
 
 static void mixed_clipboard(Editor *e) {
@@ -501,6 +546,165 @@ static void drawing(Editor *e) {
     ui_render(e->renderer);
 }
 
+static size_t last_lane_node(Editor *e) {
+    size_t last = SIZE_MAX;
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        DmAutomation a = e->project.automation[i];
+
+        if (ed_automation_matches(e, a) && a.curve >= 0) {
+            last = i;
+        }
+    }
+
+    return last;
+}
+
+static void check_lane_schedule(Editor *e, const DmSchedule *before, int cc, double end_beat,
+                                const char *label) {
+    DmSchedule after = {0};
+    check(dm_schedule(&e->project, &after), "schedule the converted lane");
+    double seconds = 60 / e->project.bpm;
+
+    for (double beat = 0; beat <= end_beat + 1e-9; beat += .25) {
+        check(scheduled(before, MIDI_CONTROL, cc, beat * seconds) ==
+                  scheduled(&after, MIDI_CONTROL, cc, beat * seconds),
+              label);
+    }
+
+    dm_schedule_free(&after);
+}
+
+static void hold_round_trips(Editor *e) {
+    /* (a) Discrete points hold through Graph and back to Point. */
+    fixture(e, MIDI_CC_MODULATION);
+    add(e, cc_point(0, MIDI_CC_MODULATION, 30, 0));
+    add(e, cc_point(1, MIDI_CC_MODULATION, 90, 0));
+    double end_beat = ed_pattern_length(e) + .25;
+    DmSchedule before = {0};
+    check(dm_schedule(&e->project, &before), "schedule discrete points");
+    ed_graph_mode(e, 0, 16);
+    check(ed_pattern(e)->graph_hold[MIDI_CC_MODULATION],
+          "discrete points set graph_hold when converted to Graph");
+    check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                        "discrete points keep playback in Graph");
+    ed_graph_mode(e, 0, 0);
+    check(ed_point_holds(e, last_lane_node(e)),
+          "discrete points keep holding after Graph -> Point");
+    check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                        "discrete points keep playback after Point -> Graph -> Point");
+    dm_schedule_free(&before);
+
+    /* (b) A Line with a releasing restoration at the lane's end. */
+    fixture(e, MIDI_CC_MODULATION);
+    add(e, cc_point(0, MIDI_CC_MODULATION, 0, 1));
+    add(e, cc_point(2, MIDI_CC_MODULATION, 127, 1));
+    add(e, cc_point(2, MIDI_CC_MODULATION, 0, -1));
+    end_beat = ed_pattern_length(e) + .25;
+    check(dm_schedule(&e->project, &before), "schedule releasing Line");
+    ed_graph_mode(e, 0, 16);
+    check(!ed_pattern(e)->graph_hold[MIDI_CC_MODULATION],
+          "releasing Line clears graph_hold when converted to Graph");
+    check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                        "releasing Line keeps playback in Graph");
+    ed_graph_mode(e, 0, 0);
+    check(!ed_point_holds(e, last_lane_node(e)),
+          "releasing Line stays unheld after Graph -> Point");
+    check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                        "releasing Line keeps playback after Point -> Graph -> Point");
+    dm_schedule_free(&before);
+
+    /* (c) A Line whose nodes have hold set. */
+    fixture(e, MIDI_CC_MODULATION);
+    DmAutomation h0 = cc_point(0, MIDI_CC_MODULATION, 25, 1);
+    h0.hold = true;
+    add(e, h0);
+    DmAutomation h1 = cc_point(1, MIDI_CC_MODULATION, 100, 1);
+    h1.hold = true;
+    add(e, h1);
+    add(e, cc_point(2, MIDI_CC_MODULATION, 50, 1));
+    end_beat = ed_pattern_length(e) + .25;
+    check(dm_schedule(&e->project, &before), "schedule held-segment Line");
+    ed_graph_mode(e, 0, 16);
+    check(ed_pattern(e)->graph_hold[MIDI_CC_MODULATION],
+          "held-segment Line sets graph_hold when converted to Graph");
+    check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                        "held-segment Line keeps playback in Graph");
+    ed_graph_mode(e, 0, 0);
+    check(ed_point_holds(e, last_lane_node(e)),
+          "held-segment Line keeps holding after Graph -> Point");
+    check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                        "held-segment Line keeps playback after Point -> Graph -> Point");
+    dm_schedule_free(&before);
+
+    /* (d) A held Line end (no restoration). */
+    fixture(e, MIDI_CC_MODULATION);
+    add(e, cc_point(0, MIDI_CC_MODULATION, 20, 1));
+    add(e, cc_point(1, MIDI_CC_MODULATION, 100, 1));
+    end_beat = ed_pattern_length(e) + .25;
+    check(dm_schedule(&e->project, &before), "schedule held Line end");
+    ed_graph_mode(e, 0, 16);
+    check(ed_pattern(e)->graph_hold[MIDI_CC_MODULATION],
+          "held Line end sets graph_hold when converted to Graph");
+    check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                        "held Line end keeps playback in Graph");
+    ed_graph_mode(e, 0, 0);
+    check(ed_point_holds(e, last_lane_node(e)), "held Line end keeps holding after Graph -> Point");
+    check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                        "held Line end keeps playback after Point -> Graph -> Point");
+    dm_schedule_free(&before);
+
+    /* (e) Graph lane with graph_hold off and on going to Points and back. */
+    for (int hold = 0; hold <= 1; ++hold) {
+        fixture(e, MIDI_CC_MODULATION);
+        ed_graph_mode(e, 0, 16);
+        ed_pattern(e)->graph_hold[MIDI_CC_MODULATION] = hold != 0;
+        add(e, cc_point(.25, MIDI_CC_MODULATION, 40, 0));
+        add(e, cc_point(.5, MIDI_CC_MODULATION, 40, 0));
+        add(e, cc_point(1, MIDI_CC_MODULATION, 90, 0));
+        end_beat = ed_pattern_length(e) + .25;
+        check(dm_schedule(&e->project, &before), "schedule Graph lane");
+        ed_graph_mode(e, 0, 0);
+        check(ed_point_holds(e, last_lane_node(e)) == (hold != 0),
+              "Graph -> Point preserves graph_hold");
+        check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                            "Graph -> Point preserves playback");
+        ed_graph_mode(e, 0, 16);
+        check(ed_pattern(e)->graph_hold[MIDI_CC_MODULATION] == (hold != 0),
+              "Graph -> Point -> Graph preserves graph_hold");
+        check_lane_schedule(e, &before, MIDI_CC_MODULATION, end_beat,
+                            "Graph -> Point -> Graph preserves playback");
+        dm_schedule_free(&before);
+    }
+
+    /* (f) Mid-lane releasing restoration produces a default bar and warns in the request. */
+    fixture(e, MIDI_CC_EXPRESSION);
+    add(e, cc_point(0, MIDI_CC_EXPRESSION, 40, 1));
+    add(e, cc_point(1, MIDI_CC_EXPRESSION, 80, 1));
+    add(e, cc_point(1, MIDI_CC_EXPRESSION, 0, -1));
+    add(e, cc_point(2, MIDI_CC_EXPRESSION, 60, 0));
+    ed_graph_mode_request(e, 0, 16);
+    check(e->graph_switch && strstr(ed_graph_switch_message(e), DM_TEXT_GRAPH_SWITCH_RELEASE_LOSS),
+          "mid-lane releasing restoration shows the release-loss line in the request");
+    e->graph_switch = false;
+    ed_graph_mode(e, 0, 16);
+    check(lane_point(e, 1, 127) && ed_pattern(e)->graph_hold[MIDI_CC_EXPRESSION],
+          "mid-lane releasing restoration becomes a bar at the setting's default");
+
+    /* (g) The Graph -> Point request says what the lane's hold setting will do. */
+    ed_graph_mode_request(e, 0, 0);
+    check(e->graph_switch &&
+              !strcmp(ed_graph_switch_message(e), DM_TEXT_GRAPH_SWITCH_TO_POINT_HOLD),
+          "a held Graph lane's Point request says its bars stay held points");
+    e->graph_switch = false;
+    ed_pattern(e)->graph_hold[MIDI_CC_EXPRESSION] = false;
+    ed_graph_mode_request(e, 0, 0);
+    check(e->graph_switch &&
+              !strcmp(ed_graph_switch_message(e), DM_TEXT_GRAPH_SWITCH_TO_POINT_RELEASE),
+          "a releasing Graph lane's Point request says it becomes one returning line");
+    e->graph_switch = false;
+}
+
 int main(void) {
     Editor *e = test_editor_open("Event graph", (TestDesktop){.renderer = "software"});
     converter(e);
@@ -513,6 +717,7 @@ int main(void) {
     additive_marquee(e);
     gestures(e);
     drawing(e);
+    hold_round_trips(e);
     printf("PASS event graph: %d checks\n", checks);
     test_editor_close(e);
     return 0;

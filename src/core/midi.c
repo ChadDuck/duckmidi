@@ -2,22 +2,60 @@
    embedded. */
 #include "core/midi_internal.h"
 
+/* The port number each note port is written with. A note port that came from a source port keeps
+   that port's number (a combined import's note port k is ports[k]; a single source view's note
+   port 0 is its port), so an untouched import exports on its own ports and channels. A note port
+   the user added takes the lowest number no source port uses. A song made in duckmidi maps each
+   note port to itself. */
+static void export_ports(const DmProject *p, uint8_t map[DM_NOTE_PORTS]) {
+    bool used[256] = {false};
+    bool combined = p->port == DM_PORT_COMBINED;
+    int from_source = combined ? p->port_count : 1;
+
+    for (int i = 0; i < p->port_count; ++i) {
+        used[p->ports[i] & 255] = true;
+    }
+
+    if (!combined) {
+        used[p->port & 255] = true;
+    }
+
+    int next = 0;
+
+    for (int k = 0; k < DM_NOTE_PORTS; ++k) {
+        if (k < from_source) {
+            map[k] = (uint8_t)(combined ? p->ports[k] : p->port);
+            continue;
+        }
+
+        while (next < 255 && used[next]) {
+            ++next;
+        }
+
+        map[k] = (uint8_t)next;
+        used[next] = true;
+    }
+}
+
 static bool encode_track(const DmProject *p, Midi *m, int track, DmBytes *out) {
     DmBytes bytes = {0};
     bool ok = true;
     uint64_t last = 0;
     int port = 0;
+    uint8_t map[DM_NOTE_PORTS];
+    export_ports(p, map);
 
     for (size_t i = 0; i < m->count && ok; ++i) {
         if (m->items[i].track == track) {
             Raw *r = &m->items[i];
+            int written = r->port >= 0 && r->port < DM_NOTE_PORTS ? map[r->port] : r->port;
 
-            if (r->bytes.data[0] < MIDI_SYSTEM && r->port != port) {
-                uint8_t prefix[] = {MIDI_META, MIDI_META_PORT, 1, (uint8_t)r->port};
+            if (r->bytes.data[0] < MIDI_SYSTEM && written != port) {
+                uint8_t prefix[] = {MIDI_META, MIDI_META_PORT, 1, (uint8_t)written};
                 ok = dm_midi_vlq(&bytes, (uint32_t)(r->tick - last)) &&
                      dm_bytes(&bytes, prefix, sizeof(prefix));
                 last = r->tick;
-                port = r->port;
+                port = written;
             }
 
             ok = dm_midi_vlq(&bytes, (uint32_t)(r->tick - last)) &&
@@ -202,10 +240,11 @@ static bool merge_original(Merge *m) {
     return true;
 }
 
+/* port is the number the message is written with, or -1 for none (conductor events). */
 static bool merge_take(Merge *m, Raw *raw, int track, int port) {
     Raw moved = *raw;
     moved.track = track;
-    moved.port = port >= 0 && raw->port ? raw->port : port;
+    moved.port = port;
 
     if (!dm_midi_raw_add(&m->output, &moved)) {
         return false;
@@ -234,6 +273,9 @@ static bool merge_group(Merge *m, const DmProject *p, int group, bool mixer) {
         dm_midi_sort(&content);
     }
 
+    uint8_t map[DM_NOTE_PORTS];
+    export_ports(p, map);
+
     for (size_t i = 0; i < content.count && ok; ++i) {
         Raw *raw = &content.items[i];
 
@@ -242,7 +284,8 @@ static bool merge_group(Merge *m, const DmProject *p, int group, bool mixer) {
         }
 
         int track = m->format == 2 ? p->sequence : base + raw->track;
-        ok = merge_take(m, raw, track, p->port == DM_PORT_COMBINED ? 0 : p->port);
+        int port = raw->port >= 0 && raw->port < DM_NOTE_PORTS ? map[raw->port] : 0;
+        ok = merge_take(m, raw, track, port);
     }
 
     if (ok) {
@@ -429,33 +472,6 @@ static bool midi_all(const DmProject *p, DmBytes *out, bool mixer, char *error, 
 
     if (!p->original.size || ((p->port_count == 1 || combined) && p->sequence_count == 1)) {
         return midi_single(p, out, mixer, error, cap);
-    }
-
-    Midi routed = {0};
-
-    if (!dm_midi_collect(p, &routed, mixer)) {
-        snprintf(error, cap, DM_TEXT_CANNOT_PREPARE_INDEPENDENT_NOTE);
-        return false;
-    }
-
-    bool collision = false;
-
-    for (size_t i = 0; i < routed.count && !collision; i++) {
-        if (routed.items[i].port > 0) {
-            for (int j = 0; j < p->port_count; j++) {
-                if (p->ports[j] == routed.items[i].port) {
-                    collision = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    dm_midi_free(&routed);
-
-    if (collision && !combined) {
-        snprintf(error, cap, DM_TEXT_COLORED_NOTE_PORTS_OVERLAP);
-        return false;
     }
 
     Merge m = {0};

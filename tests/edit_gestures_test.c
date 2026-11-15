@@ -4,6 +4,49 @@
 #define TEST_NAME "edit_gestures"
 #include "test_common.h"
 
+static void gesture_table(Editor *e) {
+    MouseBinding bindings[GESTURE_COUNT];
+
+    for (int i = 0; i < GESTURE_COUNT; ++i) {
+        const GestureInfo *gesture = &ed_gestures[i];
+        check(gesture->label && gesture->label[0] && gesture->targets && gesture->phases,
+              "every gesture describes its label, targets and phases");
+        check(gesture->binding.button != MOUSE_WHEEL || gesture->phases == PHASE_WHEEL,
+              "only wheel gestures use the wheel button");
+        bindings[i] = gesture->binding;
+        char formatted[128];
+        check(ed_gesture_format(bindings[i], formatted, sizeof(formatted)) && formatted[0],
+              "every gesture has a printable binding");
+    }
+
+    for (int a = 0; a < GESTURE_COUNT; ++a) {
+        for (int b = a + 1; b < GESTURE_COUNT; ++b) {
+            check(!ed_gesture_conflict(bindings, a, b), "default gestures do not conflict");
+            check(!!(ed_gestures[a].alternatives & (1u << b)) ==
+                      !!(ed_gestures[b].alternatives & (1u << a)),
+                  "gesture alternatives are symmetric");
+        }
+    }
+
+    bindings[GESTURE_COPY_NOTES] = (MouseBinding){MOUSE_LEFT, SDL_KMOD_SHIFT};
+    check(ed_gesture_conflict(bindings, GESTURE_COPY_NOTES, GESTURE_NOTE_BEND),
+          "copying notes with Shift Left would collide with drawing a bend");
+    bindings[GESTURE_COPY_NOTES] = (MouseBinding){MOUSE_LEFT, SDL_KMOD_CTRL};
+    check(ed_gesture_conflict(bindings, GESTURE_COPY_NOTES, GESTURE_MARQUEE),
+          "copying notes with Ctrl Left would collide with marquee");
+    MouseBinding before = e->gestures[GESTURE_COPY_NOTES];
+    e->gesture_capture = GESTURE_COPY_NOTES;
+    e->gesture_capture_armed = true;
+    check(ed_gesture_capture(e, (UiMouse){.clicked = true, .left = true, .shift = true}),
+          "conflicting gesture capture consumes the click");
+    check(e->gesture_capture == -1 && e->gestures[GESTURE_COPY_NOTES].button == before.button &&
+              e->gestures[GESTURE_COPY_NOTES].mods == before.mods,
+          "conflicting capture finishes without changing the old binding");
+    /* Copy notes on Shift + Left first collides with the Shift press that extends a selection. */
+    check(strstr(e->status, ed_gestures[GESTURE_EXTEND].label) != NULL,
+          "conflicting capture names the gesture that already uses the binding");
+}
+
 static void history_and_duplication(Editor *e) {
     editor_smoke(e);
     e->edit_focus = FOCUS_NOTES;
@@ -227,6 +270,7 @@ static void group_drag_and_modifiers(Editor *e) {
 int main(void) {
     Editor *e = test_editor_open("edit_gestures validation", (TestDesktop){0});
     SDL_Renderer *renderer = e->renderer;
+    gesture_table(e);
     group_drag_and_modifiers(e);
     ui_frame();
     ui_root(0, 900);

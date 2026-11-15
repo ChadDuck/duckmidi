@@ -823,16 +823,6 @@ static uint16_t program_bank(const Editor *e, DmEditorSamples *s, int port, int 
         }
     }
 
-    for (size_t i = 0; i < e->project.automation_count; ++i) {
-        DmAutomation a = e->project.automation[i];
-
-        if (a.port == port && a.channel == channel && a.pattern < 0 && a.type == MIDI_CONTROL &&
-            (uint64_t)llround(a.beat * DM_PPQ) == tick &&
-            (adding || (!raw && i < (size_t)e->midi_event_index))) {
-            bank_controller((double)tick, a.a, a.b, latest, bank);
-        }
-    }
-
     s->program_bank = (uint16_t)((bank[0] << 7) | bank[1]);
     return s->program_bank;
 }

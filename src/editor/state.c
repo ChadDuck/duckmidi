@@ -1,10 +1,19 @@
 #include "editor/internal.h"
+#include "devtools/devtools.h"
 #include "crash.h"
 #include "text/en.h"
 
 /* Every rebindable action: its name (also its key in the preferences file), default shortcut,
    group in Keyboard Shortcuts and dispatch rules. */
 const ActionInfo ed_actions[ACT_COUNT] = {
+#ifdef DM_DEVTOOLS
+    [ACT_PROFILER] = {DM_TEXT_FRAME_PROFILER, SDL_SCANCODE_F12, 0, ACTIONS_WINDOWS,
+                      ACTION_DEVTOOLS},
+    [ACT_GESTURE_INSPECTOR] = {DM_TEXT_GESTURE_INSPECTOR, SDL_SCANCODE_F11, 0, ACTIONS_WINDOWS,
+                               ACTION_DEVTOOLS},
+    [ACT_INPUT_RECORD] = {DM_TEXT_INPUT_RECORDER, SDL_SCANCODE_F10, 0, ACTIONS_WINDOWS,
+                          ACTION_DEVTOOLS},
+#endif
     [ACT_PIANO] = {DM_TEXT_COMPUTER_KEYBOARD_PIANO, SDL_SCANCODE_F1, 0, ACTIONS_TRANSPORT, 0},
     [ACT_QUANTIZE] = {DM_TEXT_QUANTIZE, SDL_SCANCODE_Q, SDL_KMOD_CTRL, ACTIONS_PATTERNS,
                       ACTION_WORKSPACE},
@@ -96,7 +105,7 @@ const ActionInfo ed_actions[ACT_COUNT] = {
 
 static void preview_open_pattern(Editor *e, int id);
 static bool push(EdHistory *stack, int *count, const DmProject *p, const int swap[2]);
-static void publish_loop(Editor *e);
+static void publish_loop(Editor *e, const DmProject *timing);
 static int clip_identity(const void *left, const void *right);
 static void retain_note_selection(DmPattern *next, const DmPattern *live);
 static void retain_selection(DmProject *next, const DmProject *live);
@@ -238,11 +247,10 @@ int ed_placed_program(Editor *e) {
     for (size_t i = 0; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
         /* Pattern events play on the channel of the placement they belong to. */
-        bool song = a.pattern < 0 && a.channel == channel,
-             local = a.pattern >= 0 && a.pattern == e->selected_pattern;
-        double beat = song ? a.beat : origin + a.beat;
+        double beat = origin + a.beat;
 
-        if ((song || local) && a.type == MIDI_PROGRAM && beat <= at && beat >= latest) {
+        if (a.pattern == e->selected_pattern && a.type == MIDI_PROGRAM && beat <= at &&
+            beat >= latest) {
             latest = beat;
             program = a.a;
         }
@@ -395,39 +403,152 @@ SDL_Keymod ed_normalized(SDL_Keymod m) {
                         ((m & SDL_KMOD_GUI) ? SDL_KMOD_GUI : 0));
 }
 
-/* Every mouse gesture: its preferences key and default. Rows up to GESTURE_REBINDABLE can be
-   changed in Keyboard Shortcuts and are saved; the rest are fixed. MOUSE_ANY rows are modifiers
-   that change what a press, drag or wheel turn already under way does. */
+/* Every mouse gesture: its preferences key, default and scope. Rows before GESTURE_REBINDABLE
+   can be changed in Keyboard Shortcuts and are saved; the rest are fixed. */
 #define CTRL SDL_KMOD_CTRL
 #define SHIFT SDL_KMOD_SHIFT
 #define ALT SDL_KMOD_ALT
 const GestureInfo ed_gestures[GESTURE_COUNT] = {
+    /* Copy-drag wins over Shift range pick on press because COPY_PLACEMENTS is tested first. */
     [GESTURE_COPY_PLACEMENTS] = {"copy_placements_drag",
                                  {MOUSE_LEFT, SHIFT},
-                                 DM_TEXT_COPY_PLACEMENTS_DRAG},
-    [GESTURE_COPY_NOTES] = {"copy_notes_drag", {MOUSE_MIDDLE, 0}, DM_TEXT_COPY_NOTES_DRAG},
-    [GESTURE_FREE] = {"free", {MOUSE_ANY, ALT}},
-    [GESTURE_MARQUEE] = {"marquee", {MOUSE_LEFT, CTRL}},
-    [GESTURE_EXTEND] = {"extend_selection", {MOUSE_LEFT, SHIFT}},
-    [GESTURE_MENU] = {"item_menu", {MOUSE_RIGHT, SHIFT}},
-    [GESTURE_ZOOM] = {"zoom", {MOUSE_WHEEL, CTRL}},
-    [GESTURE_SCROLL_ROWS] = {"scroll_rows", {MOUSE_WHEEL, SHIFT}},
-    [GESTURE_VELOCITY_WHEEL] = {"velocity_wheel", {MOUSE_WHEEL, ALT}},
-    [GESTURE_NOTE_BEND] = {"note_bend", {MOUSE_LEFT, SHIFT}},
-    [GESTURE_BEND_EDIT] = {"bend_edit", {MOUSE_LEFT, SHIFT}},
-    [GESTURE_BEND_POINT] = {"bend_point", {MOUSE_LEFT, ALT}},
-    [GESTURE_BRUSH_KEY] = {"brush_key", {MOUSE_ANY, CTRL}},
-    [GESTURE_LOCK_VALUE] = {"lock_value", {MOUSE_ANY, SHIFT}},
-    [GESTURE_LOCK_TIME] = {"lock_time", {MOUSE_ANY, CTRL}},
-    [GESTURE_CONNECT] = {"connect_point", {MOUSE_LEFT, SHIFT}},
-    [GESTURE_LANE_SETTINGS] = {"lane_settings", {MOUSE_LEFT, SHIFT}},
-    [GESTURE_PLAY_RANGE] = {"play_range", {MOUSE_LEFT, SHIFT}},
-    [GESTURE_DESELECT] = {"deselect_pattern", {MOUSE_LEFT, CTRL}},
-    [GESTURE_APPLY_ALL] = {"apply_all", {MOUSE_LEFT, SHIFT}},
-    [GESTURE_PORT_MENU] = {"port_menu", {MOUSE_LEFT, SHIFT}},
-    [GESTURE_PANIC] = {"panic", {MOUSE_LEFT, SHIFT}},
-    [GESTURE_PICK_TOGGLE] = {"toggle_selection", {MOUSE_LEFT, CTRL}},
-    [GESTURE_PICK_RANGE] = {"range_selection", {MOUSE_LEFT, SHIFT}},
+                                 DM_TEXT_COPY_PLACEMENTS_DRAG,
+                                 TARGET_PLACEMENT,
+                                 PHASE_PRESS | PHASE_DRAG,
+                                 1u << GESTURE_PICK_RANGE},
+    [GESTURE_COPY_NOTES] = {"copy_notes_drag",
+                            {MOUSE_MIDDLE, 0},
+                            DM_TEXT_COPY_NOTES_DRAG,
+                            TARGET_NOTE,
+                            PHASE_PRESS | PHASE_DRAG,
+                            0},
+    /* Alt edits a bend line on press; elsewhere it turns snapping off. */
+    [GESTURE_FREE] = {"free",
+                      {MOUSE_ANY, ALT},
+                      DM_TEXT_GESTURE_FREE,
+                      TARGET_NOTE | TARGET_PLACEMENT | TARGET_EVENT_POINT | TARGET_BEND |
+                          TARGET_EVENT_LANE | TARGET_CANVAS | TARGET_TIMELINE | TARGET_SAMPLE,
+                      PHASE_PRESS | PHASE_HELD,
+                      1u << GESTURE_BEND_POINT},
+    /* Ctrl starts a marquee; a release without moving toggles one item. */
+    [GESTURE_MARQUEE] = {"marquee",
+                         {MOUSE_LEFT, CTRL},
+                         DM_TEXT_GESTURE_MARQUEE,
+                         TARGET_CANVAS | TARGET_NOTE | TARGET_PLACEMENT | TARGET_EVENT_POINT |
+                             TARGET_EVENT_LANE,
+                         PHASE_PRESS,
+                         1u << GESTURE_PICK_TOGGLE},
+    /* Shift adds/retains selection on items without an order (notes, event points).
+       At a point press Shift keeps the group; held during its drag it locks the value. */
+    [GESTURE_EXTEND] = {"extend_selection",
+                        {MOUSE_LEFT, SHIFT},
+                        DM_TEXT_GESTURE_EXTEND,
+                        TARGET_NOTE | TARGET_EVENT_POINT,
+                        PHASE_PRESS | PHASE_HELD,
+                        (1u << GESTURE_PICK_RANGE) | (1u << GESTURE_LOCK_VALUE)},
+    [GESTURE_MENU] = {"item_menu",
+                      {MOUSE_RIGHT, SHIFT},
+                      DM_TEXT_GESTURE_MENU,
+                      TARGET_NOTE | TARGET_PLACEMENT | TARGET_EVENT_POINT | TARGET_EVENT_LANE,
+                      PHASE_CLICK,
+                      0},
+    [GESTURE_ZOOM] = {"zoom",
+                      {MOUSE_WHEEL, CTRL},
+                      DM_TEXT_GESTURE_ZOOM,
+                      TARGET_CANVAS | TARGET_EVENT_LANE | TARGET_TIMELINE,
+                      PHASE_WHEEL,
+                      0},
+    [GESTURE_SCROLL_ROWS] = {"scroll_rows",
+                             {MOUSE_WHEEL, SHIFT},
+                             DM_TEXT_GESTURE_SCROLL_ROWS,
+                             TARGET_CANVAS | TARGET_EVENT_LANE,
+                             PHASE_WHEEL,
+                             0},
+    [GESTURE_VELOCITY_WHEEL] = {"velocity_wheel",
+                                {MOUSE_WHEEL, ALT},
+                                DM_TEXT_GESTURE_VELOCITY_WHEEL,
+                                TARGET_NOTE,
+                                PHASE_WHEEL,
+                                0},
+    [GESTURE_NOTE_BEND] =
+        {"note_bend", {MOUSE_LEFT, SHIFT}, DM_TEXT_GESTURE_NOTE_BEND, TARGET_NOTE, PHASE_DRAG, 0},
+    [GESTURE_BEND_EDIT] = {"bend_edit",
+                           {MOUSE_LEFT, SHIFT},
+                           DM_TEXT_GESTURE_BEND_EDIT,
+                           TARGET_BEND,
+                           PHASE_PRESS | PHASE_DRAG,
+                           0},
+    /* Alt edits a bend line on press; elsewhere FREE turns snapping off. */
+    [GESTURE_BEND_POINT] = {"bend_point",
+                            {MOUSE_LEFT, ALT},
+                            DM_TEXT_GESTURE_BEND_POINT,
+                            TARGET_BEND,
+                            PHASE_PRESS | PHASE_DRAG,
+                            1u << GESTURE_FREE},
+    [GESTURE_BRUSH_KEY] =
+        {"brush_key", {MOUSE_ANY, CTRL}, DM_TEXT_GESTURE_BRUSH_KEY, TARGET_CANVAS, PHASE_HELD, 0},
+    /* Shift at the point press keeps the selected group (EXTEND); held in its drag locks value. */
+    [GESTURE_LOCK_VALUE] = {"lock_value",
+                            {MOUSE_ANY, SHIFT},
+                            DM_TEXT_GESTURE_LOCK_VALUE,
+                            TARGET_EVENT_POINT,
+                            PHASE_HELD,
+                            1u << GESTURE_EXTEND},
+    [GESTURE_LOCK_TIME] = {"lock_time",
+                           {MOUSE_ANY, CTRL},
+                           DM_TEXT_GESTURE_LOCK_TIME,
+                           TARGET_EVENT_POINT,
+                           PHASE_HELD,
+                           0},
+    [GESTURE_CONNECT] = {"connect_point",
+                         {MOUSE_LEFT, SHIFT},
+                         DM_TEXT_GESTURE_CONNECT,
+                         TARGET_EVENT_LANE,
+                         PHASE_PRESS,
+                         0},
+    [GESTURE_LANE_SETTINGS] = {"lane_settings",
+                               {MOUSE_RIGHT, SHIFT},
+                               DM_TEXT_GESTURE_LANE_SETTINGS,
+                               TARGET_CHANNEL_LABEL,
+                               PHASE_CLICK,
+                               0},
+    [GESTURE_PLAY_RANGE] = {"play_range",
+                            {MOUSE_LEFT, SHIFT},
+                            DM_TEXT_GESTURE_PLAY_RANGE,
+                            TARGET_SAMPLE,
+                            PHASE_PRESS | PHASE_DRAG,
+                            0},
+    [GESTURE_DESELECT] = {"deselect_pattern",
+                          {MOUSE_LEFT, CTRL},
+                          DM_TEXT_GESTURE_DESELECT,
+                          TARGET_PATTERN_CARD,
+                          PHASE_CLICK,
+                          0},
+    [GESTURE_APPLY_ALL] = {"apply_all",
+                           {MOUSE_LEFT, SHIFT},
+                           DM_TEXT_GESTURE_APPLY_ALL,
+                           TARGET_LANE_BUTTON,
+                           PHASE_CLICK,
+                           0},
+    [GESTURE_PORT_MENU] =
+        {"port_menu", {MOUSE_LEFT, SHIFT}, DM_TEXT_GESTURE_PORT_MENU, TARGET_PORT, PHASE_CLICK, 0},
+    [GESTURE_PANIC] =
+        {"panic", {MOUSE_LEFT, SHIFT}, DM_TEXT_GESTURE_PANIC, TARGET_TRANSPORT, PHASE_CLICK, 0},
+    /* Ctrl starts a marquee; a release without moving toggles one item. */
+    [GESTURE_PICK_TOGGLE] = {"toggle_selection",
+                             {MOUSE_LEFT, CTRL},
+                             DM_TEXT_GESTURE_PICK_TOGGLE,
+                             TARGET_NOTE | TARGET_PLACEMENT | TARGET_EVENT_POINT |
+                                 TARGET_EVENT_LIST,
+                             PHASE_PRESS | PHASE_CLICK,
+                             1u << GESTURE_MARQUEE},
+    /* File-manager Shift range; EXTEND retains selection, COPY_PLACEMENTS wins on press. */
+    [GESTURE_PICK_RANGE] = {"range_selection",
+                            {MOUSE_LEFT, SHIFT},
+                            DM_TEXT_GESTURE_PICK_RANGE,
+                            TARGET_NOTE | TARGET_PLACEMENT | TARGET_EVENT_POINT | TARGET_EVENT_LIST,
+                            PHASE_PRESS | PHASE_CLICK,
+                            (1u << GESTURE_EXTEND) | (1u << GESTURE_COPY_PLACEMENTS)},
 };
 #undef CTRL
 #undef SHIFT
@@ -446,7 +567,10 @@ bool ed_mouse_down(UiMouse mouse, int button) {
 
 bool ed_gesture_held(const Editor *e, Gesture gesture, UiMouse mouse) {
     SDL_Keymod mods = e->gestures[gesture].mods;
-    return (mouse_mods(mouse) & mods) == mods;
+    SDL_Keymod held = mouse_mods(mouse);
+    bool result = (held & mods) == mods;
+    dm_gesture_inspector_record(gesture, DM_GESTURE_HELD, result, mods, held, false);
+    return result;
 }
 
 void ed_gesture_set(const Editor *e, Gesture gesture, UiMouse *mouse, bool held) {
@@ -461,13 +585,25 @@ bool ed_gesture_pressed(Editor *e, Gesture gesture, UiMouse mouse) {
     bool pressed = b.button == MOUSE_LEFT    ? mouse.clicked
                    : b.button == MOUSE_RIGHT ? mouse.right_clicked
                                              : mouse.middle_clicked;
-    return pressed && mouse_mods(mouse) == b.mods;
+    SDL_Keymod held = mouse_mods(mouse);
+    bool result = pressed && held == b.mods;
+    dm_gesture_inspector_record(gesture, DM_GESTURE_PRESSED, result, b.mods, held, pressed);
+    return result;
 }
 
 /* Plain left and right drags select, move and erase, so a gesture needs another button or a
    modifier. */
 static bool ed_gesture_allowed(MouseBinding b) {
     return b.button == MOUSE_MIDDLE || b.mods;
+}
+
+bool ed_gesture_conflict(const MouseBinding *bindings, int a, int b) {
+    MouseBinding x = bindings[a], y = bindings[b];
+    const GestureInfo *first = &ed_gestures[a], *second = &ed_gestures[b];
+    return (x.button == y.button || x.button == MOUSE_ANY || y.button == MOUSE_ANY) &&
+           x.mods == y.mods && (first->targets & second->targets) &&
+           (first->phases & second->phases) && !(first->alternatives & (1u << b)) &&
+           !(second->alternatives & (1u << a));
 }
 
 bool ed_gesture_capture(Editor *e, UiMouse mouse) {
@@ -492,8 +628,27 @@ bool ed_gesture_capture(Editor *e, UiMouse mouse) {
     if (!ed_gesture_allowed(b)) {
         ed_message(e, DM_TEXT_GESTURE_NEEDS_MODIFIER);
     } else {
-        e->gestures[e->gesture_capture] = b;
-        ed_preference_save(e);
+        MouseBinding bindings[GESTURE_COUNT];
+        memcpy(bindings, e->gestures, sizeof(bindings));
+        bindings[e->gesture_capture] = b;
+        int conflict = -1;
+
+        for (int i = 0; i < GESTURE_COUNT; ++i) {
+            if (i != e->gesture_capture && ed_gesture_conflict(bindings, e->gesture_capture, i)) {
+                conflict = i;
+                break;
+            }
+        }
+
+        if (conflict >= 0) {
+            char message[256];
+            snprintf(message, sizeof(message), DM_TEXT_GESTURE_CONFLICT,
+                     ed_gestures[conflict].label);
+            ed_message(e, message);
+        } else {
+            e->gestures[e->gesture_capture] = b;
+            ed_preference_save(e);
+        }
     }
 
     e->gesture_capture = -1;
@@ -501,10 +656,10 @@ bool ed_gesture_capture(Editor *e, UiMouse mouse) {
 }
 
 bool ed_gesture_format(MouseBinding b, char *out, size_t cap) {
-    static const char *buttons[MOUSE_BUTTONS] = {DM_TEXT_MOUSE_LEFT, DM_TEXT_MOUSE_RIGHT,
-                                                 DM_TEXT_MOUSE_MIDDLE};
+    static const char *buttons[] = {DM_TEXT_MOUSE_LEFT, DM_TEXT_MOUSE_RIGHT, DM_TEXT_MOUSE_MIDDLE,
+                                    DM_TEXT_MOUSE_WHEEL, DM_TEXT_MOUSE_ANY};
 
-    if (b.button < 0 || b.button >= MOUSE_BUTTONS) {
+    if (b.button < 0 || b.button > MOUSE_ANY) {
         return false;
     }
 
@@ -579,41 +734,104 @@ void ed_bind_pattern_channel(Editor *e) {
     }
 }
 
+static void history_free(EdHistory *step) {
+    if (step->copy) {
+        dm_project_free(step->copy);
+        free(step->copy);
+    }
+
+    dm_bytes_free(&step->project);
+    *step = (EdHistory){0};
+}
+
+/* Transfer a live copy without serializing, or read an already compacted step. */
+static bool history_restore(EdHistory *step, DmProject *next, char *error, size_t cap) {
+    if (step->copy) {
+        *next = *step->copy;
+        free(step->copy);
+        step->copy = NULL;
+        return true;
+    }
+
+    return dm_unpack(next, step->project.data, step->project.size, error, cap);
+}
+
+void ed_history_compact(Editor *e) {
+    for (int stack = 0; stack < 2; ++stack) {
+        EdHistory *steps = stack ? e->redo : e->undo;
+        int count = stack ? e->redo_count : e->undo_count;
+
+        for (int i = 0; i < count; ++i) {
+            EdHistory *step = &steps[i];
+
+            if (!step->copy) {
+                continue;
+            }
+
+            DmBytes bytes = {0};
+            DM_PROFILE_BEGIN(HISTORY_PACK, profile_start);
+            bool packed = dm_pack(step->copy, &bytes);
+            DM_PROFILE_END(HISTORY_PACK, profile_start);
+
+            if (packed) {
+                dm_project_free(step->copy);
+                free(step->copy);
+                step->copy = NULL;
+                step->project = bytes;
+                step->size = bytes.size;
+            } else {
+                dm_bytes_free(&bytes);
+            }
+
+            return;
+        }
+    }
+}
+
 void ed_clear_history(EdHistory *steps, int *count) {
     for (int i = 0; i < *count; ++i) {
-        dm_bytes_free(&steps[i].project);
+        history_free(&steps[i]);
     }
 
     *count = 0;
 }
 
 static bool push(EdHistory *stack, int *count, const DmProject *p, const int swap[2]) {
-    DmBytes bytes = {0};
+    DmProject *copy = malloc(sizeof(*copy));
 
-    if (!dm_pack(p, &bytes)) {
+    if (!copy) {
         return false;
     }
 
-    size_t total = bytes.size;
+    dm_project_init(copy);
+
+    if (!dm_project_copy(copy, p)) {
+        dm_project_free(copy);
+        free(copy);
+        return false;
+    }
+
+    size_t size = dm_project_memory(copy);
+    size_t total = size;
 
     for (int i = 0; i < *count; ++i) {
-        total += stack[i].project.size;
+        total += stack[i].size;
     }
 
     while (*count && (*count == ED_UNDO_LIMIT || total > 512u * 1024u * 1024u)) {
-        total -= stack[0].project.size;
-        dm_bytes_free(&stack[0].project);
+        total -= stack[0].size;
+        history_free(&stack[0]);
         memmove(stack, stack + 1, (size_t)(*count - 1) * sizeof(*stack));
         --*count;
     }
 
-    stack[(*count)++] = (EdHistory){bytes, {swap[0], swap[1]}};
+    stack[(*count)++] = (EdHistory){.copy = copy, .size = size, .swap = {swap[0], swap[1]}};
     return true;
 }
 
 static const int no_swap[2] = {-1, -1};
 
-bool ed_checkpoint(Editor *e) {
+static bool checkpoint_now(Editor *e) {
     e->midi_mix_last = 0;
     e->checkpoint_pushed = false;
 
@@ -630,6 +848,7 @@ bool ed_checkpoint(Editor *e) {
     }
 
     e->checkpoint_pushed = true;
+    e->checkpoint_this_frame = true;
 
     if (e->recording_take) {
         e->take_snapshot = true;
@@ -637,6 +856,13 @@ bool ed_checkpoint(Editor *e) {
 
     ed_clear_history(e->redo, &e->redo_count);
     return true;
+}
+
+bool ed_checkpoint(Editor *e) {
+    DM_PROFILE_BEGIN(CHECKPOINT, profile_start);
+    bool result = checkpoint_now(e);
+    DM_PROFILE_END(CHECKPOINT, profile_start);
+    return result;
 }
 
 bool ed_checkpoint_swap(Editor *e, int a, int b) {
@@ -672,11 +898,11 @@ void ed_checkpoint_abandon(Editor *e) {
     }
 
     e->checkpoint_pushed = false;
-    DmBytes b = e->undo[--e->undo_count].project;
+    EdHistory step = e->undo[--e->undo_count];
     DmProject saved;
     dm_project_init(&saved);
 
-    if (dm_unpack(&saved, b.data, b.size, e->status, sizeof(e->status))) {
+    if (history_restore(&step, &saved, e->status, sizeof(e->status))) {
         saved.next_pattern_uid =
             (uint32_t)fmax(saved.next_pattern_uid, e->project.next_pattern_uid);
         retain_selection(&saved, &e->project);
@@ -690,7 +916,7 @@ void ed_checkpoint_abandon(Editor *e) {
         e->take_snapshot = false;
     }
 
-    dm_bytes_free(&b);
+    history_free(&step);
 }
 
 bool ed_add_note(Editor *e, DmPattern *p, DmNote note) {
@@ -721,11 +947,12 @@ double ed_pattern_length(Editor *e) {
     return ed_pattern(e)->length;
 }
 
-static void publish_loop(Editor *e) {
+/* Sets the loop in seconds by timing's tempo map: the project the playing schedule was built
+   from, which during background builds can be older than the editor's. */
+static void publish_loop(Editor *e, const DmProject *timing) {
     int mode = e->pattern_mode;
-    dm_audio_loop(e->audio, e->loop_enabled[mode],
-                  dm_beat_seconds(&e->project, e->loop_start[mode]),
-                  dm_beat_seconds(&e->project, e->loop_end[mode]));
+    dm_audio_loop(e->audio, e->loop_enabled[mode], dm_beat_seconds(timing, e->loop_start[mode]),
+                  dm_beat_seconds(timing, e->loop_end[mode]));
 }
 
 /* A placed pattern follows its region's program changes unless a preview instrument is chosen. */
@@ -738,6 +965,23 @@ static DmPatternPreview pattern_preview(Editor *e) {
                               ed_pattern_region_origin(e), ed_pattern_length(e)};
 }
 
+/* Records what the newest publish or publish request plays: the song (preview NULL) or a
+   pattern preview. ed_transport_seek reuses the schedule only while this still holds. */
+static void published_view(Editor *e, const DmPatternPreview *preview) {
+    e->published_known = true;
+    e->published_session = e->project_session;
+    e->published_pattern = preview != NULL;
+
+    if (preview) {
+        e->published_preview = *preview;
+    }
+}
+
+static bool same_preview(DmPatternPreview a, DmPatternPreview b) {
+    return a.pattern == b.pattern && a.channel == b.channel && a.program == b.program &&
+           a.follow == b.follow && a.origin == b.origin && a.length == b.length;
+}
+
 bool ed_transport_publish(Editor *e, double seconds, bool playing) {
     bool ok;
 
@@ -745,13 +989,49 @@ bool ed_transport_publish(Editor *e, double seconds, bool playing) {
         DmPatternPreview preview = pattern_preview(e);
         ok = dm_audio_publish_pattern(e->audio, &e->project, &preview, seconds, playing, e->status,
                                       sizeof(e->status));
+
+        if (ok) {
+            published_view(e, &preview);
+        }
     } else {
         ok =
             dm_audio_publish(e->audio, &e->project, seconds, playing, e->status, sizeof(e->status));
+
+        if (ok) {
+            published_view(e, NULL);
+        }
     }
 
     if (ok) {
-        publish_loop(e);
+        /* The current project is playing; any pending background build was cancelled. */
+        e->published_revision = e->publish_revision;
+        publish_loop(e, &e->project);
+    }
+
+    return ok;
+}
+
+bool ed_transport_seek(Editor *e, double seconds, bool playing) {
+    bool pattern = e->pattern_mode && ed_pattern(e);
+
+    if (!e->published_known || e->published_session != e->project_session ||
+        e->published_revision != e->publish_revision || pattern != e->published_pattern) {
+        return false;
+    }
+
+    if (pattern && !same_preview(pattern_preview(e), e->published_preview)) {
+        return false;
+    }
+
+    return dm_audio_seek(e->audio, &e->project, seconds, playing);
+}
+
+bool ed_publish_song_start(Editor *e) {
+    bool ok = dm_audio_publish(e->audio, &e->project, 0, false, e->status, sizeof(e->status));
+
+    if (ok) {
+        e->published_revision = e->publish_revision;
+        published_view(e, NULL);
     }
 
     return ok;
@@ -762,6 +1042,7 @@ double ed_transport_length(Editor *e) {
 }
 
 void ed_publish(Editor *e) {
+    DM_PROFILE_BEGIN(PUBLISH, profile_start);
     e->midi_mix_pending = false;
     ++e->export_revision;
 
@@ -775,17 +1056,67 @@ void ed_publish(Editor *e) {
             ed_follow_preview(e);
         }
 
-        if (dm_audio_update(e->audio, &e->project, pattern ? &preview : NULL, e->status,
-                            sizeof(e->status))) {
-            publish_loop(e);
+        const DmPatternPreview *arg = pattern ? &preview : NULL;
+        published_view(e, arg);
+
+        if (!dm_audio_update_async(e->audio, &e->project, arg, e->project_session,
+                                   ++e->publish_revision)) {
+            if (dm_audio_update(e->audio, &e->project, arg, e->status, sizeof(e->status))) {
+                e->published_revision = e->publish_revision;
+                publish_loop(e, &e->project);
+            }
         }
     }
+
+    DM_PROFILE_END(PUBLISH, profile_start);
+}
+
+int ed_publish_poll(Editor *e) {
+    if (!e || !e->active || !e->audio) {
+        return 0;
+    }
+
+    char error[sizeof(e->status)] = "";
+    DmAudioPublished published = {0};
+    int status = dm_audio_update_poll(e->audio, e->project_session, e->publish_revision, &published,
+                                      error, sizeof(error));
+
+    if (status == 1) {
+        e->published_revision = published.revision;
+        publish_loop(e, &published.project);
+        dm_project_free(&published.project);
+    } else if (status == -1) {
+        snprintf(e->status, sizeof(e->status), "%s",
+                 error[0] ? error : DM_TEXT_CANNOT_UPDATE_PLAYBACK);
+    }
+
+    return status;
 }
 
 void ed_changed(Editor *e) {
+    DM_PROFILE_BEGIN(CHANGED, profile_start);
     ++e->export_revision;
     dm_patterns_fit(&e->project);
+#ifdef DM_DEVTOOLS
+    char error[256];
+
+    DM_PROFILE_BEGIN(VALIDATE, validate_start);
+    bool valid = dm_project_check_edit(&e->project, error, sizeof(error));
+    DM_PROFILE_END(VALIDATE, validate_start);
+
+    if (!valid) {
+        char message[512];
+        snprintf(message, sizeof(message), DM_TEXT_PROJECT_CHECK_FAILED, error);
+        ed_message(e, message);
+
+        if (!e->devtools_invalid[0]) {
+            snprintf(e->devtools_invalid, sizeof(e->devtools_invalid), "%s", error);
+        }
+    }
+#endif
+
     e->dirty = true;
+    DM_PROFILE_END(CHANGED, profile_start);
 }
 
 void ed_request_font(Editor *e, const char *path) {
@@ -943,6 +1274,7 @@ void ed_undo(Editor *e, bool redo) {
     e->midi_event_index = -1;
     e->song_event = false;
     e->curve_drag = e->marquee = e->event_marquee = false;
+    e->mixer_drag = false;
     e->wait_armed = e->take_started = false;
     e->event_selection.size = 0;
     ed_release_piano(e);
@@ -963,11 +1295,10 @@ void ed_undo(Editor *e, bool redo) {
     }
 
     EdHistory step = from[--*n];
-    DmBytes b = step.project;
     DmProject next;
     dm_project_init(&next);
 
-    if (dm_unpack(&next, b.data, b.size, e->status, sizeof(e->status))) {
+    if (history_restore(&step, &next, e->status, sizeof(e->status))) {
         /* Identities cannot be reused when an undone creation is replaced by another edit. */
         next.next_pattern_uid = (uint32_t)fmax(next.next_pattern_uid, e->project.next_pattern_uid);
         retain_selection(&next, &e->project);
@@ -1009,5 +1340,5 @@ void ed_undo(Editor *e, bool redo) {
     }
 
     dm_project_free(&next);
-    dm_bytes_free(&b);
+    history_free(&step);
 }

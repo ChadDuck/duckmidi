@@ -1,4 +1,5 @@
 #include "editor/internal.h"
+#include "devtools/devtools.h"
 #include "text/en.h"
 
 /* Keep placement snapping aligned with the visible playlist grid. */
@@ -45,7 +46,7 @@ static PlaylistRow row_extent(const int *list, int i, float row) {
     return layout;
 }
 
-PlaylistRow ed_playlist_row(const int *list, int count, int index, float row) {
+static PlaylistRow playlist_row_now(const int *list, int count, int index, float row) {
     float bottom = 0;
 
     for (int i = 0; i <= count; ++i) {
@@ -62,8 +63,15 @@ PlaylistRow ed_playlist_row(const int *list, int count, int index, float row) {
     return (PlaylistRow){.top = bottom};
 }
 
+PlaylistRow ed_playlist_row(const int *list, int count, int index, float row) {
+    DM_PROFILE_BEGIN(PLAYLIST_LAYOUT, profile_start);
+    PlaylistRow result = playlist_row_now(list, count, index, row);
+    DM_PROFILE_END(PLAYLIST_LAYOUT, profile_start);
+    return result;
+}
+
 /* A point in a channel gap belongs to the row below it. */
-int ed_playlist_row_at(const int *list, int count, float y, float row) {
+static int playlist_row_at_now(const int *list, int count, float y, float row) {
     if (y < 0) {
         return -1;
     }
@@ -82,6 +90,13 @@ int ed_playlist_row_at(const int *list, int count, float y, float row) {
     return count + 1;
 }
 
+int ed_playlist_row_at(const int *list, int count, float y, float row) {
+    DM_PROFILE_BEGIN(PLAYLIST_LAYOUT, profile_start);
+    int result = playlist_row_at_now(list, count, y, row);
+    DM_PROFILE_END(PLAYLIST_LAYOUT, profile_start);
+    return result;
+}
+
 /* An automation subrow's own name, or "Automation N" by its position while it has none. */
 void ed_lane_label(const Editor *e, int channel, int lane, char *text, size_t capacity) {
     const char *name = e->project.lane_names[channel][lane - 1];
@@ -94,6 +109,7 @@ void ed_lane_label(const Editor *e, int channel, int lane, char *text, size_t ca
 }
 
 int ed_playlist_channels(Editor *e, int *list) {
+    DM_PROFILE_BEGIN(PLAYLIST_LAYOUT, profile_start);
     int base[16], count = ed_channels(e, base), n = 0;
 
     for (int i = 0; i < count; ++i) {
@@ -113,6 +129,7 @@ int ed_playlist_channels(Editor *e, int *list) {
         }
     }
 
+    DM_PROFILE_END(PLAYLIST_LAYOUT, profile_start);
     return n;
 }
 
@@ -455,6 +472,7 @@ static bool channel_expander(Editor *e, UiRect r, float label, float row, int ch
             ui_rect(button, mouse.left ? DIM : GRID, 0);
         }
 
+        e->hover_target = TARGET_CHANNEL_LABEL;
         ed_hover(e, DM_TEXT_EXPAND_COLLAPSE_AUTOMATION);
     }
 
@@ -589,6 +607,7 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
         return;
     }
 
+    e->hover_target = TARGET_CHANNEL_LABEL;
     ed_playlist_label_action(e, channel, lane, mouse);
 
     if (lane && lane != ED_ROW_CHANNEL_EVENTS) {
@@ -598,6 +617,7 @@ void ed_playlist_label(Editor *e, UiRect r, float label, float row, const int *l
 
 static void playlist_rows(Editor *e, UiRect r, View *v, float label, float row, const int *list,
                           int count, UiMouse mouse) {
+    DM_PROFILE_BEGIN(PLAYLIST_ROWS, rows_start);
     UiRect body = {r.x, r.y + 28, r.w, r.h - 28};
     float origin = r.y + 28 - v->scroll_y, bottom = 0;
     ui_clip(body);
@@ -648,6 +668,7 @@ static void playlist_rows(Editor *e, UiRect r, View *v, float label, float row, 
     }
 
     ui_unclip();
+    DM_PROFILE_END(PLAYLIST_ROWS, rows_start);
 }
 
 const char *ed_event_label(const DmBytes *m) {
@@ -1390,9 +1411,11 @@ static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale
                      ed_intersects(box, grid);
 
         if (marquee) {
+            DM_PROFILE_BEGIN(GESTURES, marquee_start);
             bool in = ranged ? placement_in_range(e, &range, i) : (int)i == e->pick_hit;
             clip->selected =
                 ed_marquee_selects(e, i, shown && ed_intersects(box, selection), in, mouse);
+            DM_PROFILE_END(GESTURES, marquee_start);
         }
 
         if (!shown) {
@@ -1416,7 +1439,9 @@ static int playlist_clips(Editor *e, UiRect r, UiRect grid, View *v, float scale
     }
 
     if (click) {
+        DM_PROFILE_BEGIN(GESTURES, pick_start);
         placements_picked(e, e->pick, e->pick_hit, ranged);
+        DM_PROFILE_END(GESTURES, pick_start);
     }
 
     return hit;
@@ -1578,6 +1603,11 @@ void ed_playlist(Editor *e, float width, float height) {
     }
 
     int hit = playlist_clips(e, r, grid, v, scale, row, list, count, mouse);
+
+    if (hovered && ed_inside(mouse.pos, grid)) {
+        e->hover_target = hit >= 0 ? TARGET_PLACEMENT : TARGET_CANVAS;
+    }
+
     pattern_drop(e, r, grid, v, scale, row, list, count, dropped);
     playlist_events(e, grid, v, row, scale, 0, -1, list, count);
 
@@ -1593,6 +1623,7 @@ void ed_playlist(Editor *e, float width, float height) {
     ed_horizontal_scroll(v, (UiRect){grid.x, r.y, grid.w, r.h}, total);
     ui_scrollbar(DM_TEXT_PLAYLIST_VERTICAL, (UiRect){r.x + r.w + 2, r.y + 28, 12, r.h - 28}, true,
                  &v->scroll_y, r.h - 28, content_height);
+    DM_PROFILE_BEGIN(GESTURES, gesture_start);
     ed_timeline_drag(e, r, v, scale, label, 1, hovered);
 
     if (hovered) {
@@ -1611,5 +1642,6 @@ void ed_playlist(Editor *e, float width, float height) {
 
     ed_playlist_drag(e, r, v, row, scale, list, count, mouse);
     ed_marquee_outline(e, FOCUS_PLAYLIST, mouse);
+    DM_PROFILE_END(GESTURES, gesture_start);
     ui_child_end();
 }

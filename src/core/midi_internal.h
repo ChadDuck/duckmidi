@@ -16,11 +16,15 @@ typedef struct {
 
 typedef struct {
     uint64_t tick;
+    uint64_t
+        placed; /* Tick of the authored point this message plays; automation patterns compare it. */
     int track, port;
     size_t order;
-    int phase;       /* Endpoints, restoration, setup, then notes at a shared tick. */
-    bool persistent; /* Detached source points retain explicit restoration values. */
+    int phase;     /* Endpoints, restoration, setup, then notes at a shared tick. */
+    bool restores; /* A Line's restoration node: its owner keeps its value (not a release). */
     bool generated_default;
+    uint64_t source; /* A pattern message's tick inside its pattern (0 otherwise). */
+    int line;        /* The Line a node, range setup or restoration belongs to (0 otherwise). */
     DmBytes bytes;
 } Raw;
 

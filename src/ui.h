@@ -35,6 +35,8 @@ void ui_resize_cursor(bool vertical);
 void ui_triangle(UiPoint a, UiPoint b, UiPoint c, uint32_t color);
 void ui_circle(UiPoint point, float radius, uint32_t color);
 void ui_circle_outline(UiPoint point, float radius, uint32_t color);
+void ui_square(UiPoint center, float half, uint32_t color);
+void ui_square_outline(UiPoint center, float half, uint32_t color);
 /* While a pattern card is dragged, returns true with its floating preview open for drawing when
    preview is set; close it with ui_drag_pattern_end either way. */
 bool ui_drag_pattern(int pattern, bool preview);

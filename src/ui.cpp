@@ -2178,6 +2178,16 @@ void ui_circle_outline(UiPoint p, float radius, uint32_t color) {
     ImGui::GetWindowDrawList()->AddCircle({p.x, p.y}, radius, color, 0, 1.5f);
 }
 
+void ui_square(UiPoint center, float half, uint32_t color) {
+    ImGui::GetWindowDrawList()->AddRectFilled({center.x - half, center.y - half},
+                                              {center.x + half, center.y + half}, color);
+}
+
+void ui_square_outline(UiPoint center, float half, uint32_t color) {
+    ImGui::GetWindowDrawList()->AddRect({center.x - half, center.y - half},
+                                        {center.x + half, center.y + half}, color, 0, 0, 1.5f);
+}
+
 /* The floating preview is drawn without the tooltip frame, so only the card shows. */
 bool ui_drag_pattern(int pattern, bool preview) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});

@@ -1,4 +1,5 @@
 #include "editor/internal.h"
+#include "devtools/devtools.h"
 #include "text/en.h"
 
 static void piano_glissando(Editor *e, int key);
@@ -825,10 +826,11 @@ static void piano_header(Editor *e, DmPattern *p) {
 
 static void pitch_underlay(Editor *e, UiRect grid, View *v, float scale) {
     UiPoint previous = {0};
-    bool has = false;
+    bool has = false, before_holds = false;
     DmAutomation before = {0};
     ed_pitch_cache_begin(e);
     size_t first = ed_automation_visible_first(e, (v->scroll_x - 8) / scale, true);
+    uint32_t dim_color = (ed_point_color(e) & 0xffffffu) | 0x44000000u;
 
     for (size_t i = first; i < e->project.automation_count; ++i) {
         DmAutomation a = e->project.automation[i];
@@ -850,21 +852,45 @@ static void pitch_underlay(Editor *e, UiRect grid, View *v, float scale) {
             previous = point;
             before = a;
             has = true;
+            before_holds = ed_point_holds(e, i);
             continue;
         }
 
+        bool holds = ed_point_holds(e, i);
+
         if (has) {
-            ed_automation_connection(previous, point, before, a,
-                                     ed_curve_units(e, before, grid, true),
-                                     (ed_point_color(e) & 0xffffffu) | 0x88000000u);
+            if (before.curve > 0 && before_holds) {
+                ui_line(previous, (UiPoint){point.x, previous.y}, dim_color, 1.5f);
+                ui_line((UiPoint){point.x, previous.y}, point, dim_color, 1.5f);
+            } else {
+                ed_automation_connection(previous, point, before, a,
+                                         ed_curve_units(e, before, grid, true),
+                                         (ed_point_color(e) & 0xffffffu) | 0x88000000u);
+            }
         }
 
-        ui_circle(point, e->automation_node == (int)i ? 6 : 3,
-                  e->automation_node == (int)i ? TEXT
-                                               : (ed_point_color(e) & 0xffffffu) | 0x99000000u);
+        float size = e->automation_node == (int)i ? 6 : 3;
+        uint32_t color =
+            e->automation_node == (int)i ? TEXT : (ed_point_color(e) & 0xffffffu) | 0x99000000u;
+
+        if (holds) {
+            ui_square(point, size, color);
+        } else {
+            ui_circle(point, size, color);
+        }
+
         previous = point;
         has = true;
         before = a;
+        before_holds = holds;
+    }
+
+    if (has && before.curve > 0 && before_holds) {
+        float end_x = grid.x + (float)ed_pattern_length(e) * scale - v->scroll_x;
+
+        if (end_x > previous.x) {
+            ui_line(previous, (UiPoint){end_x, previous.y}, dim_color, 1.5f);
+        }
     }
 
     ed_pitch_cache_end(e);
@@ -939,10 +965,12 @@ static int piano_notes(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, 
 
         /* Notes have no order to select a range in, so a range click adds the note. */
         if (marquee) {
+            DM_PROFILE_BEGIN(GESTURES, marquee_start);
             bool clicked = (int)i == e->pick_hit;
             n.selected = ed_marquee_selects(e, i, visible && ed_intersects(box, selection),
                                             ed_picked_before(e, i) || clicked, mouse);
             p->notes[i].selected = n.selected;
+            DM_PROFILE_END(GESTURES, marquee_start);
         }
 
         if (!visible) {
@@ -1106,21 +1134,33 @@ static void move_bend_node(Editor *e, UiRect grid, View *v, float scale, UiMouse
 
 bool ed_bend_mouse(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse) {
     if (e->drag == DRAG_BEND_POINT) {
+        if (ed_inside(mouse.pos, grid)) {
+            e->hover_target = TARGET_BEND;
+        }
+
         move_bend_node(e, grid, v, scale, mouse);
         return true;
+    }
+
+    if (!ed_inside(mouse.pos, grid)) {
+        return false;
+    }
+
+    int hit = bend_hit(e, grid, v, scale, mouse, false);
+    int segment = hit < 0 ? bend_hit(e, grid, v, scale, mouse, true) : -1;
+
+    if (hit >= 0 || segment >= 0) {
+        e->hover_target = TARGET_BEND;
     }
 
     if (ed_gesture_held(e, GESTURE_MARQUEE, mouse) || e->tool == TOOL_MARQUEE) {
         return false;
     }
 
-    if (!ed_inside(mouse.pos, grid) || !mouse.clicked ||
-        (!ed_gesture_held(e, GESTURE_BEND_POINT, mouse) &&
-         !ed_gesture_held(e, GESTURE_BEND_EDIT, mouse))) {
+    if (!mouse.clicked || (!ed_gesture_held(e, GESTURE_BEND_POINT, mouse) &&
+                           !ed_gesture_held(e, GESTURE_BEND_EDIT, mouse))) {
         return false;
     }
-
-    int hit = bend_hit(e, grid, v, scale, mouse, false);
 
     /* Shift + click selects a point; Shift + drag moves it, as Alt does. */
     if (hit >= 0 && ed_gesture_held(e, GESTURE_BEND_EDIT, mouse)) {
@@ -1128,8 +1168,6 @@ bool ed_bend_mouse(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse) 
     } else if (!ed_gesture_held(e, GESTURE_BEND_POINT, mouse)) {
         return false;
     }
-
-    int segment = hit < 0 ? bend_hit(e, grid, v, scale, mouse, true) : -1;
 
     if (hit < 0 && segment < 0) {
         return false;
@@ -1159,6 +1197,12 @@ bool ed_bend_mouse(Editor *e, UiRect grid, View *v, float scale, UiMouse mouse) 
 
 void ed_piano_mouse(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, float scale, float row,
                     UiMouse mouse, bool hovered, int hit, UiRect hit_box) {
+    DM_PROFILE_BEGIN(GESTURES, profile_start);
+
+    if (hovered && ed_inside(mouse.pos, grid)) {
+        e->hover_target = hit >= 0 ? TARGET_NOTE : TARGET_CANVAS;
+    }
+
     /* The resize cursor shows only where a click would resize: nothing else holds the mouse, and
        the tool and modifiers leave the edge to resizing. */
     bool idle = hovered && !e->drag && !e->marquee && !e->scrub && !e->pan_context &&
@@ -1214,6 +1258,8 @@ void ed_piano_mouse(Editor *e, DmPattern *p, UiRect r, UiRect grid, View *v, flo
     if (hovered && mouse.right && ed_right_free(e, mouse) && ed_inside(mouse.pos, grid)) {
         erase_swept_notes(e, p, r, grid, v, scale, row, mouse);
     }
+
+    DM_PROFILE_END(GESTURES, profile_start);
 }
 
 /* The pitch a pattern's view centers on: the mean key of the middle 80% of its notes, so a few
@@ -1377,16 +1423,20 @@ void ed_roll(Editor *e, float width, float height) {
     ed_horizontal_scroll(v, (UiRect){grid.x, r.y, grid.w, r.h}, total);
     ui_scrollbar(DM_TEXT_PIANO_VERTICAL, (UiRect){r.x + r.w + 2, r.y + 28, 12, r.h - 28}, true,
                  &v->scroll_y, r.h - 28, 128 * row);
+    DM_PROFILE_BEGIN(GESTURES, drag_start);
     ed_brush_drag(e, p, grid, v, scale, row, mouse);
     note_drag(e, p, scale, row, mouse);
+    DM_PROFILE_END(GESTURES, drag_start);
 
     if (e->drag == DRAG_NOTE && !e->drag_edge) {
         ui_gesture_cursor(false);
     }
 
     note_placement_tip(e, p, grid, v, row, mouse, hovered);
+    DM_PROFILE_BEGIN(GESTURES, bend_start);
     note_bend(e, grid, v, scale, row, mouse);
     ed_marquee_outline(e, FOCUS_NOTES, mouse);
+    DM_PROFILE_END(GESTURES, bend_start);
 
     ed_automation_panel(e, r, v, scale, label, mouse);
     e->roll_scroll_seen = v->scroll_y;

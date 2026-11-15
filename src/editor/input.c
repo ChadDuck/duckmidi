@@ -1,4 +1,5 @@
 #include "editor/internal.h"
+#include "devtools/devtools.h"
 #include "text/en.h"
 
 static bool escape_active(Editor *e);
@@ -265,6 +266,33 @@ static bool action_global(Editor *e, int a) {
         e->preferences = true;
         ui_dialog_raise(DM_TEXT_PREFERENCES);
         break;
+#ifdef DM_DEVTOOLS
+    case ACT_PROFILER:
+        e->profiler = !e->profiler;
+        break;
+    case ACT_GESTURE_INSPECTOR:
+        e->gesture_inspector = !e->gesture_inspector;
+        break;
+    case ACT_INPUT_RECORD:
+        if (dm_input_log_recording()) {
+            char path[DM_PATH];
+
+            if (dm_input_log_stop(path, sizeof(path))) {
+                char message[DM_PATH + 64];
+                snprintf(message, sizeof(message), DM_TEXT_INPUT_RECORD_SAVED, path);
+                ed_message(e, message);
+            } else {
+                ed_message(e, DM_TEXT_INPUT_RECORD_FAILED);
+            }
+        } else {
+            int width = 0, height = 0;
+            SDL_GetWindowSize(e->window, &width, &height);
+            dm_input_log_start(width, height);
+            ed_message(e, DM_TEXT_INPUT_RECORD_STARTED);
+        }
+
+        break;
+#endif
     case ACT_SHORTCUTS:
         e->shortcuts = true;
         break;

@@ -53,6 +53,7 @@ jobs:
 
       - name: Name the build
         if: always()
+        shell: bash
         run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
 
       - name: Upload build

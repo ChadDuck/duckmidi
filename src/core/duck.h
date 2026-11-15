@@ -7,13 +7,13 @@
 #include "../../include/duckmidi_midi.h"
 #include "../../shared/sample/ids.h"
 
-#define DM_PORT_COMBINED 256 /* Virtual source view; exported channel messages use port 0. */
+#define DM_PORT_COMBINED 256 /* Virtual source view: every source port in one arrangement. */
 #define DM_LANES 32
 #define DM_NOTE_ROWS 16
 #define DM_PPQ 960
 #define DM_MAX_BEAT (0x0FFFFFFF / DM_PPQ)
 #define DM_PIANO_KEYS 37
-#define DM_PROJECT_SCHEMA 19
+#define DM_PROJECT_SCHEMA 23
 #define DM_PROJECT_SCHEMA_OLDEST 9    /* Schema 9 (0.10.1) also loads, converted through 10. */
 #define DM_NOTE_PORTS 128
 #define DM_PATTERN_COLORS 16
@@ -67,13 +67,15 @@ typedef struct {
     double speed, tension, skew, pulse, amount;
     double center, pitch_center;
     int reference;
-    int control_scope; /* 0 ordinary; 1 detached note controls; 2 unscoped source controls. */
     int port;
     bool inverted;
     uint8_t color; /* 0 uses the application color; 1..DM_PATTERN_COLORS select the palette. */
     /* Indexed by controller or DM_GRAPH_PITCH_LANE. 0 is the default Point view,
        DM_GRAPH_POINT is explicitly Point, and 8..256 is a Graph note denominator. */
     uint16_t graph_lanes[DM_GRAPH_LANES];
+    /* A Graph lane's last bar holds until the placement ends instead of returning after one
+       cell; only read while the lane is a Graph. */
+    bool graph_hold[DM_GRAPH_LANES];
 } DmPattern;
 
 typedef struct {
@@ -91,7 +93,7 @@ enum { DM_BEND_ROOT_NONE, DM_BEND_ROOT_PITCH, DM_BEND_ROOT_MIDI };
 typedef struct {
     double beat;
     int type, channel, a, b;
-    int pattern;       /* -1: song event; otherwise local to a reusable pattern. */
+    int pattern;       /* Owning reusable pattern index (song-level messages are DmEvents). */
     int curve, anchor; /* 0: discrete source; positive: line nodes; negative: restoration. */
     double bend;       /* Midpoint offset in MIDI value units for the outgoing segment. */
     bool ramp;         /* Discrete-source outgoing segment was explicitly converted to a curve. */
@@ -229,6 +231,8 @@ void dm_project_init(DmProject *p);
 void dm_project_free(DmProject *p);
 /* Deep copy into an initialized destination; leave it unchanged on failure. */
 bool dm_project_copy(DmProject *destination, const DmProject *source);
+/* Estimated owned memory, including the project struct and allocated capacities. */
+size_t dm_project_memory(const DmProject *p);
 DmPortMix dm_port_mix(const DmProject *project, int port, int channel);
 bool dm_port_mix_set(DmProject *project, DmPortMix mix);
 bool dm_patch_replacement_valid(const DmPatchReplacement *replacement);
@@ -240,6 +244,10 @@ void dm_patch_replacement_clear(DmProject *project, DmPatchKey key);
 void dm_channel_ports(const DmProject *project, int channel, bool used[DM_NOTE_PORTS]);
 int dm_pattern_add(DmProject *p, const char *name);
 int dm_pattern_copy(DmProject *p, int source);
+/* Gives `to` every setting of `from` (kind, mode, event, LFO shape, port, color, Graph lanes,
+   length, ...) and keeps `to`'s identity (name, uid) and notes. Every pattern copy goes through
+   it, so a new DmPattern field is copied without touching the copies. */
+void dm_pattern_copy_settings(DmPattern *to, const DmPattern *from);
 /* Full-copy LFOs and unsliced placements; otherwise fit a copy of the visible contents. */
 int dm_clip_make_unique(DmProject *p, size_t index);
 void dm_pattern_remove(DmProject *p, int pattern);
@@ -248,7 +256,9 @@ void dm_pattern_remove(DmProject *p, int pattern);
 int dm_pattern_move(DmProject *p, int from, int before);
 /* An index after dm_pattern_move moved the pattern at "from" to "to". */
 int dm_pattern_moved_index(int index, int from, int to);
+bool dm_note_valid(DmNote note);
 bool dm_note_add(DmPattern *p, DmNote note);
+bool dm_clip_valid(const DmProject *p, DmClip clip);
 bool dm_clip_add(DmProject *p, DmClip clip);
 double dm_clip_length(const DmProject *p, DmClip clip);
 double dm_lfo(const DmPattern *pattern, double beat);
@@ -257,14 +267,19 @@ double dm_lfo_speed_snap(double speed, double bar);
 int dm_lfo_range(const DmPattern *pattern);
 int dm_lfo_value(const DmPattern *pattern, double beat);
 bool dm_automation_later(DmAutomation first, DmAutomation second);
+/* Where a point plays among points on the same beat: 1 a Line's last node, 2 a restoration,
+   3 everything else (then by position in the automation array). Playback and the editor's
+   "value before a section" both follow this order. */
+int dm_automation_phase(const DmProject *p, DmAutomation a);
+bool dm_automation_valid(const DmProject *p, DmAutomation item);
 bool dm_automation_add(DmProject *p, DmAutomation item);
 double dm_curve_value(DmAutomation first, DmAutomation last, double t);
 bool dm_automation_curves(DmAutomation a);
 bool dm_event_add(DmProject *p, double beat, int track, int port, const DmBytes *message);
 int dm_project_program_repeat(DmProgramHistory history[DM_PORT_COMBINED][16], const DmProject *p,
-                              int index, bool automation);
-bool dm_collapse_program_repeats(DmProject *p, int index, bool automation);
-void dm_collapse_marked_program_repeats(DmProject *p, bool *marks, bool automation);
+                              int index);
+bool dm_collapse_program_repeats(DmProject *p, int index);
+void dm_collapse_marked_program_repeats(DmProject *p, bool *marks);
 bool dm_message_valid(const DmBytes *message);
 bool dm_conductor(const DmBytes *message);
 double dm_duration(const DmProject *p);
@@ -297,6 +312,10 @@ enum { DM_EXPORT_DEFAULT_CONTROL = 1u };
 
 bool dm_export_timeline(const DmProject *p, DmExportEvent **events, size_t *count,
                         uint64_t *duration, char *error, size_t cap);
+/* dm_export_timeline's events for one MIDI channel, resolving only that channel's placements
+   and messages (cheaper on a large song); the editor draws what a placement hears from it. */
+bool dm_export_channel(const DmProject *p, int channel, DmExportEvent **events, size_t *count,
+                       char *error, size_t cap);
 /* Mask of MIDI channels whose opening pan was authored, including pan folded into the mixer
    on import. Reads the retained source MIDI, so call it once per export. */
 unsigned dm_export_authored_pan(const DmProject *p);
@@ -310,6 +329,10 @@ typedef enum {
 /* File export policy for sequencer-specific (FF 7F) editor information. */
 bool dm_midi_export(const DmProject *p, DmBytes *out, bool all_views, DmMetadataMode metadata,
                     char *error, size_t cap);
+/* The cross-array rules every loaded project meets; dm_project_check_edit adds the rules edits
+   keep (validate.c). */
+bool dm_project_validate(const DmProject *p, char *error, size_t cap);
+bool dm_project_check_edit(const DmProject *p, char *error, size_t cap);
 bool dm_pack(const DmProject *p, DmBytes *out);
 bool dm_unpack(DmProject *p, const unsigned char *data, size_t size, char *error, size_t cap);
 /* LZ77 compression of project bodies; see src/compress.c. */
@@ -355,6 +378,8 @@ bool dm_midi_rhythm_part(const DmBytes *message, int *channel, bool *drums);
 int dm_loop_marker(const DmBytes *message);
 /* Beats of the first loop start and end markers, -1 when absent. Returns whether either exists. */
 bool dm_loop_points(const DmProject *p, double *start, double *end);
+/* Song beat of the first note on channel (any channel when channel < 0), or HUGE_VAL. */
+double dm_first_note(const DmProject *p, int channel);
 const char *dm_program_name(int program);
 /* Sets a channel's starting instrument, including program changes sent before its first note.
    Without apply, only reports whether anything would change. */

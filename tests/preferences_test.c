@@ -24,12 +24,18 @@ static void readable_values(Editor *e) {
     snprintf(e->midi_folder, DM_PATH, "C:\\MIDI files\\");
     snprintf(e->preferred_font, DM_PATH, "D:\\fonts\\a \"quoted\".sf2");
     e->bindings[ACT_PLAY_MODE] = (Binding){SDL_SCANCODE_F9, SDL_KMOD_SHIFT | SDL_KMOD_ALT};
+#ifdef DM_DEVTOOLS
+    e->bindings[ACT_PROFILER] = (Binding){.key = SDL_SCANCODE_F11};
+#endif
     e->percussion_global[36] = (uint8_t)(ed_piano_index(SDL_SCANCODE_Z) + 1);
     assert(dm_preferences_save(e));
     DmBytes data = {0};
     char error[256];
     assert(dm_read(e->settings_path, &data, error, sizeof(error)));
     assert(dm_bytes(&data, "", 1));
+#ifdef DM_DEVTOOLS
+    assert(!strstr((char *)data.data, "frame_profiler="));
+#endif
     assert(strstr((char *)data.data, "midi_folder=\"C:\\MIDI files\\\""));
     assert(strstr((char *)data.data, "Shift + Alt + F9") &&
            !strstr((char *)data.data, "action_0="));
@@ -37,6 +43,9 @@ static void readable_values(Editor *e) {
     ed_defaults(e);
     memset(e->percussion_global, 0, 128);
     assert(dm_preferences_load(e));
+#ifdef DM_DEVTOOLS
+    assert(e->bindings[ACT_PROFILER].key == SDL_SCANCODE_F12 && !e->bindings[ACT_PROFILER].mods);
+#endif
     assert(e->bindings[ACT_PLAY_MODE].key == SDL_SCANCODE_F9 && e->percussion_global[36]);
     Binding b;
     char text[160];

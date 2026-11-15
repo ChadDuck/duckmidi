@@ -1,4 +1,5 @@
 #include "editor/editor.h"
+#include "devtools/devtools.h"
 #include "crash.h"
 #include "text/en.h"
 #include <SDL3/SDL_main.h>
@@ -104,17 +105,97 @@ static bool window_frame(Editor *editor, SDL_Window *window, bool smoke) {
 /* Where a smoke run saves its 30th frame: the path after --smoke or --welcome-smoke, or NULL to
    save nothing. */
 static const char *smoke_capture;
+#ifdef DM_DEVTOOLS
+typedef struct {
+    DmInputLog log;
+    size_t cursor;
+    uint64_t frame;
+    bool active;
+} InputReplay;
+
+static InputReplay replay;
+#endif
 
 static void editor_loop(Editor *editor, SDL_Window *window, SDL_Renderer *renderer, bool smoke) {
     while (editor->running) {
+        DM_PROFILE_BEGIN(FRAME, frame_start);
+        DM_PROFILE_BEGIN(INPUT, input_start);
         SDL_Event event;
 
-        while (SDL_PollEvent(&event)) {
-            ui_event(&event);
-            editor_event(editor, &event);
+#ifdef DM_DEVTOOLS
+        if (replay.active) {
+            SDL_WindowID window_id = SDL_GetWindowID(window);
+
+            while (SDL_PollEvent(&event)) {
+                if (event.type == SDL_EVENT_QUIT) {
+                    ui_event(&event);
+                    editor_event(editor, &event);
+                }
+            }
+
+            while (replay.cursor < replay.log.count &&
+                   replay.log.events[replay.cursor].frame == replay.frame) {
+                SDL_Event injected;
+
+                if (dm_input_log_to_sdl(&replay.log.events[replay.cursor], window_id, &injected)) {
+                    ui_event(&injected);
+                    editor_event(editor, &injected);
+                }
+
+                ++replay.cursor;
+            }
+
+            ++replay.frame;
+
+            if (replay.cursor >= replay.log.count) {
+                dm_input_log_free(&replay.log);
+                replay = (InputReplay){0};
+                snprintf(editor->status, sizeof(editor->status), "%s", DM_TEXT_INPUT_REPLAY_DONE);
+                editor->status_time = SDL_GetTicks();
+            }
+        } else
+#endif
+        {
+#ifdef DM_DEVTOOLS
+            static uint64_t record_frame;
+
+            if (!dm_input_log_recording()) {
+                record_frame = 0;
+            }
+#endif
+            while (SDL_PollEvent(&event)) {
+#ifdef DM_DEVTOOLS
+                bool was_recording = dm_input_log_recording();
+#endif
+                ui_event(&event);
+                editor_event(editor, &event);
+#ifdef DM_DEVTOOLS
+                if (was_recording && dm_input_log_recording()) {
+                    bool full = false;
+                    char saved_path[DM_PATH];
+                    dm_input_log_record(&event, record_frame, &full, saved_path,
+                                        sizeof(saved_path));
+
+                    if (full) {
+                        snprintf(editor->status, sizeof(editor->status), DM_TEXT_INPUT_RECORD_FULL,
+                                 saved_path);
+                        editor->status_time = SDL_GetTicks();
+                    }
+                }
+#endif
+            }
+#ifdef DM_DEVTOOLS
+            if (dm_input_log_recording()) {
+                ++record_frame;
+            }
+#endif
         }
 
+        DM_PROFILE_END(INPUT, input_start);
+
         if (!window_frame(editor, window, smoke)) {
+            DM_PROFILE_END(FRAME, frame_start);
+            dm_profile_frame_end();
             continue;
         }
 
@@ -128,7 +209,9 @@ static void editor_loop(Editor *editor, SDL_Window *window, SDL_Renderer *render
         SDL_SetRenderDrawColor(renderer, (Uint8)background, (Uint8)(background >> 8),
                                (Uint8)(background >> 16), 255);
         SDL_RenderClear(renderer);
+        DM_PROFILE_BEGIN(DRAW, render_start);
         ui_render(renderer);
+        DM_PROFILE_END(DRAW, render_start);
 
         if (smoke && ++editor->smoke_frames == 30) {
             SDL_Surface *surface = smoke_capture ? SDL_RenderReadPixels(renderer, NULL) : NULL;
@@ -144,8 +227,12 @@ static void editor_loop(Editor *editor, SDL_Window *window, SDL_Renderer *render
             editor->running = false;
         }
 
+        DM_PROFILE_BEGIN(DRAW, present_start);
         SDL_RenderPresent(renderer);
+        DM_PROFILE_END(DRAW, present_start);
         SDL_Delay(1);
+        DM_PROFILE_END(FRAME, frame_start);
+        dm_profile_frame_end();
     }
 }
 
@@ -179,6 +266,9 @@ int main(int argc, char **argv) {
     int mode = launch_mode(argc, argv);
     bool welcome = mode == 2, smoke = mode != 0;
     smoke_capture = smoke && argc > 2 ? argv[2] : NULL;
+#ifdef DM_DEVTOOLS
+    const char *replay_path = argc > 2 && !strcmp(argv[1], "--replay") ? argv[2] : NULL;
+#endif
 #ifdef _WIN32
     SDL_SetHintWithPriority(SDL_HINT_AUDIO_DRIVER, "wasapi", SDL_HINT_OVERRIDE);
 #endif
@@ -255,9 +345,24 @@ int main(int argc, char **argv) {
     editor_init(editor, window, renderer, audio, base ? base : "", settings, smoke);
 
     if (!smoke) {
+#ifdef DM_DEVTOOLS
+        if (replay_path) {
+            if (dm_input_log_load(&replay.log, replay_path)) {
+                replay.active = true;
+                SDL_SetWindowSize(window, replay.log.width, replay.log.height);
+            } else {
+                snprintf(editor->status, sizeof(editor->status), DM_TEXT_INPUT_REPLAY_FAILED,
+                         replay_path);
+                editor->status_time = SDL_GetTicks();
+            }
+        } else if (argc > 1) {
+            editor_open(editor, argv[1]);
+        }
+#else
         if (argc > 1) {
             editor_open(editor, argv[1]);
         }
+#endif
 
         ed_update_launch(editor);
     }
@@ -271,6 +376,9 @@ int main(int argc, char **argv) {
     }
 
     editor_loop(editor, window, renderer, smoke);
+#ifdef DM_DEVTOOLS
+    dm_input_log_free(&replay.log);
+#endif
     ed_update_finish(editor);
     DmAudio *final_audio = editor->audio;
     editor_free(editor);
