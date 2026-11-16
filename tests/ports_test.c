@@ -127,10 +127,15 @@ int main(void) {
           error);
     check(r.sequence_count == 2 && notes(&r) == 1 && r.patterns[0].notes[0].key == 65,
           "multi-sequence export retains edits without duplicates");
+    dm_bytes_free(&out);
+    dm_bytes_free(&b);
+
     /* MIDI files are exported as the arrangement sounds: a muted channel is left out. */
     b = fixture(false, 1);
     check(dm_import(&p, b.data, b.size, -1, 0, error, sizeof(error)), error);
-    p.channels[1].mute = true;
+    DmPortMix mix = dm_port_mix(&p, 1, 1);
+    mix.mute = true;
+    check(dm_port_mix_set(&p, mix), "mute channel 2 on the second port");
     check(dm_midi_export(&p, &out, true, DM_METADATA_STRIP_ALL, error, sizeof(error)), error);
     check(dm_import(&r, out.data, out.size, -1, 0, error, sizeof(error)) && notes(&r) == 1 &&
               !r.channels[1].enabled,
