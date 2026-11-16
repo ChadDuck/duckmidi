@@ -203,7 +203,10 @@ bool dm_schedule(const DmProject *p, DmSchedule *s) {
     bool ok = dm_midi_collect(p, &m, true);
 
     if (ok) {
-        qsort(m.items, m.count, sizeof(Raw), dm_midi_export_compare);
+        if (m.count > 1) {
+            qsort(m.items, m.count, sizeof(Raw), dm_midi_export_compare);
+        }
+
         ok = schedule_events(p, &m, s);
     }
 

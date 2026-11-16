@@ -656,7 +656,10 @@ static unsigned section_of(const Song *s, uint64_t tick) {
 /* ---- Voices ---- */
 
 static bool assign_voices(Song *s) {
-    qsort(s->notes, s->note_count, sizeof(*s->notes), compare_notes);
+    if (s->note_count > 1) {
+        qsort(s->notes, s->note_count, sizeof(*s->notes), compare_notes);
+    }
+
     unsigned groups[16] = {0};
     bool used[16] = {false};
 
@@ -2368,7 +2371,10 @@ int32_t oot_convert(const OotRequest *q, const DmeHost *host, bool analyze, OotR
         goto done;
     }
 
-    qsort(s->tempos, s->tempo_count, sizeof(*s->tempos), compare_tempos);
+    if (s->tempo_count > 1) {
+        qsort(s->tempos, s->tempo_count, sizeof(*s->tempos), compare_tempos);
+    }
+
     choose_ticks(s);
 
     if (!plan_sections(s)) {

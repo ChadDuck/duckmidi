@@ -257,8 +257,15 @@ static size_t same_song(const char *name, const DmProject *source, const DmProje
     assert(dm_export_timeline(source, &before, &bn, &bd, error, sizeof(error)) &&
            dm_export_timeline(result, &after, &an, &ad, error, sizeof(error)));
     compare_controls(name, before, bn, after, an);
-    qsort(before, bn, sizeof(*before), note_order);
-    qsort(after, an, sizeof(*after), note_order);
+
+    if (bn > 1) {
+        qsort(before, bn, sizeof(*before), note_order);
+    }
+
+    if (an > 1) {
+        qsort(after, an, sizeof(*after), note_order);
+    }
+
     size_t i = 0, j = 0, notes = 0;
 
     for (;;) {

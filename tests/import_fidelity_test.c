@@ -314,7 +314,10 @@ static bool parse_smf(const char *name, const uint8_t *data, size_t size, EventL
         pos = track_end;
     }
 
-    qsort(out->items, out->count, sizeof(*out->items), cmp_event_tick);
+    if (out->count > 1) {
+        qsort(out->items, out->count, sizeof(*out->items), cmp_event_tick);
+    }
+
     return true;
 }
 
@@ -353,7 +356,9 @@ static void collect_duck_events(const DmProject *p, const DmExportEvent *tl, siz
         push_event(out, ev.tick, ev.status, ev.a, b, port);
     }
 
-    qsort(out->items, out->count, sizeof(*out->items), cmp_event_tick);
+    if (out->count > 1) {
+        qsort(out->items, out->count, sizeof(*out->items), cmp_event_tick);
+    }
 }
 
 static void init_channel_state(ChannelState *st, int port, int channel) {
@@ -695,8 +700,13 @@ static void compare_tempos(const char *file, const EventList *file_events,
 
 static void compare_multisets(const char *file, const char *what, uint64_t tick, EventList *fa,
                               EventList *da) {
-    qsort(fa->items, fa->count, sizeof(*fa->items), cmp_event_value);
-    qsort(da->items, da->count, sizeof(*da->items), cmp_event_value);
+    if (fa->count > 1) {
+        qsort(fa->items, fa->count, sizeof(*fa->items), cmp_event_value);
+    }
+
+    if (da->count > 1) {
+        qsort(da->items, da->count, sizeof(*da->items), cmp_event_value);
+    }
 
     if (fa->count != da->count) {
         fprintf(stderr, "FAIL %s tick=%llu %s count: file=%zu duck=%zu\n", file,

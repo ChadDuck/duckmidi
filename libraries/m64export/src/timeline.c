@@ -265,7 +265,10 @@ static bool split_region(Compile *c) {
         c->notes[c->count++] = n;
     }
 
-    qsort(c->notes, c->count, sizeof(Note), note_order);
+    if (c->count > 1) {
+        qsort(c->notes, c->count, sizeof(Note), note_order);
+    }
+
     c->duration = c->loop_end;
     diagnose(
         c, M64_INFO, 61, NULL,

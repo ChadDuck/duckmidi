@@ -376,7 +376,10 @@ bool es_mappings_inspect(EsMappings *s, const DmeContext *context, const uint8_t
                  drums ? event->a : program + 1);
     }
 
-    qsort(s->rows, s->count, sizeof(*s->rows), source_order);
+    if (s->count > 1) {
+        qsort(s->rows, s->count, sizeof(*s->rows), source_order);
+    }
+
     return true;
 }
 

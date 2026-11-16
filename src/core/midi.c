@@ -454,7 +454,10 @@ static bool merge_track(Merge *m, int track, size_t *cursor, DmBytes *out) {
 }
 
 static bool merge_encode(Merge *m, DmBytes *out) {
-    qsort(m->output.items, m->output.count, sizeof(Raw), merged_compare);
+    if (m->output.count > 1) {
+        qsort(m->output.items, m->output.count, sizeof(Raw), merged_compare);
+    }
+
     bool ok = dm_bytes(out, "MThd", 4) && dm_midi_be(out, 6, 4) && dm_midi_be(out, m->format, 2) &&
               dm_midi_be(out, m->tracks, 2) && dm_midi_be(out, DM_PPQ, 2);
     size_t cursor = 0;

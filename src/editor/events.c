@@ -1824,7 +1824,9 @@ static void event_group_selection(Editor *e) {
         e->event_selection.size += sizeof(a);
     }
 
-    qsort(e->event_selection.data, count, sizeof(DmAutomation), event_identity);
+    if (count > 1) {
+        qsort(e->event_selection.data, count, sizeof(DmAutomation), event_identity);
+    }
 }
 
 static double event_group_delta(Editor *e, UiRect lane, UiMouse mouse, EventDragItem *items,
@@ -2740,8 +2742,10 @@ void ed_event_box_select(Editor *e, UiRect lane, View *v, float scale, UiMouse m
             e->event_selection.size += sizeof(a);
         }
 
-        qsort(e->event_selection.data, e->event_selection.size / sizeof(DmAutomation),
-              sizeof(DmAutomation), event_identity);
+        if (e->event_selection.size / sizeof(DmAutomation) > 1) {
+            qsort(e->event_selection.data, e->event_selection.size / sizeof(DmAutomation),
+                  sizeof(DmAutomation), event_identity);
+        }
     }
 
     ui_rect(box, (e->accent & 0xffffffu) | 0x22000000u, 0);
@@ -3542,8 +3546,11 @@ static bool paste_events(Editor *e, const DmProject *from, double at, bool all, 
     }
 
     free(items);
-    qsort(e->event_selection.data, e->event_selection.size / sizeof(DmAutomation),
-          sizeof(DmAutomation), event_identity);
+
+    if (e->event_selection.size / sizeof(DmAutomation) > 1) {
+        qsort(e->event_selection.data, e->event_selection.size / sizeof(DmAutomation),
+              sizeof(DmAutomation), event_identity);
+    }
 
     if (ok) {
         ok = ed_graph_convert(e, e->selected_pattern);

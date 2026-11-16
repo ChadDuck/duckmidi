@@ -1294,7 +1294,11 @@ static bool mod_capture(ModList *list, Midi *source, Midi *out, int owner, int p
     ModParams states[16];
     mod_initial_params(list, states, start);
     Midi passed = {0};
-    qsort(source->items, source->count, sizeof(*source->items), mod_capture_compare);
+
+    if (source->count > 1) {
+        qsort(source->items, source->count, sizeof(*source->items), mod_capture_compare);
+    }
+
     ModLine *lines = NULL;
     size_t line_count = 0, line_capacity = 0;
     bool ok = true;
@@ -1628,7 +1632,9 @@ static bool collect_clips(const DmProject *p, Midi *m, bool mixer) {
         qsort(forget, forget_count, sizeof(*forget), forget_compare);
     }
 
-    qsort(list.items, list.count, sizeof(*list.items), mod_compare);
+    if (list.count > 1) {
+        qsort(list.items, list.count, sizeof(*list.items), mod_compare);
+    }
 
     for (size_t i = 0; i < list.count && ok;) {
         size_t end = i + 1;
@@ -2025,7 +2031,9 @@ int dm_midi_export_compare(const void *a, const void *b) {
 /* SMF track order puts SysEx on track zero before the channel tracks. Share its track
    when a patch message must precede a same-tick SysEx. */
 void dm_midi_sort(Midi *m) {
-    qsort(m->items, m->count, sizeof(Raw), dm_midi_export_compare);
+    if (m->count > 1) {
+        qsort(m->items, m->count, sizeof(Raw), dm_midi_export_compare);
+    }
 
     for (size_t first = 0; first < m->count;) {
         size_t end = first;
@@ -2111,7 +2119,10 @@ static bool export_midi(const DmProject *p, int channel, DmExportEvent **events,
     }
 
     if (ok) {
-        qsort(m.items, m.count, sizeof(*m.items), dm_midi_export_compare);
+        if (m.count > 1) {
+            qsort(m.items, m.count, sizeof(*m.items), dm_midi_export_compare);
+        }
+
         uint64_t end = (uint64_t)llround(dm_duration(p) * DM_PPQ);
 
         for (size_t i = 0; i < m.count; ++i) {

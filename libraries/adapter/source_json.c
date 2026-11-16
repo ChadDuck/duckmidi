@@ -53,7 +53,10 @@ static int edit_order(const void *left, const void *right) {
 
 bool es_edits_apply(EsEdits *edits, const void *source, size_t size, EsFile *out, char *error,
                     size_t cap) {
-    qsort(edits->items, edits->count, sizeof(*edits->items), edit_order);
+    if (edits->count > 1) {
+        qsort(edits->items, edits->count, sizeof(*edits->items), edit_order);
+    }
+
     size_t end = 0, total = size;
 
     for (size_t i = 0; i < edits->count; ++i) {

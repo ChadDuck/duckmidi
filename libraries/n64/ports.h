@@ -3,6 +3,7 @@
 
 #include "../../include/duckmidi_export_plugin.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

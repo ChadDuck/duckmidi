@@ -1492,7 +1492,10 @@ bool dm_import(DmProject *p, const unsigned char *data, size_t size, int port, i
     }
 
     bool ok = sequence >= 0 && sequence < next.sequence_count;
-    qsort(m.items, m.count, sizeof(Raw), raw_compare);
+
+    if (m.count > 1) {
+        qsort(m.items, m.count, sizeof(Raw), raw_compare);
+    }
 
     if (ok) {
         ok = dm_bytes(&next.original, data, size) &&
