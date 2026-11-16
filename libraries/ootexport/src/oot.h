@@ -4,7 +4,7 @@
    zeldaret/oot repository patches. No editor, UI toolkit or file I/O. */
 #include "duckmidi_export_plugin.h"
 #include "duckmidi_midi.h"
-#include "../../export_support/sample.h"
+#include "../../n64/sample.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -64,6 +64,9 @@ extern const unsigned oot_font_drum_count;
 #define OOT_SILENT 999
 #define OOT_CUSTOM_FONT (-1)
 #define OOT_MAX_RATE 3.99996 /* Audio_NoteSetResamplingRate clamps above this. */
+/* The sequence player clamps tempo to one sequence tick per audio update: 224 BPM at 48 ticks
+   per beat on NTSC, the lowest of the TV types (PAL 249). Faster songs use fewer ticks per beat. */
+#define OOT_MAX_TEMPO 224
 
 bool oot_instrument_valid(int value);
 bool oot_drum_valid(int value);

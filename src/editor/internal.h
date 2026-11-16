@@ -14,7 +14,7 @@
 #define BG ui_background_shade(12)
 #define GRID ui_background_shade(38)
 bool ed_record_start(Editor *e);
-double ed_record_origin(Editor *e, double beat);
+double ed_record_origin(Editor *e, double *beat, uint32_t loop);
 bool ed_record_insert(Editor *e, DmPattern *pattern, int key, int velocity, unsigned port,
                       double start, double end, double origin);
 void ed_midi_input_init(Editor *e);
@@ -101,6 +101,16 @@ bool ed_sample_source_picker(Editor *e, DmPatchKey key, const DmPatchReplacement
                              DmPatchReplacement *selected, bool *inherit);
 bool ed_sample_store_replacement(Editor *e, const DmPatchReplacement *selection, bool inherit);
 void ed_sample_clear_route(DmProject *project, int port, int channel);
+/* The Instrument window's sample choice for a percussion patch: a set's drum assignments whole
+   (By Set, staged in Editor.instrument_source) or one sample per drum key (By Sample, a table).
+   Key edits are staged until ed_sample_kit_apply, which runs inside the caller's checkpoint;
+   ed_sample_kit_reset drops them. Drawing leaves `reserve` of height below it and returns true
+   when *preview should be auditioned. ed_sample_kit_table is true while the table shows. */
+bool ed_sample_kit_table(Editor *e, DmPatchKey key);
+void ed_sample_kit_reset(Editor *e);
+bool ed_sample_kit_draw(Editor *e, DmPatchKey key, float reserve, DmPatchReplacement *preview);
+bool ed_sample_kit_dirty(Editor *e);
+bool ed_sample_kit_apply(Editor *e, DmPatchKey key);
 void ed_sample_program_source(Editor *e);
 size_t ed_export_count(Editor *e);
 const char *ed_export_name(Editor *e, size_t index);
@@ -342,7 +352,7 @@ bool ed_percussion_midi_listen(Editor *e, DmMidiInputEvent event);
 bool ed_begin_record_take(Editor *e);
 double ed_recording_origin(Editor *e, double beat);
 void ed_record_note(Editor *e, int note);
-double ed_heard_beat(Editor *e);
+double ed_heard_beat(Editor *e, uint32_t *loop);
 void ed_stop_edit_feedback(Editor *e);
 void ed_finish_edit_feedback(Editor *e);
 void ed_edit_feedback(Editor *e, float pitch);
@@ -463,6 +473,8 @@ static inline int ed_row_note(int code) {
 
 int ed_playlist_channels(Editor *e, int *list);
 void ed_lane_label(const Editor *e, int channel, int lane, char *text, size_t capacity);
+/* The channel's instrument as its labels show it: "Percussion" or the program's name. */
+const char *ed_channel_instrument(const DmProject *p, int channel);
 
 /* Pixels between one channel's playlist rows and the next, and between the sections of one
    channel (note rows, Events row, automation subrows). */

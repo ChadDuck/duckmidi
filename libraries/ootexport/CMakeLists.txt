@@ -5,7 +5,7 @@ set(OOT_PLUGIN_SOURCES plugin/ui.c plugin/review.c plugin/exporter.c plugin/repo
 add_library(ootexport SHARED ${OOT_SOURCES} ${OOT_PLUGIN_SOURCES})
 target_compile_features(ootexport PRIVATE c_std_17)
 target_include_directories(ootexport PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
-target_link_libraries(ootexport PRIVATE duck_export_support)
+target_link_libraries(ootexport PRIVATE n64 duck_adapter)
 set_target_properties(ootexport PROPERTIES OUTPUT_NAME OoT PREFIX "" C_VISIBILITY_PRESET hidden)
 if(APPLE)
   set_target_properties(ootexport PROPERTIES INSTALL_RPATH "@loader_path")
@@ -14,7 +14,7 @@ elseif(UNIX)
 endif()
 # Converter and repository patches without the plugin entry point, for tests.
 add_library(ootexport_static STATIC ${OOT_SOURCES})
-target_link_libraries(ootexport_static PUBLIC duck_export_support)
+target_link_libraries(ootexport_static PUBLIC n64)
 target_compile_features(ootexport_static PRIVATE c_std_17)
 target_include_directories(ootexport_static PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/../../include"
   "${CMAKE_CURRENT_SOURCE_DIR}/src")

@@ -4,7 +4,6 @@
 
 static int event_identity(const void *left, const void *right);
 static const char *automation_help(int controller);
-static const char *automation_name(int cc);
 static double next_pitch_range(Editor *e, double beat);
 static void reencode_pitch(DmAutomation *a, float old);
 static DmAutomation lane_edited(Editor *e, DmAutomation a, UiRect lane, float y, bool free);
@@ -241,51 +240,6 @@ static const char *automation_help(int controller) {
     }
 }
 
-static const char *automation_name(int cc) {
-    switch (cc) {
-    case DM_EVENT_VELOCITY:
-        return DM_TEXT_VELOCITY;
-    case DM_EVENT_PROGRAM:
-        return DM_TEXT_PROGRAM_CHANGE;
-    case DM_EVENT_CHANNEL_PRESSURE:
-        return DM_TEXT_CHANNEL_PRESSURE;
-    case DM_EVENT_KEY_PRESSURE:
-        return DM_TEXT_POLY_PRESSURE;
-    case DM_EVENT_BEND:
-        return DM_TEXT_PITCH_BEND;
-    case 1:
-        return DM_TEXT_MODULATION;
-    case 11:
-        return DM_TEXT_EXPRESSION;
-    case 7:
-        return DM_TEXT_VOLUME;
-    case 10:
-        return DM_TEXT_PAN;
-    case 64:
-        return DM_TEXT_SUSTAIN;
-    case 66:
-        return DM_TEXT_SOSTENUTO;
-    case 5:
-        return DM_TEXT_PORTAMENTO;
-    case 91:
-        return DM_TEXT_REVERB_SEND;
-    case 93:
-        return DM_TEXT_CHORUS_SEND;
-    case 74:
-        return DM_TEXT_BRIGHTNESS;
-    case 71:
-        return DM_TEXT_RESONANCE;
-    case 92:
-        return DM_TEXT_TREMOLO_DEPTH;
-    case 76:
-        return DM_TEXT_VIBRATO_RATE;
-    case 77:
-        return DM_TEXT_VIBRATO_DEPTH;
-    default:
-        return DM_TEXT_CONTROLLER;
-    }
-}
-
 bool ed_pedal_event(int cc) {
     return cc == 64 || cc == 66;
 }
@@ -350,7 +304,8 @@ void ed_automation_selector(Editor *e) {
         }
     }
 
-    const char *preview = automation_name(e->automation_cc);
+    char preview[64];
+    dm_event_name(e->automation_cc, preview, sizeof(preview));
     ui_width((pattern && pattern->kind && pattern->mode) || ui_available().x < 600 ? 130 : 220);
 
     bool populated = ed_event_type_used(e, e->automation_cc);

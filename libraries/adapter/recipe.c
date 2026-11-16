@@ -1,5 +1,4 @@
 #include "recipe.h"
-#include "internal.h"
 #include <string.h>
 #include <stdlib.h>
 

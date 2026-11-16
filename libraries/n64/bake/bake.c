@@ -1,4 +1,4 @@
-#include "sample.h"
+#include "bake.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -118,9 +118,10 @@ static void chorus(float *out, const float *in, uint32_t frames, uint32_t rate, 
 }
 
 bool es_native_bake(float *pcm, uint32_t frames, uint32_t rate, uint32_t loop_start,
-                    uint32_t loop_end, const DmeSampleToneParams *tone, uint32_t *fixes) {
+                    uint32_t loop_end, const DmeSampleToneParams *tone, bool *chorus_short) {
     bool filtered = tone->cutoff > 0 || tone->resonance > 0;
     bool chorused = tone->chorus > 0;
+    *chorus_short = false;
 
     if (!frames || (!filtered && !chorused)) {
         return true;
@@ -139,7 +140,7 @@ bool es_native_bake(float *pcm, uint32_t frames, uint32_t rate, uint32_t loop_st
 
     /* A loop shorter than the longest chorus delay cannot hold its echo. */
     if (chorused && loop_end && loop_end - loop_start <= .011 * rate) {
-        *fixes = (*fixes & ~(1u << ES_FIX_CHORUS)) | 1u << ES_FIX_CHORUS_SHORT;
+        *chorus_short = true;
     } else if (chorused) {
         memcpy(copy, pcm, (size_t)frames * sizeof(*copy));
         chorus(pcm, copy, frames, rate, loop_start, loop_end, fmin(1, tone->chorus));

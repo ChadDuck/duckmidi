@@ -59,6 +59,21 @@ struct DmEditorSamples {
     SampleWork work;
     PublishedDraft *links;
     size_t link_count, link_capacity;
+
+    /* The Instrument window's sample choice for a percussion patch; key edits are staged until
+       Apply. */
+    struct {
+        DmPatchReplacement keys[128]; /* A key's own entry where its stage is KEY_SET. */
+        uint8_t stage[128];
+        uint8_t mode, selected;  /* KIT_BY_SET or KIT_BY_SAMPLE; the selected key plus one. */
+        bool ready, all, cached; /* Mode chosen for the patch; show unused keys; rows current. */
+        uint64_t revision;
+        float split;                /* Width of the key list. */
+        char set[DM_SAMPLE_ID_CAP]; /* By Sample: the set whose samples are listed. */
+        bool used[128];
+        char names[128][DM_SAMPLE_NAME_CAP]; /* What each key plays; empty is the SoundFont. */
+    } kit;
+
     DmPatchReplacement label_refs[16];
     bool label_ready[16];
     uint64_t label_revision[16];
@@ -497,7 +512,9 @@ void ed_samples_poll(Editor *e) {
                     for (uint32_t j = 0; j < w->manifest.preset_count; ++j) {
                         const DmSamplePreset *p = &w->manifest.presets[j];
 
-                        if (!strcmp(r->preset_id, p->id) && r->key.drums == p->drums) {
+                        /* A drum key's entry may name a sample of either kind of preset. */
+                        if (!strcmp(r->preset_id, p->id) &&
+                            (r->key.drum_key || r->key.drums == p->drums)) {
                             r->generation = w->manifest.generation;
                             snprintf(r->locator, sizeof(r->locator), "%s", w->root);
                             break;
@@ -742,6 +759,502 @@ bool ed_sample_store_replacement(Editor *e, const DmPatchReplacement *selection,
     return true;
 }
 
+/* ---- Instrument window, Drums: a set's drum assignments, or one sample per drum key ---- */
+
+enum { KEY_KEPT, KEY_SET, KEY_CLEARED }; /* A drum key's staged edit. */
+
+enum { KIT_BY_SET, KIT_BY_SAMPLE }; /* Whole set, or the drum key table. */
+
+void ed_sample_kit_reset(Editor *e) {
+    DmEditorSamples *s = e->samples;
+
+    if (s) {
+        memset(s->kit.stage, 0, sizeof(s->kit.stage));
+        s->kit.selected = 0;
+        s->kit.ready = s->kit.cached = false;
+    }
+}
+
+bool ed_sample_kit_dirty(Editor *e) {
+    DmEditorSamples *s = e->samples;
+
+    for (int k = 0; s && k < 128; ++k) {
+        if (s->kit.stage[k] != KEY_KEPT) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* The patch's whole-set entry on this port as the window shows it: staged, else the project's. */
+static const DmPatchReplacement *kit_whole(Editor *e, DmPatchKey key) {
+    return !e->instrument_source_dirty    ? dm_patch_replacement_exact(&e->project, key)
+           : e->instrument_source_inherit ? NULL
+                                          : &e->instrument_source;
+}
+
+/* A drum key's own entry as the window shows it: staged, else the project's. */
+static const DmPatchReplacement *kit_key(Editor *e, DmEditorSamples *s, DmPatchKey key, int k) {
+    if (s->kit.stage[k] == KEY_SET) {
+        return &s->kit.keys[k];
+    }
+
+    key.drum_key = (uint8_t)(k + 1);
+    return s->kit.stage[k] == KEY_CLEARED ? NULL : dm_patch_replacement_exact(&e->project, key);
+}
+
+static void kit_stage_key(DmEditorSamples *s, DmPatchReplacement entry, int k) {
+    entry.key.drum_key = (uint8_t)(k + 1);
+    s->kit.keys[k] = entry;
+    s->kit.stage[k] = KEY_SET;
+    s->kit.cached = false;
+}
+
+static void kit_stage_whole(Editor *e, DmEditorSamples *s, DmPatchReplacement whole, bool inherit) {
+    e->instrument_source = whole;
+    e->instrument_source_dirty = true;
+    e->instrument_source_inherit = inherit;
+    s->kit.cached = false;
+}
+
+/* The preset holding a set's drum assignments, as the sample editor saved them. */
+static const DmSamplePreset *set_kit(const DmSampleManifest *set, const char *id) {
+    for (uint32_t i = 0; i < set->preset_count; ++i) {
+        if (set->presets[i].drums && (!id || !strcmp(set->presets[i].id, id))) {
+            return &set->presets[i];
+        }
+    }
+
+    return NULL;
+}
+
+/* The sample a set's drum assignments put on a key, or NULL. */
+static const DmSampleZone *kit_zone(const DmSampleManifest *set, const DmSamplePreset *kit, int k) {
+    for (uint32_t z = 0; kit && z < kit->zone_count; ++z) {
+        const DmSampleZone *zone = &set->zones[kit->first_zone + z];
+
+        if (k >= zone->key_lo && k <= zone->key_hi) {
+            return zone;
+        }
+    }
+
+    return NULL;
+}
+
+/* A sample's listed name: a single-sample preset's own name, else its source file's. */
+static const char *zone_name(const DmSampleManifest *set, const DmSamplePreset *p,
+                             const DmSampleZone *zone) {
+    const DmSampleAsset *a = &set->assets[zone->asset];
+    return !p->drums && p->zone_count == 1 && *p->name ? p->name
+           : *a->source_name                           ? a->source_name
+                                                       : a->file;
+}
+
+static const DmSampleCatalogEntry *catalog_entry(const DmEditorSamples *s, const char *id) {
+    for (size_t i = 0; i < s->catalog.count; ++i) {
+        if (!strcmp(s->catalog.entries[i].id, id)) {
+            return &s->catalog.entries[i];
+        }
+    }
+
+    return NULL;
+}
+
+/* By Sample keeps no whole-set entry under its keys. The set that applied here gives each key it
+   covers, and that has no entry of its own, that sample as the key's own entry, so the patch
+   sounds the same; then it is taken off this port. */
+static void kit_split(Editor *e, DmEditorSamples *s, DmPatchKey key) {
+    DmPatchKey wide = key;
+    wide.port = 0;
+    const DmPatchReplacement *whole = kit_whole(e, key);
+    whole = whole || !key.port ? whole : dm_patch_replacement_exact(&e->project, wide);
+
+    if (!whole) {
+        return;
+    }
+
+    if (whole->generation) {
+        const DmSampleManifest *set =
+            browse_set(s, whole->locator, whole->set_id, whole->generation);
+        const DmSamplePreset *kit = set_kit(set, whole->preset_id);
+
+        for (int k = 0; k < 128; ++k) {
+            const DmSampleZone *zone = kit_zone(set, kit, k);
+
+            if (zone && !kit_key(e, s, key, k)) {
+                DmPatchReplacement entry = *whole;
+                entry.key = key;
+                snprintf(entry.sample_id, sizeof(entry.sample_id), "%s",
+                         set->assets[zone->asset].id);
+                kit_stage_key(s, entry, k);
+            }
+        }
+
+        if (!*s->kit.set) {
+            snprintf(s->kit.set, sizeof(s->kit.set), "%s", whole->set_id);
+        }
+    }
+
+    /* A port needs a SoundFont entry of its own to stop the channel's set applying to it. */
+    kit_stage_whole(e, s, (DmPatchReplacement){.key = key}, !key.port);
+}
+
+/* Drops every drum key entry of the patch, for a whole-set choice or the SoundFont. */
+static void kit_clear_keys(DmEditorSamples *s) {
+    memset(s->kit.stage, KEY_CLEARED, sizeof(s->kit.stage));
+    s->kit.selected = 0;
+    s->kit.cached = false;
+}
+
+/* On first use for a patch: By Sample when it has drum key entries, with the set of one of them
+   listed. */
+static void kit_sync(Editor *e, DmEditorSamples *s, DmPatchKey key) {
+    if (s->kit.ready) {
+        return;
+    }
+
+    s->kit.ready = true;
+    s->kit.mode = KIT_BY_SET;
+
+    for (size_t i = 0; i < e->project.patch_replacement_count; ++i) {
+        const DmPatchReplacement *r = &e->project.patch_replacements[i];
+
+        if (r->key.drum_key && dm_patch_same(r->key, key)) {
+            s->kit.mode = KIT_BY_SAMPLE;
+
+            if (r->generation && !catalog_entry(s, s->kit.set)) {
+                snprintf(s->kit.set, sizeof(s->kit.set), "%s", r->set_id);
+            }
+        }
+    }
+
+    if (s->kit.mode == KIT_BY_SAMPLE) {
+        kit_split(e, s, key);
+    }
+}
+
+bool ed_sample_kit_table(Editor *e, DmPatchKey key) {
+    DmEditorSamples *s = state(e);
+
+    if (!s) {
+        return false;
+    }
+
+    kit_sync(e, s, key);
+    return s->kit.mode == KIT_BY_SAMPLE;
+}
+
+/* Rebuilds what the key rows show: the keys the channel's notes use, and what each key with an
+   entry plays and from which set. */
+static void kit_refresh(Editor *e, DmEditorSamples *s, DmPatchKey key) {
+    memset(s->kit.used, 0, sizeof(s->kit.used));
+    memset(s->kit.names, 0, sizeof(s->kit.names));
+
+    for (size_t i = 0; i < e->project.clip_count; ++i) {
+        const DmClip *clip = &e->project.clips[i];
+        const DmPattern *pattern = &e->project.patterns[clip->pattern];
+
+        for (size_t n = 0; clip->channel == key.channel && !pattern->kind && n < pattern->count;
+             ++n) {
+            s->kit.used[pattern->notes[n].key & 127] = true;
+        }
+    }
+
+    for (int k = 0; k < 128; ++k) {
+        const DmPatchReplacement *r = kit_key(e, s, key, k);
+
+        if (!r || !r->generation) {
+            continue;
+        }
+
+        const DmSampleManifest *set = browse_set(s, r->locator, r->set_id, r->generation);
+        const char *from = *set->name ? set->name : r->set_id;
+        snprintf(s->kit.names[k], DM_SAMPLE_NAME_CAP, "%s", DM_TEXT_SAMPLE_UNAVAILABLE);
+
+        for (uint32_t i = 0; i < set->preset_count; ++i) {
+            const DmSamplePreset *p = &set->presets[i];
+
+            for (uint32_t z = 0; !strcmp(p->id, r->preset_id) && z < p->zone_count; ++z) {
+                const DmSampleZone *zone = &set->zones[p->first_zone + z];
+
+                /* A key that plays what the set itself assigns to it says so. */
+                if (!strcmp(set->assets[zone->asset].id, r->sample_id)) {
+                    snprintf(s->kit.names[k], DM_SAMPLE_NAME_CAP,
+                             p->drums && zone == kit_zone(set, p, k) ? DM_TEXT_SAMPLE_KEY_SET
+                                                                     : DM_TEXT_SAMPLE_KEY_FROM,
+                             zone_name(set, p, zone), from);
+                }
+            }
+        }
+    }
+
+    s->kit.cached = true;
+    s->kit.revision = e->export_revision;
+}
+
+/* A sample of the listed set as the entry of the selected key, or of the first key when none
+   is selected: any key plays a sample alike, so it can still be heard. */
+static DmPatchReplacement kit_sample(const DmEditorSamples *s, DmPatchKey key, const char *root,
+                                     const DmSampleManifest *set, const DmSamplePreset *p,
+                                     const DmSampleZone *zone) {
+    key.drum_key = s->kit.selected ? s->kit.selected : 1;
+    DmPatchReplacement entry = replacement_for(key, root, set, p);
+    snprintf(entry.sample_id, sizeof(entry.sample_id), "%s", set->assets[zone->asset].id);
+    return entry;
+}
+
+bool ed_sample_kit_draw(Editor *e, DmPatchKey key, float reserve, DmPatchReplacement *preview) {
+    DmEditorSamples *s = state(e);
+
+    if (!s) {
+        return false;
+    }
+
+    if (!s->scanned) {
+        ed_sample_catalog_refresh(e);
+    }
+
+    kit_sync(e, s, key);
+    bool by_sample = s->kit.mode == KIT_BY_SAMPLE, audition = false;
+    const DmPatchReplacement *whole = kit_whole(e, key);
+
+    /* By Sample lists a set of the user's choosing; By Set shows the one assigned. */
+    if (by_sample && !catalog_entry(s, s->kit.set) && s->catalog.count) {
+        snprintf(s->kit.set, sizeof(s->kit.set), "%s", s->catalog.entries[0].id);
+    }
+
+    const DmSampleCatalogEntry *entry = by_sample ? catalog_entry(s, s->kit.set)
+                                        : whole && whole->generation
+                                            ? catalog_entry(s, whole->set_id)
+                                            : NULL;
+    const char *label = entry                        ? entry->name
+                        : whole && whole->generation ? whole->set_id
+                        : !whole && key.port         ? DM_TEXT_SAMPLE_INHERIT
+                                                     : DM_TEXT_SOUNDFONT;
+    /* The mode applies to a set, so its dropdown shows only beside one. */
+    float spacing = ui_item_spacing_x(), mode_width = entry ? 130 + spacing : 0;
+    ui_width(ui_available().x - mode_width - ui_text_width(DM_TEXT_SAMPLE_SOURCE) - 2 * spacing);
+
+    if (ui_combo(DM_TEXT_SAMPLE_SOURCE, label)) {
+        if (key.port && ui_select(DM_TEXT_SAMPLE_INHERIT, !by_sample && !whole, 0, 0)) {
+            kit_clear_keys(s);
+            kit_stage_whole(e, s, (DmPatchReplacement){.key = key}, true);
+            s->kit.mode = KIT_BY_SET;
+        }
+
+        /* The SoundFont takes the whole patch back, its drum key entries included. */
+        if (ui_select(DM_TEXT_SOUNDFONT, !by_sample && (whole ? !whole->generation : !key.port), 0,
+                      0)) {
+            kit_clear_keys(s);
+            kit_stage_whole(e, s, (DmPatchReplacement){.key = key}, !key.port);
+            s->kit.mode = KIT_BY_SET;
+            *preview = (DmPatchReplacement){.key = key};
+            audition = true;
+        }
+
+        for (size_t i = 0; i < s->catalog.count; ++i) {
+            const DmSampleCatalogEntry *choice = &s->catalog.entries[i];
+            ui_id((int)i);
+
+            if (ui_select(choice->name, choice == entry, 0, 0)) {
+                const char *root = choice->writable_root ? s->writable : s->program;
+                const DmSampleManifest *set = browse_set(s, root, choice->id, choice->generation);
+                const DmSamplePreset *kit = set_kit(set, NULL);
+                snprintf(s->kit.set, sizeof(s->kit.set), "%s", choice->id);
+
+                /* By Sample keeps its keys and lists the new set. A set without drum
+                   assignments has nothing to use whole, so its samples are listed instead. */
+                if (!by_sample && kit) {
+                    kit_stage_whole(e, s, replacement_for(key, root, set, kit), false);
+                    *preview = e->instrument_source;
+                    audition = true;
+                } else if (!by_sample) {
+                    kit_stage_whole(e, s, (DmPatchReplacement){.key = key}, !key.port);
+                    s->kit.mode = KIT_BY_SAMPLE;
+                }
+            }
+
+            ui_pop_id();
+        }
+
+        ui_combo_end();
+    }
+
+    if (entry) {
+        ui_same();
+        ui_width(mode_width - spacing);
+    }
+
+    if (entry && ui_combo(DM_TEXT_SAMPLE_MODE,
+                          by_sample ? DM_TEXT_SAMPLE_BY_SAMPLE : DM_TEXT_SAMPLE_BY_SET)) {
+        const char *root = entry->writable_root ? s->writable : s->program;
+        const DmSampleManifest *set = browse_set(s, root, entry->id, entry->generation);
+        const DmSamplePreset *kit = set_kit(set, NULL);
+        ui_disabled(!kit);
+
+        if (ui_select(DM_TEXT_SAMPLE_BY_SET, !by_sample, 0, 0) && by_sample) {
+            kit_clear_keys(s);
+            kit_stage_whole(e, s, replacement_for(key, root, set, kit), false);
+            s->kit.mode = KIT_BY_SET;
+        }
+
+        ui_disabled_end();
+
+        if (ui_select(DM_TEXT_SAMPLE_BY_SAMPLE, by_sample, 0, 0) && !by_sample) {
+            snprintf(s->kit.set, sizeof(s->kit.set), "%s", entry->id);
+            s->kit.mode = KIT_BY_SAMPLE;
+            kit_split(e, s, key);
+        }
+
+        ui_combo_end();
+    }
+
+    /* A choice above takes effect next frame, so one frame never mixes both layouts. */
+    if (!by_sample || s->kit.mode != KIT_BY_SAMPLE) {
+        return audition;
+    }
+
+    if (!s->kit.cached || s->kit.revision != e->export_revision) {
+        kit_refresh(e, s, key);
+    }
+
+    const char *root = entry && entry->writable_root ? s->writable : s->program;
+    const DmSampleManifest *set = entry ? browse_set(s, root, entry->id, entry->generation) : NULL;
+    const DmSamplePreset *kit = set ? set_kit(set, NULL) : NULL;
+    const DmPatchReplacement *current =
+        s->kit.selected ? kit_key(e, s, key, s->kit.selected - 1) : NULL;
+    DmPatchReplacement chosen = {0};
+    bool choose = false;
+    float available = ui_available().x;
+    float height = fmaxf(120, ui_available().y - ui_frame_height() - ui_item_spacing_y() - reserve);
+    float minimum = available * .25f, maximum = available * .75f;
+    UiPoint panels = ui_cursor();
+    s->kit.split = fmaxf(minimum, fminf(s->kit.split ? s->kit.split : available * .55f, maximum));
+
+    /* Drum keys: the ones the channel's notes use, then the others that play a sample. */
+    if (ui_child("drum-keys", s->kit.split, height, true)) {
+        for (int pass = 0; pass < 2; ++pass) {
+            for (int k = 0; k < 128; ++k) {
+                if (pass ? s->kit.used[k] || !(s->kit.all || *s->kit.names[k]) : !s->kit.used[k]) {
+                    continue;
+                }
+
+                char text[2 * DM_SAMPLE_NAME_CAP + 32];
+                snprintf(text, sizeof(text), DM_TEXT_SAMPLE_KEY_ROW, k, dm_drum_name(k),
+                         *s->kit.names[k] ? s->kit.names[k] : DM_TEXT_SOUNDFONT);
+                ui_id(k);
+
+                if (ui_select(text, s->kit.selected == k + 1, 0, 0)) {
+                    const DmPatchReplacement *own = kit_key(e, s, key, k);
+                    s->kit.selected = (uint8_t)(k + 1);
+                    *preview = own ? *own : (DmPatchReplacement){.key = key};
+                    preview->key.drum_key = s->kit.selected;
+                    audition = true;
+                }
+
+                ui_pop_id();
+            }
+        }
+    }
+
+    ui_child_end();
+    ui_position(panels.x + s->kit.split + spacing, panels.y);
+    ui_splitter(&s->kit.split, minimum, maximum, height);
+    ui_same();
+
+    /* Samples: a click plays one and gives it to the selected key. Above the rule, the listed
+       set's own assignment for that key. */
+    if (ui_child("drum-samples", 0, height, true)) {
+        const DmSampleZone *assigned =
+            s->kit.selected ? kit_zone(set, kit, s->kit.selected - 1) : NULL;
+        char text[DM_SAMPLE_NAME_CAP + 32];
+        snprintf(text, sizeof(text), DM_TEXT_SAMPLE_FROM_SET, entry ? entry->name : "");
+        bool from_set = assigned && current && !strcmp(current->set_id, set->id) &&
+                        !strcmp(current->preset_id, kit->id) &&
+                        !strcmp(current->sample_id, set->assets[assigned->asset].id);
+        ui_disabled(!assigned);
+
+        if (ui_select(text, from_set, 0, 0)) {
+            chosen = kit_sample(s, key, root, set, kit, assigned);
+            choose = true;
+        }
+
+        ui_disabled_end();
+        ui_separator();
+
+        if (ui_select(DM_TEXT_SOUNDFONT, s->kit.selected && !(current && current->generation), 0,
+                      0)) {
+            chosen.key = key;
+            chosen.key.drum_key = s->kit.selected ? s->kit.selected : 1;
+            choose = true;
+        }
+
+        int row = 0;
+
+        for (uint32_t i = 0; set && i < set->preset_count; ++i) {
+            const DmSamplePreset *p = &set->presets[i];
+
+            for (uint32_t z = 0; z < p->zone_count; ++z) {
+                const DmSampleZone *zone = &set->zones[p->first_zone + z];
+                bool same = !from_set && current && !strcmp(current->set_id, set->id) &&
+                            !strcmp(current->preset_id, p->id) &&
+                            !strcmp(current->sample_id, set->assets[zone->asset].id);
+                ui_id(row++);
+
+                if (ui_select(zone_name(set, p, zone), same, 0, 0)) {
+                    chosen = kit_sample(s, key, root, set, p, zone);
+                    choose = true;
+                }
+
+                ui_pop_id();
+            }
+        }
+    }
+
+    ui_child_end();
+    ui_position(panels.x, panels.y + height + ui_item_spacing_y());
+    ui_check(DM_TEXT_EXPORT_SHOW_ALL, &s->kit.all);
+
+    if (choose) {
+        *preview = chosen;
+        audition = true;
+    }
+
+    if (choose && s->kit.selected && chosen.generation) {
+        kit_stage_key(s, chosen, s->kit.selected - 1);
+    } else if (choose && s->kit.selected) {
+        s->kit.stage[s->kit.selected - 1] = KEY_CLEARED;
+        s->kit.cached = false;
+    }
+
+    return audition;
+}
+
+bool ed_sample_kit_apply(Editor *e, DmPatchKey key) {
+    DmEditorSamples *s = e->samples;
+
+    for (int k = 0; s && k < 128; ++k) {
+        key.drum_key = (uint8_t)(k + 1);
+
+        if (s->kit.stage[k] == KEY_CLEARED) {
+            dm_patch_replacement_clear(&e->project, key);
+        } else if (s->kit.stage[k] == KEY_SET) {
+            DmPatchReplacement entry = s->kit.keys[k];
+            entry.key = key;
+
+            if (!dm_patch_replacement_set(&e->project, &entry)) {
+                ed_message(e, DM_TEXT_SAMPLE_ASSIGN_FAILED);
+                return false;
+            }
+        }
+    }
+
+    dm_audio_reload_samples(e->audio);
+    ed_sample_kit_reset(e);
+    return true;
+}
+
 void ed_sample_clear_route(DmProject *p, int port, int channel) {
     size_t write = 0;
 
@@ -827,11 +1340,6 @@ static uint16_t program_bank(const Editor *e, DmEditorSamples *s, int port, int 
     return s->program_bank;
 }
 
-static bool same_patch(DmPatchKey a, DmPatchKey b) {
-    return a.port == b.port && a.channel == b.channel && a.bank == b.bank &&
-           a.program == b.program && a.drums == b.drums;
-}
-
 void ed_sample_program_source(Editor *e) {
     bool adding = e->song_event && e->song_event_add;
     int port = adding ? 0 : e->midi_source_port;
@@ -851,7 +1359,7 @@ void ed_sample_program_source(Editor *e) {
     snprintf(label, sizeof(label), DM_TEXT_SAMPLE_TARGET_BANK, key.bank, key.port);
     ui_dim(label);
 
-    if (e->midi_sample_dirty && !same_patch(key, e->midi_sample_source.key)) {
+    if (e->midi_sample_dirty && !dm_patch_same(key, e->midi_sample_source.key)) {
         e->midi_sample_dirty = false;
     }
 

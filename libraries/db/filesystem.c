@@ -5,7 +5,6 @@
 #include "../../src/text/en.h"
 #include <errno.h>
 #include <inttypes.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -80,7 +79,6 @@ void es_checkout_unlock(void *lock) {
 }
 
 #define ES_FILE_LIMIT (256u * 1024u * 1024u)
-#define ES_PATH_LIMIT 8192
 
 typedef struct {
 #ifdef _WIN32
@@ -126,71 +124,6 @@ typedef struct {
 
 static SDL_SpinLock coordinator_init;
 static SDL_Mutex *coordinator;
-
-bool es_fail(char *error, size_t cap, const char *format, ...) {
-    va_list args;
-    va_start(args, format);
-    vsnprintf(error, cap, format, args);
-    va_end(args);
-    return false;
-}
-
-bool es_reserve(void **data, size_t *capacity, size_t count, size_t width) {
-    if (count <= *capacity) {
-        return true;
-    }
-
-    size_t next = *capacity ? *capacity : 16;
-
-    while (next < count && next <= SIZE_MAX / 2) {
-        next *= 2;
-    }
-
-    if (next < count || next > SIZE_MAX / width) {
-        return false;
-    }
-
-    void *grown = realloc(*data, next * width);
-
-    if (!grown) {
-        return false;
-    }
-
-    *data = grown;
-    *capacity = next;
-    return true;
-}
-
-bool es_relative(const char *path) {
-    if (!path || !*path || strlen(path) >= ES_PATH_LIMIT || strchr(path, '\\') ||
-        strchr(path, ':') || path[0] == '/') {
-        return false;
-    }
-
-    for (const char *p = path; *p;) {
-        const char *end = strchr(p, '/');
-        size_t n = end ? (size_t)(end - p) : strlen(p);
-
-        if (!n || (n == 1 && *p == '.') || (n == 2 && p[0] == '.' && p[1] == '.') ||
-            p[n - 1] == '.' || p[n - 1] == ' ') {
-            return false;
-        }
-
-        for (size_t i = 0; i < n; ++i) {
-            if ((unsigned char)p[i] < 32 || strchr("*?\"<>|", p[i])) {
-                return false;
-            }
-        }
-
-        if (end && !end[1]) {
-            return false;
-        }
-
-        p += n + (end != NULL);
-    }
-
-    return true;
-}
 
 #ifdef _WIN32
 static wchar_t *wide(const char *name) {

@@ -1,6 +1,5 @@
 #include "mapping.h"
 #include "../../src/text/en.h"
-#include "internal.h"
 #include "../../include/duckmidi_midi.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -54,7 +53,7 @@ static DmeString copy_string(DmeString value) {
     DmeString result = {0};
 
     if (!value.length) {
-        result.data = SDL_strdup("");
+        result.data = calloc(1, 1);
         return result;
     }
 
@@ -63,7 +62,7 @@ static DmeString copy_string(DmeString value) {
         return result;
     }
 
-    char *copy = SDL_malloc((size_t)value.length + 1);
+    char *copy = malloc((size_t)value.length + 1);
 
     if (copy) {
         memcpy(copy, value.data, (size_t)value.length);
@@ -75,7 +74,7 @@ static DmeString copy_string(DmeString value) {
 }
 
 static void free_string(DmeString value) {
-    SDL_free((void *)value.data);
+    free((void *)value.data);
 }
 
 static void selection_free(Selection *selection) {
@@ -244,7 +243,7 @@ static int source_order(const void *left, const void *right) {
                            b->source.source.channel, b->source.source.bank,
                            b->source.source.program, b->source.source.drum_key};
 
-    for (size_t i = 0; i < SDL_arraysize(aa); ++i) {
+    for (size_t i = 0; i < sizeof(aa) / sizeof(*aa); ++i) {
         if (aa[i] != bb[i]) {
             return aa[i] < bb[i] ? -1 : 1;
         }

@@ -1,6 +1,5 @@
 #include "source.h"
 #include "../../src/text/en.h"
-#include "internal.h"
 #include <pugixml.hpp>
 #include <cstring>
 #include <new>

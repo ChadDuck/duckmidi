@@ -231,7 +231,7 @@ If a game export had to adapt your song, the **Export warnings** window lists wh
 
 ### Repository history
 
-duckmidi records every **Export to Repository** so you can undo it. Click the arrow beside **Export format** to open the history drawer, then **Revert** any export, or **Revert all**.
+duckmidi records every **Export to Repository** so you can undo it. Click the arrow beside **Export format** to open the history drawer, then **Revert** any export, or **Revert all**. Click a change to expand the list of files it touched.
 
 - **Enable** turns history on or off (on by default).
 - With history off, files are written directly and can't be reverted. **Keep original files** decides whether the old versions are saved as `.bkp` files.
@@ -241,7 +241,7 @@ Keep your game's build stopped while exporting or reverting. See [How repository
 
 ## More handy features
 
-- **Turn an imported song into patterns:** **Edit > Generate Patterns** cuts each channel into phrases of whole bars (or of the song's own repeat length when its phrases do not line up with the bars), links phrases whose notes repeat exactly, and moves controller data into automation patterns. Notes held into the next phrase put it on another note row.
+- **Turn an imported song into patterns:** **Edit > Generate Patterns** cuts each channel into phrases of whole bars (or of the song's own repeat length when its phrases do not line up with the bars), links phrases whose notes repeat exactly, and moves controller data into automation patterns. Notes held into the next phrase put it on another note row. The dropdown above **Generate** picks **All channels** or one channel; with one channel, every other channel stays as it was.
 - **Song events:** click the **Events** row in the arrangement to add tempo, time signature, key, markers and more. In **Edit**, Ctrl + click and Shift + click select several events; then move them all by a number of beats, or to one beat. **MIDI Events** lists every MIDI message.
 - **Check for updates:** **Help > Check for Update**. duckmidi only goes online when you ask it to (Windows only).
 

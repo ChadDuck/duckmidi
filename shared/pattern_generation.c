@@ -1,4 +1,5 @@
 #include "pattern_generation.h"
+#include "../src/text/en.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -194,8 +195,42 @@ static int control_group(DmAutomation a) {
     return a.a == MIDI_CC_PORTAMENTO ? MIDI_CC_PORTAMENTO_TIME : a.a;
 }
 
+/* The pattern event a control group plays (DmPattern.event); RPN/NRPN groups play as data
+   entry. */
+static int group_event(int group) {
+    switch (group) {
+    case 128:
+        return DM_EVENT_BEND;
+    case 129:
+        return DM_EVENT_PROGRAM;
+    case 130:
+        return DM_EVENT_CHANNEL_PRESSURE;
+    case 131:
+        return DM_EVENT_KEY_PRESSURE;
+    case PARAMETERS:
+        return MIDI_CC_DATA;
+    default:
+        return group;
+    }
+}
+
+/* What a group's generated automation patterns and subrow are called: the event they carry. */
+static void group_name(int group, char *out, size_t cap) {
+    if (group == PARAMETERS) {
+        snprintf(out, cap, "%s", DM_TEXT_GENERATED_PARAMETERS);
+    } else {
+        dm_event_name(group_event(group), out, cap);
+    }
+}
+
+static bool in_scope(int scope, int channel) {
+    return scope < 0 || channel == scope;
+}
+
+/* placed[] marks the note patterns placed on the channels in scope; their note placements there
+   are replaced by placements of the separated controls, and every other placement is kept. */
 static bool separate_controls(const DmProject *source, DmProject *next, const bool *placed,
-                              const DmGenerationHooks *hooks, DmGenerationStats *stats) {
+                              int scope, const DmGenerationHooks *hooks, DmGenerationStats *stats) {
     size_t size = table_size(source->automation_count + 1), count = 0;
     Entry *table = calloc(size, sizeof(*table));
     AutoGroup *groups = calloc(source->automation_count + 1, sizeof(*groups));
@@ -239,13 +274,7 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
 
         if (!entry->count) {
             char name[64];
-            snprintf(name, sizeof(name), "Controls %zu - %s", count + 1,
-                     event == 128          ? "Pitch bend"
-                     : event == 129        ? "Program"
-                     : event == 130        ? "Pressure"
-                     : event == 131        ? "Poly pressure"
-                     : event == PARAMETERS ? "Parameters"
-                                           : "Controller");
+            group_name(event, name, sizeof(name));
             int id = dm_pattern_add(next, name);
 
             if (id < 0) {
@@ -255,12 +284,7 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
 
             DmPattern *p = &next->patterns[id];
             p->kind = 1;
-            p->event = event == 128          ? -2
-                       : event == 129        ? -1
-                       : event == 130        ? -4
-                       : event == 131        ? -5
-                       : event == PARAMETERS ? MIDI_CC_DATA
-                                             : event;
+            p->event = group_event(event);
             p->length = source->patterns[a.pattern].length;
             p->port = a.port;
             /* A Graph lane plays its bars as the source did: same cells, same hold. */
@@ -303,7 +327,7 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
     for (size_t i = 0; i < source->clip_count && ok; i++) {
         DmClip c = source->clips[i];
 
-        if (source->patterns[c.pattern].kind) {
+        if (source->patterns[c.pattern].kind || !in_scope(scope, c.channel)) {
             ok = dm_clip_add(next, c);
             continue;
         }
@@ -328,8 +352,10 @@ static bool separate_controls(const DmProject *source, DmProject *next, const bo
                 next->lane_count[c.channel] = lane;
                 lanes[c.channel][g.event] = lane;
 
+                /* Groups past the last subrow share it and keep its name. */
                 if (created) {
-                    snprintf(next->lane_names[c.channel][lane - 1], 64, "Generated controls");
+                    group_name(g.event, next->lane_names[c.channel][lane - 1],
+                               sizeof(next->lane_names[c.channel][lane - 1]));
                 }
             }
 
@@ -891,16 +917,18 @@ static bool channel_patterns(DmProject *next, const Flat *flat, size_t count, in
 }
 
 bool dm_generate_patterns(const DmProject *source, DmProject *output,
-                          const DmGenerationHooks *hooks, DmGenerationStats *stats, char *error,
-                          size_t cap) {
+                          const DmGenerationScope *scope, const DmGenerationHooks *hooks,
+                          DmGenerationStats *stats, char *error, size_t cap) {
     DmProject next;
     dm_project_init(&next);
     *stats = (DmGenerationStats){0};
     Flat *flat = NULL;
     size_t count = 0, capacity = 0;
-    bool *placed = calloc(source->pattern_count + 1, sizeof(bool));
+    int only = scope ? scope->channel : -1;
+    bool *placed = calloc(source->pattern_count + 1, sizeof(bool)),
+         *kept = calloc(source->pattern_count + 1, sizeof(bool));
     Entry *table = NULL;
-    bool ok = placed && dm_project_copy(&next, source);
+    bool ok = placed && kept && only >= -1 && only < 16 && dm_project_copy(&next, source);
     double ends[16] = {0};
 
     for (size_t i = 0; i < source->clip_count && ok; i++) {
@@ -912,7 +940,7 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
         DmClip clip = source->clips[i];
         const DmPattern *p = &source->patterns[clip.pattern];
 
-        if (p->kind) {
+        if (p->kind || !in_scope(only, clip.channel)) {
             continue;
         }
 
@@ -944,7 +972,7 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
     }
 
     if (ok) {
-        ok = separate_controls(source, &next, placed, hooks, stats);
+        ok = separate_controls(source, &next, placed, only, hooks, stats);
     }
 
     if (ok && count) {
@@ -967,10 +995,11 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
     }
 
     size_t first = 0;
+    int lo = only < 0 ? 0 : only, hi = only < 0 ? 15 : only;
 
-    for (int channel = 0; channel < 16 && ok; channel++) {
+    for (int channel = lo; channel <= hi && ok; channel++) {
         if (hooks && hooks->progress) {
-            hooks->progress(hooks->user, (unsigned)(channel * 100 / 16));
+            hooks->progress(hooks->user, (unsigned)((channel - lo) * 100 / (hi - lo + 1)));
         }
 
         size_t end = first;
@@ -1006,8 +1035,17 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
     }
 
     if (ok) {
+        /* A source pattern a kept placement (on a channel not in scope) still plays stays whole,
+           with its notes and controls; the regenerated channel has its own copies. Removing from
+           the highest index down leaves the lower indices in kept[] valid. */
+        for (size_t i = 0; i < next.clip_count; i++) {
+            if ((size_t)next.clips[i].pattern < source->pattern_count) {
+                kept[next.clips[i].pattern] = true;
+            }
+        }
+
         for (size_t i = source->pattern_count; i > 0; i--) {
-            if (placed[i - 1] && !source->patterns[i - 1].kind) {
+            if (placed[i - 1] && !kept[i - 1] && !source->patterns[i - 1].kind) {
                 dm_pattern_remove(&next, (int)i - 1);
             }
         }
@@ -1025,6 +1063,7 @@ bool dm_generate_patterns(const DmProject *source, DmProject *output,
     }
 
     free(placed);
+    free(kept);
     free(flat);
     free(table);
     free(bars);

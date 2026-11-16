@@ -5,7 +5,7 @@ option(DUCKMIDI_PRODUCTION "Include the supplied SoundFont and first-launch samp
 option(DUCKMIDI_DEV_DELIVERY "Deliver an unstripped build to a -DEV folder" OFF)
 install(TARGETS duckmidi RUNTIME DESTINATION .)
 install(TARGETS m64export ootexport sampletool RUNTIME DESTINATION plugins LIBRARY DESTINATION plugins)
-install(TARGETS duck_export_support RUNTIME DESTINATION plugins LIBRARY DESTINATION plugins)
+install(TARGETS duck_db RUNTIME DESTINATION plugins LIBRARY DESTINATION plugins)
 if(WIN32)
   install(FILES ${FLUID_DLLS} ${FFMPEG_DLLS} "$<TARGET_FILE:SDL3::SDL3>" DESTINATION .)
   if(EXISTS "${COMPILER_BIN}/libwinpthread-1.dll")

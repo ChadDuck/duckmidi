@@ -117,7 +117,9 @@ bool dm_audio_instrument_preview(DmAudio *a, const DmPatchReplacement *r, int ro
                            .keyboard = true,
                            .keyboard_route = route,
                            .song_part = r->key.port * 16 + route,
-                           .key = r->key.drums ? 36 : 60,
+                           .key = r->key.drum_key ? r->key.drum_key - 1
+                                  : r->key.drums  ? 36
+                                                  : 60,
                            .release_in = RATE / 3};
     DmSampleExportSnapshot *snapshot = NULL;
     DmeContext context = {0};

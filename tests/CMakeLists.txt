@@ -121,6 +121,8 @@ set_tests_properties(generate_soundfont generate_programs PROPERTIES
   WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" FIXTURES_SETUP soundfont_fixtures RUN_SERIAL TRUE)
 
 set(REGISTRY_FIXTURES "${PROJECT_SOURCE_DIR}/build/development/export-registry-fixtures")
+# The game exporters alone, without plugins/db.
+set(REGISTRY_NO_DB "${PROJECT_SOURCE_DIR}/build/development/export-registry-no-db")
 foreach(VARIANT fixture bad-abi bad-schema missing-entry allocation-failure z-duplicate)
   add_library(plugin_${VARIANT} MODULE export_plugin_fixture.c)
   set_target_properties(plugin_${VARIANT} PROPERTIES PREFIX "" OUTPUT_NAME "${VARIANT}"
@@ -139,11 +141,14 @@ set_target_properties(plugin_tool_fixture PROPERTIES PREFIX "" OUTPUT_NAME "samp
   LIBRARY_OUTPUT_DIRECTORY "${REGISTRY_FIXTURES}" RUNTIME_OUTPUT_DIRECTORY "${REGISTRY_FIXTURES}")
 add_custom_target(export_registry_fixtures
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${TEST_BIN}/plugins"
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:duck_export_support>" "${TEST_BIN}/plugins/"
-  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:duck_export_support>" "${REGISTRY_FIXTURES}/"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:duck_db>" "${TEST_BIN}/plugins/"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:duck_db>" "${REGISTRY_FIXTURES}/"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:m64export>" "${REGISTRY_FIXTURES}/m64.dll"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:plugin_fixture>" "${TEST_BIN}/plugins/fixture.dll"
   COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ootexport>" "${TEST_BIN}/plugins/"
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${REGISTRY_NO_DB}"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:m64export>" "${REGISTRY_NO_DB}/"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:ootexport>" "${REGISTRY_NO_DB}/"
   DEPENDS m64export ootexport plugin_fixture plugin_tool_fixture plugin_bad-abi plugin_bad-schema plugin_missing-entry
     plugin_allocation-failure plugin_z-duplicate VERBATIM)
 add_dependencies(export_plugins_test export_registry_fixtures)

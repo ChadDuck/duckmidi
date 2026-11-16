@@ -684,11 +684,12 @@ void ed_piano_press(Editor *e, SDL_Scancode key, SDL_Keymod mods, bool repeat) {
             dm_audio_preview(e->audio, e->piano_channel, note, 100, true);
         }
 
+        uint32_t loop = e->play_loop;
         e->record_start[note] = !e->record || !dm_audio_playing(e->audio) ? -1
                                 : starts_take ? e->start_beat[e->pattern_mode]
-                                              : ed_heard_beat(e);
+                                              : ed_heard_beat(e, &loop);
         e->record_origin[note] =
-            e->record_start[note] >= 0 ? ed_record_origin(e, e->record_start[note]) : 0;
+            e->record_start[note] >= 0 ? ed_record_origin(e, &e->record_start[note], loop) : 0;
     }
 }
 

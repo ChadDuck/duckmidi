@@ -1,5 +1,5 @@
 #include "internal.h"
-#include "../../export_support/curves.h"
+#include "../../n64/curves.h"
 #include <limits.h>
 
 bool reserve(void **p, size_t *cap, size_t count, size_t width) {

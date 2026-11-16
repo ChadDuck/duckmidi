@@ -198,6 +198,25 @@ static void check_conversion(void) {
     assert(strstr(result.sequence.data, "instr 13")); /* Piano is program 13 of font 3. */
     oot_result_free(&result);
 
+    /* The game plays at most 224 BPM at 48 ticks per beat. 224 BPM keeps them; 240 BPM is
+       written as 120 BPM at 24 ticks per beat, so the one-beat note lasts 24 ticks. */
+    event_count = 0;
+    add(0, 0xff, 267857, 0);
+    note(0, 96, 0, 60);
+    assert(oot_convert(&q, NULL, false, &result, error, sizeof(error)) == DME_OK);
+    seq = result.sequence.data;
+    assert(strstr(seq, "tempo 224"));
+    assert(strstr(seq, "notedv 39, 48, 100") || strstr(seq, "notedvg 39, 48, 100"));
+    oot_result_free(&result);
+    event_count = 0;
+    add(0, 0xff, 250000, 0);
+    note(0, 96, 0, 60);
+    assert(oot_convert(&q, NULL, false, &result, error, sizeof(error)) == DME_OK);
+    seq = result.sequence.data;
+    assert(strstr(seq, "tempo 120") && !strstr(seq, "tempo 240"));
+    assert(strstr(seq, "notedv 39, 24, 100") || strstr(seq, "notedvg 39, 24, 100"));
+    oot_result_free(&result);
+
     /* Six overlapping notes: four layers on channel 1, two more on a free channel. */
     event_count = 0;
 

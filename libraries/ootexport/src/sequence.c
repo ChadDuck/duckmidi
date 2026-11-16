@@ -1,11 +1,11 @@
 /* MIDI to OoT sequence (aseq.h MML assembly) and its soundfont.
 
-   Notes are counted in sequence ticks (48 per beat, fewer for tempos above 255 BPM). Each MIDI
+   Notes are counted in sequence ticks (48 per beat, fewer above OOT_MAX_TEMPO). Each MIDI
    channel becomes a sequence channel whose script sets the instrument and controllers; its notes
    are spread over up to four layers, and more overlapping notes move to free channels that copy
    the controllers. Layer scripts are cut at bar lines, and bars that repeat become subroutines. */
 #include "oot.h"
-#include "../../export_support/curves.h"
+#include "../../n64/curves.h"
 #include "../../../src/text/en.h"
 #include <math.h>
 #include <stdarg.h>
@@ -497,26 +497,27 @@ static void choose_ticks(Song *s) {
 
     s->tpb = 48;
 
-    while (s->tpb > 6 && fastest * s->tpb / 48 > 255) {
+    while (s->tpb > 6 && fastest * s->tpb / 48 > OOT_MAX_TEMPO) {
         s->tpb /= 2;
     }
 
     if (s->tpb < 48) {
         diagnose(s, DME_INFO,
-                 "Tempos above 255 BPM play at %u ticks per beat, so very short notes are rounded.",
-                 s->tpb);
+                 "Tempos above %u BPM play at %u ticks per beat, so very short notes are rounded.",
+                 OOT_MAX_TEMPO, s->tpb);
     }
 
-    if (fastest * s->tpb / 48 > 255) {
-        diagnose_item(s, 0, DM_TEXT_EXPORT_LIST_CONVERTED, DM_TEXT_EXPORT_ITEM_MAX_TEMPO,
-                      255 * 48 / s->tpb);
+    if (fastest * s->tpb / 48 > OOT_MAX_TEMPO) {
+        unsigned limit = OOT_MAX_TEMPO * 48 / s->tpb;
+        diagnose_item(s, 0, DM_TEXT_EXPORT_LIST_CONVERTED, DM_TEXT_EXPORT_ITEM_MAX_TEMPO, limit,
+                      limit);
     }
 }
 
 static unsigned tempo_bpm(const Song *s, unsigned microseconds) {
     double bpm = 60000000.0 / microseconds * s->tpb / 48.0;
     long value = lround(bpm);
-    return (unsigned)(value < 1 ? 1 : value > 255 ? 255 : value);
+    return (unsigned)(value < 1 ? 1 : value > OOT_MAX_TEMPO ? OOT_MAX_TEMPO : value);
 }
 
 static int compare_tempos(const void *left, const void *right) {

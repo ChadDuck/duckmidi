@@ -510,7 +510,6 @@ static void loop_wrap(Editor *e) {
     commit(e, true);
     memset(m->lanes, 0, sizeof(m->lanes));
     m->lead_published = false;
-    e->take_origin_set = false;
 }
 
 /* Publishes the pass shortly before the wrap, so material near the loop start plays next pass;
@@ -609,7 +608,7 @@ static void input_event(Editor *e, DmMidiInputEvent event) {
 
     m->loop = event.loop;
     m->loop_seen = true;
-    double origin = ed_record_origin(e, beat);
+    double origin = ed_record_origin(e, &beat, event.loop);
     InputNote *note = &m->held[event.device][event.status & MIDI_CHANNEL_MASK][event.a];
 
     if (type == MIDI_NOTE_ON) {

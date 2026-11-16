@@ -2,6 +2,7 @@
    placements, controller values and note timelines survive, and Apply is one undo step. */
 #include "editor/internal.h"
 #include "../shared/pattern_generation.h"
+#include "text/en.h"
 #include <assert.h>
 #define TEST_NAME "pattern generation"
 #include "test_common.h"
@@ -320,7 +321,7 @@ static void imported_generation(void) {
         DmGenerationStats stats;
         assert(dm_read(files[f], &data, error, sizeof(error)) &&
                dm_import(&source, data.data, data.size, 0, 0, error, sizeof(error)));
-        assert(dm_generate_patterns(&source, &result, NULL, &stats, error, sizeof(error)));
+        assert(dm_generate_patterns(&source, &result, NULL, NULL, &stats, error, sizeof(error)));
         size_t notes = same_song(files[f], &source, &result);
         /* Phrases group many notes; the old note-group splitter averaged two or three. */
         assert(stats.note_patterns * 10 < notes);
@@ -358,7 +359,7 @@ static void sliced_generation(void) {
             .beat = 32, .pattern = id, .channel = 0, .row = 1, .offset = 3.5, .length = 10.5}));
     char error[256];
     DmGenerationStats stats;
-    assert(dm_generate_patterns(&source, &result, NULL, &stats, error, sizeof(error)));
+    assert(dm_generate_patterns(&source, &result, NULL, NULL, &stats, error, sizeof(error)));
     size_t notes = same_song("sliced", &source, &result);
     /* Each note is an on and an off event: six whole bars and the slice's three. */
     assert(notes == 2 * (4 * 6 + 4 * 3) && stats.linked_placements > 0);
@@ -538,7 +539,7 @@ static void controls_cross_phrases(void) {
 
     char error[256];
     DmGenerationStats stats;
-    assert(dm_generate_patterns(&source, &result, NULL, &stats, error, sizeof(error)));
+    assert(dm_generate_patterns(&source, &result, NULL, NULL, &stats, error, sizeof(error)));
     same_song("controls_cross_phrases", &source, &result);
     same_timeline("controls_cross_phrases", &source, &result);
 
@@ -612,7 +613,7 @@ static void imported_event_timelines(void) {
 
         assert(dm_import(&source, data.data, data.size, files[f].port, 0, error, sizeof(error)));
         assert(!dm_generation_changes_sound(&source));
-        assert(dm_generate_patterns(&source, &result, NULL, &stats, error, sizeof(error)));
+        assert(dm_generate_patterns(&source, &result, NULL, NULL, &stats, error, sizeof(error)));
         same_timeline(files[f].path, &source, &result);
 
         for (size_t i = 0; i < result.automation_count; i++) {
@@ -685,7 +686,7 @@ static void graph_lane_generation(void) {
 
         char error[256];
         DmGenerationStats stats;
-        assert(dm_generate_patterns(&source, &result, NULL, &stats, error, sizeof(error)));
+        assert(dm_generate_patterns(&source, &result, NULL, NULL, &stats, error, sizeof(error)));
         same_timeline(hold ? "graph_lane_hold" : "graph_lane_release", &source, &result);
 
         bool found_graph = false;
@@ -727,7 +728,7 @@ static void precedence_after_generation(void) {
 
     char error[256];
     DmGenerationStats stats;
-    assert(dm_generate_patterns(&source, &result, NULL, &stats, error, sizeof(error)));
+    assert(dm_generate_patterns(&source, &result, NULL, NULL, &stats, error, sizeof(error)));
 
     int max_lane = 0;
 
@@ -776,7 +777,7 @@ static void warning_detection(void) {
     assert(dm_read("samples/imp_night.mid", &data, error, sizeof(error)) &&
            dm_import(&source, data.data, data.size, 0, 0, error, sizeof(error)));
     assert(!dm_generation_changes_sound(&source));
-    assert(dm_generate_patterns(&source, &result, NULL, &stats, error, sizeof(error)));
+    assert(dm_generate_patterns(&source, &result, NULL, NULL, &stats, error, sizeof(error)));
     assert(!dm_generation_changes_sound(&result));
     dm_bytes_free(&data);
     dm_project_free(&source);
@@ -883,6 +884,232 @@ static void warning_detection(void) {
     puts("PASS generation warning detection");
 }
 
+static int pattern_named(const DmProject *p, const char *name) {
+    for (size_t i = 0; i < p->pattern_count; ++i) {
+        if (!strcmp(p->patterns[i].name, name)) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+/* The pattern's notes and event points are the same in both projects. */
+static void same_pattern(const DmProject *s, int x, const DmProject *r, int y) {
+    const DmPattern *a = &s->patterns[x], *b = &r->patterns[y];
+    assert(!strcmp(a->name, b->name) && a->kind == b->kind && a->count == b->count &&
+           a->length == b->length);
+
+    for (size_t i = 0; i < a->count; ++i) {
+        DmNote m = a->notes[i], n = b->notes[i];
+        assert(m.beat == n.beat && m.length == n.length && m.key == n.key &&
+               m.velocity == n.velocity && m.port == n.port);
+    }
+
+    size_t j = 0;
+
+    for (size_t i = 0; i < s->automation_count; ++i) {
+        DmAutomation m = s->automation[i];
+
+        if (m.pattern != x) {
+            continue;
+        }
+
+        while (j < r->automation_count && r->automation[j].pattern != y) {
+            j++;
+        }
+
+        assert(j < r->automation_count);
+        DmAutomation n = r->automation[j++];
+        assert(m.beat == n.beat && m.type == n.type && m.channel == n.channel && m.a == n.a &&
+               m.b == n.b && m.curve == n.curve && m.port == n.port);
+    }
+
+    while (j < r->automation_count && r->automation[j].pattern != y) {
+        j++;
+    }
+
+    assert(j == r->automation_count);
+}
+
+/* A channel a single-channel run leaves alone: its placements in order, their patterns' contents
+   and points, its subrows and their names. */
+static void channel_unchanged(const DmProject *s, const DmProject *r, int channel) {
+    size_t j = 0;
+
+    for (size_t i = 0; i < s->clip_count; ++i) {
+        DmClip a = s->clips[i];
+
+        if (a.channel != channel) {
+            continue;
+        }
+
+        while (j < r->clip_count && r->clips[j].channel != channel) {
+            j++;
+        }
+
+        assert(j < r->clip_count);
+        DmClip b = r->clips[j++];
+        assert(a.beat == b.beat && a.length == b.length && a.offset == b.offset && a.row == b.row &&
+               a.lane == b.lane);
+        same_pattern(s, a.pattern, r, b.pattern);
+    }
+
+    while (j < r->clip_count && r->clips[j].channel != channel) {
+        j++;
+    }
+
+    assert(j == r->clip_count);
+    assert(s->lane_count[channel] == r->lane_count[channel] &&
+           s->note_rows[channel] == r->note_rows[channel] &&
+           !memcmp(s->lane_names[channel], r->lane_names[channel], sizeof(s->lane_names[channel])));
+}
+
+/* Eight bars of a four-note riff with a volume change and a bend, placed on the channel. */
+static int riff(DmProject *p, const char *name, int channel, uint8_t key) {
+    int id = dm_pattern_add(p, name);
+    assert(id >= 0);
+
+    for (int bar = 0; bar < 8; ++bar) {
+        for (int j = 0; j < 4; ++j) {
+            assert(dm_note_add(&p->patterns[id],
+                               (DmNote){bar * 4.0 + j, .5, (uint8_t)(key + j), 100, 0}));
+        }
+    }
+
+    dm_pattern_fit(p, &p->patterns[id]);
+    p->channels[channel].enabled = true;
+    assert(dm_automation_add(p, (DmAutomation){.pattern = id,
+                                               .type = MIDI_CONTROL,
+                                               .channel = channel,
+                                               .a = MIDI_CC_VOLUME,
+                                               .b = 90,
+                                               .beat = 0}));
+    assert(dm_automation_add(p, (DmAutomation){.pattern = id,
+                                               .type = MIDI_PITCH_BEND,
+                                               .channel = channel,
+                                               .a = 0,
+                                               .b = 80,
+                                               .beat = 12}));
+    assert(dm_clip_add(p, (DmClip){.beat = 0, .pattern = id, .channel = channel}));
+    return id;
+}
+
+static void single_channel_generation(void) {
+    DmGenerationScope first = {.channel = 0};
+    char error[256];
+    DmGenerationStats stats;
+
+    /* Two channels with their own notes and controls; channel 2 also has an automation
+       placement on a named subrow. Only channel 1 is regenerated. */
+    {
+        DmProject source, result;
+        dm_project_init(&source);
+        dm_project_init(&result);
+        riff(&source, "Lead", 0, 60);
+        riff(&source, "Bass", 1, 36);
+        int lfo = dm_pattern_add(&source, "Bass LFO");
+        assert(lfo >= 0);
+        source.patterns[lfo].kind = 1;
+        source.patterns[lfo].mode = 1;
+        source.patterns[lfo].event = MIDI_CC_EXPRESSION;
+        source.patterns[lfo].length = 8;
+        source.lane_count[1] = 1;
+        snprintf(source.lane_names[1][0], 64, "Bass swell");
+        assert(dm_clip_add(&source, (DmClip){.pattern = lfo, .channel = 1, .lane = 1}));
+        assert(dm_generate_patterns(&source, &result, &first, NULL, &stats, error, sizeof(error)));
+        assert(dm_project_validate(&result, error, sizeof(error)));
+        same_timeline("single channel", &source, &result);
+        channel_unchanged(&source, &result, 1);
+        /* Channel 1's source pattern is replaced by generated notes and controls. */
+        assert(pattern_named(&result, "Lead") < 0 && stats.note_patterns > 0 &&
+               stats.automation_patterns == 2);
+        bool generated = false;
+
+        for (size_t i = 0; i < result.clip_count; ++i) {
+            DmClip c = result.clips[i];
+
+            if (c.channel == 0 && !result.patterns[c.pattern].kind) {
+                generated = true;
+                assert(!strncmp(result.patterns[c.pattern].name, "Generated notes", 15));
+            }
+        }
+
+        assert(generated && result.lane_count[0] == 2);
+        dm_project_free(&source);
+        dm_project_free(&result);
+    }
+
+    /* One pattern placed on channels 1 and 2: regenerating channel 1 keeps it, notes and
+       controls, for channel 2's placement. */
+    {
+        DmProject source, result;
+        dm_project_init(&source);
+        dm_project_init(&result);
+        int shared = riff(&source, "Shared", 0, 60);
+        source.channels[1].enabled = true;
+        assert(dm_clip_add(&source, (DmClip){.beat = 0, .pattern = shared, .channel = 1}));
+        assert(dm_generate_patterns(&source, &result, &first, NULL, &stats, error, sizeof(error)));
+        assert(dm_project_validate(&result, error, sizeof(error)));
+        same_timeline("shared pattern", &source, &result);
+        channel_unchanged(&source, &result, 1);
+        int kept = pattern_named(&result, "Shared");
+        assert(kept >= 0);
+        same_pattern(&source, shared, &result, kept);
+
+        for (size_t i = 0; i < result.clip_count; ++i) {
+            assert(result.clips[i].pattern != kept || result.clips[i].channel == 1);
+        }
+
+        dm_project_free(&source);
+        dm_project_free(&result);
+    }
+
+    puts("PASS single-channel generation keeps other channels and shared patterns");
+}
+
+static bool lane_named(const DmProject *p, int channel, const char *name) {
+    for (int lane = 0; lane < p->lane_count[channel]; ++lane) {
+        if (!strcmp(p->lane_names[channel][lane], name)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* Generated automation patterns and subrows are named after the event they carry; a second
+   pattern for the same event gets the usual duplicate suffix. */
+static void automation_names(void) {
+    DmProject source, result;
+    dm_project_init(&source);
+    dm_project_init(&result);
+    int lead = riff(&source, "Lead", 0, 60);
+    riff(&source, "Bass", 1, 36);
+    assert(dm_automation_add(&source, (DmAutomation){.pattern = lead,
+                                                     .type = MIDI_CONTROL,
+                                                     .channel = 0,
+                                                     .a = MIDI_CC_REVERB,
+                                                     .b = 40,
+                                                     .beat = 4}));
+    char error[256];
+    DmGenerationStats stats;
+    assert(dm_generate_patterns(&source, &result, NULL, NULL, &stats, error, sizeof(error)));
+    same_timeline("automation names", &source, &result);
+    char duplicate[64];
+    snprintf(duplicate, sizeof(duplicate), "%s-2", DM_TEXT_PITCH_BEND);
+    assert(pattern_named(&result, DM_TEXT_PITCH_BEND) >= 0 &&
+           pattern_named(&result, duplicate) >= 0 && pattern_named(&result, DM_TEXT_VOLUME) >= 0 &&
+           pattern_named(&result, DM_TEXT_REVERB_SEND) >= 0);
+    assert(result.lane_count[0] == 3 && lane_named(&result, 0, DM_TEXT_PITCH_BEND) &&
+           lane_named(&result, 0, DM_TEXT_VOLUME) && lane_named(&result, 0, DM_TEXT_REVERB_SEND));
+    assert(result.lane_count[1] == 2 && lane_named(&result, 1, DM_TEXT_PITCH_BEND) &&
+           lane_named(&result, 1, DM_TEXT_VOLUME));
+    dm_project_free(&source);
+    dm_project_free(&result);
+    puts("PASS generated automation is named after its event");
+}
+
 int main(void) {
     Editor *e = test_editor_open("Pattern generation", (TestDesktop){.renderer = "software"});
     generation(e);
@@ -893,6 +1120,8 @@ int main(void) {
     graph_lane_generation();
     precedence_after_generation();
     warning_detection();
+    single_channel_generation();
+    automation_names();
     test_editor_close(e);
     return 0;
 }

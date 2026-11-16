@@ -1,5 +1,5 @@
 #include "repository_install.h"
-#include "../libraries/export_support/export_support.h"
+#include "../libraries/db/db.h"
 #include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
@@ -11,6 +11,11 @@ static int32_t action(const DmeExporter *exporter, void *settings, void *job,
     const DmeHistoryRuntime *runtime = duckmidi_history_runtime(DME_REPOSITORY_API);
     const DmeHistoryAdapter *adapter = exporter->history(DME_REPOSITORY_API);
     assert(runtime && adapter);
+
+    if (adapter->attach) {
+        adapter->attach(runtime->api);
+    }
+
     DmeRepositoryRequest request = {.size = sizeof(request),
                                     .action = kind,
                                     .keep_originals = untracked,

@@ -1,5 +1,5 @@
 #include "sample.h"
-#include "internal.h"
+#include "bake/bake.h"
 #include "../../include/duckmidi_midi.h"
 #include "../../src/text/en.h"
 #include <math.h>
@@ -129,7 +129,7 @@ static bool sanitize(EsNativeRegion *r) {
         {t->chorus != 0, ES_FIX_CHORUS},
     };
 
-    for (size_t i = 0; i < SDL_arraysize(omitted); i++) {
+    for (size_t i = 0; i < sizeof(omitted) / sizeof(*omitted); i++) {
         if (omitted[i].used) {
             r->fixes |= 1u << omitted[i].fix;
         }
@@ -237,10 +237,17 @@ static int write_baked(EsNativeRegion *r, const DmeSampleAsset *a, uint64_t hand
         status = read_mono(r, a, handle, asset, frame, count, gain, mono + frame, host, error, cap);
     }
 
+    bool chorus_short = false;
+
     if (status == PREP_OK && !es_native_bake(mono, r->frames, a->rate, r->loop_start, r->loop_end,
-                                             &r->params.tone, &r->fixes)) {
+                                             &r->params.tone, &chorus_short)) {
         es_fail(error, cap, DM_TEXT_NATIVE_SAMPLE_MEMORY);
         status = PREP_FAILED;
+    }
+
+    /* A loop too short for the chorus delay leaves the chorus out: report that instead. */
+    if (chorus_short) {
+        r->fixes = (r->fixes & ~(1u << ES_FIX_CHORUS)) | 1u << ES_FIX_CHORUS_SHORT;
     }
 
     double peak = 0;

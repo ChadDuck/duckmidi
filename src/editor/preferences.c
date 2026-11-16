@@ -339,6 +339,7 @@ static void instrument_route(Editor *e, int port) {
                                               : (int)fmax(0, e->project.channels[c].program);
     e->instrument_bank = e->instrument_new ? 0 : ed_initial_bank(&e->project, port, c);
     e->instrument_source_dirty = false;
+    ed_sample_kit_reset(e);
 }
 
 static void preview_sample_source(Editor *e, const DmPatchReplacement *replacement) {
@@ -376,6 +377,7 @@ void ed_open_instrument(Editor *e, int channel, bool preview) {
 static void select_instrument(Editor *e, int program, bool drums) {
     stop_instrument_preview(e);
     e->instrument_source_dirty = false;
+    ed_sample_kit_reset(e);
     e->instrument_program = program;
     e->instrument_drums = drums;
     int c = e->instrument_channel;
@@ -582,7 +584,10 @@ void ed_apply_instrument(Editor *e) {
     int port = e->instrument_port;
     bool type_changed = e->project.channels[c].drums != drums;
     bool assign = e->instrument_source_dirty, inherit = e->instrument_source_inherit;
+    bool keys = drums && ed_sample_kit_dirty(e);
     DmPatchReplacement source = e->instrument_source;
+    DmPatchKey patch = {(uint16_t)e->instrument_bank, (uint8_t)port, (uint8_t)c, (uint8_t)program,
+                        drums};
     DmPortMix mix = dm_port_mix(&e->project, port, c);
     int original = mix.program && port ? mix.program - 1 : e->project.channels[c].program;
     bool midi_change = create || type_changed || program != (int)fmax(0, original);
@@ -600,12 +605,13 @@ void ed_apply_instrument(Editor *e) {
 
     ed_close_instrument(e);
 
-    if (midi_change || assign) {
+    if (midi_change || assign || keys) {
         if (!ed_checkpoint(e)) {
             return;
         }
 
-        if (assign && !ed_sample_store_replacement(e, &source, inherit)) {
+        if ((assign && !ed_sample_store_replacement(e, &source, inherit)) ||
+            (keys && !ed_sample_kit_apply(e, patch))) {
             ed_checkpoint_abandon(e);
             return;
         }
@@ -743,10 +749,20 @@ static void instrument_fields(Editor *e) {
        (ed_initial_bank) so sources stay keyed to the bank the channel actually plays. */
     DmPatchKey key = {(uint16_t)e->instrument_bank, (uint8_t)e->instrument_port, (uint8_t)c,
                       (uint8_t)e->instrument_program, e->instrument_drums};
+    DmPatchReplacement next = {.key = key};
+
+    /* Drums: one sample per drum key, above the Cancel, Apply and Remove channel rows. */
+    if (e->instrument_drums) {
+        if (ed_sample_kit_draw(e, key, 2 * (ui_frame_height() + ui_item_spacing_y()), &next)) {
+            preview_sample_source(e, &next);
+        }
+
+        return;
+    }
+
     const DmPatchReplacement *current =
         e->instrument_source_dirty ? (e->instrument_source_inherit ? NULL : &e->instrument_source)
                                    : dm_patch_replacement_exact(&e->project, key);
-    DmPatchReplacement next = {.key = key};
     bool inherit = false;
 
     if (ed_sample_source_picker(e, key, current, &next, &inherit)) {
@@ -782,7 +798,15 @@ void ed_instrument(Editor *e) {
 
     bool open = true;
 
-    if (ui_dialog(DM_TEXT_INSTRUMENT, &open, (UiDialog){.width = 460})) {
+    /* The drum key table needs room, so the window is larger and resizable while it shows. */
+    DmPatchKey patch = {(uint16_t)e->instrument_bank, (uint8_t)e->instrument_port,
+                        (uint8_t)e->instrument_channel, (uint8_t)e->instrument_program, true};
+    bool table = e->instrument_drums && !e->instrument_remove && ed_sample_kit_table(e, patch);
+    UiDialog dialog =
+        table ? (UiDialog){.width = 760, .height = 560, .size = UI_RESIZABLE, .layout = 1}
+              : (UiDialog){.width = 460};
+
+    if (ui_dialog(DM_TEXT_INSTRUMENT, &open, dialog)) {
         if (e->instrument_remove) {
             char text[160];
             snprintf(text, sizeof(text), DM_TEXT_REMOVE_CHANNEL_WARNING, e->instrument_channel + 1);

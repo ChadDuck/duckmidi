@@ -42,7 +42,10 @@ add_library(duckcore STATIC shared/spectrum.c src/core/core.c src/core/files.c s
   src/core/project.c src/core/project_codec.c src/core/project_checks.c
   src/core/project_legacy.c src/core/project_fields.c src/core/validate.c src/core/project_compat.c src/core/compress.c
   src/core/instruments.c)
-add_subdirectory(libraries/export_support)
+add_subdirectory(libraries/common)
+add_subdirectory(libraries/n64)
+add_subdirectory(libraries/db)
+add_subdirectory(libraries/adapter)
 add_subdirectory(libraries/m64export)
 add_subdirectory(libraries/ootexport)
 include(tools/ffmpeg.cmake)
@@ -118,7 +121,7 @@ if(DUCKMIDI_DEVTOOLS)
 endif()
 add_dependencies(duckmidi m64export ootexport sampletool)
 add_custom_command(TARGET duckmidi POST_BUILD COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:duckmidi>/plugins"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:duck_export_support>" "$<TARGET_FILE_DIR:duckmidi>/plugins/"
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:duck_db>" "$<TARGET_FILE_DIR:duckmidi>/plugins/"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:m64export>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:m64export>"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:ootexport>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:ootexport>"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:sampletool>" "$<TARGET_FILE_DIR:duckmidi>/plugins/$<TARGET_FILE_NAME:sampletool>")
@@ -201,14 +204,14 @@ if(BUILD_TESTING)
     COMMAND "${Python3_EXECUTABLE}" -I -B "${PROJECT_SOURCE_DIR}/tests/input_to_test_test.py")
   add_executable(repository_history_test tests/repository_history_test.c)
   add_executable(native_sample_test tests/native_sample_test.c)
-  target_link_libraries(native_sample_test PRIVATE duck_export_support)
+  target_link_libraries(native_sample_test PRIVATE n64)
   if(NOT WIN32)
     target_link_libraries(native_sample_test PRIVATE m)
   endif()
   target_compile_options(native_sample_test PRIVATE $<$<NOT:$<C_COMPILER_ID:MSVC>>:-UNDEBUG>
     $<$<C_COMPILER_ID:MSVC>:/UNDEBUG>)
   add_test(NAME native_sample_configuration COMMAND native_sample_test)
-  target_link_libraries(repository_history_test PRIVATE duck_export_support SDL3::SDL3)
+  target_link_libraries(repository_history_test PRIVATE duck_db duck_adapter SDL3::SDL3)
   target_compile_options(repository_history_test PRIVATE $<$<NOT:$<C_COMPILER_ID:MSVC>>:-UNDEBUG>
     $<$<C_COMPILER_ID:MSVC>:/UNDEBUG>)
   file(MAKE_DIRECTORY "${PROJECT_SOURCE_DIR}/agents/reports/repository-history")
@@ -244,13 +247,13 @@ if(BUILD_TESTING)
     libraries/m64export/plugin/coopdx.c
     libraries/m64export/plugin/repository.c
     libraries/m64export/plugin/exporter.c)
-  target_link_libraries(m64_install_test PRIVATE m64export_static duck_export_support SDL3::SDL3)
+  target_link_libraries(m64_install_test PRIVATE m64export_static duck_db duck_adapter SDL3::SDL3)
   add_executable(custom_m64_export_test tests/custom_m64_export_test.c
     libraries/m64export/plugin/ui.c libraries/m64export/plugin/review.c
     libraries/m64export/plugin/samples.c libraries/m64export/plugin/memory.c
     libraries/m64export/plugin/coopdx.c
     libraries/m64export/plugin/exporter.c libraries/m64export/plugin/repository.c)
-  target_link_libraries(custom_m64_export_test PRIVATE m64export_static duck_export_support SDL3::SDL3)
+  target_link_libraries(custom_m64_export_test PRIVATE m64export_static duck_db duck_adapter SDL3::SDL3)
   target_compile_options(custom_m64_export_test PRIVATE -UNDEBUG)
   add_test(NAME custom_m64_export COMMAND custom_m64_export_test)
   target_sources(custom_m64_export_test PRIVATE tests/native_sequence_decode.c)
@@ -270,10 +273,10 @@ if(BUILD_TESTING)
     libraries/ootexport/plugin/repository.c)
   target_compile_definitions(custom_oot_export_test PRIVATE CUSTOM_TEST_OOT)
   target_compile_options(custom_oot_export_test PRIVATE -UNDEBUG)
-  target_link_libraries(custom_oot_export_test PRIVATE ootexport_static duck_export_support SDL3::SDL3)
+  target_link_libraries(custom_oot_export_test PRIVATE ootexport_static duck_db duck_adapter SDL3::SDL3)
   add_test(NAME custom_oot_export COMMAND custom_oot_export_test)
   target_sources(custom_oot_export_test PRIVATE tests/native_sequence_decode.c)
-  target_link_libraries(oot_install_test PRIVATE ootexport_static duck_export_support SDL3::SDL3)
+  target_link_libraries(oot_install_test PRIVATE ootexport_static duck_db duck_adapter SDL3::SDL3)
   add_test(NAME oot_repository_install COMMAND oot_install_test
     WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
   add_executable(core_test tests/core_test.c)

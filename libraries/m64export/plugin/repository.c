@@ -1,7 +1,6 @@
 #include "repository.h"
 #include "../../../src/text/en.h"
-#include "../../export_support/source.h"
-#include "../../export_support/package.h"
+#include "../../adapter/source.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,13 +23,13 @@ static int sequence_id(const char *name) {
                                                                                     : -1;
 }
 
-bool m64_repository_sequence(M64PluginJob *job, EsRepository *repo, char *error, size_t cap) {
+bool m64_repository_sequence(M64PluginJob *job, EsHistory *repo, char *error, size_t cap) {
     if (job->request.target == M64_TARGET_SM64COOPDX || sequence_id(job->sequence) >= 0) {
         return true;
     }
 
     EsFile source = {0};
-    bool ok = es_repository_read(repo, M64_SEQUENCES_JSON, &source, error, cap);
+    bool ok = es_history_read(repo, M64_SEQUENCES_JSON, &source, error, cap);
     EsJson *json = ok ? es_json_parse(source.data, source.size, error, cap) : NULL;
     yyjson_val *root = json ? es_json_root(json) : NULL;
     ok = ok && json && yyjson_is_obj(root);
@@ -90,11 +89,11 @@ bool m64_repository_sequence(M64PluginJob *job, EsRepository *repo, char *error,
     return ok;
 }
 
-static bool sequence_path(EsRepository *repo, EsPlan *plan, const char *sequence,
+static bool sequence_path(EsHistory *repo, EsHistoryPlan *plan, const char *sequence,
                           const char *old_name, const char *key, char out[512], char *error,
                           size_t cap) {
     EsPaths paths = {0};
-    bool ok = es_repository_baseline_paths(repo, &paths, error, cap);
+    bool ok = es_history_baseline_paths(repo, &paths, error, cap);
     const char *selected = NULL;
     const char *lookup = old_name ? old_name : sequence;
 
@@ -130,8 +129,8 @@ static bool sequence_path(EsRepository *repo, EsPlan *plan, const char *sequence
         snprintf(out, 512, "%.*s/%s.m64", (int)(slash - selected), selected, sequence);
 
         if (strcmp(out, selected)) {
-            ok = es_plan_put(plan, selected, NULL, 0, 0, false, error, cap) &&
-                 es_plan_affect(plan, key, selected, "replaced sequence source");
+            ok = es_history_plan_put(plan, selected, NULL, 0, 0, false, error, cap) &&
+                 es_history_plan_affect(plan, key, selected, "replaced sequence source");
         }
     } else if (ok) {
         snprintf(out, 512, "sound/sequences/us/%s.m64", sequence);
@@ -141,13 +140,13 @@ static bool sequence_path(EsRepository *repo, EsPlan *plan, const char *sequence
     return ok;
 }
 
-bool m64_repository_bank(M64PluginJob *job, EsRepository *repo, char *error, size_t cap) {
+bool m64_repository_bank(M64PluginJob *job, EsHistory *repo, char *error, size_t cap) {
     if (job->request.target == M64_TARGET_SM64COOPDX) {
         return true;
     }
 
     EsPaths paths = {0};
-    bool ok = es_repository_baseline_paths(repo, &paths, error, cap);
+    bool ok = es_history_baseline_paths(repo, &paths, error, cap);
     const char *maximum = "";
 
     for (size_t i = 0; ok && i < paths.count; i++) {
@@ -168,7 +167,7 @@ bool m64_repository_bank(M64PluginJob *job, EsRepository *repo, char *error, siz
     /* With history off the current files are the baseline, so an earlier export's own bank
        may already be the last one; it is reused. */
     int order = strcmp(file, maximum);
-    int n = order > 0 || (!order && es_repository_untracked(repo))
+    int n = order > 0 || (!order && es_history_untracked(repo))
                 ? snprintf(job->bank, sizeof(job->bank), "%s", requested)
                 : snprintf(job->bank, sizeof(job->bank), "%.*s_%s",
                            (int)(length > 5 ? length - 5 : 0), maximum, requested);
@@ -207,12 +206,13 @@ static bool allowed(const char *path) {
             (suffix(path, "/main.lua") || suffix(path, ".m64")));
 }
 
-static bool detect(EsRoot *root, DmeHistoryTarget *target, char *error, size_t cap) {
+static bool detect(const DmeHistoryApi *api, DmeHistoryRoot *root, DmeHistoryTarget *target,
+                   char *error, size_t cap) {
     char *version = target->version;
     EsFile coop = {0}, hacker = {0}, registration = {0};
-    bool ok = es_fs_read(root, M64_COOPDX_MARKER, &coop, error, cap) &&
-              es_fs_read(root, M64_HACKER_CONFIG, &hacker, error, cap) &&
-              es_fs_read(root, M64_SEQUENCES_JSON, &registration, error, cap);
+    bool ok = es_history_root_read(api, root, M64_COOPDX_MARKER, &coop, error, cap) &&
+              es_history_root_read(api, root, M64_HACKER_CONFIG, &hacker, error, cap) &&
+              es_history_root_read(api, root, M64_SEQUENCES_JSON, &registration, error, cap);
 
     if (ok && !coop.exists && !registration.exists) {
         ok = fail(error, cap, DM_TEXT_NATIVE_SELECT_M64, "sound/sequences.json");
@@ -228,7 +228,7 @@ static bool detect(EsRoot *root, DmeHistoryTarget *target, char *error, size_t c
     target->capabilities = coop.exists ? 0 : DME_REPOSITORY_CUSTOM;
     EsFile makefile = {0};
     bool found = false;
-    ok = ok && es_fs_read(root, "Makefile", &makefile, error, cap) &&
+    ok = ok && es_history_root_read(api, root, "Makefile", &makefile, error, cap) &&
          es_make_value(&makefile, "VERSION", version, &found, error, cap) && found;
 
     if (ok && strcmp(version, "us")) {
@@ -242,10 +242,10 @@ static bool detect(EsRoot *root, DmeHistoryTarget *target, char *error, size_t c
     return ok;
 }
 
-static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t cap) {
+static bool inventory(EsHistory *repo, EsPaths *paths, char *error, size_t cap) {
     EsPaths all = {0};
     EsFile marker = {0};
-    bool detected = es_repository_read(repo, M64_COOPDX_MARKER, &marker, error, cap);
+    bool detected = es_history_read(repo, M64_COOPDX_MARKER, &marker, error, cap);
     bool coopdx = marker.exists;
     es_file_free(&marker);
 
@@ -254,7 +254,7 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
     }
 
     if (coopdx) {
-        bool ok = es_repository_paths(repo, "mods", true, &all, error, cap);
+        bool ok = es_history_paths(repo, "mods", true, &all, error, cap);
 
         for (size_t i = 0; ok && i < all.count; i++) {
             if (allowed(all.items[i])) {
@@ -266,7 +266,7 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
         return ok;
     }
 
-    bool ok = es_repository_paths(repo, "sound", true, &all, error, cap);
+    bool ok = es_history_paths(repo, "sound", true, &all, error, cap);
     const char *fixed[] = {
         M64_DATA_C, M64_DATA_H, M64_BUFFERS_C, M64_HACKER_CONFIG, "tools/assemble_sound.py",
         "Makefile"};
@@ -279,7 +279,7 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
 
     for (size_t i = 0; ok && i < sizeof(fixed) / sizeof(*fixed); i++) {
         EsFile f = {0};
-        ok = es_repository_read(repo, fixed[i], &f, error, cap);
+        ok = es_history_read(repo, fixed[i], &f, error, cap);
 
         if (ok && f.exists) {
             ok = es_paths_add(paths, fixed[i]);
@@ -288,7 +288,7 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
         es_file_free(&f);
         char backup[256];
         snprintf(backup, sizeof(backup), "%s.bkp", fixed[i]);
-        ok = ok && es_repository_read(repo, backup, &f, error, cap);
+        ok = ok && es_history_read(repo, backup, &f, error, cap);
 
         if (ok && f.exists) {
             ok = es_paths_add(paths, backup);
@@ -370,11 +370,11 @@ static yyjson_val *select_value(yyjson_val *value, char *error, size_t cap) {
 }
 
 typedef struct {
-    EsRepository *repo;
-    const EsPlan *desired;
+    EsHistory *repo;
+    EsHistoryPlan *desired;
     EsTargets *targets;
     EsPaths *target_paths;
-    EsPlan *changes;
+    EsHistoryPlan *changes;
     const EsModification *replacement;
     const char *bank_path, *sample_bank, *target;
     double old_tuning, new_tuning;
@@ -384,13 +384,13 @@ typedef struct {
     const char *aliases;
 } Scan;
 
-static bool current(EsRepository *, const EsPlan *, const char *, EsFile *, char *, size_t);
+static bool current(EsHistory *, EsHistoryPlan *, const char *, EsFile *, char *, size_t);
 
 static bool resolve_sample(Scan *scan, const char *sample, char path[512], bool *exists,
                            char *error, size_t cap) {
     snprintf(path, 512, "sound/samples/%s/%s.aiff", scan->sample_bank, sample);
 
-    if (!es_plan_exists(scan->repo, scan->desired, path, exists, error, cap)) {
+    if (!es_history_plan_exists(scan->repo, scan->desired, path, exists, error, cap)) {
         return false;
     }
 
@@ -451,7 +451,7 @@ static bool resolve_sample(Scan *scan, const char *sample, char path[512], bool 
             for (unsigned i = 0; i < count; i++) {
                 snprintf(path, 512, "sound/samples/instruments/%s.aiff", names[i]);
 
-                if (!es_plan_exists(scan->repo, scan->desired, path, exists, error, cap)) {
+                if (!es_history_plan_exists(scan->repo, scan->desired, path, exists, error, cap)) {
                     return false;
                 }
 
@@ -469,25 +469,28 @@ static bool resolve_sample(Scan *scan, const char *sample, char path[512], bool 
     return true;
 }
 
-static bool current(EsRepository *repo, const EsPlan *plan, const char *path, EsFile *out,
+static bool current(EsHistory *repo, EsHistoryPlan *plan, const char *path, EsFile *out,
                     char *error, size_t cap) {
-    const EsFile *file = plan ? es_plan_find(plan, path) : NULL;
+    EsFile file = {0};
 
-    if (!file) {
-        return es_repository_baseline(repo, path, out, error, cap);
+    if (!plan || !es_history_plan_find(plan, path, &file)) {
+        return es_history_baseline(repo, path, out, error, cap);
     }
 
-    out->data = malloc(file->size + 1);
+    out->data = malloc(file.size + 1);
 
     if (!out->data) {
         return false;
     }
 
-    memcpy(out->data, file->data, file->size);
-    out->data[file->size] = 0;
-    out->size = file->size;
-    out->mode = file->mode;
-    out->exists = file->exists;
+    if (file.size) {
+        memcpy(out->data, file.data, file.size);
+    }
+
+    out->data[file.size] = 0;
+    out->size = file.size;
+    out->mode = file.mode;
+    out->exists = file.exists;
     return true;
 }
 
@@ -519,14 +522,14 @@ static bool sound(Scan *scan, yyjson_val *parent, const char *key, const char *l
 
     if (ok && scan->targets && !es_paths_has(scan->target_paths, path)) {
         char id[8704], text[1024];
-        snprintf(id, sizeof(id), "%s|%s", es_repository_identity(scan->repo), path);
+        snprintf(id, sizeof(id), "%s|%s", es_history_identity(scan->repo), path);
         snprintf(text, sizeof(text), "%s / %s / %s — %s", label, key, sample, path);
         ok =
             es_targets_add(scan->targets, id, text, path) && es_paths_add(scan->target_paths, path);
     }
 
     if (ok && scan->changes) {
-        ok = es_plan_depend(scan->changes, scan->bank_path, path, key);
+        ok = es_history_plan_depend(scan->changes, scan->bank_path, path, key);
     }
 
     if (ok && scan->target && !strcmp(scan->target, path)) {
@@ -553,8 +556,8 @@ static bool sound(Scan *scan, yyjson_val *parent, const char *key, const char *l
                 ok = es_json_set(scan->json, value, "tuning", number, &scan->edits, error, cap);
             }
 
-            ok =
-                ok && es_plan_affect(scan->changes, scan->replacement->key, scan->bank_path, label);
+            ok = ok && es_history_plan_affect(scan->changes, scan->replacement->key,
+                                              scan->bank_path, label);
         }
     }
 
@@ -608,16 +611,14 @@ static bool instrument(Scan *scan, yyjson_val *value, const char *label, unsigne
     return ok;
 }
 
-static bool scan_banks(EsRepository *repo, EsPlan *plan, EsTargets *targets,
+static bool scan_banks(EsHistory *repo, EsHistoryPlan *plan, EsTargets *targets,
                        const EsModification *replacement, char *error, size_t cap) {
     EsPaths paths = {0}, target_paths = {0};
-    bool ok = es_repository_baseline_paths(repo, &paths, error, cap);
+    bool ok = es_history_baseline_paths(repo, &paths, error, cap);
     EsFile aliases = {0};
-    ok = ok && es_repository_baseline(repo, "tools/assemble_sound.py", &aliases, error, cap);
+    ok = ok && es_history_baseline(repo, "tools/assemble_sound.py", &aliases, error, cap);
 
-    for (size_t i = 0; ok && plan && i < plan->count; i++) {
-        ok = es_paths_add(&paths, plan->writes[i].path);
-    }
+    ok = ok && (!plan || es_history_plan_paths(plan, &paths));
 
     const char *target =
         replacement ? es_recipe_text(replacement->data, replacement->size, "path") : NULL;
@@ -628,7 +629,7 @@ static bool scan_banks(EsRepository *repo, EsPlan *plan, EsTargets *targets,
 
     if (replacement) {
         EsFile baseline = {0};
-        ok = ok && target && tuning && es_repository_baseline(repo, target, &baseline, error, cap);
+        ok = ok && target && tuning && es_history_baseline(repo, target, &baseline, error, cap);
         old_tuning = natural(&baseline);
         es_file_free(&baseline);
         ok = ok && old_tuning > 0;
@@ -696,7 +697,8 @@ static bool scan_banks(EsRepository *repo, EsPlan *plan, EsTargets *targets,
         if (ok && scan.edits.count) {
             EsFile edited = {0};
             ok = es_edits_apply(&scan.edits, source.data, source.size, &edited, error, cap) &&
-                 es_plan_put(plan, path, edited.data, edited.size, source.mode, true, error, cap);
+                 es_history_plan_put(plan, path, edited.data, edited.size, source.mode, true, error,
+                                     cap);
             es_file_free(&edited);
         }
 
@@ -711,9 +713,9 @@ static bool scan_banks(EsRepository *repo, EsPlan *plan, EsTargets *targets,
     return ok;
 }
 
-bool m64_repository_targets(EsRepository *repo, EsTargets *targets, char *error, size_t cap) {
+bool m64_repository_targets(EsHistory *repo, EsTargets *targets, char *error, size_t cap) {
     EsFile coop = {0};
-    bool ok = es_repository_read(repo, M64_COOPDX_MARKER, &coop, error, cap);
+    bool ok = es_history_read(repo, M64_COOPDX_MARKER, &coop, error, cap);
 
     if (ok && !coop.exists) {
         ok = scan_banks(repo, NULL, targets, NULL, error, cap);
@@ -723,12 +725,12 @@ bool m64_repository_targets(EsRepository *repo, EsTargets *targets, char *error,
     return ok;
 }
 
-bool m64_repository_sample_targets(M64PluginJob *j, EsRepository *repo, const DmeContext *context,
+bool m64_repository_sample_targets(M64PluginJob *j, EsHistory *repo, const DmeContext *context,
                                    const DmeHost *host, char *error, size_t cap) {
     EsTargets targets = {0};
     EsPaths paths = {0};
     bool ok = m64_repository_targets(repo, &targets, error, cap) &&
-              es_repository_baseline_paths(repo, &paths, error, cap);
+              es_history_baseline_paths(repo, &paths, error, cap);
     j->sample_bank[0] = 0;
     /* Added samples sort after every initialized instrument sample, keeping stock IDs. */
     const char *maximum = "";
@@ -779,7 +781,7 @@ bool m64_repository_sample_targets(M64PluginJob *j, EsRepository *repo, const Dm
         /* The generated bank uses the initialized physical sample's calibration. The global
            replacement pass applies the new calibration once to every consumer. */
         EsFile original = {0};
-        ok = es_repository_baseline(repo, path, &original, error, cap);
+        ok = es_history_baseline(repo, path, &original, error, cap);
         double calibration = ok ? natural(&original) : 0;
         es_file_free(&original);
 
@@ -872,26 +874,24 @@ bool m64_repository_sample_targets(M64PluginJob *j, EsRepository *repo, const Dm
     return ok;
 }
 
-static bool validate_registration(EsRepository *repo, EsPlan *plan, char *error, size_t cap) {
+static bool validate_registration(EsHistory *repo, EsHistoryPlan *plan, char *error, size_t cap) {
     EsPaths paths = {0}, banks = {0};
     EsFile source = {0};
-    bool ok = es_repository_baseline_paths(repo, &paths, error, cap) &&
+    bool ok = es_history_baseline_paths(repo, &paths, error, cap) &&
               current(repo, plan, M64_SEQUENCES_JSON, &source, error, cap);
 
-    for (size_t i = 0; ok && i < plan->count; i++) {
-        ok = es_paths_add(&paths, plan->writes[i].path);
-    }
+    ok = ok && es_history_plan_paths(plan, &paths);
 
     for (size_t i = 0; ok && i < paths.count; i++) {
         if (!strncmp(paths.items[i], "sound/sound_banks/", 18) && suffix(paths.items[i], ".json")) {
             bool exists = false;
-            ok = es_plan_exists(repo, plan, paths.items[i], &exists, error, cap) &&
+            ok = es_history_plan_exists(repo, plan, paths.items[i], &exists, error, cap) &&
                  (!exists || es_paths_add(&banks, paths.items[i]));
         }
     }
 
     EsFile config = {0};
-    ok = ok && es_repository_baseline(repo, M64_HACKER_CONFIG, &config, error, cap);
+    ok = ok && es_history_baseline(repo, M64_HACKER_CONFIG, &config, error, cap);
     unsigned bank_capacity =
         config.exists && m64_hacker_expanded(config.data, config.size) ? 256 : 64;
     es_file_free(&config);
@@ -959,11 +959,11 @@ static bool validate_registration(EsRepository *repo, EsPlan *plan, char *error,
 
             if (strlen(name) == length && !strncmp(leaf + 1, name, length)) {
                 bool exists = false;
-                ok = es_plan_exists(repo, plan, path, &exists, error, cap);
+                ok = es_history_plan_exists(repo, plan, path, &exists, error, cap);
                 sources += exists;
 
                 if (ok && exists) {
-                    ok = es_plan_depend(plan, M64_SEQUENCES_JSON, path, "sequence");
+                    ok = es_history_plan_depend(plan, M64_SEQUENCES_JSON, path, "sequence");
                 }
             }
         }
@@ -991,7 +991,7 @@ static bool validate_registration(EsRepository *repo, EsPlan *plan, char *error,
                 break;
             }
 
-            ok = ok && es_plan_depend(plan, M64_SEQUENCES_JSON, path, "bank");
+            ok = ok && es_history_plan_depend(plan, M64_SEQUENCES_JSON, path, "bank");
         }
     }
 
@@ -1028,7 +1028,7 @@ static bool validate_registration(EsRepository *repo, EsPlan *plan, char *error,
         }
 
         bool exists = false;
-        ok = es_plan_exists(repo, plan, path, &exists, error, cap);
+        ok = es_history_plan_exists(repo, plan, path, &exists, error, cap);
         size_t length = strlen(leaf + 1) - (suffix(path, ".m64") ? 4 : 2);
         char name[512];
 
@@ -1049,15 +1049,14 @@ static bool validate_registration(EsRepository *repo, EsPlan *plan, char *error,
     return ok;
 }
 
-static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan, char *error,
+static bool render(EsHistory *repo, const EsModifications *mods, EsHistoryPlan *plan, char *error,
                    size_t cap) {
     EsFile registration = {0};
     EsFile marker = {0};
-    bool ok = es_repository_read(repo, M64_COOPDX_MARKER, &marker, error, cap);
+    bool ok = es_history_read(repo, M64_COOPDX_MARKER, &marker, error, cap);
     bool coopdx = marker.exists;
     es_file_free(&marker);
-    ok = ok &&
-         (coopdx || es_repository_baseline(repo, M64_SEQUENCES_JSON, &registration, error, cap));
+    ok = ok && (coopdx || es_history_baseline(repo, M64_SEQUENCES_JSON, &registration, error, cap));
     EsJson *json = ok && registration.exists
                        ? es_json_parse(registration.data, registration.size, error, cap)
                        : NULL;
@@ -1104,8 +1103,9 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
             size_t size;
             const uint8_t *bytes = es_recipe_get(m->data, m->size, "audio", &size);
             ok = path && bytes && allowed(path) &&
-                 es_plan_put(plan, path, bytes, size, 0, true, error, cap) &&
-                 es_plan_backup(plan, path) && es_plan_affect(plan, m->key, path, "sample");
+                 es_history_plan_put(plan, path, bytes, size, 0, true, error, cap) &&
+                 es_history_plan_backup(plan, path) &&
+                 es_history_plan_affect(plan, m->key, path, "sample");
             continue;
         }
 
@@ -1134,12 +1134,13 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
             char folder[128];
             m64_coopdx_folder(sequence, folder, sizeof(folder));
             snprintf(path, sizeof(path), "mods/%s/sound/%s.m64", folder, sequence);
-            ok = es_plan_put(plan, path, seq, seq_size, 0, true, error, cap) &&
-                 es_plan_affect(plan, m->key, path, "sequence");
+            ok = es_history_plan_put(plan, path, seq, seq_size, 0, true, error, cap) &&
+                 es_history_plan_affect(plan, m->key, path, "sequence");
             char *lua = m64_coopdx_main_lua(sequence);
             snprintf(path, sizeof(path), "mods/%s/main.lua", folder);
-            ok = ok && lua && es_plan_put(plan, path, lua, strlen(lua), 0, true, error, cap) &&
-                 es_plan_affect(plan, m->key, path, "registration");
+            ok = ok && lua &&
+                 es_history_plan_put(plan, path, lua, strlen(lua), 0, true, error, cap) &&
+                 es_history_plan_affect(plan, m->key, path, "registration");
             free(lua);
             continue;
         }
@@ -1159,21 +1160,22 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
         uint64_t need = !strcmp(stock, "0") ? strtoull(required, NULL, 10) : 0;
         memory = need > memory ? need : memory;
         ok = sequence_path(repo, plan, sequence, slot_names[id], m->key, path, error, cap) &&
-             es_plan_put(plan, path, seq, seq_size, 0, true, error, cap) &&
-             es_plan_affect(plan, m->key, path, "sequence");
+             es_history_plan_put(plan, path, seq, seq_size, 0, true, error, cap) &&
+             es_history_plan_affect(plan, m->key, path, "sequence");
         char bank_path[256];
         snprintf(bank_path, sizeof(bank_path), "sound/sound_banks/%s.json", bank);
-        const EsFile *prior = es_plan_find(plan, bank_path);
+        EsFile prior = {0};
+        bool has_prior = es_history_plan_find(plan, bank_path, &prior);
 
-        if (prior && (prior->size != bank_size || memcmp(prior->data, definition, bank_size))) {
+        if (has_prior && (prior.size != bank_size || memcmp(prior.data, definition, bank_size))) {
             ok = fail(error, cap, DM_TEXT_NATIVE_M64_SHARED_BANK, bank_path);
         }
 
         ok = ok && definition &&
-             es_plan_put(plan, bank_path, definition, bank_size, 0, true, error, cap) &&
-             es_plan_affect(plan, m->key, bank_path, "bank") &&
-             es_plan_depend(plan, path, bank_path, "bank") &&
-             es_plan_depend(plan, M64_SEQUENCES_JSON, bank_path, "registration");
+             es_history_plan_put(plan, bank_path, definition, bank_size, 0, true, error, cap) &&
+             es_history_plan_affect(plan, m->key, bank_path, "bank") &&
+             es_history_plan_depend(plan, path, bank_path, "bank") &&
+             es_history_plan_depend(plan, M64_SEQUENCES_JSON, bank_path, "registration");
         yyjson_val *root = registration_root;
         yyjson_val *existing = slot_values[id];
         const char *member = slot_names[id] ? slot_names[id] : sequence;
@@ -1188,7 +1190,7 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
         ok = ok && json && quoted &&
              es_json_set(json, yyjson_is_obj(existing) ? existing : root,
                          yyjson_is_obj(existing) ? "banks" : member, list, &entries, error, cap) &&
-             es_plan_affect(plan, m->key, M64_SEQUENCES_JSON, sequence);
+             es_history_plan_affect(plan, m->key, M64_SEQUENCES_JSON, sequence);
         free(quoted);
 
         for (unsigned asset = 0; ok; asset++) {
@@ -1203,17 +1205,18 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
             snprintf(field, sizeof(field), "asset%u.bytes", asset);
             size_t bytes = 0;
             const uint8_t *data = es_recipe_get(m->data, m->size, field, &bytes);
-            const EsFile *other = es_plan_find(plan, asset_path);
+            EsFile other = {0};
+            bool has_other = es_history_plan_find(plan, asset_path, &other);
 
-            if (other && (other->size != bytes || memcmp(other->data, data, bytes))) {
+            if (has_other && (other.size != bytes || memcmp(other.data, data, bytes))) {
                 ok = fail(error, cap,
                           DM_TEXT_M64_ACTIVE_SONGS_REQUEST_DIFFERENT_REVISIONS_OF_A_SHARED_CUSTOM,
                           asset_path);
             }
 
             ok = ok && data && allowed(asset_path) &&
-                 es_plan_put(plan, asset_path, data, bytes, 0, true, error, cap) &&
-                 es_plan_affect(plan, m->key, asset_path, "added sample");
+                 es_history_plan_put(plan, asset_path, data, bytes, 0, true, error, cap) &&
+                 es_history_plan_affect(plan, m->key, asset_path, "added sample");
         }
     }
 
@@ -1228,8 +1231,8 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
 
         EsFile edited = {0};
         ok = es_edits_apply(&entries, registration.data, registration.size, &edited, error, cap) &&
-             es_plan_put(plan, M64_SEQUENCES_JSON, edited.data, edited.size, registration.mode,
-                         true, error, cap);
+             es_history_plan_put(plan, M64_SEQUENCES_JSON, edited.data, edited.size,
+                                 registration.mode, true, error, cap);
         es_file_free(&edited);
     }
 
@@ -1248,12 +1251,12 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
 
             EsFile source = {0};
             M64Text edited = {0};
-            ok = es_repository_baseline(repo, paths[i], &source, error, cap);
+            ok = es_history_baseline(repo, paths[i], &source, error, cap);
             bool changed = true;
 
             if (ok && hacker) {
                 EsFile config = {0};
-                ok = es_repository_baseline(repo, M64_HACKER_CONFIG, &config, error, cap) &&
+                ok = es_history_baseline(repo, M64_HACKER_CONFIG, &config, error, cap) &&
                      m64_patch_hacker_data_h(source.data, source.size, memory,
                                              m64_hacker_expanded(config.data, config.size), &edited,
                                              &changed, error, cap);
@@ -1268,15 +1271,16 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
             }
 
             if (ok && changed) {
-                ok = es_plan_put(plan, paths[i], edited.data, edited.size, source.mode, true, error,
-                                 cap);
+                ok = es_history_plan_put(plan, paths[i], edited.data, edited.size, source.mode,
+                                         true, error, cap);
 
                 for (size_t m = 0; ok && m < mods->count; m++) {
                     const char *need =
                         es_recipe_text(mods->items[m].data, mods->items[m].size, "memory");
 
                     if (need && strtoull(need, NULL, 10) == memory) {
-                        ok = es_plan_affect(plan, mods->items[m].key, paths[i], "sequence memory");
+                        ok = es_history_plan_affect(plan, mods->items[m].key, paths[i],
+                                                    "sequence memory");
                     }
                 }
             }
@@ -1302,7 +1306,7 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
         const char *keep = es_recipe_text(mods->items[i].data, mods->items[i].size, "keep");
 
         if (keep && !strcmp(keep, "1")) {
-            ok = es_plan_keep_originals(repo, plan, mods->items[i].key, error, cap);
+            ok = es_history_keep_originals(repo, plan, mods->items[i].key, error, cap);
         }
     }
 
@@ -1311,14 +1315,16 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
 
 int32_t DME_CALL m64_history_detect(const DmeHistoryApi *api, DmeHistoryRoot *root,
                                     DmeHistoryTarget *target, char *error, uint64_t cap) {
-    (void)api;
-    return detect((EsRoot *)root, target, error, (size_t)cap);
+    return detect(api, root, target, error, (size_t)cap);
 }
 
 int32_t DME_CALL m64_history_inventory(const DmeHistoryApi *api, DmeHistory *history,
                                        DmeHistoryList *list, char *error, uint64_t cap) {
-    (void)api;
-    return inventory((EsRepository *)history, (EsPaths *)list, error, (size_t)cap);
+    EsHistory h = {api, history};
+    EsPaths paths = {0};
+    bool ok = inventory(&h, &paths, error, (size_t)cap) && es_history_list(api, list, &paths);
+    es_paths_free(&paths);
+    return ok;
 }
 
 int32_t DME_CALL m64_history_allow(const char *path) {
@@ -1328,22 +1334,25 @@ int32_t DME_CALL m64_history_allow(const char *path) {
 int32_t DME_CALL m64_history_render(const DmeHistoryApi *api, DmeHistory *history,
                                     const DmeHistoryIntent *intents, uint32_t count,
                                     DmeHistoryPlan *plan, char *error, uint64_t cap) {
-    (void)api;
+    EsHistory h = {api, history};
+    EsHistoryPlan p = {api, plan};
     EsModifications mods;
-    bool ok = es_intents_view(intents, count, &mods) &&
-              render((EsRepository *)history, &mods, (EsPlan *)plan, error, (size_t)cap);
+    bool ok = es_intents_view(intents, count, &mods) && render(&h, &mods, &p, error, (size_t)cap);
     es_intents_release(&mods);
     return ok;
 }
 
 int32_t DME_CALL m64_history_targets(const DmeHistoryApi *api, DmeHistory *history,
                                      DmeHistoryTargets *targets, char *error, uint64_t cap) {
-    (void)api;
-    return m64_repository_targets((EsRepository *)history, (EsTargets *)targets, error,
-                                  (size_t)cap);
+    EsHistory h = {api, history};
+    EsTargets t = {0};
+    bool ok =
+        m64_repository_targets(&h, &t, error, (size_t)cap) && es_history_targets(api, targets, &t);
+    es_targets_free(&t);
+    return ok;
 }
 
-static bool compose(M64PluginJob *j, EsRepository *repo, const M64Result *result,
+static bool compose(M64PluginJob *j, EsHistory *repo, const M64Result *result,
                     const DmeHost *package_host, char *error, size_t cap) {
     EsRecipe recipes[ES_NATIVE_REGIONS + 1] = {0};
     EsModification mods[ES_NATIVE_REGIONS + 1] = {0};
@@ -1421,8 +1430,8 @@ static bool compose(M64PluginJob *j, EsRepository *repo, const M64Result *result
     }
 
     EsModifications state = {.items = mods, .count = count};
-    ok = ok && (package_host ? es_package_plan(repo, &state, package_host, error, cap)
-                             : es_repository_apply_batch(repo, mods, count, error, cap));
+    ok = ok && (package_host ? es_history_package(repo, &state, package_host, error, cap)
+                             : es_history_apply(repo, mods, count, error, cap));
 
     for (size_t i = 0; i < count; i++) {
         es_recipe_free(&recipes[i]);
@@ -1431,12 +1440,12 @@ static bool compose(M64PluginJob *j, EsRepository *repo, const M64Result *result
     return ok;
 }
 
-bool m64_repository_apply(M64PluginJob *job, EsRepository *repo, const M64Result *result,
-                          char *error, size_t cap) {
+bool m64_repository_apply(M64PluginJob *job, EsHistory *repo, const M64Result *result, char *error,
+                          size_t cap) {
     return compose(job, repo, result, NULL, error, cap);
 }
 
-bool m64_repository_package(M64PluginJob *job, EsRepository *probe, const M64Result *result,
+bool m64_repository_package(M64PluginJob *job, EsHistory *probe, const M64Result *result,
                             const DmeHost *host, char *error, size_t cap) {
     return compose(job, probe, result, host, error, cap);
 }

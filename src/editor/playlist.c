@@ -108,6 +108,12 @@ void ed_lane_label(const Editor *e, int channel, int lane, char *text, size_t ca
     }
 }
 
+const char *ed_channel_instrument(const DmProject *p, int channel) {
+    int program = p->channels[channel].program;
+    return dm_channel_drums(p, channel) ? DM_TEXT_PERCUSSION
+                                        : dm_program_name(program < 0 ? 0 : program);
+}
+
 int ed_playlist_channels(Editor *e, int *list) {
     DM_PROFILE_BEGIN(PLAYLIST_LAYOUT, profile_start);
     int base[16], count = ed_channels(e, base), n = 0;
@@ -437,11 +443,7 @@ static void ed_playlist_label_text(Editor *e, float label, const int *list, int 
         if (label < 100) {
             snprintf(text, capacity, "%02d", c + 1);
         } else {
-            int program = e->project.channels[c].program;
-            const char *name = dm_channel_drums(&e->project, c)
-                                   ? DM_TEXT_PERCUSSION
-                                   : dm_program_name(program < 0 ? 0 : program);
-            snprintf(text, capacity, "%02d  %s", c + 1, name);
+            snprintf(text, capacity, "%02d  %s", c + 1, ed_channel_instrument(&e->project, c));
         }
     }
 }

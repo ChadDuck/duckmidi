@@ -2,7 +2,7 @@
 
 Every exporter with **Export to Repository** shares one history runtime. It records what each export changed so you can revert it, even after a restart. This page explains how it stores and protects your files. To use it, see [Repository history](user-guide.md#repository-history) in the user guide.
 
-The runtime is the `db` library in the plugins folder (`db.dll`, `db.so` or `db.dylib`), which bundles SQLite 3.50.4, yyjson 0.12.0 and pugixml 1.15. duckmidi finds its `duckmidi_history_runtime` entry point and hands it each exporter's [`DmeHistoryAdapter`](../include/duckmidi_repository_plugin.h).
+The runtime is the `db` library in the plugins folder (`db.dll`, `db.so` or `db.dylib`), which bundles SQLite 3.50.4. duckmidi finds its `duckmidi_history_runtime` entry point and hands it each exporter's [`DmeHistoryAdapter`](../include/duckmidi_repository_plugin.h). Exporters don't link it; they reach it only through the `DmeHistoryApi` it hands them. Without `db`, the exporters still load and save files, but **Export to Repository** and its history are unavailable.
 
 ## Sections and starting points
 

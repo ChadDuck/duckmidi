@@ -16,7 +16,7 @@ extern "C" {
    checkout detection, the files that make up its namespace, and how its current intents
    render into files. Every callback receives the runtime's DmeHistoryApi. */
 
-#define DME_REPOSITORY_API 2u
+#define DME_REPOSITORY_API 3u
 
 enum {
     DME_REPOSITORY_INSPECT,
@@ -73,6 +73,11 @@ typedef struct DmeHistoryPlan DmeHistoryPlan;       /* The desired write set bei
 typedef struct DmeHistoryList DmeHistoryList;       /* Paths collected by inventory. */
 typedef struct DmeHistoryTargets DmeHistoryTargets; /* Physical replace targets. */
 
+struct DmeHistoryAdapter;
+
+/* Called once per path by the listing functions; return 0 to stop with an error. */
+typedef int32_t(DME_CALL *DmeHistoryVisit)(void *user, const char *path);
+
 /* File contents owned by the caller; release with DmeHistoryApi.file_free. */
 typedef struct {
     uint8_t *data;
@@ -127,7 +132,8 @@ typedef struct DmeHistoryApi {
        the path's initialized original as "<path>.bkp", the intent that affects a path, and a
        consumer that requires a provider. */
     int32_t(DME_CALL *plan_put)(DmeHistoryPlan *, const char *path, const uint8_t *data,
-                                uint64_t size, uint32_t exists, char *error, uint64_t capacity);
+                                uint64_t size, uint32_t exists, uint32_t mode, char *error,
+                                uint64_t capacity);
     int32_t(DME_CALL *plan_backup)(DmeHistoryPlan *, const char *path);
     int32_t(DME_CALL *plan_affect)(DmeHistoryPlan *, const char *key, const char *path,
                                    const char *selector);
@@ -138,6 +144,33 @@ typedef struct DmeHistoryApi {
                              uint64_t capacity);
     int32_t(DME_CALL *targets_add)(DmeHistoryTargets *, const char *id, const char *label,
                                    const char *path);
+    /* The checkout's identity, stable while the scope is open. */
+    const char *(DME_CALL *identity)(DmeHistory *);
+    /* Nonzero when history is off for this request (DmeRepositoryRequest.untracked). */
+    int32_t(DME_CALL *untracked)(DmeHistory *);
+    /* Visits every path of the initialized baseline (the inventory), in name order. */
+    int32_t(DME_CALL *baseline_paths)(DmeHistory *, DmeHistoryVisit, void *user, char *error,
+                                      uint64_t capacity);
+    /* Visits every regular file of the current checkout below directory. */
+    int32_t(DME_CALL *paths)(DmeHistory *, const char *directory, uint32_t recursive,
+                             DmeHistoryVisit, void *user, char *error, uint64_t capacity);
+    /* The desired state of a path already put in the plan, borrowed until the plan changes:
+       returns 0 when the plan does not hold the path. Do not free the view. */
+    int32_t(DME_CALL *plan_find)(DmeHistoryPlan *, const char *path, DmeHistoryFile *view);
+    /* Visits every path put in the plan so far, in the order it was first put. */
+    int32_t(DME_CALL *plan_paths)(DmeHistoryPlan *, DmeHistoryVisit, void *user);
+    /* Asks to keep "<path>.bkp" originals for every path the intent `key` changes from its
+       baseline. */
+    int32_t(DME_CALL *plan_keep_originals)(DmeHistory *, DmeHistoryPlan *, const char *key,
+                                           char *error, uint64_t capacity);
+    /* Outside history jobs (a saved package that replaces checkout files): opens a read-only
+       view of a checkout for this adapter without the ledger, writes the package's files and
+       manifest through host->artifact from the intents rendered over it, and closes it. */
+    int32_t(DME_CALL *probe)(const struct DmeHistoryAdapter *, const char *checkout, DmeHistory **,
+                             char *error, uint64_t capacity);
+    int32_t(DME_CALL *package)(DmeHistory *probe, const DmeHistoryIntent *, uint32_t count,
+                               const DmeHost *, char *error, uint64_t capacity);
+    void(DME_CALL *close)(DmeHistory *probe);
 } DmeHistoryApi;
 
 typedef struct DmeHistoryAdapter {
@@ -170,6 +203,10 @@ typedef struct DmeHistoryAdapter {
                               uint64_t capacity);
     /* Optional, main thread, install only: copies job settings before the worker starts. */
     void(DME_CALL *begin_install)(void *export_job, const DmeRepositoryRequest *);
+    /* Optional, main thread, once after loading when the history runtime is present: the table
+       for work outside history jobs (probe, package and close). Without the runtime it is never
+       called, and the exporter works without repository features. */
+    void(DME_CALL *attach)(const DmeHistoryApi *);
 } DmeHistoryAdapter;
 
 /* Host-facing jobs exported by the history runtime as duckmidi_history_runtime(version).
@@ -187,6 +224,7 @@ typedef struct DmeHistoryRuntime {
     int32_t(DME_CALL *finish)(void *job, char *error, uint64_t capacity);
     int32_t(DME_CALL *describe)(const void *job, DmeRepositoryView *);
     void(DME_CALL *destroy_job)(void *job);
+    const DmeHistoryApi *api; /* What the host passes to DmeHistoryAdapter.attach. */
 } DmeHistoryRuntime;
 
 typedef const DmeHistoryRuntime *(DME_CALL *DmeHistoryRuntimeEntry)(uint32_t version);

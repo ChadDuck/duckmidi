@@ -390,6 +390,7 @@ The history adapter, in [`duckmidi_repository_plugin.h`](../include/duckmidi_rep
 | `targets` | worker, optional | List the files a custom sample may replace. |
 | `finish` | main, optional | Receive the detected checkout, target and replace targets after any action. |
 | `begin_install` | main, optional | Copy request settings, such as **Keep original files**, into the export job. |
+| `attach` | main, optional | Receive the runtime's `DmeHistoryApi` once after loading, for work outside these callbacks. It is only called when the runtime is installed. |
 
 An intent is one logical change, such as a song slot. It has a stable key, a short label for the history list and a recipe in your own format. Applying an intent with an existing key replaces it, so each song keeps one history row. Because every intent is rendered together, reverting one export leaves later ones intact.
 
@@ -398,7 +399,7 @@ static int32_t DME_CALL render(const DmeHistoryApi *api, DmeHistory *history,
                                const DmeHistoryIntent *intents, uint32_t count,
                                DmeHistoryPlan *plan, char *error, uint64_t cap) {
     for (uint32_t i = 0; i < count; i++) {
-        if (!api->plan_put(plan, "music/song.txt", intents[i].recipe, intents[i].recipe_size, 1,
+        if (!api->plan_put(plan, "music/song.txt", intents[i].recipe, intents[i].recipe_size, 1, 0,
                            error, cap) ||
             !api->plan_affect(plan, intents[i].key.data, "music/song.txt", "song")) {
             return 0;
@@ -409,7 +410,9 @@ static int32_t DME_CALL render(const DmeHistoryApi *api, DmeHistory *history,
 }
 ```
 
-Each callback gets the runtime's `DmeHistoryApi`, whose handles only last for that call. Read original files with `baseline` or `baseline_exists`, and current ones with `read`. Paths are relative to the checkout and use `/`; traversal, links and aliased paths are refused. For storage and recovery details, see the [repository history reference](repository-history.md).
+Each callback gets the runtime's `DmeHistoryApi`, whose handles only last for that call. Read original files with `baseline` or `baseline_exists`, and current ones with `read`. List files with `baseline_paths` (the starting state) or `paths` (the checkout now); both call your `DmeHistoryVisit` once per path. While rendering, `plan_find` and `plan_paths` show what the plan already holds, and `plan_keep_originals` keeps `.bkp` copies of what an intent changed. `plan_put` takes the file's permission bits, or 0 for 0644. Paths are relative to the checkout and use `/`; traversal, links and aliased paths are refused. For storage and recovery details, see the [repository history reference](repository-history.md).
+
+The runtime is the separate `db` plugin. Don't link it: call it only through `DmeHistoryApi`. Then your exporter still loads when `db` is missing. duckmidi hides **Export to Repository** for it, says that `db` is missing, and never calls `attach`. Saving files works as usual. Outside the callbacks, a saved package can still read a checkout: `probe` opens one without the history database, `package` writes your rendered files and a manifest through `DmeHost.artifact`, and `close` releases it.
 
 `DmeHost.plugins_directory` and `DmeMainHost.plugins_directory` give the plugin folder. Copy the path if you keep it.
 

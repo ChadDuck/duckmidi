@@ -17,7 +17,8 @@ void dm_sample_patch_state_event(DmSamplePatchState *state, unsigned status, uns
                                  unsigned b);
 
 /* Prepares all assigned presets for interactive playback, including assignments with no
-   scheduled notes. Indices are parallel to project replacements. Zero selects SoundFont. */
+   scheduled notes. Indices are parallel to project replacements. Zero selects SoundFont. Every
+   entry of a percussion patch on one port, whole or for one drum key, gets that port's kit. */
 bool dm_sample_playback_snapshot(const DmProject *project, DmeContext *context, const DmeHost *host,
                                  uint32_t *indices, DmSampleExportSnapshot **out);
 

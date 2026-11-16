@@ -215,6 +215,8 @@ static const Field patch_fields[] = {
     FIELD(7, FIELD_TEXT, DmPatchReplacement, locator, 0),
     FIELD(8, FIELD_TEXT, DmPatchReplacement, set_id, 0),
     FIELD(9, FIELD_TEXT, DmPatchReplacement, preset_id, 0),
+    FIELD(10, FIELD_U8, DmPatchReplacement, key.drum_key, 0),
+    FIELD(11, FIELD_TEXT, DmPatchReplacement, sample_id, 0),
 };
 
 /* The member size each numeric type stores; a table row with another size is a bug that makes

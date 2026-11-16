@@ -257,23 +257,31 @@ bool dm_sample_id_valid(const char *text) {
     return false;
 }
 
-static bool patch_key_equal(DmPatchKey a, DmPatchKey b) {
+bool dm_patch_same(DmPatchKey a, DmPatchKey b) {
     return a.bank == b.bank && a.port == b.port && a.channel == b.channel &&
            a.program == b.program && a.drums == b.drums;
 }
 
+static bool patch_key_equal(DmPatchKey a, DmPatchKey b) {
+    return dm_patch_same(a, b) && a.drum_key == b.drum_key;
+}
+
 bool dm_patch_replacement_valid(const DmPatchReplacement *r) {
     if (r->key.bank > 16383 || r->key.port >= DM_NOTE_PORTS || r->key.channel >= 16 ||
-        r->key.program > 127) {
+        r->key.program > 127 || r->key.drum_key > 128 || (r->key.drum_key && !r->key.drums)) {
         return false;
     }
 
+    /* SoundFont entries exist only to override a wider one: a port's over the channel's, or a
+       drum key's over the kit's. */
     if (!r->generation) {
-        return r->key.port && !r->locator[0] && !r->set_id[0] && !r->preset_id[0];
+        return (r->key.port || r->key.drum_key) && !r->locator[0] && !r->set_id[0] &&
+               !r->preset_id[0] && !r->sample_id[0];
     }
 
     return r->locator[0] && memchr(r->locator, 0, sizeof(r->locator)) &&
-           dm_sample_id_valid(r->set_id) && dm_sample_id_valid(r->preset_id);
+           dm_sample_id_valid(r->set_id) && dm_sample_id_valid(r->preset_id) &&
+           (r->key.drum_key ? dm_sample_id_valid(r->sample_id) : !r->sample_id[0]);
 }
 
 const DmPatchReplacement *dm_patch_replacement_exact(const DmProject *p, DmPatchKey key) {

@@ -1,4 +1,4 @@
-#include "export_support.h"
+#include "common.h"
 #include <string.h>
 
 static uint32_t rotate(uint32_t value, unsigned bits) {

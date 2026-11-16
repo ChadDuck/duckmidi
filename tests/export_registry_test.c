@@ -1,4 +1,5 @@
 #include "export_plugins.h"
+#include "../include/duckmidi_midi.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,12 +31,59 @@ static int32_t DME_CALL artifact(void *user, const char *name, const uint8_t *da
     return 1;
 }
 
+static uint64_t artifact_bytes;
+
+static int32_t DME_CALL count_artifact(void *user, const char *name, const uint8_t *data,
+                                       uint64_t size) {
+    (void)user;
+    (void)name;
+    (void)data;
+    artifact_bytes += size;
+    return 1;
+}
+
+/* The game exporters load without plugins/db, with repository installs off, and still save a
+   plain file. */
+static void without_history(void) {
+    DmExportRegistry r;
+    dm_export_registry_load(&r, "build/development/export-registry-no-db");
+    printf("without db: registered=%zu\n%s\n", r.count, r.errors);
+    assert(r.count == 2 && !*r.errors && !r.history_runtime);
+
+    for (size_t i = 0; i < r.count; i++) {
+        DmExportFormat *f = &r.formats[i];
+        char message[256] = {0};
+        assert(!f->history && f->history_missing);
+        DmeEvent events[] = {{0, 1, MIDI_NOTE_ON, 60, 100, 0}, {96, 2, MIDI_NOTE_OFF, 60, 0, 0}};
+        DmeContext context = {
+            .events = events, .event_count = 2, .duration = 192, .ppq = 96, .project_name = "x"};
+        DmeHost host = {NULL, cancelled, progress, diagnostic, count_artifact};
+        void *job = f->api->create_job(f->instance, message, sizeof(message));
+        assert(job);
+        artifact_bytes = 0;
+        int32_t status = f->api->run(job, &context, &host, message, sizeof(message));
+        printf("%s: %d %s\n", f->api->id, (int)status, message);
+        assert(status == DME_OK && artifact_bytes > 0);
+        f->api->destroy_job(job);
+    }
+
+    dm_export_registry_free(&r);
+}
+
 int main(void) {
     assert(SDL_Init(0));
+    without_history();
     DmExportRegistry r;
     dm_export_registry_load(&r, "build/development/export-registry-fixtures");
     printf("registered=%zu\n%s\n", r.count, r.errors);
     assert(r.count == 2);
+    assert(r.history_runtime);
+
+    for (size_t i = 0; i < r.count; i++) {
+        bool installs = r.formats[i].api->install_label != NULL;
+        assert(!r.formats[i].history_missing && (r.formats[i].history != NULL) == installs);
+    }
+
     assert(strstr(r.errors, "ABI 8"));
     assert(r.tool_count == 1);
     DmNativeTool *tool = dm_export_registry_tool(&r, DME_SAMPLES_TOOL_ID);
@@ -112,6 +160,6 @@ int main(void) {
     dm_export_registry_free(&r);
     SDL_Quit();
     puts(
-        "PASS plugin discovery, independent formats, invalid ABI/entry/schema/duplicates/allocation, and unload");
+        "PASS plugin discovery, independent formats, invalid ABI/entry/schema/duplicates/allocation, unload, and exporters without db");
     return 0;
 }

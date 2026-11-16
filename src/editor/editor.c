@@ -34,6 +34,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->selected_pattern = -1;
     e->instrument_channel = -1;
     e->instrument_preview = false;
+    e->generate_channel = -1;
     e->selected_clip = -1;
     e->heard_clip = -1;
     e->select_anchor = -1;

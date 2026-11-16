@@ -3,9 +3,10 @@
 #include "duckmidi_export_plugin.h"
 #include "duckmidi_midi.h"
 #include "m64export/m64export.h"
-#include "../../export_support/mapping.h"
-#include "../../export_support/sample.h"
-#include "../../export_support/ports.h"
+#include "../../n64/mapping.h"
+#include "../../n64/sample.h"
+#include "../../n64/ports.h"
+#include "../../adapter/client.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -52,7 +53,7 @@ typedef struct {
     EsMappingJob *custom;
     EsNativeSamples samples;
     M64Instrument custom_definitions[ES_NATIVE_REGIONS];
-    EsRepository *repository; /* Borrowed only during a repository worker callback. */
+    EsHistory *repository; /* Borrowed only during a repository worker callback. */
     char checkout[DME_PATH_LIMIT], checkout_identity[96];
     char sequence[97], bank[97];
     M64Instrument melodic[16 * 128], drums[128];

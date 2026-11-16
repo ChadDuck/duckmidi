@@ -18,7 +18,6 @@
    killed process is rolled back deterministically on the next open. */
 
 #define ES_DATABASE_SCHEMA 2
-#define ES_MAX_PATHS 20000
 #define ES_MAX_RECIPES (256u * 1024u * 1024u)
 #define ES_CACHE_BYTES (64u * 1024u * 1024u)
 
@@ -267,51 +266,6 @@ bool es_render(EsRepository *r, const EsModifications *mods, EsPlan *plan, char 
 }
 
 /* ---- Paths and plans -------------------------------------------------------------------- */
-
-void es_file_free(EsFile *file) {
-    free(file->data);
-    *file = (EsFile){0};
-}
-
-bool es_paths_has(const EsPaths *paths, const char *path) {
-    return es_map_get(&paths->index, path, NULL);
-}
-
-/* Adds any string once; es_paths_add also requires a safe relative path. */
-bool es_strings_add(EsPaths *paths, const char *path) {
-    if (es_paths_has(paths, path)) {
-        return true;
-    }
-
-    if (paths->count >= ES_MAX_PATHS ||
-        !es_reserve((void **)&paths->items, &paths->capacity, paths->count + 1, sizeof(char *))) {
-        return false;
-    }
-
-    char *copy = SDL_strdup(path);
-
-    if (!copy || !es_map_put(&paths->index, copy, paths->count)) {
-        SDL_free(copy);
-        return false;
-    }
-
-    paths->items[paths->count++] = copy;
-    return true;
-}
-
-bool es_paths_add(EsPaths *paths, const char *path) {
-    return es_relative(path) && es_strings_add(paths, path);
-}
-
-void es_paths_free(EsPaths *paths) {
-    for (size_t i = 0; i < paths->count; ++i) {
-        SDL_free(paths->items[i]);
-    }
-
-    free(paths->items);
-    es_map_free(&paths->index);
-    *paths = (EsPaths){0};
-}
 
 const EsFile *es_plan_find(const EsPlan *plan, const char *path) {
     size_t index;

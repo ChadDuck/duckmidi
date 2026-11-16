@@ -4,6 +4,7 @@
 
 typedef struct DmPatternJob {
     DmProject source, result;
+    DmGenerationScope scope;
     DmGenerationStats stats;
     SDL_Thread *thread;
     SDL_AtomicInt cancel, done, progress;
@@ -24,8 +25,8 @@ static void progress(void *user, unsigned value) {
 static int generate(void *user) {
     DmPatternJob *job = user;
     DmGenerationHooks hooks = {job, cancelled, progress};
-    job->success = dm_generate_patterns(&job->source, &job->result, &hooks, &job->stats, job->error,
-                                        sizeof(job->error));
+    job->success = dm_generate_patterns(&job->source, &job->result, &job->scope, &hooks,
+                                        &job->stats, job->error, sizeof(job->error));
 
     if (job->success) {
         int diff[16][2][513] = {0};
@@ -111,6 +112,7 @@ void ed_generate_start(Editor *e) {
     dm_project_init(&job->result);
     job->revision = e->export_revision;
     job->session = e->project_session;
+    job->scope = (DmGenerationScope){.channel = e->generate_channel};
 
     if (!dm_project_copy(&job->source, &e->project)) {
         dm_project_free(&job->source);
@@ -289,6 +291,41 @@ static void preview(Editor *e, DmPatternJob *job) {
     ui_child_end();
 }
 
+static void channel_label(const Editor *e, int channel, char *text, size_t cap) {
+    if (channel < 0) {
+        snprintf(text, cap, "%s", DM_TEXT_GENERATE_ALL_CHANNELS);
+    } else {
+        snprintf(text, cap, DM_TEXT_GENERATE_CHANNEL, channel + 1,
+                 ed_channel_instrument(&e->project, channel));
+    }
+}
+
+/* All channels or one enabled channel. A new choice drops the preview, so Apply never applies
+   a result made for another scope. */
+static void scope_dropdown(Editor *e) {
+    char text[128];
+    channel_label(e, e->generate_channel, text, sizeof(text));
+    ui_width(300);
+
+    if (ui_combo(DM_TEXT_GENERATE_SCOPE, text)) {
+        for (int channel = -1; channel < 16; channel++) {
+            if (channel >= 0 && !e->project.channels[channel].enabled) {
+                continue;
+            }
+
+            channel_label(e, channel, text, sizeof(text));
+
+            if (ui_select(text, e->generate_channel == channel, 0, 0) &&
+                e->generate_channel != channel) {
+                e->generate_channel = channel;
+                ed_generate_free(e);
+            }
+        }
+
+        ui_combo_end();
+    }
+}
+
 void ed_generate_dialog(Editor *e) {
     if (!e->generate_window) {
         return;
@@ -310,6 +347,7 @@ void ed_generate_dialog(Editor *e) {
 
         bool busy = ed_generate_busy(e);
         ui_disabled(busy);
+        scope_dropdown(e);
 
         if (ui_button(DM_TEXT_GENERATE, 140, 0)) {
             ed_generate_start(e);

@@ -90,7 +90,6 @@ typedef struct DmExportPlugins {
     char suggested[DM_PATH];
     bool history_open;
     float history_width;
-    char history_key[520]; /* Logical key of the selected history row, or empty. */
     int history_confirm;
 } DmExportPlugins;
 

@@ -446,7 +446,7 @@ void dm_export_registry_load(DmExportRegistry *r, const char *directory) {
         const DmeHistoryRuntime *runtime = entry ? entry(DME_REPOSITORY_API) : NULL;
 
         if (runtime && runtime->size == sizeof(*runtime) &&
-            runtime->version == DME_REPOSITORY_API) {
+            runtime->version == DME_REPOSITORY_API && runtime->api) {
             r->history_runtime = runtime;
         }
 
@@ -513,9 +513,11 @@ void dm_export_registry_load(DmExportRegistry *r, const char *directory) {
                 break;
             }
 
-            if (history && !r->history_runtime) {
-                why = DM_TEXT_HISTORY_RUNTIME_MISSING;
-                break;
+            /* Without plugins/db the exporter still loads; only repository installs are off. */
+            bool history_missing = history && !r->history_runtime;
+
+            if (history_missing) {
+                history = NULL;
             }
 
             if (r->count == DM_EXPORT_MAX_FORMATS) {
@@ -554,7 +556,12 @@ void dm_export_registry_load(DmExportRegistry *r, const char *directory) {
             DmExportFormat *f = &r->formats[r->count++];
             f->api = a;
             f->history = history;
+            f->history_missing = history_missing;
             f->instance = instance;
+
+            if (history && history->attach) {
+                history->attach(r->history_runtime->api);
+            }
         }
 
         for (uint32_t j = 0; !why && j < plugin->tool_count; ++j) {

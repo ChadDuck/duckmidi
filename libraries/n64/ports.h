@@ -1,8 +1,7 @@
-#ifndef DUCK_EXPORT_SUPPORT_PORTS_H
-#define DUCK_EXPORT_SUPPORT_PORTS_H
+#ifndef DUCK_N64_PORTS_H
+#define DUCK_N64_PORTS_H
 
 #include "../../include/duckmidi_export_plugin.h"
-#include "export_support.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -21,13 +20,13 @@ typedef struct {
     char merges[768]; /* One "where: control" line per interfering merge. */
 } EsPortLayout;
 
-DES_API bool es_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion,
-                            EsPortLayout *layout);
+bool es_port_layout(const DmeEvent *events, uint64_t count, uint32_t percussion,
+                    EsPortLayout *layout);
 
 /* The loop the context's markers ask for, in ticks. A missing start is the beginning; an end of 0
    means the end of the song. Fails with a message when the start is not before the end. */
-DES_API bool es_loop_region(const DmeContext *context, uint64_t *start, uint64_t *end, char *error,
-                            size_t cap);
+bool es_loop_region(const DmeContext *context, uint64_t *start, uint64_t *end, char *error,
+                    size_t cap);
 
 #ifdef __cplusplus
 }

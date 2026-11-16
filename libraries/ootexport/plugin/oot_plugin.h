@@ -1,9 +1,10 @@
 #ifndef OOT_PLUGIN_H
 #define OOT_PLUGIN_H
 #include "../src/oot.h"
-#include "../../export_support/mapping.h"
-#include "../../export_support/sample.h"
-#include "../../export_support/ports.h"
+#include "../../n64/mapping.h"
+#include "../../n64/sample.h"
+#include "../../n64/ports.h"
+#include "../../adapter/client.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -42,7 +43,7 @@ typedef struct {
     OotRequest request;
     EsMappingJob *custom;
     EsNativeSamples samples;
-    EsRepository *repository;
+    EsHistory *repository;
     char checkout[DME_PATH_LIMIT], checkout_identity[96];
     char name[OOT_NAME_CAPACITY];
     char sample_bank[DME_PATH_LIMIT];

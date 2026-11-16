@@ -1,7 +1,8 @@
-#ifndef DUCK_EXPORT_SUPPORT_H
-#define DUCK_EXPORT_SUPPORT_H
+#ifndef DUCK_DB_H
+#define DUCK_DB_H
 
 #include "../../include/duckmidi_repository_plugin.h"
+#include "../common/common.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -22,20 +23,6 @@ extern "C" {
 typedef struct EsRepository EsRepository;
 typedef struct EsRoot EsRoot;
 
-/* String-keyed hash index. Keys are borrowed and must outlive the map. */
-typedef struct {
-    const char **keys;
-    size_t *values;
-    size_t capacity, count;
-} EsMap;
-
-typedef struct {
-    uint8_t *data;
-    size_t size;
-    uint32_t mode;
-    bool exists;
-} EsFile;
-
 /* Directory-entry metadata. The signature (size, mtime, mode) detects outside edits without
    reading contents; a changed signature is confirmed by hashing before it counts as drift. */
 typedef struct {
@@ -43,12 +30,6 @@ typedef struct {
     uint32_t mode;
     bool exists, directory;
 } EsStat;
-
-typedef struct {
-    char **items;
-    size_t count, capacity;
-    EsMap index;
-} EsPaths;
 
 typedef struct {
     char *path;
@@ -76,19 +57,6 @@ typedef struct {
     size_t dependency_count, dependency_capacity;
 } EsPlan;
 
-typedef struct {
-    char *key, *label;
-    uint8_t *data;
-    size_t size;
-    uint64_t order;
-    EsPaths paths;
-} EsModification;
-
-typedef struct {
-    EsModification *items;
-    size_t count;
-} EsModifications;
-
 /* target_name and capabilities (DME_REPOSITORY_* flags) describe the scope in history views. */
 typedef struct {
     const char *plugins, *checkout, *exporter, *target, *version, *target_name;
@@ -108,15 +76,6 @@ typedef struct {
     size_t count;
 } EsScopes;
 
-typedef struct {
-    DmeSampleTarget *items;
-    size_t count, capacity;
-} EsTargets;
-
-DES_API bool es_map_put(EsMap *, const char *key, size_t value);
-DES_API bool es_map_get(const EsMap *, const char *key, size_t *value);
-DES_API void es_map_free(EsMap *);
-
 DES_API EsRepository *es_repository_open(const EsOpen *, char *error, size_t cap);
 /* Read-only native inspection for packages; creates no history directory or database. */
 DES_API EsRepository *es_repository_probe(const char *checkout, const DmeHistoryAdapter *, char *,
@@ -133,9 +92,6 @@ DES_API bool es_render(EsRepository *, const EsModifications *, EsPlan *, char *
 /* The callback table given to adapters; DmeHistory, DmeHistoryPlan and DmeHistoryList are
    EsRepository, EsPlan and EsPaths. */
 DES_API const DmeHistoryApi *es_history_api(void);
-/* A borrowed EsModifications view of intents; free it with es_intents_release. */
-DES_API bool es_intents_view(const DmeHistoryIntent *, uint32_t, EsModifications *);
-DES_API void es_intents_release(EsModifications *);
 DES_API void es_repository_close(EsRepository *);
 DES_API bool es_repository_initialize(EsRepository *, char *error, size_t cap);
 DES_API bool es_repository_apply(EsRepository *, const char *key, const char *label,
@@ -174,10 +130,6 @@ DES_API const char *es_root_name(const EsRoot *);
 DES_API const char *es_root_identity(const EsRoot *);
 DES_API bool es_fs_read(EsRoot *, const char *, EsFile *, char *, size_t);
 
-DES_API bool es_paths_add(EsPaths *, const char *);
-DES_API bool es_paths_has(const EsPaths *, const char *);
-DES_API void es_paths_free(EsPaths *);
-DES_API void es_file_free(EsFile *);
 DES_API bool es_plan_put(EsPlan *, const char *path, const void *, size_t, uint32_t mode,
                          bool exists, char *, size_t);
 DES_API bool es_plan_backup(EsPlan *, const char *path);
@@ -186,9 +138,6 @@ DES_API bool es_plan_affect(EsPlan *, const char *key, const char *path, const c
 DES_API bool es_plan_depend(EsPlan *, const char *consumer, const char *provider, const char *role);
 DES_API const EsFile *es_plan_find(const EsPlan *, const char *);
 DES_API void es_plan_free(EsPlan *);
-DES_API void es_sha256(const void *, size_t, uint8_t hash[32]);
-DES_API bool es_targets_add(EsTargets *, const char *id, const char *label, const char *path);
-DES_API void es_targets_free(EsTargets *);
 /* The host-facing job table, resolved by name from plugins/db. */
 DES_API const DmeHistoryRuntime *DME_CALL duckmidi_history_runtime(uint32_t version);
 

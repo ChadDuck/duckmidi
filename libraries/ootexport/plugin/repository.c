@@ -1,7 +1,6 @@
 #include "repository.h"
 #include "../../../src/text/en.h"
-#include "../../export_support/source.h"
-#include "../../export_support/package.h"
+#include "../../adapter/source.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,12 +25,14 @@ static bool version_from(const EsFile *makefile, const EsFile *options, char out
                           "Makefile VERSION"));
 }
 
-static bool detect(EsRoot *root, DmeHistoryTarget *target, char *error, size_t cap) {
+static bool detect(const DmeHistoryApi *api, DmeHistoryRoot *root, DmeHistoryTarget *target,
+                   char *error, size_t cap) {
     char *version = target->version;
     EsFile makefile = {0}, compiler = {0}, options = {0};
-    bool ok = es_fs_read(root, "Makefile", &makefile, error, cap) &&
-              es_fs_read(root, ".make_options.mk", &options, error, cap) &&
-              es_fs_read(root, "tools/audio/soundfont_compiler.c", &compiler, error, cap) &&
+    bool ok = es_history_root_read(api, root, "Makefile", &makefile, error, cap) &&
+              es_history_root_read(api, root, ".make_options.mk", &options, error, cap) &&
+              es_history_root_read(api, root, "tools/audio/soundfont_compiler.c", &compiler, error,
+                                   cap) &&
               compiler.exists && version_from(&makefile, &options, version, error, cap);
     snprintf(target->id, sizeof(target->id), "oot");
     snprintf(target->name, sizeof(target->name), "OoT");
@@ -75,11 +76,11 @@ static bool allowed(const char *path) {
            (suffix(path, ".wav") || suffix(path, ".xml") || suffix(path, ".seq"));
 }
 
-static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t cap) {
+static bool inventory(EsHistory *repo, EsPaths *paths, char *error, size_t cap) {
     EsFile makefile = {0}, options = {0};
     char version[64], extracted[256];
-    bool ok = es_repository_read(repo, "Makefile", &makefile, error, cap) &&
-              es_repository_read(repo, ".make_options.mk", &options, error, cap) &&
+    bool ok = es_history_read(repo, "Makefile", &makefile, error, cap) &&
+              es_history_read(repo, ".make_options.mk", &options, error, cap) &&
               version_from(&makefile, &options, version, error, cap) &&
               es_paths_add(paths, ".make_options.mk");
     es_file_free(&makefile);
@@ -89,7 +90,7 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
 
     for (unsigned f = 0; ok && f < 2; f++) {
         EsPaths all = {0};
-        ok = es_repository_paths(repo, folders[f], true, &all, error, cap);
+        ok = es_history_paths(repo, folders[f], true, &all, error, cap);
 
         for (size_t i = 0; ok && i < all.count; i++) {
             if (allowed(all.items[i])) {
@@ -105,7 +106,7 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
 
     for (size_t i = 0; ok && i < sizeof(fixed) / sizeof(*fixed); i++) {
         EsFile file = {0};
-        ok = es_repository_read(repo, fixed[i], &file, error, cap);
+        ok = es_history_read(repo, fixed[i], &file, error, cap);
 
         if (ok && !file.exists) {
             snprintf(error, cap, "%s: %s", DM_TEXT_OOT_MISSING_NATIVE_SOURCE_INPUT, fixed[i]);
@@ -116,7 +117,7 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
         es_file_free(&file);
         char backup[256];
         snprintf(backup, sizeof(backup), "%s.bkp", fixed[i]);
-        ok = ok && es_repository_read(repo, backup, &file, error, cap);
+        ok = ok && es_history_read(repo, backup, &file, error, cap);
 
         if (ok && file.exists) {
             ok = es_paths_add(paths, backup);
@@ -128,39 +129,42 @@ static bool inventory(EsRepository *repo, EsPaths *paths, char *error, size_t ca
     return ok;
 }
 
-static bool current(EsRepository *repo, const EsPlan *plan, const char *path, EsFile *file,
+static bool current(EsHistory *repo, EsHistoryPlan *plan, const char *path, EsFile *file,
                     char *error, size_t cap) {
-    const EsFile *desired = plan ? es_plan_find(plan, path) : NULL;
+    EsFile desired = {0};
 
-    if (!desired) {
-        return es_repository_baseline(repo, path, file, error, cap);
+    if (!plan || !es_history_plan_find(plan, path, &desired)) {
+        return es_history_baseline(repo, path, file, error, cap);
     }
 
-    file->data = malloc(desired->size + 1);
+    file->data = malloc(desired.size + 1);
 
     if (!file->data) {
         return false;
     }
 
-    memcpy(file->data, desired->data, desired->size);
-    file->data[desired->size] = 0;
-    file->size = desired->size;
-    file->mode = desired->mode;
-    file->exists = desired->exists;
+    if (desired.size) {
+        memcpy(file->data, desired.data, desired.size);
+    }
+
+    file->data[desired.size] = 0;
+    file->size = desired.size;
+    file->mode = desired.mode;
+    file->exists = desired.exists;
     return true;
 }
 
-static bool get_version(EsRepository *repo, char version[64], char *error, size_t cap) {
+static bool get_version(EsHistory *repo, char version[64], char *error, size_t cap) {
     EsFile file = {0}, options = {0};
-    bool ok = es_repository_baseline(repo, "Makefile", &file, error, cap) &&
-              es_repository_baseline(repo, ".make_options.mk", &options, error, cap) &&
+    bool ok = es_history_baseline(repo, "Makefile", &file, error, cap) &&
+              es_history_baseline(repo, ".make_options.mk", &options, error, cap) &&
               version_from(&file, &options, version, error, cap);
     es_file_free(&file);
     es_file_free(&options);
     return ok;
 }
 
-static bool effective(EsRepository *repo, const EsPlan *plan, const char *logical,
+static bool effective(EsHistory *repo, EsHistoryPlan *plan, const char *logical,
                       const char *version, char physical[DME_PATH_LIMIT], EsFile *file, char *error,
                       size_t cap) {
     char extracted[DME_PATH_LIMIT];
@@ -202,7 +206,7 @@ static bool effective(EsRepository *repo, const EsPlan *plan, const char *logica
 
 /* Resolves the effective physical input for a logical path without reading it: an authored
    source takes precedence over the extracted copy. */
-static bool effective_path(EsRepository *repo, const EsPlan *plan, const char *logical,
+static bool effective_path(EsHistory *repo, EsHistoryPlan *plan, const char *logical,
                            const char *version, char physical[DME_PATH_LIMIT], char *error,
                            size_t cap) {
     char extracted[DME_PATH_LIMIT];
@@ -210,8 +214,8 @@ static bool effective_path(EsRepository *repo, const EsPlan *plan, const char *l
 
     if (snprintf(extracted, sizeof(extracted), "extracted/%s/%s", version, logical) >=
             (int)sizeof(extracted) ||
-        !es_plan_exists(repo, plan, logical, &authored, error, cap) ||
-        !es_plan_exists(repo, plan, extracted, &fallback, error, cap)) {
+        !es_history_plan_exists(repo, plan, logical, &authored, error, cap) ||
+        !es_history_plan_exists(repo, plan, extracted, &fallback, error, cap)) {
         return false;
     }
 
@@ -340,8 +344,8 @@ typedef struct {
 } Sample;
 
 typedef struct {
-    EsRepository *repo;
-    EsPlan *plan;
+    EsHistory *repo;
+    EsHistoryPlan *plan;
     EsTargets *targets;
     char version[64];
     Sample *samples;
@@ -501,7 +505,7 @@ static bool scan_bank(Graph *g, const char *logical, char *error, size_t cap) {
         }
 
         ok = ok && graph_sample(g, logical, name, physical) &&
-             (!g->plan || es_plan_depend(g->plan, path, physical, name));
+             (!g->plan || es_history_plan_depend(g->plan, path, physical, name));
     }
 
     es_xml_free(xml);
@@ -631,7 +635,7 @@ static bool scan_font(Graph *g, const char *logical, bool font_indices[256], cha
 
             if (g->targets && !es_paths_has(&g->target_paths, sample->path)) {
                 char id[16384], label[16384];
-                snprintf(id, sizeof(id), "%s|%s", es_repository_identity(g->repo), sample->path);
+                snprintf(id, sizeof(id), "%s|%s", es_history_identity(g->repo), sample->path);
                 snprintf(label, sizeof(label), "%s / %s / %s — %s", logical, n->name, name,
                          sample->path);
                 ok = es_targets_add(g->targets, id, label, sample->path) &&
@@ -639,7 +643,7 @@ static bool scan_font(Graph *g, const char *logical, bool font_indices[256], cha
             }
 
             if (ok && g->plan) {
-                ok = es_plan_depend(g->plan, path, sample->path, refs[r]);
+                ok = es_history_plan_depend(g->plan, path, sample->path, refs[r]);
             }
 
             if (!ok || !g->replace_path || strcmp(sample->path, g->replace_path)) {
@@ -648,7 +652,7 @@ static bool scan_font(Graph *g, const char *logical, bool font_indices[256], cha
 
             EsFile wav = {0};
             Pitch natural = {0}, configured;
-            ok = es_repository_baseline(g->repo, sample->path, &wav, error, cap) &&
+            ok = es_history_baseline(g->repo, sample->path, &wav, error, cap) &&
                  wav_pitch(&wav, &natural);
             es_file_free(&wav);
             configured = natural;
@@ -660,7 +664,7 @@ static bool scan_font(Graph *g, const char *logical, bool font_indices[256], cha
                 double desired = tuning(configured) / tuning(natural) * g->replacement_tuning;
                 ok = patch_pitch(xml, defaults ? definition_index : i, ending, desired, &edits,
                                  error, cap) &&
-                     es_plan_affect(g->plan, g->replacement->key, path, refs[r]);
+                     es_history_plan_affect(g->plan, g->replacement->key, path, refs[r]);
 
                 if (ok && !pan_patched && g->replacement_pan >= 0 && !strcmp(n->name, "Drum")) {
                     char pan[16];
@@ -675,7 +679,8 @@ static bool scan_font(Graph *g, const char *logical, bool font_indices[256], cha
     if (ok && edits.count) {
         EsFile edited = {0};
         ok = es_edits_apply(&edits, source.data, source.size, &edited, error, cap) &&
-             es_plan_put(g->plan, path, edited.data, edited.size, source.mode, true, error, cap);
+             es_history_plan_put(g->plan, path, edited.data, edited.size, source.mode, true, error,
+                                 cap);
         es_file_free(&edited);
     }
 
@@ -689,7 +694,7 @@ static bool scan_font(Graph *g, const char *logical, bool font_indices[256], cha
                    : fail(error, cap, DM_TEXT_OOT_UNSUPPORTED_NATIVE_SOUNDFONT_OR_PITCH, logical));
 }
 
-static bool scan_graph(EsRepository *repo, EsPlan *plan, EsTargets *targets,
+static bool scan_graph(EsHistory *repo, EsHistoryPlan *plan, EsTargets *targets,
                        const EsModification *replacement, char *error, size_t cap) {
     Graph g = {.repo = repo,
                .plan = plan,
@@ -698,11 +703,9 @@ static bool scan_graph(EsRepository *repo, EsPlan *plan, EsTargets *targets,
                .replacement_pan = -1};
     bool ok = get_version(repo, g.version, error, cap);
     EsPaths paths = {0}, banks = {0}, fonts = {0};
-    ok = ok && es_repository_baseline_paths(repo, &paths, error, cap);
+    ok = ok && es_history_baseline_paths(repo, &paths, error, cap);
 
-    for (size_t i = 0; ok && plan && i < plan->count; i++) {
-        ok = es_paths_add(&paths, plan->writes[i].path);
-    }
+    ok = ok && (!plan || es_history_plan_paths(plan, &paths));
 
     for (size_t i = 0; ok && i < paths.count; i++) {
         const char *logical = paths.items[i];
@@ -761,17 +764,17 @@ static bool scan_graph(EsRepository *repo, EsPlan *plan, EsTargets *targets,
     return ok;
 }
 
-bool oot_repository_targets(EsRepository *repo, EsTargets *targets, char *error, size_t cap) {
+bool oot_repository_targets(EsHistory *repo, EsTargets *targets, char *error, size_t cap) {
     return scan_graph(repo, NULL, targets, NULL, error, cap);
 }
 
-bool oot_repository_sample_targets(OotPluginJob *job, EsRepository *repo, const DmeContext *context,
+bool oot_repository_sample_targets(OotPluginJob *job, EsHistory *repo, const DmeContext *context,
                                    const DmeHost *host, char *error, size_t cap) {
     Graph g = {.repo = repo, .replacement_pan = -1};
     EsPaths paths = {0}, banks = {0};
     job->sample_bank[0] = 0;
     bool ok = get_version(repo, g.version, error, cap) &&
-              es_repository_baseline_paths(repo, &paths, error, cap);
+              es_history_baseline_paths(repo, &paths, error, cap);
 
     for (size_t i = 0; ok && i < paths.count; i++) {
         const char *logical = paths.items[i];
@@ -807,7 +810,7 @@ bool oot_repository_sample_targets(OotPluginJob *job, EsRepository *repo, const 
 
         for (size_t s = 0; s < g.count; s++) {
             char id[16384];
-            snprintf(id, sizeof(id), "%s|%s", es_repository_identity(repo), g.samples[s].path);
+            snprintf(id, sizeof(id), "%s|%s", es_history_identity(repo), g.samples[s].path);
 
             if (!strcmp(id, r->target) || !strcmp(g.samples[s].path, r->target)) {
                 selected = &g.samples[s];
@@ -823,7 +826,7 @@ bool oot_repository_sample_targets(OotPluginJob *job, EsRepository *repo, const 
 
         EsFile wav = {0};
         Pitch pitch = {0};
-        ok = es_repository_baseline(repo, selected->path, &wav, error, cap);
+        ok = es_history_baseline(repo, selected->path, &wav, error, cap);
         bool pitched = ok && wav_pitch(&wav, &pitch);
         es_file_free(&wav);
 
@@ -895,8 +898,8 @@ bool oot_repository_sample_targets(OotPluginJob *job, EsRepository *repo, const 
     return ok;
 }
 
-static bool append_sample(EsRepository *repo, EsPlan *plan, const char *version, const char *name,
-                          char *error, size_t cap) {
+static bool append_sample(EsHistory *repo, EsHistoryPlan *plan, const char *version,
+                          const char *name, char *error, size_t cap) {
     char path[DME_PATH_LIMIT];
     EsFile source = {0};
     bool ok = effective(repo, plan, "assets/audio/samplebanks/SampleBank_0.xml", version, path,
@@ -926,7 +929,8 @@ static bool append_sample(EsRepository *repo, EsPlan *plan, const char *version,
         EsFile edited = {0};
         ok = es_xml_append(xml, 0, fragment, &edits, error, cap) &&
              es_edits_apply(&edits, source.data, source.size, &edited, error, cap) &&
-             es_plan_put(plan, path, edited.data, edited.size, source.mode, true, error, cap);
+             es_history_plan_put(plan, path, edited.data, edited.size, source.mode, true, error,
+                                 cap);
         es_edits_free(&edits);
         es_file_free(&edited);
     }
@@ -936,26 +940,27 @@ static bool append_sample(EsRepository *repo, EsPlan *plan, const char *version,
     return ok && xml;
 }
 
-static bool memory_plan(EsRepository *repo, const EsModifications *mods, EsPlan *plan,
+static bool memory_plan(EsHistory *repo, const EsModifications *mods, EsHistoryPlan *plan,
                         uint32_t sequence, uint32_t font, char *error, size_t cap) {
     EsFile session = {0};
     OotText edited = {0};
     uint32_t growth = 0;
-    bool ok = es_repository_baseline(repo, OOT_SESSION_CONFIG, &session, error, cap) &&
+    bool ok = es_history_baseline(repo, OOT_SESSION_CONFIG, &session, error, cap) &&
               oot_patch_session_config(session.data, session.size, sequence, font, &edited, &growth,
                                        error, cap);
 
     if (ok && growth) {
-        ok = es_plan_put(plan, OOT_SESSION_CONFIG, edited.data, edited.size, session.mode, true,
-                         error, cap);
+        ok = es_history_plan_put(plan, OOT_SESSION_CONFIG, edited.data, edited.size, session.mode,
+                                 true, error, cap);
         const char *heaps[] = {OOT_AUDIO_HEAP_C, OOT_BUFFERS_H};
 
         for (unsigned i = 0; ok && i < 2; i++) {
             EsFile original = {0};
             OotText heap = {0};
-            ok = es_repository_baseline(repo, heaps[i], &original, error, cap) &&
+            ok = es_history_baseline(repo, heaps[i], &original, error, cap) &&
                  oot_patch_audio_heap(original.data, original.size, growth, &heap, error, cap) &&
-                 es_plan_put(plan, heaps[i], heap.data, heap.size, original.mode, true, error, cap);
+                 es_history_plan_put(plan, heaps[i], heap.data, heap.size, original.mode, true,
+                                     error, cap);
             oot_text_free(&heap);
             es_file_free(&original);
         }
@@ -967,7 +972,7 @@ static bool memory_plan(EsRepository *repo, const EsModifications *mods, EsPlan 
                 es_recipe_text(mods->items[i].data, mods->items[i].size, "enlarge");
 
             for (unsigned p = 0; enlarge && !strcmp(enlarge, "1") && ok && p < 3; p++) {
-                ok = es_plan_affect(plan, mods->items[i].key, paths[p], "audio memory");
+                ok = es_history_plan_affect(plan, mods->items[i].key, paths[p], "audio memory");
             }
         }
     }
@@ -977,13 +982,13 @@ static bool memory_plan(EsRepository *repo, const EsModifications *mods, EsPlan 
     return ok;
 }
 
-static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan, char *error,
+static bool render(EsHistory *repo, const EsModifications *mods, EsHistoryPlan *plan, char *error,
                    size_t cap) {
     char version[64];
     bool ok = get_version(repo, version, error, cap);
     EsFile spec = {0}, table = {0};
-    ok = ok && es_repository_baseline(repo, OOT_SPEC, &spec, error, cap) &&
-         es_repository_baseline(repo, OOT_SEQUENCE_TABLE, &table, error, cap);
+    ok = ok && es_history_baseline(repo, OOT_SPEC, &spec, error, cap) &&
+         es_history_baseline(repo, OOT_SEQUENCE_TABLE, &table, error, cap);
     uint32_t max_sequence = 0, max_font = 0;
     /* Sequence files are named after the song, so two installed songs cannot share a name. */
     EsPaths names = {0};
@@ -1002,8 +1007,9 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
             size_t size = 0;
             const uint8_t *bytes = es_recipe_get(m->data, m->size, "audio", &size);
             ok = path && bytes && allowed(path) && suffix(path, ".wav") &&
-                 es_plan_put(plan, path, bytes, size, 0, true, error, cap) &&
-                 es_plan_backup(plan, path) && es_plan_affect(plan, m->key, path, "sample");
+                 es_history_plan_put(plan, path, bytes, size, 0, true, error, cap) &&
+                 es_history_plan_backup(plan, path) &&
+                 es_history_plan_affect(plan, m->key, path, "sample");
             continue;
         }
 
@@ -1065,10 +1071,10 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
         oot_text_free(&new_table);
         char path[512];
         snprintf(path, sizeof(path), "assets/audio/sequences/%s.seq", name);
-        ok = ok && es_plan_put(plan, path, sequence, sequence_size, 0, true, error, cap) &&
-             es_plan_affect(plan, m->key, path, "sequence") &&
-             es_plan_affect(plan, m->key, OOT_SPEC, name) &&
-             es_plan_affect(plan, m->key, OOT_SEQUENCE_TABLE, *song ? song : name);
+        ok = ok && es_history_plan_put(plan, path, sequence, sequence_size, 0, true, error, cap) &&
+             es_history_plan_affect(plan, m->key, path, "sequence") &&
+             es_history_plan_affect(plan, m->key, OOT_SPEC, name) &&
+             es_history_plan_affect(plan, m->key, OOT_SEQUENCE_TABLE, *song ? song : name);
 
         if (ok && has_font) {
             EsXml *xml = es_xml_parse(font, font_size, error, cap);
@@ -1082,9 +1088,10 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
             snprintf(font_path, sizeof(font_path), "assets/audio/soundfonts/Soundfont_%s.xml",
                      name);
             ok = ok &&
-                 es_plan_put(plan, font_path, adjusted.data, adjusted.size, 0, true, error, cap) &&
-                 es_plan_affect(plan, m->key, font_path, "soundfont") &&
-                 es_plan_depend(plan, path, font_path, "soundfont");
+                 es_history_plan_put(plan, font_path, adjusted.data, adjusted.size, 0, true, error,
+                                     cap) &&
+                 es_history_plan_affect(plan, m->key, font_path, "soundfont") &&
+                 es_history_plan_depend(plan, path, font_path, "soundfont");
             es_file_free(&adjusted);
             es_edits_free(&edits);
             es_xml_free(xml);
@@ -1104,23 +1111,25 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
             snprintf(field, sizeof(field), "asset%u.bytes", a);
             size_t bytes = 0;
             const uint8_t *data = es_recipe_get(m->data, m->size, field, &bytes);
-            const EsFile *other = es_plan_find(plan, sample_path);
+            EsFile other = {0};
+            bool has_other = es_history_plan_find(plan, sample_path, &other);
 
-            if (other && (other->size != bytes || !data || memcmp(other->data, data, bytes))) {
+            if (has_other && (other.size != bytes || !data || memcmp(other.data, data, bytes))) {
                 ok = fail(error, cap,
                           DM_TEXT_M64_ACTIVE_SONGS_REQUEST_DIFFERENT_REVISIONS_OF_A_SHARED_CUSTOM,
                           sample_path);
             }
 
-            ok = ok && data && es_plan_put(plan, sample_path, data, bytes, 0, true, error, cap) &&
-                 es_plan_affect(plan, m->key, sample_path, "added sample") &&
+            ok = ok && data &&
+                 es_history_plan_put(plan, sample_path, data, bytes, 0, true, error, cap) &&
+                 es_history_plan_affect(plan, m->key, sample_path, "added sample") &&
                  append_sample(repo, plan, version, asset_name, error, cap);
             char physical[DME_PATH_LIMIT];
             EsFile bank = {0};
             ok = ok &&
                  effective(repo, plan, "assets/audio/samplebanks/SampleBank_0.xml", version,
                            physical, &bank, error, cap) &&
-                 es_plan_affect(plan, m->key, physical, asset_name);
+                 es_history_plan_affect(plan, m->key, physical, asset_name);
             es_file_free(&bank);
         }
 
@@ -1138,8 +1147,9 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
     }
 
     if (ok && mods->count) {
-        ok = es_plan_put(plan, OOT_SPEC, spec.data, spec.size, 0, true, error, cap) &&
-             es_plan_put(plan, OOT_SEQUENCE_TABLE, table.data, table.size, 0, true, error, cap);
+        ok = es_history_plan_put(plan, OOT_SPEC, spec.data, spec.size, 0, true, error, cap) &&
+             es_history_plan_put(plan, OOT_SEQUENCE_TABLE, table.data, table.size, 0, true, error,
+                                 cap);
     }
 
     es_paths_free(&names);
@@ -1165,7 +1175,7 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
         const char *keep = es_recipe_text(mods->items[i].data, mods->items[i].size, "keep");
 
         if (keep && !strcmp(keep, "1")) {
-            ok = es_plan_keep_originals(repo, plan, mods->items[i].key, error, cap);
+            ok = es_history_keep_originals(repo, plan, mods->items[i].key, error, cap);
         }
     }
 
@@ -1174,14 +1184,16 @@ static bool render(EsRepository *repo, const EsModifications *mods, EsPlan *plan
 
 int32_t DME_CALL oot_history_detect(const DmeHistoryApi *api, DmeHistoryRoot *root,
                                     DmeHistoryTarget *target, char *error, uint64_t cap) {
-    (void)api;
-    return detect((EsRoot *)root, target, error, (size_t)cap);
+    return detect(api, root, target, error, (size_t)cap);
 }
 
 int32_t DME_CALL oot_history_inventory(const DmeHistoryApi *api, DmeHistory *history,
                                        DmeHistoryList *list, char *error, uint64_t cap) {
-    (void)api;
-    return inventory((EsRepository *)history, (EsPaths *)list, error, (size_t)cap);
+    EsHistory h = {api, history};
+    EsPaths paths = {0};
+    bool ok = inventory(&h, &paths, error, (size_t)cap) && es_history_list(api, list, &paths);
+    es_paths_free(&paths);
+    return ok;
 }
 
 int32_t DME_CALL oot_history_allow(const char *path) {
@@ -1191,22 +1203,25 @@ int32_t DME_CALL oot_history_allow(const char *path) {
 int32_t DME_CALL oot_history_render(const DmeHistoryApi *api, DmeHistory *history,
                                     const DmeHistoryIntent *intents, uint32_t count,
                                     DmeHistoryPlan *plan, char *error, uint64_t cap) {
-    (void)api;
+    EsHistory h = {api, history};
+    EsHistoryPlan p = {api, plan};
     EsModifications mods;
-    bool ok = es_intents_view(intents, count, &mods) &&
-              render((EsRepository *)history, &mods, (EsPlan *)plan, error, (size_t)cap);
+    bool ok = es_intents_view(intents, count, &mods) && render(&h, &mods, &p, error, (size_t)cap);
     es_intents_release(&mods);
     return ok;
 }
 
 int32_t DME_CALL oot_history_targets(const DmeHistoryApi *api, DmeHistory *history,
                                      DmeHistoryTargets *targets, char *error, uint64_t cap) {
-    (void)api;
-    return oot_repository_targets((EsRepository *)history, (EsTargets *)targets, error,
-                                  (size_t)cap);
+    EsHistory h = {api, history};
+    EsTargets t = {0};
+    bool ok =
+        oot_repository_targets(&h, &t, error, (size_t)cap) && es_history_targets(api, targets, &t);
+    es_targets_free(&t);
+    return ok;
 }
 
-static bool compose(OotPluginJob *j, EsRepository *repo, const OotResult *result,
+static bool compose(OotPluginJob *j, EsHistory *repo, const OotResult *result,
                     const DmeHost *package_host, char *error, size_t cap) {
     EsRecipe recipes[ES_NATIVE_REGIONS + 1] = {0};
     EsModification mods[ES_NATIVE_REGIONS + 1] = {0};
@@ -1264,8 +1279,8 @@ static bool compose(OotPluginJob *j, EsRepository *repo, const OotResult *result
     }
 
     EsModifications state = {.items = mods, .count = count};
-    ok = ok && (package_host ? es_package_plan(repo, &state, package_host, error, cap)
-                             : es_repository_apply_batch(repo, mods, count, error, cap));
+    ok = ok && (package_host ? es_history_package(repo, &state, package_host, error, cap)
+                             : es_history_apply(repo, mods, count, error, cap));
 
     for (size_t i = 0; i < count; i++) {
         es_recipe_free(&recipes[i]);
@@ -1274,12 +1289,12 @@ static bool compose(OotPluginJob *j, EsRepository *repo, const OotResult *result
     return ok;
 }
 
-bool oot_repository_apply(OotPluginJob *job, EsRepository *repo, const OotResult *result,
-                          char *error, size_t cap) {
+bool oot_repository_apply(OotPluginJob *job, EsHistory *repo, const OotResult *result, char *error,
+                          size_t cap) {
     return compose(job, repo, result, NULL, error, cap);
 }
 
-bool oot_repository_package(OotPluginJob *job, EsRepository *probe, const OotResult *result,
+bool oot_repository_package(OotPluginJob *job, EsHistory *probe, const OotResult *result,
                             const DmeHost *host, char *error, size_t cap) {
     return compose(job, probe, result, host, error, cap);
 }

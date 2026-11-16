@@ -535,38 +535,24 @@ void ed_export_history_panel(Editor *e, UiRect main) {
     }
 
     if (open) {
-        /* Selection follows the logical key, so it survives reverts and new exports. */
-        const DmeRepositoryRow *chosen = NULL;
-
-        for (uint32_t i = 0; valid && i < view.row_count; i++) {
-            chosen = !strcmp(h->history_key, view.rows[i].key.data) ? &view.rows[i] : chosen;
-        }
-
-        /* The list ends where the selected row's paths and the two actions begin, so the
-           actions sit at the drawer's bottom edge. */
-        float paths_height = 70, spacing = ui_item_spacing_y();
+        /* The list ends where the two actions begin, so they sit at the drawer's bottom edge. */
+        float spacing = ui_item_spacing_y();
         float tail = spacing + 2 * ui_frame_height() + spacing;
-
-        if (chosen) {
-            tail += paths_height + spacing;
-        }
-
         float height = fmaxf(90, ui_available().y - tail);
 
         if (ui_child("repository-current", 0, height, true)) {
+            uint32_t line_color = ui_theme_text(true);
+
             for (uint32_t i = 0; valid && i < view.row_count; i++) {
                 const DmeRepositoryRow *row = &view.rows[i];
                 ui_id((int)i);
                 /* The label wraps beside the Revert button, which is centred on the row. */
                 float button = 68, frame = ui_frame_height();
-                float width = fmaxf(40, ui_available().x - button - ui_item_spacing_x());
-                float rows = fmaxf(frame, ui_text_height(row->label.data, width));
+                float full = ui_available().x;
+                float width = fmaxf(40, full - button - ui_item_spacing_x());
                 UiPoint at = ui_cursor();
-
-                if (ui_select_wrapped("##row", row->label.data, row == chosen, width, rows)) {
-                    snprintf(h->history_key, sizeof(h->history_key), "%s", row->key.data);
-                }
-
+                bool expanded = ui_expander(row->key.data, row->label.data, width, 0);
+                float rows = ui_item_rect().h;
                 ui_same();
                 ui_position(ui_cursor().x, at.y + (rows - frame) / 2);
                 ui_disabled(!row->can_revert);
@@ -577,6 +563,27 @@ void ed_export_history_panel(Editor *e, UiRect main) {
                 }
 
                 ui_disabled_end();
+
+                if (expanded && row->path_count) {
+                    /* A rule closes the row; the files hang off a line under the triangle, level
+                       with the label. */
+                    float tree_x = at.x + UI_EXPANDER_TEXT * .5f;
+                    float top_y = ui_cursor().y - spacing / 2, last_y = top_y;
+                    ui_line((UiPoint){at.x, top_y}, (UiPoint){at.x + full, top_y}, line_color, 1);
+                    ui_indent(UI_EXPANDER_TEXT);
+
+                    for (uint32_t j = 0; j < row->path_count; j++) {
+                        ui_wrap(row->paths[j].data);
+                        float branch_y = ui_item_rect().y + ui_font_size() * .5f;
+                        ui_line((UiPoint){tree_x, branch_y},
+                                (UiPoint){at.x + UI_EXPANDER_TEXT - 3, branch_y}, line_color, 1);
+                        last_y = branch_y;
+                    }
+
+                    ui_unindent(UI_EXPANDER_TEXT);
+                    ui_line((UiPoint){tree_x, top_y}, (UiPoint){tree_x, last_y}, line_color, 1);
+                }
+
                 ui_pop_id();
             }
 
@@ -586,16 +593,6 @@ void ed_export_history_panel(Editor *e, UiRect main) {
         }
 
         ui_child_end();
-
-        if (chosen) {
-            if (ui_child("repository-paths", 0, paths_height, true)) {
-                for (uint32_t i = 0; i < chosen->path_count; i++) {
-                    ui_wrap(chosen->paths[i].data);
-                }
-            }
-
-            ui_child_end();
-        }
 
         ui_disabled(!selected || (selected->capabilities & DME_REPOSITORY_MISSING));
 
@@ -677,6 +674,8 @@ void ed_export_controls(Editor *e) {
 
     if (f->history) {
         repository_settings(h);
+    } else if (f->history_missing) {
+        ui_wrap(DM_TEXT_HISTORY_RUNTIME_MISSING);
     }
 
     /* Actions, Save and Export to Repository share one row of equal buttons. */

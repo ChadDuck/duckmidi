@@ -1,5 +1,6 @@
 #include "core/duck.h"
 #include "text/en.h"
+#include <stdio.h>
 
 const char *dm_program_name(int program) {
     static const char *names[128] = {DM_TEXT_ACOUSTIC_GRAND_PIANO,
@@ -226,5 +227,130 @@ const char *dm_drum_kit_name(int program) {
         return DM_TEXT_KIT_SFX;
     default:
         return NULL;
+    }
+}
+
+static const char *const controller_names[128] = {[0] = DM_TEXT_BANK_SELECT_MSB,
+                                                  [1] = DM_TEXT_MODULATION,
+                                                  [2] = DM_TEXT_BREATH,
+                                                  [4] = DM_TEXT_FOOT_CONTROLLER,
+                                                  [5] = DM_TEXT_PORTAMENTO_TIME,
+                                                  [6] = DM_TEXT_DATA_ENTRY_MSB,
+                                                  [7] = DM_TEXT_VOLUME,
+                                                  [8] = DM_TEXT_BALANCE,
+                                                  [10] = DM_TEXT_PAN,
+                                                  [11] = DM_TEXT_EXPRESSION,
+                                                  [12] = DM_TEXT_EFFECT_CONTROL_1,
+                                                  [13] = DM_TEXT_EFFECT_CONTROL_2,
+                                                  [16] = DM_TEXT_GENERAL_PURPOSE_1,
+                                                  [17] = DM_TEXT_GENERAL_PURPOSE_2,
+                                                  [18] = DM_TEXT_GENERAL_PURPOSE_3,
+                                                  [19] = DM_TEXT_GENERAL_PURPOSE_4,
+                                                  [32] = DM_TEXT_BANK_SELECT_LSB,
+                                                  [33] = DM_TEXT_MODULATION_LSB,
+                                                  [37] = DM_TEXT_PORTAMENTO_TIME_LSB,
+                                                  [38] = DM_TEXT_DATA_ENTRY_LSB,
+                                                  [39] = DM_TEXT_VOLUME_LSB,
+                                                  [42] = DM_TEXT_PAN_LSB,
+                                                  [43] = DM_TEXT_EXPRESSION_LSB,
+                                                  [64] = DM_TEXT_SUSTAIN,
+                                                  [65] = DM_TEXT_PORTAMENTO_ENABLE,
+                                                  [66] = DM_TEXT_SOSTENUTO,
+                                                  [67] = DM_TEXT_SOFT_PEDAL,
+                                                  [68] = DM_TEXT_LEGATO,
+                                                  [69] = DM_TEXT_HOLD_2,
+                                                  [70] = DM_TEXT_SOUND_VARIATION,
+                                                  [71] = DM_TEXT_RESONANCE,
+                                                  [72] = DM_TEXT_RELEASE_TIME,
+                                                  [73] = DM_TEXT_ATTACK_TIME,
+                                                  [74] = DM_TEXT_BRIGHTNESS,
+                                                  [75] = DM_TEXT_DECAY_TIME,
+                                                  [76] = DM_TEXT_VIBRATO_RATE,
+                                                  [77] = DM_TEXT_VIBRATO_DEPTH,
+                                                  [78] = DM_TEXT_VIBRATO_DELAY,
+                                                  [84] = DM_TEXT_PORTAMENTO_SOURCE_KEY,
+                                                  [88] = DM_TEXT_HIGH_RESOLUTION_VELOCITY,
+                                                  [91] = DM_TEXT_REVERB_SEND,
+                                                  [92] = DM_TEXT_TREMOLO_EFFECT_2,
+                                                  [93] = DM_TEXT_CHORUS_SEND,
+                                                  [94] = DM_TEXT_EFFECT_4_DEPTH,
+                                                  [95] = DM_TEXT_EFFECT_5_DEPTH,
+                                                  [96] = DM_TEXT_DATA_INCREMENT,
+                                                  [97] = DM_TEXT_DATA_DECREMENT,
+                                                  [98] = DM_TEXT_NRPN_LSB,
+                                                  [99] = DM_TEXT_NRPN_MSB,
+                                                  [100] = DM_TEXT_RPN_LSB,
+                                                  [101] = DM_TEXT_RPN_MSB,
+                                                  [120] = DM_TEXT_SOUND_OFF,
+                                                  [121] = DM_TEXT_RESET_CONTROLLERS,
+                                                  [122] = DM_TEXT_LOCAL_CONTROL,
+                                                  [123] = DM_TEXT_NOTES_OFF,
+                                                  [124] = DM_TEXT_OMNI_OFF,
+                                                  [125] = DM_TEXT_OMNI,
+                                                  [126] = DM_TEXT_MONO_MODE,
+                                                  [127] = DM_TEXT_POLY_MODE};
+
+const char *dm_controller_name(int cc) {
+    return cc >= 0 && cc < 128 ? controller_names[cc] : NULL;
+}
+
+/* The short names event lanes and automation patterns use, where they differ from or are missing
+   in the controller table. */
+static const char *short_event_name(int event) {
+    switch (event) {
+    case DM_EVENT_VELOCITY:
+        return DM_TEXT_VELOCITY;
+    case DM_EVENT_PROGRAM:
+        return DM_TEXT_PROGRAM_CHANGE;
+    case DM_EVENT_CHANNEL_PRESSURE:
+        return DM_TEXT_CHANNEL_PRESSURE;
+    case DM_EVENT_KEY_PRESSURE:
+        return DM_TEXT_POLY_PRESSURE;
+    case DM_EVENT_BEND:
+        return DM_TEXT_PITCH_BEND;
+    case 1:
+        return DM_TEXT_MODULATION;
+    case 11:
+        return DM_TEXT_EXPRESSION;
+    case 7:
+        return DM_TEXT_VOLUME;
+    case 10:
+        return DM_TEXT_PAN;
+    case 64:
+        return DM_TEXT_SUSTAIN;
+    case 66:
+        return DM_TEXT_SOSTENUTO;
+    case 5:
+        return DM_TEXT_PORTAMENTO;
+    case 91:
+        return DM_TEXT_REVERB_SEND;
+    case 93:
+        return DM_TEXT_CHORUS_SEND;
+    case 74:
+        return DM_TEXT_BRIGHTNESS;
+    case 71:
+        return DM_TEXT_RESONANCE;
+    case 92:
+        return DM_TEXT_TREMOLO_DEPTH;
+    case 76:
+        return DM_TEXT_VIBRATO_RATE;
+    case 77:
+        return DM_TEXT_VIBRATO_DEPTH;
+    default:
+        return NULL;
+    }
+}
+
+void dm_event_name(int event, char *out, size_t cap) {
+    const char *name = short_event_name(event);
+
+    if (!name) {
+        name = dm_controller_name(event);
+    }
+
+    if (name) {
+        snprintf(out, cap, "%s", name);
+    } else {
+        snprintf(out, cap, DM_TEXT_CONTROLLER_NUMBER, event);
     }
 }

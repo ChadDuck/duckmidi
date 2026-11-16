@@ -133,6 +133,31 @@ static void render_sample_instrument(DmAudio *audio) {
               sample_tone(&rendered, .1, 0, 660 * corrected) < .005,
           "missing sample falls back to the selected SoundFont in audio export");
     dm_sample_audio_free(&rendered);
+
+    /* One drum key plays a melody sample at its own pitch; the key beside it has no entry and
+       stays with the SoundFont. */
+    int drums = dm_pattern_add(&project, "Drum keys");
+    check(drums >= 0 && dm_channel_drums(&project, MIDI_DRUM_CHANNEL), "create drum arrangement");
+    check(dm_note_add(&project.patterns[drums], (DmNote){6, .8, 36, 112, 0}) &&
+              dm_note_add(&project.patterns[drums], (DmNote){8, .8, 38, 112, 0}) &&
+              dm_clip_add(&project, (DmClip){0, drums, MIDI_DRUM_CHANNEL, 0}),
+          "place drum notes");
+    DmPatchReplacement kick = {.key = {.channel = MIDI_DRUM_CHANNEL, .drums = true, .drum_key = 37},
+                               .generation = 1,
+                               .set_id = "audio-test",
+                               .preset_id = "tone",
+                               .sample_id = "tone"};
+    snprintf(kick.locator, sizeof(kick.locator), "%s", root);
+    check(dm_patch_replacement_set(&project, &kick), "set drum key sample");
+    path = "agents/reports/offline-drum-key-fixture.wav";
+    check(dm_audio_export(audio, &project, path, NULL, error, sizeof(error)), error);
+    await_job(audio);
+    check(dm_sample_decode(path, NULL, &rendered, error, sizeof(error)), error);
+    check(sample_tone(&rendered, 3.1, 0, 660 * corrected) > .02,
+          "a drum key plays its own sample at the sample's pitch");
+    check(sample_tone(&rendered, 4.1, 0, 660 * corrected) < .005,
+          "a drum key without an entry does not play another key's sample");
+    dm_sample_audio_free(&rendered);
     dm_project_free(&project);
 }
 

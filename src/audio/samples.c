@@ -782,6 +782,7 @@ bool dm_sample_synth_note(DmSampleSynth *s, fluid_synth_t *synth, DmSamplePedals
     return true;
 }
 
+/* A patch on one port; its drum key entries share the binding of its kit. */
 static uint64_t binding_key(DmPatchKey key) {
     return (uint64_t)key.port << 26 | (uint64_t)key.channel << 22 | (uint64_t)key.drums << 21 |
            (uint64_t)key.bank << 7 | key.program;
@@ -850,9 +851,10 @@ bool dm_live_sample_bank_matches(const DmLiveSampleBank *bank, const DmProject *
     for (size_t i = 0; i < count; ++i) {
         const DmPatchReplacement *a = &bank->replacements[i], *b = &p->patch_replacements[i];
 
-        if (binding_key(a->key) != binding_key(b->key) || a->generation != b->generation ||
-            strcmp(a->locator, b->locator) || strcmp(a->set_id, b->set_id) ||
-            strcmp(a->preset_id, b->preset_id)) {
+        if (binding_key(a->key) != binding_key(b->key) || a->key.drum_key != b->key.drum_key ||
+            a->generation != b->generation || strcmp(a->locator, b->locator) ||
+            strcmp(a->set_id, b->set_id) || strcmp(a->preset_id, b->preset_id) ||
+            strcmp(a->sample_id, b->sample_id)) {
             return false;
         }
     }
@@ -879,6 +881,21 @@ uint32_t dm_live_sample_bank_patch(const DmLiveSampleBank *bank, DmPatchKey key)
     return found ? found->preset : 0;
 }
 
+/* True when a percussion entry plays through a combined kit, whose regions are not the library
+   preset's: a drum key entry, or a kit that key entries on its port or channel are laid over. */
+static bool combined_kit(const DmLiveSampleBank *bank, const DmPatchReplacement *r) {
+    for (size_t i = 0; r->key.drums && i < bank->count; ++i) {
+        DmPatchKey key = bank->replacements[i].key;
+        key.port = key.port ? key.port : r->key.port;
+
+        if (key.drum_key && dm_patch_same(key, r->key)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void dm_live_sample_bank_edit(DmLiveSampleBank *bank, fluid_synth_t *synth, const char *locator,
                               const char *set_id, const char *preset_id, uint32_t region,
                               const char *asset, const DmeSampleZoneParams *params) {
@@ -889,8 +906,9 @@ void dm_live_sample_bank_edit(DmLiveSampleBank *bank, fluid_synth_t *synth, cons
     for (size_t i = 0; i < bank->count; ++i) {
         const DmPatchReplacement *r = &bank->replacements[i];
 
+        /* A combined kit hears the edit when the saved set reloads the bank. */
         if (!strcmp(locator, r->locator) && !strcmp(set_id, r->set_id) &&
-            !strcmp(preset_id, r->preset_id)) {
+            !strcmp(preset_id, r->preset_id) && !combined_kit(bank, r)) {
             uint32_t preset = dm_live_sample_bank_patch(bank, r->key);
             dm_sample_synth_edit_region(bank->synth, synth, preset, region, asset, params);
         }

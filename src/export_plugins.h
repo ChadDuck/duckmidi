@@ -13,6 +13,7 @@
 typedef struct {
     const DmeExporter *api;
     const DmeHistoryAdapter *history; /* NULL without repository installs. */
+    bool history_missing;             /* Supports repository installs, but plugins/db is absent. */
     void *instance;
     void *history_job;
     uint64_t history_scope;

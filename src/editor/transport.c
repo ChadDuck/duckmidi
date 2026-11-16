@@ -168,8 +168,7 @@ static bool placement_contains(const Editor *e, DmClip c, double beat) {
 /* Song beat where pattern beat 0 falls for a note played at a song beat. Pattern playback
    records at the pattern's own position. In song playback, a placement of the pattern under the
    playhead decides, whatever has focus, so notes land where they were played; the selected
-   placement wins where placements overlap. Off its placements, the pattern starts at the bar
-   where playing began, keeping the beat within that bar. */
+   placement wins where placements overlap. Off its placements, see free_origin. */
 static bool placement_origin(const Editor *e, double beat, double *origin) {
     int selected = e->selected_clip;
     const DmClip *found = NULL;
@@ -197,28 +196,69 @@ static double bar_origin(const Editor *e, double beat) {
     return meter.origin + floor((beat - meter.origin) / meter.bar + 1e-9) * meter.bar;
 }
 
+/* Origin off the pattern's placements. While the pattern editor has focus, the playhead decides:
+   the pattern continues from its latest placement that starts before the beat (the selected one
+   on a tie), so playing past a placement's end extends it, and a pattern that is not on the
+   playlist records at the song position. Otherwise, and before every placement of the pattern,
+   the pattern starts at the bar where playing began, keeping the beat within that bar. */
+static double free_origin(Editor *e, double beat) {
+    if (ed_context(e) != CONTEXT_ROLL) {
+        return bar_origin(e, beat);
+    }
+
+    const DmClip *found = NULL;
+    bool placed = false;
+
+    for (size_t i = 0; i < e->project.clip_count; ++i) {
+        const DmClip *c = &e->project.clips[i];
+
+        if (c->pattern != e->selected_pattern) {
+            continue;
+        }
+
+        placed = true;
+
+        if (c->beat <= beat + 1e-7 && (!found || c->beat > found->beat ||
+                                       (c->beat == found->beat && (int)i == e->selected_clip))) {
+            found = c;
+        }
+    }
+
+    return found ? found->beat - found->offset : placed ? bar_origin(e, beat) : 0;
+}
+
 double ed_recording_origin(Editor *e, double beat) {
     double origin = 0;
 
     if (!e->pattern_mode && !placement_origin(e, beat, &origin)) {
-        origin = bar_origin(e, beat);
+        origin = free_origin(e, beat);
     }
 
     return origin;
 }
 
-/* Each note is placed by the placement it was played in, so a take that crosses from one
-   placement into the next lands in both. Off the placements, the take's first note fixes the
-   bar origin for the rest of the take; a loop back to an earlier beat restarts it. */
-double ed_record_origin(Editor *e, double beat) {
+/* Places input played at *beat in loop pass loop and returns its origin. Input is stamped by
+   what was heard, so a note played as playback starts or wraps can stamp slightly before the
+   beat playing began from; it moves to that beat, which keeps a chord together. Each note is
+   placed by the placement it was played in, so a take that crosses from one placement into the
+   next lands in both. Off the placements, the first note of each loop pass fixes the origin for
+   the rest of that pass. */
+double ed_record_origin(Editor *e, double *beat, uint32_t loop) {
+    if (loop == e->play_loop) {
+        *beat = fmax(*beat, e->play_beat);
+    } else if (e->loop_enabled[e->pattern_mode]) {
+        *beat = fmax(*beat, e->loop_start[e->pattern_mode]);
+    }
+
     double origin = 0;
 
-    if (e->pattern_mode || placement_origin(e, beat, &origin)) {
+    if (e->pattern_mode || placement_origin(e, *beat, &origin)) {
         return origin;
     }
 
-    if (!e->take_origin_set || beat < e->take_origin) {
-        e->take_origin = bar_origin(e, beat);
+    if (!e->take_origin_set || loop != e->take_loop) {
+        e->take_origin = free_origin(e, *beat);
+        e->take_loop = loop;
         e->take_origin_set = true;
     }
 
@@ -247,10 +287,11 @@ bool ed_record_insert(Editor *e, DmPattern *pattern, int key, int velocity, unsi
 
 /* The song beat that was audible when the key event being handled happened (now, outside a key
    event), so computer-keyboard notes are timed like MIDI device notes: by when they were
-   played against what was heard, not by when a frame got to them. */
-double ed_heard_beat(Editor *e) {
+   played against what was heard, not by when a frame got to them. loop, when given, receives the
+   loop pass it was heard in. */
+double ed_heard_beat(Editor *e, uint32_t *loop) {
     uint64_t ns = e->key_time_ns ? e->key_time_ns : SDL_GetTicksNS();
-    return dm_seconds_beat(&e->project, dm_audio_heard_seconds(e->audio, ns));
+    return dm_seconds_beat(&e->project, dm_audio_heard_seconds(e->audio, ns, loop));
 }
 
 void ed_record_note(Editor *e, int note) {
@@ -264,7 +305,7 @@ void ed_record_note(Editor *e, int note) {
     }
 
     ed_record_insert(e, ed_pattern(e), note, ED_DEFAULT_VELOCITY, ed_note_port(e),
-                     e->record_start[note], ed_heard_beat(e), e->record_origin[note]);
+                     e->record_start[note], ed_heard_beat(e, NULL), e->record_origin[note]);
     e->record_start[note] = -1;
     ed_commit(e);
 }

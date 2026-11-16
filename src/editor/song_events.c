@@ -643,11 +643,8 @@ void ed_song_event_dialog(Editor *e) {
 
     if (e->song_event_channel >= 0) {
         int channel = e->song_event_channel;
-        int program = e->project.channels[channel].program;
-        const char *instrument = dm_channel_drums(&e->project, channel)
-                                     ? DM_TEXT_PERCUSSION
-                                     : dm_program_name(program < 0 ? 0 : program);
-        snprintf(title, sizeof(title), DM_TEXT_CHANNEL_EVENT_TITLE, channel + 1, instrument);
+        snprintf(title, sizeof(title), DM_TEXT_CHANNEL_EVENT_TITLE, channel + 1,
+                 ed_channel_instrument(&e->project, channel));
         name = title;
     }
 

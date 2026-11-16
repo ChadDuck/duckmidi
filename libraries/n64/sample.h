@@ -1,5 +1,5 @@
-#ifndef DES_SAMPLE_H
-#define DES_SAMPLE_H
+#ifndef DUCK_N64_SAMPLE_H
+#define DUCK_N64_SAMPLE_H
 
 #include "mapping.h"
 
@@ -76,9 +76,8 @@ typedef struct {
 
 /* Sorted by start; cuts earlier matching voices in the same source channel and saved preset.
    Native release tails remain audible. False reports cancellation or allocation failure. */
-DES_API bool es_native_has_choke(const EsNativeSamples *);
-DES_API bool es_native_choke(const EsNativeSamples *, const EsNativeChokeNote *, size_t,
-                             const DmeHost *);
+bool es_native_has_choke(const EsNativeSamples *);
+bool es_native_choke(const EsNativeSamples *, const EsNativeChokeNote *, size_t, const DmeHost *);
 
 /* Channel effects from preset reverb and vibrato, as native command bytes. */
 enum { ES_FX_REVERB, ES_FX_RATE, ES_FX_DEPTH, ES_FX_KINDS };
@@ -103,31 +102,22 @@ typedef struct {
    controller. Only channels with a custom note setting a value change at all. `shared` gets a bit
    for each channel where notes that overlap wanted different values; the latest note's value
    applies. The caller frees `changes`. False reports allocation failure. */
-DES_API bool es_native_channel_fx(const EsNativeSamples *, const EsNativeFxNote *, size_t,
-                                  uint32_t native, bool hacker, unsigned initial_rate,
-                                  const uint16_t midi[ES_FX_KINDS], EsNativeFxChange **changes,
-                                  size_t *change_count, uint16_t *shared);
-
-/* Bakes the zone's static low-pass filter and chorus into mono PCM at `rate`, in place, as
-   duckmidi plays them at the root key. Looped audio stays seamless: the loop body is the
-   settled effect output running around the loop. `loop_end` 0 means unlooped. Adds ES_FIX_*
-   bits to `fixes`. False reports allocation failure. */
-DES_API bool es_native_bake(float *, uint32_t frames, uint32_t rate, uint32_t loop_start,
-                            uint32_t loop_end, const DmeSampleToneParams *, uint32_t *fixes);
+bool es_native_channel_fx(const EsNativeSamples *, const EsNativeFxNote *, size_t, uint32_t native,
+                          bool hacker, unsigned initial_rate, const uint16_t midi[ES_FX_KINDS],
+                          EsNativeFxChange **changes, size_t *change_count, uint16_t *shared);
 
 enum { ES_RESAMPLE_OK, ES_RESAMPLE_LIMIT, ES_RESAMPLE_FAILED };
 
 /* Worker-only, immutable after success. Free on every exit, including preparation failure. */
-DES_API bool es_native_samples(EsNativeSamples *, const EsMappingJob *, uint32_t target,
-                               uint32_t native, const DmeContext *, const DmeHost *, char *,
-                               size_t);
-DES_API void es_native_samples_free(EsNativeSamples *);
+bool es_native_samples(EsNativeSamples *, const EsMappingJob *, uint32_t target, uint32_t native,
+                       const DmeContext *, const DmeHost *, char *, size_t);
+void es_native_samples_free(EsNativeSamples *);
 /* Records one change for the export warning. Safe before preparation. */
-DES_API void es_native_fix(EsNativeSamples *, unsigned kind, const char *preset);
+void es_native_fix(EsNativeSamples *, unsigned kind, const char *preset);
 /* Turns a Replace region into an Add region that keeps its derived name. */
-DES_API void es_native_add_instead(EsNativeSamples *, EsNativeRegion *);
+void es_native_add_instead(EsNativeSamples *, EsNativeRegion *);
 /* Removes every region of this selection and restores its notes' ordinary mappings. */
-DES_API void es_native_fallback(EsNativeSamples *, size_t region, unsigned kind);
+void es_native_fallback(EsNativeSamples *, size_t region, unsigned kind);
 
 enum { ES_FIT_DONE, ES_FIT_RETRY, ES_FIT_FAILED };
 
@@ -137,17 +127,17 @@ enum { ES_FIT_DONE, ES_FIT_RETRY, ES_FIT_FAILED };
    non-default sample bank; it is cleared when any change forces the default bank. Returns
    ES_FIT_RETRY after a change, so the caller converts again; every retry lowers a rate or
    removes a selection. ES_FIT_FAILED reports cancellation or allocation failure. */
-DES_API int es_native_fit(EsNativeSamples *, const double *overspeed, const bool *capacity,
-                          uint32_t native, bool *other_bank, const DmeHost *, char *, size_t);
+int es_native_fit(EsNativeSamples *, const double *overspeed, const bool *capacity, uint32_t native,
+                  bool *other_bank, const DmeHost *, char *, size_t);
 /* Whether es_native_resample can fit the tuning without reaching ES_RESAMPLE_LIMIT. */
-DES_API bool es_native_resample_fits(const EsNativeRegion *, double);
+bool es_native_resample_fits(const EsNativeRegion *, double);
 /* Lowers the rate until the C4 tuning fits. ES_RESAMPLE_LIMIT leaves the region unchanged. */
-DES_API int es_native_resample(EsNativeRegion *, double, uint32_t, const DmeHost *, char *, size_t);
-DES_API void es_native_samples_report(const EsNativeSamples *, uint32_t, const DmeHost *);
+int es_native_resample(EsNativeRegion *, double, uint32_t, const DmeHost *, char *, size_t);
+void es_native_samples_report(const EsNativeSamples *, uint32_t, const DmeHost *);
 /* Native 0-127 pan for the zone; 64 is centre. */
-DES_API unsigned es_native_pan(const EsNativeRegion *);
+unsigned es_native_pan(const EsNativeRegion *);
 /* Key whose pitch a drum entry for `key` plays, following the zone's key tracking the way
    duckmidi playback does. Each drum entry has its own tuning, so any tracking is exact. */
-DES_API double es_native_drum_key(const EsNativeRegion *, unsigned key);
+double es_native_drum_key(const EsNativeRegion *, unsigned key);
 
 #endif

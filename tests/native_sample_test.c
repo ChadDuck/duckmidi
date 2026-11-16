@@ -1,5 +1,6 @@
-#include "../libraries/export_support/curves.h"
-#include "../libraries/export_support/sample.h"
+#include "../libraries/n64/curves.h"
+#include "../libraries/n64/sample.h"
+#include "../libraries/n64/bake/bake.h"
 #include "../include/duckmidi_midi.h"
 #include "../src/text/en.h"
 #include <assert.h>
@@ -495,14 +496,14 @@ static void baking(void) {
     static float pcm[FRAMES];
     const double low = 250, high = 8000;
     DmeSampleToneParams tone = {.cutoff = 1000};
-    uint32_t fixes = 0;
+    bool chorus_short = true;
 
     for (unsigned i = 0; i < FRAMES; i++) {
         double angle = 6.2831853071795864769 * i / RATE;
         pcm[i] = (float)(.25 * sin(angle * low) + .25 * sin(angle * high));
     }
 
-    assert(es_native_bake(pcm, FRAMES, RATE, 0, 0, &tone, &fixes) && !fixes);
+    assert(es_native_bake(pcm, FRAMES, RATE, 0, 0, &tone, &chorus_short) && !chorus_short);
     double passed = tone_level(pcm, 1000, FRAMES, low, RATE);
     double stopped = tone_level(pcm, 1000, FRAMES, high, RATE);
     /* A second-order low-pass at 1 kHz passes 250 Hz near unity and cuts 8 kHz by about 36 dB. */
@@ -514,7 +515,7 @@ static void baking(void) {
     }
 
     tone = (DmeSampleToneParams){.cutoff = 3000, .resonance = 6, .chorus = .5};
-    assert(es_native_bake(pcm, FRAMES, RATE, 8000, 9600, &tone, &fixes) && !fixes);
+    assert(es_native_bake(pcm, FRAMES, RATE, 8000, 9600, &tone, &chorus_short) && !chorus_short);
     double largest = 0;
 
     for (unsigned i = 8001; i < 9600; i++) {
@@ -524,8 +525,7 @@ static void baking(void) {
     assert(fabs(pcm[8000] - pcm[9599]) <= largest * 1.01);
 
     tone = (DmeSampleToneParams){.chorus = .5};
-    assert(es_native_bake(pcm, FRAMES, RATE, 8000, 8200, &tone, &fixes));
-    assert(fixes == 1u << ES_FIX_CHORUS_SHORT);
+    assert(es_native_bake(pcm, FRAMES, RATE, 8000, 8200, &tone, &chorus_short) && chorus_short);
 }
 
 /* Added samples take their preset's name as a safe file/symbol name, with a region number for

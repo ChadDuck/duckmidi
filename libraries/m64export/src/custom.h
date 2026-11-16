@@ -2,7 +2,7 @@
 #define M64_CUSTOM_H
 
 #include "m64export/m64export.h"
-#include "../../export_support/sample.h"
+#include "../../n64/sample.h"
 
 #define M64_CUSTOM_STOCK_BASE (4096 + ES_NATIVE_REGIONS * 256)
 

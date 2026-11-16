@@ -11,6 +11,7 @@
 
 typedef M64PluginJob ExportJob;
 
+static const DmeHistoryApi *history_api;
 static const char *const game_names[M64_GAME_COUNT] = {"SM64", "HackerSM64", "sm64coopdx"};
 
 /* The game for a detected repository target ID. */
@@ -154,25 +155,22 @@ static M64Event *prepare(ExportJob *j, const DmeContext *c, const DmeHost *host,
         replacing |= j->samples.regions[i].target != NULL;
     }
 
-    EsRepository *probe = NULL;
+    EsHistory probe = {0};
 
     if (replacing && !j->repository) {
-        probe = *j->checkout
-                    ? es_repository_probe(j->checkout, &m64_history_adapter, error, (size_t)cap)
-                    : NULL;
-
-        /* A configured checkout that cannot be opened, such as a locked history, is an error;
-           only a missing or different checkout turns Replace into Add. */
-        if (*j->checkout && !probe) {
+        if (history_api && *j->checkout &&
+            !es_history_probe(&probe, history_api, &m64_history_adapter, j->checkout, error,
+                              (size_t)cap)) {
+            /* A configured checkout that cannot be opened, such as a locked history, is an error;
+               only a missing or different checkout turns Replace into Add. */
             *status = DME_FAILED;
             return NULL;
         }
 
         /* Without the inspected checkout a saved package cannot replace its samples, so the
            Replace regions are added as new samples instead. */
-        if (!probe || strcmp(j->checkout_identity, es_repository_identity(probe))) {
-            es_repository_close(probe);
-            probe = NULL;
+        if (!probe.history || strcmp(j->checkout_identity, es_history_identity(&probe))) {
+            es_history_close(&probe);
             *error = 0;
 
             for (size_t i = 0; i < j->samples.count; i++) {
@@ -183,13 +181,13 @@ static M64Event *prepare(ExportJob *j, const DmeContext *c, const DmeHost *host,
         }
     }
 
-    EsRepository *target_repository = j->repository ? j->repository : probe;
+    EsHistory *target_repository = j->repository ? j->repository : (probe.history ? &probe : NULL);
     bool targets_ok =
         !target_repository ||
         (m64_repository_sequence(j, target_repository, error, (size_t)cap) &&
          m64_repository_bank(j, target_repository, error, (size_t)cap) &&
          m64_repository_sample_targets(j, target_repository, c, host, error, (size_t)cap));
-    es_repository_close(probe);
+    es_history_close(&probe);
 
     if (!targets_ok) {
         *status = DME_FAILED;
@@ -495,11 +493,12 @@ static int32_t DME_CALL run(void *job, const DmeContext *c, const DmeHost *host,
     }
 
     if (ok && replacing) {
-        EsRepository *probe =
-            es_repository_probe(j->checkout, &m64_history_adapter, error, (size_t)cap);
-        ok = probe && !strcmp(j->checkout_identity, es_repository_identity(probe)) &&
-             m64_repository_package(j, probe, result, host, error, (size_t)cap);
-        es_repository_close(probe);
+        EsHistory probe = {0};
+        ok = es_history_probe(&probe, history_api, &m64_history_adapter, j->checkout, error,
+                              (size_t)cap) &&
+             !strcmp(j->checkout_identity, es_history_identity(&probe)) &&
+             m64_repository_package(j, &probe, result, host, error, (size_t)cap);
+        es_history_close(&probe);
         api->result_free(result);
         return ok ? DME_OK : DME_FAILED;
     }
@@ -650,9 +649,8 @@ static int32_t DME_CALL set_custom(void *instance, const char *id, const DmeCust
 static int32_t DME_CALL history_prepare(void *job, const DmeContext *c, const DmeHost *host,
                                         const DmeHistoryApi *api, DmeHistory *history,
                                         const DmeHistoryTarget *target, char *error, uint64_t cap) {
-    (void)api;
     ExportJob *j = job;
-    EsRepository *repo = (EsRepository *)history;
+    EsHistory h = {api, history};
     unsigned game = detected_game(target->id);
 
     if ((int)game != j->target) {
@@ -670,11 +668,11 @@ static int32_t DME_CALL history_prepare(void *job, const DmeContext *c, const Dm
     j->request.target = library_target((int)game);
     j->request.bank_name = game == M64_GAME_COOPDX ? "extended" : j->bank;
 
-    if (!m64_repository_sequence(j, repo, error, (size_t)cap)) {
+    if (!m64_repository_sequence(j, &h, error, (size_t)cap)) {
         return DME_INVALID;
     }
 
-    j->repository = repo;
+    j->repository = &h;
     int32_t status = preflight(j, c, host, error, cap);
     j->repository = NULL;
     return status;
@@ -683,15 +681,14 @@ static int32_t DME_CALL history_prepare(void *job, const DmeContext *c, const Dm
 static int32_t DME_CALL history_install(void *job, const DmeContext *c, const DmeHost *host,
                                         const DmeHistoryApi *api, DmeHistory *history, char *error,
                                         uint64_t cap) {
-    (void)api;
     ExportJob *j = job;
-    EsRepository *repo = (EsRepository *)history;
+    EsHistory h = {api, history};
     M64Result *result = NULL;
-    j->repository = repo;
+    j->repository = &h;
     int32_t status = compile(j, c, host, error, cap, &result);
     j->repository = NULL;
 
-    if (status == DME_OK && !m64_repository_apply(j, repo, result, error, (size_t)cap)) {
+    if (status == DME_OK && !m64_repository_apply(j, &h, result, error, (size_t)cap)) {
         status = host->cancelled(host->user) ? DME_CANCELLED : DME_FAILED;
     }
 
@@ -701,6 +698,10 @@ static int32_t DME_CALL history_install(void *job, const DmeContext *c, const Dm
 
 static void DME_CALL history_begin(void *job, const DmeRepositoryRequest *request) {
     ((ExportJob *)job)->keep_originals = request->keep_originals != 0;
+}
+
+static void DME_CALL history_attach(const DmeHistoryApi *api) {
+    history_api = api;
 }
 
 static int32_t DME_CALL history_finish(void *instance, const DmeHistoryResult *result, char *error,
@@ -727,7 +728,8 @@ const DmeHistoryAdapter m64_history_adapter = {.size = sizeof(DmeHistoryAdapter)
                                                .install = history_install,
                                                .targets = m64_history_targets,
                                                .finish = history_finish,
-                                               .begin_install = history_begin};
+                                               .begin_install = history_begin,
+                                               .attach = history_attach};
 
 static const DmeHistoryAdapter *DME_CALL history_interface(uint32_t version) {
     return version == DME_REPOSITORY_API ? &m64_history_adapter : NULL;

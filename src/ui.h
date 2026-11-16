@@ -136,6 +136,12 @@ bool ui_editor_menu(void);
 bool ui_select(const char *label, bool selected, float w, float h);
 /* A selectable row whose text wraps within w; h should fit ui_text_height(text, w). */
 bool ui_select_wrapped(const char *id, const char *text, bool selected, float w, float h);
+/* A wrapped selectable row with a leading expand triangle (right closed, down open); a click
+   toggles it and it returns whether it is open. The state is kept per key in the current
+   window, and starts closed. The label starts UI_EXPANDER_TEXT from the row's left, with the
+   triangle centred in that space. */
+#define UI_EXPANDER_TEXT 18
+bool ui_expander(const char *key, const char *text, float w, float h);
 bool ui_check(const char *label, bool *value);
 bool ui_int(const char *label, int *value, int lo, int hi);
 bool ui_float(const char *label, float *value, float lo, float hi);

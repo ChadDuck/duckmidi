@@ -146,12 +146,16 @@ typedef struct {
     uint16_t bank;
     uint8_t port, channel, program;
     bool drums;
+    /* On a percussion patch, the drum key plus one of an entry for that key alone; zero is the
+       whole patch. A key's entry is laid over the whole patch's kit. */
+    uint8_t drum_key;
 } DmPatchKey;
 
 typedef struct {
-    DmPatchKey key;       /* Port 0 is the channel default. */
-    uint32_t generation;  /* Runtime sample cache token; zero explicitly selects SoundFont. */
+    DmPatchKey key;      /* Port 0 is the channel default. */
+    uint32_t generation; /* Runtime sample cache token; zero explicitly selects SoundFont. */
     char locator[DM_PATH], set_id[DM_SAMPLE_ID_CAP], preset_id[DM_SAMPLE_ID_CAP];
+    char sample_id[DM_SAMPLE_ID_CAP]; /* A drum key's entry: the preset's asset that key plays. */
 } DmPatchReplacement;
 
 typedef struct {
@@ -236,6 +240,8 @@ size_t dm_project_memory(const DmProject *p);
 DmPortMix dm_port_mix(const DmProject *project, int port, int channel);
 bool dm_port_mix_set(DmProject *project, DmPortMix mix);
 bool dm_patch_replacement_valid(const DmPatchReplacement *replacement);
+/* True when two keys name the same patch, whichever drum key each is for. */
+bool dm_patch_same(DmPatchKey a, DmPatchKey b);
 const DmPatchReplacement *dm_patch_replacement_exact(const DmProject *project, DmPatchKey key);
 const DmPatchReplacement *dm_patch_replacement(const DmProject *project, DmPatchKey key);
 bool dm_patch_replacement_set(DmProject *project, const DmPatchReplacement *replacement);
@@ -381,6 +387,11 @@ bool dm_loop_points(const DmProject *p, double *start, double *end);
 /* Song beat of the first note on channel (any channel when channel < 0), or HUGE_VAL. */
 double dm_first_note(const DmProject *p, int channel);
 const char *dm_program_name(int program);
+/* A controller's name (CC 0-127), or NULL when the controller has none. */
+const char *dm_controller_name(int cc);
+/* The name of an event type (DmPattern.event): bend, program, pressure, velocity or a controller,
+   numbered when the controller has no name. */
+void dm_event_name(int event, char *out, size_t cap);
 /* Sets a channel's starting instrument, including program changes sent before its first note.
    Without apply, only reports whether anything would change. */
 bool dm_set_initial_program(DmProject *p, int channel, int program, bool apply);

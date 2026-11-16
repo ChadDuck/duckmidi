@@ -814,9 +814,10 @@ static bool projects_equal(const DmProject *a, const DmProject *b) {
 
         if (ra->key.bank != rb->key.bank || ra->key.port != rb->key.port ||
             ra->key.channel != rb->key.channel || ra->key.program != rb->key.program ||
-            ra->key.drums != rb->key.drums || (ra->generation != 0) != (rb->generation != 0) ||
-            strcmp(ra->locator, rb->locator) || strcmp(ra->set_id, rb->set_id) ||
-            strcmp(ra->preset_id, rb->preset_id)) {
+            ra->key.drums != rb->key.drums || ra->key.drum_key != rb->key.drum_key ||
+            (ra->generation != 0) != (rb->generation != 0) || strcmp(ra->locator, rb->locator) ||
+            strcmp(ra->set_id, rb->set_id) || strcmp(ra->preset_id, rb->preset_id) ||
+            strcmp(ra->sample_id, rb->sample_id)) {
             return false;
         }
     }
@@ -990,6 +991,24 @@ static void build_full_project(DmProject *p) {
         .set_id = "test-set",
         .preset_id = "test-preset"};
     check(dm_patch_replacement_set(p, &patch), "add patch replacement");
+    /* One drum key of that kit plays another set's sample, and another the SoundFont. */
+    DmPatchReplacement drum = patch, stock = {.key = patch.key};
+    drum.key.drum_key = 37;
+    stock.key.drum_key = 39;
+    strcpy(drum.set_id, "other-set");
+    strcpy(drum.sample_id, "kick");
+    check(dm_patch_replacement_set(p, &drum) && dm_patch_replacement_set(p, &stock),
+          "add drum key replacements");
+    check(dm_patch_replacement(p, patch.key) == dm_patch_replacement_exact(p, patch.key) &&
+              !strcmp(dm_patch_replacement(p, drum.key)->sample_id, "kick"),
+          "a drum key entry and its kit are separate entries");
+    drum.sample_id[0] = 0;
+    check(!dm_patch_replacement_set(p, &drum), "a drum key entry names its sample");
+    drum = patch;
+    drum.key.drums = false;
+    drum.key.drum_key = 37;
+    strcpy(drum.sample_id, "kick");
+    check(!dm_patch_replacement_set(p, &drum), "only a percussion patch has drum key entries");
     check(dm_project_validate(p, error, sizeof(error)), error);
 }
 

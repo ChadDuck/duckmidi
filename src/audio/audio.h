@@ -83,8 +83,11 @@ void dm_audio_panic(DmAudio *audio);
 double dm_audio_position(DmAudio *audio);
 /* The song position in seconds that was audible at ticks_ns (an SDL_GetTicksNS time): the
    transport clock advanced to that moment, less the input latency, as MIDI device input is
-   timed. While stopped it is the stopped position. */
-double dm_audio_heard_seconds(DmAudio *audio, uint64_t ticks_ns);
+   timed. While stopped it is the stopped position. loop, when given, receives the loop pass of
+   that reading, and is left unchanged when the clock could not be read. */
+double dm_audio_heard_seconds(DmAudio *audio, uint64_t ticks_ns, uint32_t *loop);
+/* The transport's current loop pass, as input events are stamped with it; 0 when unreadable. */
+uint32_t dm_audio_loop_pass(DmAudio *audio);
 bool dm_audio_playing(DmAudio *audio);
 /* Internal-only edit gesture voice, isolated from song and keyboard input. */
 void dm_audio_edit_preview(DmAudio *audio, int program, float pitch, bool on);

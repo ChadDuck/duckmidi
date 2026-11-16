@@ -766,7 +766,7 @@ static void independent_ports(Editor *e) {
     DmProject generated;
     dm_project_init(&generated);
     DmGenerationStats stats;
-    assert(dm_generate_patterns(p, &generated, NULL, &stats, error, sizeof(error)));
+    assert(dm_generate_patterns(p, &generated, NULL, NULL, &stats, error, sizeof(error)));
     assert(dm_export_timeline(&generated, &events, &count, &duration, error, sizeof(error)));
     memset(starts, 0, sizeof(starts));
 

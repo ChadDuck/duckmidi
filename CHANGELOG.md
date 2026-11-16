@@ -51,6 +51,16 @@
 18. Imported resets, channel mode messages, and loop starts play and export cleanly.
 19. Imported RPN and NRPN messages play as their own parameters instead of pitch bend range changes.
 20. Refined conversation between Graph <> Point Modes further.
+21. Ocarina of Time exports no longer play slow between 225 and 255 BPM: the game tops out near 224 BPM, so faster songs are now written at a lower timing resolution from there instead of from 255.
+22. Repository history: each change has an arrow that expands a tree of the files it touched, replacing the small file box under the list.
+23. Drum channels can use a different sample on each drum key: in the Instrument window, **Drums** has a **By Set** / **By Sample** choice beside **Source**.
+    - **By Set** uses the set's drum assignments as saved in the sample editor; **By Sample** lists the drum keys beside the set's samples, and clicking a sample puts it on the selected key.
+    - Any sample can go on a key, keys can mix samples from several sets, and keys without one use the SoundFont.
+24. **Generate Patterns** can regenerate one channel: a dropdown above **Generate** picks **All channels** or a single channel, and the other channels are left exactly as they were.
+25. The SM64 and OoT exporters no longer need the `db` plugin: without it they still save files and packages, and only **Export to Repository** and its history are unavailable.
+26. **Generate Patterns** names each automation pattern and subrow it creates after its event, such as "Pitch bend" or "Reverb send", instead of "Controls" and "Generated controls".
+27. Recording a chord as playback starts keeps it together and in place, instead of moving later notes a bar early and erasing existing notes with **Overlap** on; a pattern that is not on the playlist records where you play while the pattern editor has focus.
+28. With the pattern editor focused, recording from a playhead past the end of a pattern's placement continues that placement instead of starting over at the pattern's beginning.
 
 # 0.12.6
 

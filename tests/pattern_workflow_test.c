@@ -34,6 +34,14 @@ static void fixture(Editor *e) {
     e->selected_clip = -1;
     e->drag = DRAG_NONE;
     e->edit_moved = false;
+    e->play_beat = 0;
+    e->play_loop = 0;
+    e->take_origin_set = false;
+    e->loop_enabled[0] = e->loop_enabled[1] = false;
+}
+
+static double take_origin(Editor *e, double beat) {
+    return ed_record_origin(e, &beat, e->play_loop);
 }
 
 static void sizing_names(Editor *e) {
@@ -208,10 +216,23 @@ static void recording(Editor *e) {
     check(ed_recording_origin(e, 140 + length * .9) == 140,
           "with the piano roll focused, late notes land late in the placement under the playhead");
     e->take_origin_set = false;
-    check(ed_record_origin(e, 120.5) == 120 && ed_record_origin(e, 140.5) == 140,
+    check(take_origin(e, 120.5) == 120 && take_origin(e, 140.5) == 140,
           "a take crossing into another placement places each note by its own placement");
-    check(ed_record_origin(e, 131.75) == 128 && ed_record_origin(e, 133.5) == 128,
-          "off the placements, the take keeps the bar where playing began");
+    e->edit_focus = FOCUS_PLAYLIST;
+    e->take_origin_set = false;
+    check(
+        take_origin(e, 131.75) == 128 && take_origin(e, 133.5) == 128,
+        "off the placements with the playlist focused, the take keeps the bar where playing began");
+    e->edit_focus = FOCUS_NOTES;
+    e->take_origin_set = false;
+    check(take_origin(e, 131.75) == 120 && take_origin(e, 133.5) == 120,
+          "with the pattern editor focused, playing past a placement continues that placement");
+    e->take_origin_set = false;
+    check(take_origin(e, 150) == 140,
+          "the latest placement that starts before the playhead is the one continued");
+    e->take_origin_set = false;
+    check(take_origin(e, 101.5) == 100,
+          "before every placement, the take keeps the bar where playing began");
     e->edit_focus = FOCUS_PLAYLIST;
     char error[256];
     dm_audio_publish(e->audio, &e->project, 61, false, error, sizeof(error));
@@ -224,6 +245,99 @@ static void recording(Editor *e) {
     check(ed_pattern(e)->length == 2, "recording extends only local content span");
     e->pattern_mode = true;
     check(ed_recording_origin(e, 120) == 0, "Pattern-mode recording already uses local beats");
+}
+
+static const DmNote *find_note(const DmPattern *p, int key, double beat) {
+    for (size_t i = 0; i < p->count; ++i) {
+        if (p->notes[i].key == key && fabs(p->notes[i].beat - beat) < 1e-6) {
+            return &p->notes[i];
+        }
+    }
+
+    return NULL;
+}
+
+/* Song playback from bar 3 into a pattern that is not on the playlist and already holds chords in
+   bars 1 and 2, with Wait: the key that starts the take lands on the start beat, and the rest of
+   the chord is stamped by the playback clock less input latency, a little before it. */
+static void recording_onto_notes(Editor *e, bool overlap) {
+    fixture(e);
+    e->overwrite = overlap;
+    e->record = true;
+    DmPattern *p = ed_pattern(e);
+    uint8_t port = (uint8_t)ed_note_port(e);
+    int old[] = {60, 64, 67, 62, 65, 69};
+
+    for (int i = 0; i < 6; ++i) {
+        dm_note_add(p, (DmNote){i < 3 ? 0 : 4, 3.25, (uint8_t)old[i], 100, 0, port});
+    }
+
+    ed_changed(e);
+    e->play_beat = 8;
+    e->play_loop = 3;
+    check(ed_begin_record_take(e), "a take starts on a pattern with notes");
+    int keys[] = {62, 55, 59, 57, 60, 64};
+    double played[] = {8, 7.94, 7.95, 12.04, 12.04, 12.05};
+
+    for (int i = 0; i < 6; ++i) {
+        double beat = played[i];
+        double origin = ed_record_origin(e, &beat, 3);
+        check(ed_record_insert(e, ed_pattern(e), keys[i], 100, port, beat, beat + 3.5, origin),
+              "record a chord note");
+    }
+
+    p = ed_pattern(e);
+    check(find_note(p, 62, 8) && find_note(p, 55, 8) && find_note(p, 59, 8),
+          "a chord played as recording starts stays together on the start beat");
+    check(find_note(p, 57, 12.04) && find_note(p, 60, 12.04) && find_note(p, 64, 12.05),
+          "with the pattern editor focused, an unplaced pattern records at the song position");
+
+    bool kept = true;
+
+    for (int i = 0; i < 6; ++i) {
+        kept &= find_note(p, old[i], i < 3 ? 0 : 4) != NULL;
+    }
+
+    if (overlap) {
+        check(kept && p->count == 12, "Overlap keeps the notes the take does not cover");
+    } else {
+        check(p->count == 6, "without Overlap the take replaces the pattern's notes");
+    }
+}
+
+/* With the playlist focused, an unplaced pattern records from its start; a loop pass places its
+   own first note afresh and keeps notes stamped before the loop start in that pass. */
+static void recording_passes(Editor *e) {
+    fixture(e);
+    e->record = true;
+    e->edit_focus = FOCUS_PLAYLIST;
+    e->play_beat = 9;
+    e->play_loop = 1;
+    double bar = dm_bar(&e->project), start = 9 - fmod(9, bar), beat = 8.98;
+    check(ed_record_origin(e, &beat, 1) == start && beat == 9,
+          "with the playlist focused, an unplaced pattern records from the bar playing began");
+    beat = 8.5;
+    check(ed_record_origin(e, &beat, 1) == start && beat == 9,
+          "an early stamp in the first pass never moves the take a bar back");
+    e->loop_enabled[0] = true;
+    e->loop_start[0] = 6;
+    beat = 5.97;
+    check(ed_record_origin(e, &beat, 2) == 6 - fmod(6, bar) && beat == 6,
+          "a new loop pass starts its own origin at the loop start");
+    e->loop_enabled[0] = false;
+    double later = 3 * bar + 1;
+    check(ed_transport_publish(e, dm_beat_seconds(&e->project, later), true),
+          "start playback later in the song");
+    uint32_t loop = e->play_loop;
+    beat = later + .5;
+    check(e->play_beat == later && ed_record_origin(e, &beat, loop) == 3 * bar,
+          "starting playback records where it starts");
+    check(ed_transport_publish(e, dm_beat_seconds(&e->project, 1), true),
+          "seek back during the take");
+    beat = 1.25;
+    check(e->play_beat == 1 && ed_record_origin(e, &beat, e->play_loop) == 0,
+          "after seeking back, the take is placed from the new position");
+    check(ed_transport_publish(e, 0, false), "stop playback");
 }
 
 static void group_points(Editor *e) {
@@ -832,6 +946,9 @@ int main(void) {
     brush_velocity(e);
     linked_copy(e);
     recording(e);
+    recording_onto_notes(e, true);
+    recording_onto_notes(e, false);
+    recording_passes(e);
     group_points(e);
     ui_end();
     ui_render(r);

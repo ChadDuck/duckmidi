@@ -52,36 +52,6 @@ static char *copy(DmeString s) {
     return p;
 }
 
-bool es_targets_add(EsTargets *t, const char *id, const char *label, const char *path) {
-    if (!id || !label || !path || t->count >= 20000 ||
-        !es_reserve((void **)&t->items, &t->capacity, t->count + 1, sizeof(*t->items))) {
-        return false;
-    }
-
-    char *a = SDL_strdup(id), *b = SDL_strdup(label), *c = SDL_strdup(path);
-
-    if (!a || !b || !c) {
-        SDL_free(a);
-        SDL_free(b);
-        SDL_free(c);
-        return false;
-    }
-
-    t->items[t->count++] = (DmeSampleTarget){string(a), string(b), string(c)};
-    return true;
-}
-
-void es_targets_free(EsTargets *t) {
-    for (size_t i = 0; i < t->count; i++) {
-        SDL_free((void *)t->items[i].id.data);
-        SDL_free((void *)t->items[i].label.data);
-        SDL_free((void *)t->items[i].path.data);
-    }
-
-    free(t->items);
-    *t = (EsTargets){0};
-}
-
 static void DME_CALL destroy_job(void *job) {
     Job *b = job;
 
@@ -434,7 +404,8 @@ static const DmeHistoryRuntime runtime = {.size = sizeof(DmeHistoryRuntime),
                                           .run = run,
                                           .finish = finish,
                                           .describe = describe,
-                                          .destroy_job = destroy_job};
+                                          .destroy_job = destroy_job,
+                                          .api = &es_history_table};
 
 DES_API const DmeHistoryRuntime *DME_CALL duckmidi_history_runtime(uint32_t version) {
     return version == DME_REPOSITORY_API ? &runtime : NULL;

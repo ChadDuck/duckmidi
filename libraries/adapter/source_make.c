@@ -1,6 +1,5 @@
 #include "source.h"
 #include "../../src/text/en.h"
-#include "internal.h"
 #include <ctype.h>
 #include <string.h>
 

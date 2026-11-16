@@ -5,6 +5,7 @@
 #include "../libraries/m64export/plugin/m64_plugin.h"
 #endif
 #include "../include/duckmidi_repository_plugin.h"
+#include "../libraries/db/db.h"
 #include "../src/text/en.h"
 #include "native_sequence_decode.h"
 #include <SDL3/SDL.h>
@@ -944,6 +945,11 @@ int main(int argc, char **argv) {
     const DmeExporter *api = plugin->exporter(0);
     void *instance = api->create();
     assert(instance && api->set_custom && api->history);
+    /* As the host does after loading: the runtime's table for saved packages that replace. */
+    const DmeHistoryRuntime *repo_api = duckmidi_history_runtime(DME_REPOSITORY_API);
+    const DmeHistoryAdapter *adapter = api->history(DME_REPOSITORY_API);
+    assert(repo_api && adapter && adapter->attach);
+    adapter->attach(repo_api->api);
     DmeEvent events[] = {{0, 1, MIDI_PROGRAM, 40, 0, 0},
                          {0, 2, MIDI_NOTE_ON, 60, 90, 0},
                          {96, 3, MIDI_NOTE_OFF, 60, 0, 0}};
@@ -1071,8 +1077,6 @@ int main(int argc, char **argv) {
         assert(outputs == 7);
 #endif
     } else {
-        const DmeHistoryRuntime *repo_api = duckmidi_history_runtime(DME_REPOSITORY_API);
-        const DmeHistoryAdapter *adapter = api->history(DME_REPOSITORY_API);
         DmeRepositoryRequest request = {.size = sizeof(request),
                                         .action = DME_REPOSITORY_INSPECT,
                                         .plugins_directory = str(argv[1]),

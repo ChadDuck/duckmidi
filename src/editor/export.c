@@ -870,8 +870,6 @@ void ed_export_history_reset(Editor *e) {
 
         format->history_scope = 0;
     }
-
-    h->history_key[0] = 0;
 }
 
 /* Preferences: choose an exporter's repository folder without exporting. */

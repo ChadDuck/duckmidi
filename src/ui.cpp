@@ -779,14 +779,51 @@ bool ui_select(const char *s, bool selected, float w, float h) {
     return pressed;
 }
 
-bool ui_select_wrapped(const char *id, const char *text, bool selected, float w, float h) {
+static bool select_wrapped_at(const char *id, const char *text, bool selected, float w, float h,
+                              float text_x) {
     ImVec2 at = ImGui::GetCursorScreenPos();
+    float text_w = ImMax(1.f, w - text_x);
+    float text_h = ImGui::CalcTextSize(text, nullptr, false, text_w).y;
+
+    if (h <= 0) {
+        h = ImMax(ImGui::GetFrameHeight(), text_h);
+    }
+
     bool pressed = ImGui::Selectable(id, selected, 0, {w, h});
-    float text_h = ImGui::CalcTextSize(text, nullptr, false, w).y;
     ImGui::GetWindowDrawList()->AddText(ImGui::GetFont(), ImGui::GetFontSize(),
-                                        {at.x, at.y + ImMax(0.f, (h - text_h) / 2)},
-                                        ImGui::GetColorU32(ImGuiCol_Text), text, nullptr, w);
+                                        {at.x + text_x, at.y + ImMax(0.f, (h - text_h) / 2)},
+                                        ImGui::GetColorU32(ImGuiCol_Text), text, nullptr, text_w);
     return pressed;
+}
+
+bool ui_select_wrapped(const char *id, const char *text, bool selected, float w, float h) {
+    return select_wrapped_at(id, text, selected, w, h, 0);
+}
+
+bool ui_expander(const char *key, const char *text, float w, float h) {
+    ImGuiWindow *window = ImGui::GetCurrentWindow();
+    ImGuiID id = ImHashStr(key, 0, window->IDStack[0]);
+    bool open = window->StateStorage.GetBool(id, false);
+    ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::PushID(key);
+
+    if (select_wrapped_at("##expander", text, false, w, h, UI_EXPANDER_TEXT)) {
+        open = !open;
+        window->StateStorage.SetBool(id, open);
+    }
+
+    ImGui::PopID();
+    ImRect rect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+    float x = at.x + UI_EXPANDER_TEXT * .5f, cy = (rect.Min.y + rect.Max.y) * .5f;
+    ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
+
+    if (open) {
+        ui_triangle({x - 4, cy - 2}, {x + 4, cy - 2}, {x, cy + 3}, color);
+    } else {
+        ui_triangle({x - 2, cy - 4}, {x - 2, cy + 4}, {x + 3, cy}, color);
+    }
+
+    return open;
 }
 
 bool ui_check(const char *s, bool *v) {

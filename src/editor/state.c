@@ -982,6 +982,19 @@ static bool same_preview(DmPatternPreview a, DmPatternPreview b) {
            a.follow == b.follow && a.origin == b.origin && a.length == b.length;
 }
 
+/* Notes where playback starts, for ed_record_origin. Playing on from an earlier beat than the
+   take's origin, as after seeking back, places the rest of the take afresh. */
+static void playback_started(Editor *e, double seconds, bool playing) {
+    if (playing) {
+        e->play_beat = dm_seconds_beat(&e->project, seconds);
+        e->play_loop = dm_audio_loop_pass(e->audio);
+
+        if (e->take_origin_set && e->play_beat < e->take_origin) {
+            e->take_origin_set = false;
+        }
+    }
+}
+
 bool ed_transport_publish(Editor *e, double seconds, bool playing) {
     bool ok;
 
@@ -1006,6 +1019,7 @@ bool ed_transport_publish(Editor *e, double seconds, bool playing) {
         /* The current project is playing; any pending background build was cancelled. */
         e->published_revision = e->publish_revision;
         publish_loop(e, &e->project);
+        playback_started(e, seconds, playing);
     }
 
     return ok;
@@ -1023,7 +1037,12 @@ bool ed_transport_seek(Editor *e, double seconds, bool playing) {
         return false;
     }
 
-    return dm_audio_seek(e->audio, &e->project, seconds, playing);
+    if (!dm_audio_seek(e->audio, &e->project, seconds, playing)) {
+        return false;
+    }
+
+    playback_started(e, seconds, playing);
+    return true;
 }
 
 bool ed_publish_song_start(Editor *e) {

@@ -274,7 +274,7 @@ double dm_audio_position(DmAudio *a) {
     return a ? SDL_GetAtomicInt(&a->position_ms) / 1000.0 : 0;
 }
 
-double dm_audio_heard_seconds(DmAudio *a, uint64_t ticks_ns) {
+double dm_audio_heard_seconds(DmAudio *a, uint64_t ticks_ns, uint32_t *loop) {
     DmMidiClockValue clock;
 
     if (!a) {
@@ -287,11 +287,28 @@ double dm_audio_heard_seconds(DmAudio *a, uint64_t ticks_ns) {
         if (dm_midi_clock_read(&a->clock, &clock)) {
             DmMidiInputEvent event = {.ticks_ns = ticks_ns};
             dm_midi_clock_stamp(clock, &event);
+
+            if (loop) {
+                *loop = event.loop;
+            }
+
             return fmax(0, event.song_seconds);
         }
     }
 
     return dm_audio_position(a);
+}
+
+uint32_t dm_audio_loop_pass(DmAudio *a) {
+    DmMidiClockValue clock;
+
+    for (int attempt = 0; a && attempt < 100; ++attempt) {
+        if (dm_midi_clock_read(&a->clock, &clock)) {
+            return clock.loop;
+        }
+    }
+
+    return 0;
 }
 
 void dm_audio_panic(DmAudio *a) {

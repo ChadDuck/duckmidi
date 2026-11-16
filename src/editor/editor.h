@@ -304,6 +304,7 @@ typedef struct {
     struct DmAutosave *autosave;
     struct DmPatternJob *pattern_job;
     bool generate_window;
+    int generate_channel; /* Generate Patterns scope: 0..15, or -1 for every channel. */
     bool note_color_popup, pattern_color_popup;
     int pattern_color_target; /* Pattern index, or -1 for the selected placements. */
     uint8_t note_ports[16];
@@ -330,9 +331,15 @@ typedef struct {
         erase_active;
     bool duration_beats, focus_pattern, clip_moved;
     bool wait_armed, take_started;
-    /* Song beat where the recording take's pattern beat 0 falls; set by the take's first note. */
+    /* Song beat where the recording take's pattern beat 0 falls off the placements; set by the
+       first note of each loop pass (take_loop). */
     double take_origin;
+    uint32_t take_loop;
     bool take_origin_set;
+    /* Where and in which loop pass playback last started, so input stamped a little earlier
+       by latency stays in the take. */
+    double play_beat;
+    uint32_t play_loop;
     int preview_program, preview_route, preview_source_channel;
     bool preview_override, channel_selected, event_marquee, midi_events;
     int midi_event_kind, midi_event_index;

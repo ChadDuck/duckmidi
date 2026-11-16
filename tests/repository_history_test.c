@@ -1,5 +1,5 @@
-#include "../libraries/export_support/export_support.h"
-#include "../libraries/export_support/source.h"
+#include "../libraries/db/db.h"
+#include "../libraries/adapter/source.h"
 #include <SDL3/SDL.h>
 #include <assert.h>
 #include <stdio.h>
@@ -359,7 +359,7 @@ static int32_t DME_CALL overlay_render(const DmeHistoryApi *api, DmeHistory *his
         path[newline - text] = 0;
         uint64_t size = intents[i].recipe_size - (uint64_t)(newline + 1 - text);
 
-        if (!api->plan_put(plan, path, (const uint8_t *)newline + 1, size, 1, error, cap) ||
+        if (!api->plan_put(plan, path, (const uint8_t *)newline + 1, size, 1, 0, error, cap) ||
             !api->plan_affect(plan, intents[i].key.data, path, "file")) {
             return 0;
         }
