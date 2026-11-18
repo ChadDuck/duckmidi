@@ -49,7 +49,7 @@ No sound? Open **Edit > Preferences** (**P**) and choose a SoundFont (`.sf2` or 
 
 Every copy of a pattern shares the same notes, so editing one changes them all. For a separate version, select the card and press **Ctrl + D**. Right-click a card to rename, recolor or delete it, and drag cards to reorder them.
 
-In the arrangement, **Shift + drag** a placement to make a linked copy, drag its edge to change its length, or use the slice tool to split it.
+In the arrangement, **Shift + drag** a placement to make a linked copy, drag its edge to change its length, or use the slice tool to split it. A pattern spans whole bars, up to the bar line after its last note; a placement follows that length until you drag its edge, and then keeps the length you gave it.
 
 Selections work as in a file manager: **Ctrl + click** adds or removes a placement, **Shift + click** selects every placement from the last one clicked to the clicked spot, across the rows between them, and **Ctrl + Shift + click** adds that range. In the piano roll, **Shift + click** and **Ctrl + click** add notes, and **Ctrl + click** on a selected note removes it.
 
@@ -76,7 +76,7 @@ Click **+ New** beside **Arrangement** to add a channel, then pick **Melody** or
 | Shift + drag inside a note | Draw a pitch bend |
 | Alt while dragging | Ignore the grid |
 
-The usual shortcuts work: **Ctrl + C / X / V**, **Ctrl + D** to duplicate, **Delete**, and **Ctrl + Z / Y**. **Ctrl + Q** snaps selected notes to quarter beats.
+The usual shortcuts work: **Ctrl + C / X / V**, **Ctrl + D** to duplicate, **Delete**, and **Ctrl + Z / Y**. **Ctrl + Q** snaps selected notes to quarter beats. **Ctrl + L** (Legato) ends each note where the next one starts, so chords end together and gaps close; the last notes run to the next bar line. Both act on the selected notes, or on every note when none are selected, and are also in the piano roll's top-left menu.
 
 With the notes section focused, **Ctrl + Shift + C / X** copies or cuts selected notes with their pitch-bend points; **Ctrl + V** pastes them relative to the playhead. Change these shortcuts in **Edit > Keyboard shortcuts**. **Escape** clears selections in both the notes and events sections before closing the editor.
 
@@ -120,7 +120,7 @@ Controller data you record, like modulation, goes into the events in **Graph** m
 
 Right-click a mixer strip's volume, pan, **M** or **S** and choose **Learn MIDI control**, then move a knob or press a button. **Learn MIDI control from any device** works whichever keyboard you use. Right-click again to **Clear MIDI control**.
 
-Transport and editing buttons are in **Edit > Preferences > MIDI input > MIDI controls**: Play, Stop, Record, Metronome, Quantize, Undo, Redo and the channel arrows. Click **Learn** beside one, or **Clear all** to start over. Choose **Toggle** for buttons that send on and off with each press; leave **Momentary** for the rest.
+Transport and editing buttons are in **Edit > Preferences > MIDI input > MIDI controls**: Play, Stop, Record, Metronome, Quantize, Legato, Undo, Redo and the channel arrows. Click **Learn** beside one, or **Clear all** to start over. Choose **Toggle** for buttons that send on and off with each press; leave **Momentary** for the rest.
 
 With **Pickup for knobs and faders** on, a knob only takes over once it reaches the current value, so the volume never jumps. Learned controls don't play notes or get recorded.
 
@@ -243,6 +243,7 @@ Keep your game's build stopped while exporting or reverting. See [How repository
 
 - **Turn an imported song into patterns:** **Edit > Generate Patterns** cuts each channel into phrases of whole bars (or of the song's own repeat length when its phrases do not line up with the bars), links phrases whose notes repeat exactly, and moves controller data into automation patterns. Notes held into the next phrase put it on another note row. The dropdown above **Generate** picks **All channels** or one channel; with one channel, every other channel stays as it was.
 - **Song events:** click the **Events** row in the arrangement to add tempo, time signature, key, markers and more. In **Edit**, Ctrl + click and Shift + click select several events; then move them all by a number of beats, or to one beat. **MIDI Events** lists every MIDI message.
+- **End of track:** the **Events** row lists the song's end like other song events; it is also where exported MIDI files and game sequences end. It follows the last placement or event. To keep silence after the music, click its bar, select **End of track** on the left, type a beat and click **Apply event**; **Auto** makes it follow the song again. Imported MIDI files keep their own end.
 - **Check for updates:** **Help > Check for Update**. duckmidi only goes online when you ask it to (Windows only).
 
 ![The Updates window](images/updates.png)

@@ -106,6 +106,16 @@ size_t ed_song_event_rows(Editor *e, double start, double end, int channel) {
         }
     }
 
+    /* The End of Track comes after every event, so it is the bar's last row. */
+    double at = dm_duration(&e->project);
+
+    if (channel < 0 && at >= start && at < end &&
+        dm_reserve((void **)&e->midi_rows.data, &e->midi_rows.capacity,
+                   (selected + 1) * sizeof(*rows), 1)) {
+        rows = (MidiRow *)e->midi_rows.data;
+        rows[selected++] = (MidiRow){.beat = at, .index = -1, .song_end = true};
+    }
+
     e->midi_rows.size = selected * sizeof(*rows);
     return selected;
 }
@@ -142,7 +152,7 @@ bool ed_song_event_picked(Editor *e, MidiRow row) {
     size_t count = ed_song_event_pick_count(e);
     const MidiRow *picks = (const MidiRow *)e->song_event_picks.data;
 
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count && !row.song_end; ++i) {
         if (picks[i].index == row.index) {
             return true;
         }
@@ -153,8 +163,8 @@ bool ed_song_event_picked(Editor *e, MidiRow row) {
 
 /* Before the first modifier click, the event open in the details panel counts as picked. */
 static bool song_event_single(const Editor *e, MidiRow row) {
-    return e->midi_selection_revision == e->export_revision && e->midi_event_index == row.index &&
-           e->midi_event_kind == 0;
+    return !row.song_end && e->midi_selection_revision == e->export_revision &&
+           e->midi_event_index == row.index && e->midi_event_kind == 0;
 }
 
 /* After the picks change: one opens in the details panel; several start Move to at the beat
@@ -163,6 +173,7 @@ static void song_event_picked(Editor *e) {
     size_t count = ed_song_event_pick_count(e);
     const MidiRow *picks = (const MidiRow *)e->song_event_picks.data;
     e->midi_event_index = -1;
+    e->midi_song_end = false;
 
     if (count == 1) {
         ed_midi_select(e, picks[0]);
@@ -186,10 +197,22 @@ void ed_song_event_pick(Editor *e, size_t clicked, SelectPick pick) {
     }
 
     const MidiRow *rows = (const MidiRow *)e->midi_rows.data;
+
+    /* The End of Track opens on its own: it is not an event to pick with others or move. */
+    if (rows[clicked].song_end) {
+        song_event_clear_picks(e);
+        ed_midi_select(e, rows[clicked]);
+        return;
+    }
+
     bool seed = !ed_song_event_pick_count(e);
     size_t anchor = count, single = count;
 
     for (size_t i = 0; i < count; ++i) {
+        if (rows[i].song_end) {
+            continue;
+        }
+
         if (rows[i].index == e->song_event_pick_anchor) {
             anchor = i;
         }
@@ -218,7 +241,8 @@ void ed_song_event_pick(Editor *e, size_t clicked, SelectPick pick) {
     for (size_t i = 0; i < count; ++i) {
         bool before = seed ? song_event_single(e, rows[i]) : ed_song_event_picked(e, rows[i]);
 
-        if (ed_pick_selects(pick, before, i == clicked, i >= first && i <= last) &&
+        if (!rows[i].song_end &&
+            ed_pick_selects(pick, before, i == clicked, i >= first && i <= last) &&
             !dm_bytes(&picks, &rows[i], sizeof(MidiRow))) {
             dm_bytes_free(&picks);
             ed_message(e, DM_TEXT_CANNOT_ALLOCATE_MIDI);
@@ -460,6 +484,7 @@ static void song_event_mode(Editor *e, bool add) {
     song_event_clear_picks(e);
     e->song_event_add = add;
     e->midi_event_index = -1;
+    e->midi_song_end = false;
     e->midi_error[0] = 0;
     e->event_beat = e->song_event_anchor;
 
@@ -608,6 +633,44 @@ void ed_song_event_position(Editor *e, double *beat, const char *label, float co
     if (e->song_event_add && isfinite(e->event_beat) && e->event_beat >= 0) {
         e->song_event_anchor = e->event_beat;
     }
+}
+
+void ed_song_end_set(Editor *e, double beat) {
+    double end = beat > 0 ? fmin(fmax(beat, dm_content_end(&e->project)), DM_MAX_BEAT) : 0;
+
+    if (end == e->project.end || !ed_checkpoint(e)) {
+        return;
+    }
+
+    e->project.end = end;
+    e->song_event_anchor = dm_duration(&e->project);
+    ed_commit(e);
+}
+
+/* The details panel for the End of Track row: its beat, Apply to set it by hand and Auto (enabled
+   once it is set by hand) to let it follow the arrangement again. The beat field follows the song
+   end until it is edited, and again after any change to the project. */
+void ed_song_end_details(Editor *e) {
+    if (e->midi_selection_revision != e->export_revision) {
+        e->event_beat = dm_duration(&e->project);
+        e->midi_selection_revision = e->export_revision;
+    }
+
+    ui_text(DM_TEXT_END_OF_TRACK);
+    ed_song_event_position(e, &e->event_beat, DM_TEXT_BEAT, 0);
+    ui_separator();
+
+    if (ui_button(DM_TEXT_APPLY_EVENT, 120, 0)) {
+        ed_song_end_set(e, fmax(e->event_beat, 1.0 / DM_PPQ));
+    }
+
+    ui_disabled(!(e->project.end > 0));
+
+    if (ui_button(DM_TEXT_END_OF_TRACK_AUTO, 120, 0)) {
+        ed_song_end_set(e, 0);
+    }
+
+    ui_disabled_end();
 }
 
 /* Add lays its fields out like the other windows: one field column across the window, with

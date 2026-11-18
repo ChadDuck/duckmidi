@@ -38,6 +38,12 @@ DmMeter dm_meter(const DmProject *p, double beat) {
     return meter;
 }
 
+double dm_bar_ceil(const DmProject *p, double beat) {
+    DmMeter meter = dm_meter(p, beat);
+    double line = meter.origin + ceil((beat - meter.origin) / meter.bar - 1e-9) * meter.bar;
+    return fmin(line, meter.next_change);
+}
+
 double dm_beat_seconds(const DmProject *p, double beat) {
     double last = 0, seconds = 0, rate = 60 / p->bpm;
 

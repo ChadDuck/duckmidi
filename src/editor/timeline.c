@@ -105,12 +105,10 @@ static void ruler_ticks(Editor *e, UiRect r, View *v, float scale, float label) 
 
 static void ruler_bars(Editor *e, UiRect r, View *v, float scale, float label) {
     double left = v->scroll_x / scale, right = (v->scroll_x + r.w - label) / scale;
-    DmMeter meter = dm_meter(&e->project, left);
-    double beat = meter.origin + ceil((left - meter.origin) / meter.bar - 1e-9) * meter.bar;
-    beat = fmin(beat, meter.next_change);
+    double beat = dm_bar_ceil(&e->project, left);
 
     for (int guard = 0; beat <= right && guard < 1000; ++guard) {
-        meter = dm_meter(&e->project, beat + 1e-8);
+        DmMeter meter = dm_meter(&e->project, beat + 1e-8);
         double number = meter.completed + floor((beat - meter.origin) / meter.bar + 1e-8) + 1;
         float x = r.x + label + (float)beat * scale - v->scroll_x;
         char text[32];
@@ -393,9 +391,10 @@ void ed_timeline_drag(Editor *e, UiRect r, View *v, float scale, float label, in
         double length = context == CONTEXT_ROLL && ed_pattern(e) ? ed_pattern_length(e)
                                                                  : dm_duration(&e->project);
         timeline_autoscroll(r, v, label, mouse);
-        double beat =
-            ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale,
-                    context == CONTEXT_ROLL ? .25 : 1, ed_gesture_held(e, GESTURE_FREE, mouse));
+        /* The playhead snaps to the finest grid lines its view shows. */
+        double step = context == CONTEXT_ROLL ? .25 : ed_playlist_step(scale);
+        double beat = ed_snap((mouse.pos.x - r.x - label + v->scroll_x) / scale, step,
+                              ed_gesture_held(e, GESTURE_FREE, mouse));
         beat = fmin(beat, length);
         e->cursor_beat[context == CONTEXT_ROLL] = e->start_beat[context == CONTEXT_ROLL] = beat;
 

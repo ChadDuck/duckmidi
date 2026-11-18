@@ -241,9 +241,9 @@ static void switches_and_glide(Editor *e) {
     dm_note_add(ed_pattern(e), (DmNote){0, 2, 60, 100, 0});
     e->project.clips[0].length = 0;
     ed_automation_line(e, 1, 6, 127, 127, 64);
-    check(dm_schedule(&e->project, &s) && scheduled_value(&s, 64, .75) == 127 &&
-              scheduled_value(&s, 64, 1) == 0,
-          "automatic note placement releases a truncated pedal");
+    check(dm_schedule(&e->project, &s) && scheduled_value(&s, 64, 1.75) == 127 &&
+              scheduled_value(&s, 64, 2) == 0,
+          "automatic note placement releases a truncated pedal at its whole-bar end");
     dm_schedule_free(&s);
     fixture(e, 5, true);
     ed_automation_line(e, 1, 3, 10, 90, 5);

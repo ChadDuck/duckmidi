@@ -100,6 +100,7 @@ static const Field project_fields[] = {
     FIELD(9, FIELD_INT, DmProject, sequence_count, 1),
     FIELD(10, FIELD_BOOL, DmProject, percussion_override, 0),
     FIELD(11, FIELD_U32, DmProject, next_pattern_uid, 0),
+    FIELD(12, FIELD_REAL, DmProject, end, 0),
 };
 
 static const Field percussion_fields[] = {

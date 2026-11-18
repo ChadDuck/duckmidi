@@ -133,8 +133,9 @@ int main(void) {
     key(e, SDL_SCANCODE_RIGHT, true);
     check(e->start_beat[1] > 0 && e->start_beat[1] == e->cursor_beat[1],
           "arrow seek updates set position");
-    /* Song playback into a pattern that is not on the playlist, with the pattern editor
-       focused: notes land at the song position where they were played. */
+    /* Song playback into an empty pattern that is not on the playlist, with the pattern editor
+       focused: the take starts at the pattern's beginning, keeping the beat within the bar where
+       playing began. */
     int unplaced = dm_pattern_add(&e->project, "Unplaced take");
     e->selected_pattern = unplaced;
     e->edit_focus = FOCUS_NOTES;
@@ -161,9 +162,8 @@ int main(void) {
     key(e, SDL_SCANCODE_W, false);
     key(e, SDL_SCANCODE_SPACE, true);
     DmPattern *take = &e->project.patterns[unplaced];
-    check(take->count == 2 && take->notes[0].beat > song_start &&
-              take->notes[0].beat < song_start + 1,
-          "an unplaced pattern records at the song position from the pattern editor");
+    check(take->count == 2 && take->notes[0].beat > 1.5 && take->notes[0].beat < 2.5,
+          "an empty unplaced pattern records from its start, offset within the bar");
     check(take->notes[1].beat > take->notes[0].beat + .2,
           "later notes of the take keep their timing after the first");
     e->record = false;

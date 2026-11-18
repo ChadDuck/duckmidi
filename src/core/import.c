@@ -206,8 +206,6 @@ static bool parse_track(Reader *r, Midi *m, int track) {
             return false;
         }
 
-        m->end_tick = tick > m->end_tick ? tick : m->end_tick;
-
         if (eot) {
             return true;
         }
@@ -1206,11 +1204,17 @@ static bool import_finish(DmProject *p, ImportState *s, const Midi *m) {
         dm_pattern_fit(p, &p->patterns[i]);
     }
 
-    /* Note-pattern fitting follows notes. Imported placements must also cover
-       controller tails, including a message on the source's final tick. */
+    /* Imported placements end at the source's End of Track (end follows every message), so the
+       song keeps the source's length instead of its patterns' whole bars. They still cover a
+       note left without its Note Off and a controller on the source's final tick. */
     for (size_t i = 0; i < p->clip_count; ++i) {
         DmClip *clip = &p->clips[i];
-        double length = fmax(p->patterns[clip->pattern].length, end);
+        const DmPattern *pattern = &p->patterns[clip->pattern];
+        double length = end;
+
+        for (size_t n = 0; n < pattern->count; ++n) {
+            length = fmax(length, pattern->notes[n].beat + pattern->notes[n].length);
+        }
 
         for (size_t j = 0; j < p->automation_count; ++j) {
             DmAutomation a = p->automation[j];
@@ -1220,9 +1224,7 @@ static bool import_finish(DmProject *p, ImportState *s, const Midi *m) {
             }
         }
 
-        if (length > p->patterns[clip->pattern].length) {
-            clip->length = length;
-        }
+        clip->length = length;
     }
 
     return true;

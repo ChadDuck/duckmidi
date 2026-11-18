@@ -165,6 +165,76 @@ static void resizing_and_quantize(Editor *e) {
           "quantize preserves unselected notes when a selection exists");
 }
 
+/* The chord progression with a passing tone from the Legato request: chords on bars 1-4 and a C6
+   on the third beat of bar 2, all short. */
+static void legato_progression(DmPattern *p, uint8_t selected) {
+    static const struct {
+        double beat;
+        uint8_t keys[3];
+    } chords[] = {{0, {72, 76, 79}}, {4, {74, 77, 81}}, {8, {67, 71, 74}}, {12, {69, 72, 76}}};
+
+    p->count = 0;
+
+    for (size_t c = 0; c < sizeof(chords) / sizeof(*chords); ++c) {
+        for (int k = 0; k < 3; ++k) {
+            dm_note_add(p, (DmNote){chords[c].beat, .75, chords[c].keys[k], 100, selected});
+        }
+    }
+
+    dm_note_add(p, (DmNote){6, .75, 84, 100, selected});
+}
+
+static double legato_end(const DmPattern *p, uint8_t key, double beat) {
+    for (size_t i = 0; i < p->count; ++i) {
+        if (p->notes[i].key == key && p->notes[i].beat == beat) {
+            return p->notes[i].beat + p->notes[i].length;
+        }
+    }
+
+    return -1;
+}
+
+static void legato(Editor *e) {
+    editor_smoke(e);
+    e->edit_focus = FOCUS_NOTES;
+    legato_progression(ed_pattern(e), 0);
+    ed_commit(e);
+    size_t undo = e->undo_count;
+    ed_action(e, ACT_LEGATO);
+    DmPattern *p = ed_pattern(e);
+    check(legato_end(p, 72, 0) == 4 && legato_end(p, 79, 0) == 4,
+          "legato runs a chord to the next chord");
+    check(legato_end(p, 74, 4) == 6 && legato_end(p, 81, 4) == 6,
+          "legato stops a chord at a passing tone");
+    check(legato_end(p, 84, 6) == 8, "legato runs a passing tone to the next chord");
+    check(legato_end(p, 69, 12) == 16 && legato_end(p, 76, 12) == 16,
+          "legato runs the last chord to the next bar line");
+    check(p->length >= 16 && e->undo_count == undo + 1, "legato is one undo step");
+    ed_undo(e, false);
+    check(legato_end(ed_pattern(e), 84, 6) == 6.75, "undo restores the lengths legato changed");
+
+    p = ed_pattern(e);
+    legato_progression(p, 0);
+
+    for (size_t i = 0; i < p->count; ++i) {
+        p->notes[i].selected = p->notes[i].beat == 4;
+    }
+
+    dm_legato(&e->project, p);
+    check(legato_end(p, 77, 4) == 6, "selected notes stop at the next unselected note");
+    check(legato_end(p, 72, 0) == .75 && legato_end(p, 84, 6) == 6.75,
+          "legato leaves unselected notes alone");
+
+    legato_progression(p, 0);
+    p->notes[9].length = 5;
+    dm_note_add(p, (DmNote){1, .5, 60, 100, 0, 1});
+    dm_legato(&e->project, p);
+    check(legato_end(p, 72, 12) == 20 && legato_end(p, 69, 12) == 20,
+          "a last chord running past a bar line ends together at the following one");
+    check(legato_end(p, 72, 0) == 4 && legato_end(p, 60, 1) == 4,
+          "notes on another port neither cut nor are cut by this port's notes");
+}
+
 static void gestures(Editor *e) {
     editor_smoke(e);
     e->piano = true;
@@ -276,6 +346,7 @@ int main(void) {
     ui_root(0, 900);
     history_and_duplication(e);
     resizing_and_quantize(e);
+    legato(e);
     gestures(e);
     e->automation_cc = 11;
     UiRect lane = {0, 0, 400, 200};

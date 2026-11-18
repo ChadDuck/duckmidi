@@ -357,6 +357,11 @@ static bool action_pattern(Editor *e, int a) {
             ed_quantize_notes(e);
         }
         break;
+    case ACT_LEGATO:
+        if (ed_context(e) == CONTEXT_ROLL && ed_pattern(e)) {
+            ed_legato_notes(e);
+        }
+        break;
     case ACT_NEXT:
     case ACT_NEXT_AUTOMATION:
         ed_step_pattern(e, e->automation_browser || a == ACT_NEXT_AUTOMATION, 1);

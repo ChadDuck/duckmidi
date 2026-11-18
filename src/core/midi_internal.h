@@ -32,7 +32,6 @@ typedef struct {
     Raw *items;
     size_t count, capacity;
     int format, tracks, division;
-    uint64_t end_tick;
     bool scan_pan;
     int scan_port, scan_sequence;
     uint64_t first_note[16], first_pan[16];

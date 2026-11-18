@@ -84,6 +84,28 @@ void ed_seek(Editor *e, double beat) {
     ed_transport_publish(e, dm_beat_seconds(&e->project, beat), dm_audio_playing(e->audio));
 }
 
+/* Whether the open pattern has nothing recorded in it: no notes, or no points in an automation
+   pattern. */
+static bool pattern_empty(Editor *e) {
+    const DmPattern *p = ed_pattern(e);
+
+    if (!p) {
+        return true;
+    }
+
+    if (!p->kind) {
+        return !p->count;
+    }
+
+    for (size_t i = 0; i < e->project.automation_count; ++i) {
+        if (e->project.automation[i].pattern == e->selected_pattern) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool ed_begin_record_take(Editor *e) {
     DmPattern *p = ed_pattern(e);
 
@@ -96,6 +118,7 @@ bool ed_begin_record_take(Editor *e) {
     }
 
     e->take_origin_set = false;
+    e->take_empty = pattern_empty(e);
 
     size_t bytes = p->count * sizeof(DmNote);
 
@@ -199,9 +222,10 @@ static double bar_origin(const Editor *e, double beat) {
 /* Origin off the pattern's placements. While the pattern editor has focus, the playhead decides:
    the pattern continues from its latest placement that starts before the beat (the selected one
    on a tie), so playing past a placement's end extends it, and a pattern that is not on the
-   playlist records at the song position. Otherwise, and before every placement of the pattern,
-   the pattern starts at the bar where playing began, keeping the beat within that bar. */
-static double free_origin(Editor *e, double beat) {
+   playlist but already has notes (empty is false) records at the song position. Otherwise, and
+   before every placement of the pattern, the pattern starts at the bar where playing began,
+   keeping the beat within that bar: an empty unplaced pattern records from its start. */
+static double free_origin(Editor *e, double beat, bool empty) {
     if (ed_context(e) != CONTEXT_ROLL) {
         return bar_origin(e, beat);
     }
@@ -224,14 +248,14 @@ static double free_origin(Editor *e, double beat) {
         }
     }
 
-    return found ? found->beat - found->offset : placed ? bar_origin(e, beat) : 0;
+    return found ? found->beat - found->offset : placed || empty ? bar_origin(e, beat) : 0;
 }
 
 double ed_recording_origin(Editor *e, double beat) {
     double origin = 0;
 
     if (!e->pattern_mode && !placement_origin(e, beat, &origin)) {
-        origin = free_origin(e, beat);
+        origin = free_origin(e, beat, pattern_empty(e));
     }
 
     return origin;
@@ -257,7 +281,7 @@ double ed_record_origin(Editor *e, double *beat, uint32_t loop) {
     }
 
     if (!e->take_origin_set || loop != e->take_loop) {
-        e->take_origin = free_origin(e, *beat);
+        e->take_origin = free_origin(e, *beat, e->take_empty);
         e->take_loop = loop;
         e->take_origin_set = true;
     }

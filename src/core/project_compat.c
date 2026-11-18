@@ -256,6 +256,22 @@ static void upgrade_20_to_21(DmProject *p) {
     p->automation_count = kept;
 }
 
+/* Schema 24 note patterns span whole bars, where older ones ended on the beat after their last
+   note. A placement that follows its pattern's length (length 0) is given the length it had, so
+   older songs keep their placements, their end and the End of Track they export. The patterns are
+   then refitted to whole bars. */
+static void upgrade_23_to_24(DmProject *p) {
+    for (size_t i = 0; i < p->clip_count; ++i) {
+        DmClip *clip = &p->clips[i];
+
+        if (!clip->length && !p->patterns[clip->pattern].kind) {
+            clip->length = dm_clip_length(p, *clip);
+        }
+    }
+
+    dm_patterns_fit(p);
+}
+
 void dm_project_upgrade(DmProject *p, uint32_t schema) {
     if (schema <= 9) {
         upgrade_9_to_10(p);
@@ -310,4 +326,8 @@ void dm_project_upgrade(DmProject *p, uint32_t schema) {
        controls into rank like every other automation pattern (newest placed point, then higher
        row). The readers take the retired field from older files and discard it
        (project_fields.c PATTERN_CONTROL_SCOPE, project_legacy.c). */
+
+    if (schema <= 23) {
+        upgrade_23_to_24(p);
+    }
 }

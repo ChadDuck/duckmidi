@@ -970,6 +970,15 @@ static void layout_and_mixer(Editor *e, void (*check)(bool, const char *)) {
     mouse_frame(e, x + 40, y, false);
     check(e->start_beat[0] == 4 && e->cursor_beat[0] == 4,
           "dragging a ruler selects and remembers the playback start");
+    e->playlist_view.zoom = 2;
+    mouse_frame(e, 0, 0, false);
+    mouse_frame(e, x, y, true);
+    mouse_frame(e, x + 62, y, true);
+    mouse_frame(e, x + 62, y, false);
+    check(e->cursor_beat[0] == 2.25,
+          "playlist ruler snaps the playhead to visible quarter beats");
+    e->playlist_view.zoom = 1;
+    mouse_frame(e, 0, 0, false);
     e->edit_focus = FOCUS_PLAYLIST;
     direct_key(e, SDL_SCANCODE_SPACE, SDL_KMOD_SHIFT);
     check(e->start_beat[0] == 0, "Shift-Space starts from the beginning");

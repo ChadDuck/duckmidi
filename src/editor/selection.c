@@ -579,6 +579,23 @@ void ed_quantize_notes(Editor *e) {
     ed_commit(e);
 }
 
+void ed_legato_notes(Editor *e) {
+    DmPattern *p = ed_pattern(e);
+
+    if (!p || !p->count || !ed_checkpoint(e)) {
+        return;
+    }
+
+    if (!dm_legato(&e->project, p)) {
+        ed_checkpoint_abandon(e);
+        ed_message(e, DM_TEXT_CANNOT_ALLOCATE_NOTE);
+        return;
+    }
+
+    dm_pattern_fit(&e->project, p);
+    ed_commit(e);
+}
+
 static int copy_pattern_between(DmProject *to, const DmProject *from, int source) {
     int id = dm_pattern_add(to, from->patterns[source].name);
 

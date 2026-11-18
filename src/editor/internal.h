@@ -162,6 +162,7 @@ typedef struct {
     double beat;
     int index;
     bool automation;
+    bool song_end; /* The song's End of Track (Song Events only); index is -1. */
 } MidiRow;
 
 extern uint32_t ed_dialog_event;
@@ -359,6 +360,7 @@ void ed_edit_feedback(Editor *e, float pitch);
 void ed_release_piano(Editor *e);
 void ed_transpose(Editor *e, int steps);
 void ed_quantize_notes(Editor *e);
+void ed_legato_notes(Editor *e);
 bool ed_reserved(SDL_Scancode key, SDL_Keymod mods);
 void ed_action_zoom(Editor *e, int a);
 void ed_action(Editor *e, int a);
@@ -373,6 +375,7 @@ bool ed_instrument_note(Editor *e, const SDL_KeyboardEvent *key);
 bool ed_inside(UiPoint p, UiRect r);
 float ed_clampf(float n, float lo, float hi);
 double ed_snap(double beat, double grid, bool free);
+double ed_playlist_step(float scale);
 void ed_hover(Editor *e, const char *text);
 void ed_info_box(Editor *e);
 void ed_modifier_hint(const Editor *e, UiMouse mouse, char *out, size_t cap);
@@ -502,6 +505,10 @@ size_t ed_song_event_pick_count(Editor *e);
 bool ed_song_event_picked(Editor *e, MidiRow row);
 bool ed_song_events_move(Editor *e, double value, bool absolute);
 void ed_song_events_move_panel(Editor *e);
+/* Sets the End of Track by hand, never before the arrangement's end; 0 makes it follow the
+   arrangement again. One undo step. */
+void ed_song_end_set(Editor *e, double beat);
+void ed_song_end_details(Editor *e);
 void ed_resize_clip(Editor *e, DmClip *clip, double length);
 void ed_move_clip(Editor *e, DmClip *clip, int encoded, double beat);
 void ed_playlist_drag(Editor *e, UiRect r, View *v, float row, float scale, const int *list,

@@ -1728,10 +1728,9 @@ static void control_scope_retired(void) {
                     count == reference_count;
 
         for (size_t k = 0; same && k < count; ++k) {
-            same = events[k].tick == reference[k].tick &&
-                   events[k].status == reference[k].status && events[k].a == reference[k].a &&
-                   events[k].b == reference[k].b && events[k].port == reference[k].port &&
-                   events[k].flags == reference[k].flags;
+            same = events[k].tick == reference[k].tick && events[k].status == reference[k].status &&
+                   events[k].a == reference[k].a && events[k].b == reference[k].b &&
+                   events[k].port == reference[k].port && events[k].flags == reference[k].flags;
         }
 
         check(same, "an older file's control_scope is dropped and plays the same events");
@@ -1744,8 +1743,63 @@ static void control_scope_retired(void) {
     dm_project_init(&p);
     char error[256] = {0};
     check(!dm_unpack(&p, file.data, file.size, error, sizeof(error)),
-          "a schema 23 file carrying control_scope is refused");
+          "a current file carrying control_scope is refused");
     dm_project_free(&p);
+    dm_bytes_free(&file);
+}
+
+/* Schema 23: a note pattern ending on the beat after its last note (4 to 6.5 stored as 7), placed
+   once with no length of its own. */
+static DmBytes beat_pattern_file(void) {
+    DmBytes body = {0}, proj = {0}, ch = {0}, pat = {0}, note = {0}, clip = {0};
+    put_varint_field(&proj, 11, 1); /* next_pattern_uid */
+    put_entry(&body, 1, proj.data, proj.size);
+    put_int_field(&ch, 1, 0);    /* channel 0 */
+    put_varint_field(&ch, 2, 1); /* enabled */
+    put_entry(&body, 2, ch.data, ch.size);
+    put_real_field(&note, 1, 4);
+    put_real_field(&note, 2, 2.5);
+    put_varint_field(&note, 3, 60);
+    put_varint_field(&note, 4, 100);
+    put_varint_field(&pat, 1, 1);
+    put_text_field(&pat, 3, "Notes");
+    put_real_field(&pat, 5, 7);
+    put_entry(&pat, 30, note.data, note.size);
+    put_entry(&body, 4, pat.data, pat.size);
+    put_real_field(&clip, 1, 0);
+    put_int_field(&clip, 2, 0);
+    put_int_field(&clip, 3, 0);
+    put_entry(&body, 5, clip.data, clip.size);
+    DmBytes file = wrap_schema(&body, 23);
+    dm_bytes_free(&clip);
+    dm_bytes_free(&note);
+    dm_bytes_free(&pat);
+    dm_bytes_free(&ch);
+    dm_bytes_free(&proj);
+    dm_bytes_free(&body);
+    return file;
+}
+
+static void whole_bar_patterns(void) {
+    DmBytes file = beat_pattern_file(), saved = {0};
+    DmProject p, again;
+    dm_project_init(&p);
+    dm_project_init(&again);
+    char error[256] = {0};
+    check(dm_unpack(&p, file.data, file.size, error, sizeof(error)), error);
+    check(p.patterns[0].length == 8 && p.clips[0].length == 7,
+          "schema 24 refits a pattern to whole bars and keeps an older placement's length");
+    check(dm_duration(&p) == 7 && p.end == 0,
+          "an older song keeps its end, and the end still follows the arrangement");
+    p.end = 10;
+    check(dm_pack(&p, &saved) && dm_unpack(&again, saved.data, saved.size, error, sizeof(error)) &&
+              again.end == 10 && dm_duration(&again) == 10,
+          "a manual song end saves and sets the song's length");
+    again.end = 2;
+    check(dm_duration(&again) == 7, "a manual end before the arrangement's end does not cut it");
+    dm_project_free(&again);
+    dm_project_free(&p);
+    dm_bytes_free(&saved);
     dm_bytes_free(&file);
 }
 
@@ -1758,6 +1812,7 @@ int main(void) {
     check_tagged_fuzz();
     song_points_convert();
     control_scope_retired();
+    whole_bar_patterns();
     parallel_note_rows();
     check_legacy_pitch_units();
     check_legacy_bends();

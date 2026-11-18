@@ -81,6 +81,10 @@ static bool timing_valid(const DmProject *p) {
         return false;
     }
 
+    if (!(p->end >= 0 && p->end <= DM_MAX_BEAT)) {
+        return false;
+    }
+
     if (p->numerator < 1 || p->numerator > 255) {
         return false;
     }

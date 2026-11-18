@@ -1,5 +1,13 @@
 # duckmidi changelog
 
+# 0.13.2
+
+1. Dragging the playlist playhead snaps to quarter beats when the quarter-beat lines are visible.
+2. **Legato** (Ctrl + L, or the piano roll's menu).
+3. The song's **End of track** appears on the Events row.
+    - Can be manually set or left on 'Auto'.
+5. *More* pattern editor logic modifications.
+
 # 0.13.1
 
 1. Ocarina of Time exports no longer play slow between 225 and 255 BPM: the game tops out near 224 BPM, so faster songs are now written at a lower timing resolution from there.

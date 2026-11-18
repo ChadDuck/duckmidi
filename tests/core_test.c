@@ -251,6 +251,28 @@ static void opening_controls(void) {
     dm_project_free(&p);
 }
 
+/* A note from beat 4 to 5 and End of Track at 6.5: the imported song keeps the file's length,
+   not its pattern's whole bars, and exports it again. */
+static void end_of_track(void) {
+    const uint8_t source[] = {'M',  'T',  'h', 'd',  0,    0,   0, 6,    0,    0,    0,    1,
+                              0,    0x60, 'M', 'T',  'r',  'k', 0, 0,    0,    14,   0x83, 0,
+                              0x90, 60,   100, 0x60, 0x80, 60,  0, 0x81, 0x10, 0xff, 0x2f, 0};
+    DmProject p, again;
+    dm_project_init(&p);
+    dm_project_init(&again);
+    char err[256];
+    CHECK(dm_import(&p, source, sizeof(source), 0, 0, err, sizeof(err)));
+    CHECK(p.patterns[0].length == 8 && p.clips[0].length == 6.5);
+    CHECK(dm_duration(&p) == 6.5 && p.end == 0);
+    DmBytes output = {0};
+    CHECK(dm_midi(&p, &output, err, sizeof(err)));
+    CHECK(dm_import(&again, output.data, output.size, 0, 0, err, sizeof(err)));
+    CHECK(dm_duration(&again) == 6.5);
+    dm_bytes_free(&output);
+    dm_project_free(&again);
+    dm_project_free(&p);
+}
+
 static unsigned default_pan_flags(const DmProject *p) {
     DmExportEvent *events = NULL;
     size_t count;
@@ -576,10 +598,10 @@ static void pattern_meter(void) {
     CHECK(id == 0 && p.patterns[0].length == 1);
     CHECK(dm_note_add(&p.patterns[0], (DmNote){3, .5, 60, 100, 0}));
     dm_pattern_fit(&p, &p.patterns[0]);
-    CHECK(p.patterns[0].length == 4);
+    CHECK(p.patterns[0].length == 6);
     CHECK(dm_automation_add(&p, (DmAutomation){6.25, 0xb0, 0, 1, 64, id, 0, 0, 0, false}));
     dm_pattern_fit(&p, &p.patterns[0]);
-    CHECK(p.patterns[0].length == 4);
+    CHECK(p.patterns[0].length == 6);
     dm_project_free(&p);
 }
 
@@ -2483,6 +2505,7 @@ int main(void) {
     project_validation();
     multiport();
     opening_controls();
+    end_of_track();
     pan_provenance();
     program_repeats();
     patch_order();

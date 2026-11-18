@@ -50,23 +50,23 @@ static void sizing_names(Editor *e) {
     check(p->length == 1, "empty pattern is one beat");
     dm_clip_add(&e->project, (DmClip){.pattern = 0, .channel = 0});
     dm_clip_add(&e->project, (DmClip){.pattern = 0, .channel = 1, .length = .5});
-    dm_note_add(p, (DmNote){0, 1, 60, 100, 0});
+    dm_note_add(p, (DmNote){0, 4, 60, 100, 0});
     ed_changed(e);
-    check(p->length == 1, "exact beat boundary does not add another beat");
+    check(p->length == 4, "a note ending on a bar line does not add another bar");
     dm_note_add(p, (DmNote){3.5, 1, 64, 100, 0});
     ed_changed(e);
-    check(p->length == 5 && dm_clip_length(&e->project, e->project.clips[0]) == 5 &&
+    check(p->length == 8 && dm_clip_length(&e->project, e->project.clips[0]) == 8 &&
               dm_clip_length(&e->project, e->project.clips[1]) == .5,
-          "auto placement grows, explicit placement stays fixed");
+          "auto placement grows by whole bars, explicit placement stays fixed");
     p->count = 1;
     ed_changed(e);
-    check(p->length == 1, "removal shrinks auto size");
+    check(p->length == 4, "removal shrinks auto size");
     p->count = 0;
     ed_changed(e);
-    check(p->length == 1, "cleared pattern retains one-beat minimum");
+    check(p->length == 4, "cleared pattern retains one whole bar");
     dm_automation_add(&e->project, (DmAutomation){20, 0xe0, 0, 0, 64, 0, 0, 0, 0, false});
     ed_changed(e);
-    check(p->length == 1 && e->project.automation_count == 1,
+    check(p->length == 4 && e->project.automation_count == 1,
           "trailing controller data stays stored without extending automatic note placements");
     int base = dm_pattern_add(&e->project, "Pattern 2");
     int a = dm_pattern_copy(&e->project, base), b = dm_pattern_copy(&e->project, base),
@@ -242,7 +242,8 @@ static void recording(Editor *e) {
     check(ed_pattern(e)->count == 1 && fabs(ed_pattern(e)->notes[0].beat - .25) < 1e-8 &&
               fabs(ed_pattern(e)->notes[0].length - 1.75) < .01,
           "late-song recording stores pattern-local beat and played duration");
-    check(ed_pattern(e)->length == 2, "recording extends only local content span");
+    check(ed_pattern(e)->length == 4,
+          "recording extends only the local content span, to a whole bar");
     e->pattern_mode = true;
     check(ed_recording_origin(e, 120) == 0, "Pattern-mode recording already uses local beats");
 }
@@ -303,6 +304,27 @@ static void recording_onto_notes(Editor *e, bool overlap) {
     } else {
         check(p->count == 6, "without Overlap the take replaces the pattern's notes");
     }
+}
+
+/* With the pattern editor focused, an empty unplaced pattern records from its start, keeping the
+   beat within the bar where playing began, and later loop passes of the take keep that rule after
+   its first notes land. */
+static void recording_empty_unplaced(Editor *e) {
+    fixture(e);
+    e->record = true;
+    e->play_beat = 41;
+    e->play_loop = 1;
+    check(ed_begin_record_take(e), "a take starts on an empty pattern");
+    double bar = dm_bar(&e->project), beat = 41;
+    double origin = ed_record_origin(e, &beat, 1);
+    check(origin == 41 - fmod(41, bar),
+          "with the pattern editor focused, an empty unplaced pattern records from its start");
+    check(ed_record_insert(e, ed_pattern(e), 60, 100, ed_note_port(e), beat, beat + 1, origin) &&
+              find_note(ed_pattern(e), 60, fmod(41, bar)),
+          "the first note lands at its beat within the bar");
+    beat = 53.5;
+    check(ed_record_origin(e, &beat, 2) == 52,
+          "a later loop pass keeps recording from the pattern's start once it has notes");
 }
 
 /* With the playlist focused, an unplaced pattern records from its start; a loop pass places its
@@ -647,9 +669,9 @@ static void unique_slices(Editor *e) {
     DmPattern *unique = &p->patterns[id];
     check(unique->count == 3 && unique->notes[0].beat == 0 && unique->notes[0].length == .5 &&
               unique->notes[1].beat == .5 && unique->notes[2].beat == 1.5 &&
-              unique->notes[2].length == .5 && unique->length == 2 && p->clips[1].pattern == id &&
-              p->clips[1].offset == 0 && p->clips[1].length == 0,
-          "unique middle notes start at zero, cut both edges and follow fitted length");
+              unique->notes[2].length == .5 && unique->length == 4 && p->clips[1].pattern == id &&
+              p->clips[1].offset == 0 && p->clips[1].length == 2,
+          "unique middle notes start at zero, cut both edges and keep the placement's span");
     check(unique->color == 9 && unique->port == 3 &&
               unique->graph_lanes[MIDI_CC_MODULATION] == DM_GRAPH_DEFAULT &&
               !strcmp(unique->name, "Pattern 1-2") && unique->uid != p->patterns[0].uid &&
@@ -675,17 +697,18 @@ static void unique_slices(Editor *e) {
           "undo restores the slice, pattern list and all automation");
     unique_playback(p, before, before_count, UINT64_MAX, 10 * DM_PPQ);
     ed_undo(e, true);
-    check(p->clips[1].pattern == id && !p->clips[1].offset && !p->clips[1].length,
+    check(p->clips[1].pattern == id && !p->clips[1].offset && p->clips[1].length == 2,
           "redo restores the unique placement and its trimmed pattern");
     unique_playback(p, before, before_count, UINT64_MAX, 10 * DM_PPQ);
     unique = &p->patterns[id];
     unique->count = 1;
     dm_patterns_fit(p);
-    check(unique->length == 1 && dm_clip_length(p, p->clips[1]) == 1,
-          "editing the unique pattern refits its following placement");
+    check(unique->length == 4 && dm_clip_length(p, p->clips[1]) == 2,
+          "a shortened unique pattern keeps one whole bar and the placement keeps its span");
     free(before);
 
-    /* Automatic note fitting deliberately ignores trailing automation and silence. */
+    /* A slice made unique keeps its span: its new pattern ignores trailing automation and silence
+       for its own whole-bar length, but the placement does not shrink. */
     ed_new_project(e);
     p = &e->project;
     check(dm_note_add(&p->patterns[0],
@@ -701,14 +724,14 @@ static void unique_slices(Editor *e) {
     ed_split_clip(e, 1, 4);
     before = export_fixture(p, &before_count);
     id = dm_clip_make_unique(p, 1);
-    check(id >= 0 && p->patterns[id].length == 1 && !p->clips[1].length && !p->clips[1].offset,
-          "a slice's silent tail does not pin the new pattern length");
-    unique_playback(p, before, before_count, 3 * DM_PPQ, 2 * DM_PPQ);
+    check(id >= 0 && p->patterns[id].length == 4 && p->clips[1].length == 2 && !p->clips[1].offset,
+          "a slice keeps its span, silent tail included, when made unique");
+    unique_playback(p, before, before_count, UINT64_MAX, 2 * DM_PPQ);
     size_t after_count;
     DmExportEvent *after = export_fixture(p, &after_count);
     DmExportEvent key = {.tick = 3 * DM_PPQ, .status = MIDI_CONTROL, .a = MIDI_CC_EXPRESSION};
-    check(control_at(before, before_count, key) == 40 && control_at(after, after_count, key) == 127,
-          "fitting a short slice deliberately releases sustained controls at its new end");
+    check(control_at(before, before_count, key) == 40 && control_at(after, after_count, key) == 40,
+          "a unique slice holds its sustained controls to its end like the original");
     free(before);
     free(after);
 }
@@ -744,7 +767,8 @@ static void unique_graph_slice(Editor *e) {
     size_t before_count;
     DmExportEvent *before = export_fixture(p, &before_count);
     int id = dm_clip_make_unique(p, 1);
-    check(id >= 0 && p->patterns[id].length == 2, "make a fractional graph cell slice unique");
+    check(id >= 0 && p->patterns[id].length == 4 && p->clips[1].length == 2,
+          "make a fractional graph cell slice unique");
     unique_playback(p, before, before_count, 0, UINT64_MAX);
     bool bar = false;
 
@@ -854,9 +878,10 @@ static void unique_automation_slices(Editor *e) {
             }
 
             check(nodes >= 2 && nodes <= original_nodes + 2 && !p->patterns[id].mode &&
-                      !p->clips[1].offset && !p->clips[1].length &&
+                      !p->clips[1].offset &&
+                      fabs(dm_clip_length(p, p->clips[1]) - (mode < 3 ? 2 : 2.125)) < 1e-9 &&
                       p->patterns[id].length == (mode < 3 ? 2 : 3),
-                  "a curve crossing both cuts adds at most two boundary nodes and fits");
+                  "a curve crossing both cuts adds at most two boundary nodes and keeps its span");
             bool start = false, end = false;
             double offset = .37, length = mode < 3 ? 2 : 2.125;
 
@@ -949,6 +974,7 @@ int main(void) {
     recording_onto_notes(e, true);
     recording_onto_notes(e, false);
     recording_passes(e);
+    recording_empty_unplaced(e);
     group_points(e);
     ui_end();
     ui_render(r);

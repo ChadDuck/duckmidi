@@ -441,6 +441,46 @@ static void song_event_group_programs(Editor *e) {
           "one undo restores program repeats and their hidden copies");
 }
 
+static void song_end(Editor *e) {
+    fixture(e);
+    e->project.clip_count = 0;
+    e->project.event_count = 0;
+    e->project.end = 0;
+    check(dm_clip_add(&e->project, (DmClip){.beat = 8, .pattern = 0}), "place a pattern at bar 3");
+    ed_changed(e);
+    check(dm_duration(&e->project) == 12, "the song ends after its last placement");
+    ed_song_event_open_bar(e, 12, false, -1);
+    check(e->midi_song_end && !e->song_event_add,
+          "a bar holding only the End of Track opens in Edit with it selected");
+    size_t rows = ed_song_event_rows(e, 12, 16, -1);
+    const MidiRow *list = (const MidiRow *)e->midi_rows.data;
+    check(rows == 1 && list[0].song_end && list[0].beat == 12 &&
+              !strcmp(ed_midi_row_name(e, list[0]), DM_TEXT_END_OF_TRACK),
+          "the End of Track is listed in its bar like an event");
+    check(!ed_song_event_rows(e, 8, 12, -1) && !ed_song_event_rows(e, 12, 16, 0),
+          "the End of Track is listed only in its own bar, and only as a song event");
+    ed_song_event_pick(e, 0, PICK_TOGGLE);
+    check(e->midi_song_end && !ed_song_event_pick_count(e),
+          "the End of Track opens on its own and is never picked with events");
+    e->song_event = false;
+    size_t undo = e->undo_count;
+    ed_song_end_set(e, 20);
+    check(e->project.end == 20 && dm_duration(&e->project) == 20 && e->undo_count == undo + 1,
+          "setting the End of Track by hand is one undo step");
+    check(dm_clip_add(&e->project, (DmClip){.beat = 24, .pattern = 0}) &&
+              dm_duration(&e->project) == 28 && e->project.end == 20,
+          "a manual end stays manual and the arrangement still runs past it");
+    e->project.clip_count = 1;
+    ed_song_end_set(e, 2);
+    check(e->project.end == 12 && dm_duration(&e->project) == 12,
+          "a manual end is never set before the arrangement's end");
+    ed_song_end_set(e, 0);
+    check(e->project.end == 0 && dm_duration(&e->project) == 12,
+          "reset makes the End of Track follow the arrangement again");
+    ed_undo(e, false);
+    check(e->project.end == 12, "undo restores the manual end");
+}
+
 static void native_drop(Editor *e, const char *path) {
 #ifdef _WIN32
     wchar_t wide[DM_PATH];
@@ -582,6 +622,7 @@ int main(void) {
     song_program_repeats(e);
     song_event_selection_checks(e);
     song_event_group_programs(e);
+    song_end(e);
     ui_end();
     ui_render(r);
     drop_checks(e);

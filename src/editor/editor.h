@@ -8,6 +8,7 @@
 typedef enum {
     ACT_PIANO,
     ACT_QUANTIZE,
+    ACT_LEGATO,
     ACT_PLAY,
     ACT_FORWARD,
     ACT_BACK,
@@ -336,6 +337,7 @@ typedef struct {
     double take_origin;
     uint32_t take_loop;
     bool take_origin_set;
+    bool take_empty; /* The take's pattern was empty when the take began (see free_origin). */
     /* Where and in which loop pass playback last started, so input stamped a little earlier
        by latency stays in the take. */
     double play_beat;
@@ -349,6 +351,7 @@ typedef struct {
     int song_event_pick_anchor;
     float song_event_move_by;
     double song_event_move_to;
+    bool midi_song_end; /* The Song Events window's details show the End of Track. */
     float midi_split, song_event_split; /* The event list's share of the panels' width. */
     double event_beat, song_event_anchor;
     int song_event_kind, song_event_channel;

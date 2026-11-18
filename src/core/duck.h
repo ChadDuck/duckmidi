@@ -13,7 +13,7 @@
 #define DM_PPQ 960
 #define DM_MAX_BEAT (0x0FFFFFFF / DM_PPQ)
 #define DM_PIANO_KEYS 37
-#define DM_PROJECT_SCHEMA 23
+#define DM_PROJECT_SCHEMA 24
 #define DM_PROJECT_SCHEMA_OLDEST 9    /* Schema 9 (0.10.1) also loads, converted through 10. */
 #define DM_NOTE_PORTS 128
 #define DM_PATTERN_COLORS 16
@@ -178,6 +178,8 @@ typedef struct {
 typedef struct {
     char name[128], soundfont[DM_PATH];
     double bpm;
+    double end; /* Manual End of Track in beats: the song lasts at least this long. 0 follows
+                   the arrangement. */
     int numerator, denominator, port, sequence, source_format;
     DmChannel channels[16];
     DmPortMix *port_mix;
@@ -288,13 +290,23 @@ bool dm_collapse_program_repeats(DmProject *p, int index);
 void dm_collapse_marked_program_repeats(DmProject *p, bool *marks);
 bool dm_message_valid(const DmBytes *message);
 bool dm_conductor(const DmBytes *message);
+/* The song's end, where every track's End of Track is written: the arrangement's end
+   (dm_content_end), or the manual end when that is later. */
 double dm_duration(const DmProject *p);
+/* The end of the arrangement: the last placement or song event, at least one bar. */
+double dm_content_end(const DmProject *p);
 double dm_bar(const DmProject *p);
 void dm_patterns_fit(DmProject *project);
 void dm_pattern_name(DmProject *project, int pattern, const char *name);
 void dm_pattern_fit(const DmProject *p, DmPattern *pattern);
 DmMeter dm_meter(const DmProject *p, double beat);
+/* The first bar line at or after beat, by the project's time signatures. */
+double dm_bar_ceil(const DmProject *p, double beat);
 void dm_quantize(DmPattern *p, double grid);
+/* Ends each note (the selected ones, or all when none are selected) where the next later note on
+   its port starts, so chords stay chords; notes with nothing after them run to the bar line at or
+   after the longest of their chord. Starts are unchanged. */
+bool dm_legato(const DmProject *project, DmPattern *p);
 bool dm_import(DmProject *p, const unsigned char *data, size_t size, int port, int sequence,
                char *error, size_t cap);
 bool dm_midi(const DmProject *p, DmBytes *out, char *error, size_t cap);

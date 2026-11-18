@@ -54,6 +54,7 @@ void editor_init(Editor *e, SDL_Window *window, SDL_Renderer *renderer, DmAudio 
     e->midi_event_index = -1;
     e->song_event_channel = -1;
     e->song_event_pick_anchor = -1;
+    e->midi_song_end = false;
     e->midi_split = 0; /* List and details share the MIDI Events window evenly at first. */
     e->ui_size = 1;
     e->status_time = 0;

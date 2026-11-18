@@ -940,7 +940,10 @@ int dm_clip_make_unique(DmProject *p, size_t index) {
 
     dm_pattern_fit(p, pattern);
     p->clips[index].pattern = id;
-    p->clips[index].offset = p->clips[index].length = 0;
+    p->clips[index].offset = 0;
+    /* The placement keeps its span; it follows the new pattern when that is the pattern's own
+       whole-bar length. */
+    p->clips[index].length = length == pattern->length ? 0 : length;
     return id;
 }
 
@@ -1397,19 +1400,21 @@ double dm_bar(const DmProject *p) {
     return p->numerator * 4.0 / p->denominator;
 }
 
-static double note_pattern_end(const DmPattern *pattern) {
-    double end = 0;
+/* A note pattern spans whole bars, at least one: up to the bar line at or after its latest note
+   end. Its bars are counted from the song's start, as the piano roll draws them. */
+static double note_pattern_end(const DmProject *project, const DmPattern *pattern) {
+    double end = 1.0 / DM_PPQ;
 
     for (size_t i = 0; i < pattern->count; ++i) {
         end = fmax(end, pattern->notes[i].beat + pattern->notes[i].length);
     }
 
-    return fmax(1, ceil(end - 1e-9));
+    return dm_bar_ceil(project, end);
 }
 
 void dm_pattern_fit(const DmProject *p, DmPattern *pattern) {
     if (!pattern->kind) {
-        pattern->length = note_pattern_end(pattern);
+        pattern->length = note_pattern_end(p, pattern);
         return;
     }
 
@@ -1429,12 +1434,12 @@ void dm_pattern_fit(const DmProject *p, DmPattern *pattern) {
 void dm_patterns_fit(DmProject *p) {
     for (size_t i = 0; i < p->pattern_count; ++i) {
         if (!p->patterns[i].kind) {
-            p->patterns[i].length = note_pattern_end(&p->patterns[i]);
+            p->patterns[i].length = note_pattern_end(p, &p->patterns[i]);
         }
     }
 }
 
-double dm_duration(const DmProject *p) {
+double dm_content_end(const DmProject *p) {
     double end = dm_bar(p);
 
     for (size_t i = 0; i < p->clip_count; ++i) {
@@ -1447,6 +1452,10 @@ double dm_duration(const DmProject *p) {
     }
 
     return end;
+}
+
+double dm_duration(const DmProject *p) {
+    return fmax(dm_content_end(p), p->end);
 }
 
 void dm_quantize(DmPattern *p, double grid) {
@@ -1464,6 +1473,85 @@ void dm_quantize(DmPattern *p, double grid) {
             p->length = fmax(p->length, p->notes[i].beat + p->notes[i].length);
         }
     }
+}
+
+typedef struct {
+    double beat;
+    size_t index;
+    uint8_t port;
+} LegatoNote;
+
+static int legato_compare(const void *a, const void *b) {
+    const LegatoNote *x = a, *y = b;
+
+    if (x->port != y->port) {
+        return x->port < y->port ? -1 : 1;
+    }
+
+    if (x->beat != y->beat) {
+        return x->beat < y->beat ? -1 : 1;
+    }
+
+    return (x->index > y->index) - (x->index < y->index);
+}
+
+bool dm_legato(const DmProject *project, DmPattern *p) {
+    bool selected = false;
+
+    for (size_t i = 0; i < p->count; ++i) {
+        selected |= p->notes[i].selected != 0;
+    }
+
+    LegatoNote *order = malloc((p->count + 1) * sizeof(*order));
+
+    if (!order) {
+        return false;
+    }
+
+    for (size_t i = 0; i < p->count; ++i) {
+        order[i] = (LegatoNote){p->notes[i].beat, i, p->notes[i].port};
+    }
+
+    qsort(order, p->count, sizeof(*order), legato_compare);
+
+    /* Notes on one port that start together form a chord and end together. */
+    for (size_t first = 0, last; first < p->count; first = last) {
+        last = first + 1;
+
+        while (last < p->count && order[last].port == order[first].port &&
+               order[last].beat - order[first].beat < 1e-9) {
+            ++last;
+        }
+
+        double end;
+
+        if (last < p->count && order[last].port == order[first].port) {
+            end = order[last].beat;
+        } else {
+            double longest = order[first].beat;
+
+            for (size_t k = first; k < last; ++k) {
+                DmNote n = p->notes[order[k].index];
+
+                if (!selected || n.selected) {
+                    longest = fmax(longest, n.beat + n.length);
+                }
+            }
+
+            end = dm_bar_ceil(project, longest);
+        }
+
+        for (size_t k = first; k < last; ++k) {
+            DmNote *n = &p->notes[order[k].index];
+
+            if (!selected || n->selected) {
+                n->length = end - n->beat;
+            }
+        }
+    }
+
+    free(order);
+    return true;
 }
 
 double dm_first_note(const DmProject *p, int channel) {

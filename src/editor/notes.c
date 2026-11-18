@@ -796,7 +796,10 @@ static void piano_header(Editor *e, DmPattern *p) {
     ui_position(top.x + 2, top.y + 2);
 
     if (ui_editor_menu()) {
-        if (ui_menu_item(DM_TEXT_COLOR_SELECTED_NOTES, "Alt+C", true)) {
+        char key[96];
+
+        if (ui_menu_item(DM_TEXT_COLOR_SELECTED_NOTES,
+                         ed_binding_text(e, ACT_NOTE_COLOR, key, sizeof(key)), true)) {
             e->note_color_popup = true;
         }
 
@@ -807,8 +810,13 @@ static void piano_header(Editor *e, DmPattern *p) {
             ed_percussion_open(e);
         }
 
-        if (ui_menu_item(DM_TEXT_QUANTIZE, NULL, true)) {
+        if (ui_menu_item(DM_TEXT_QUANTIZE, ed_binding_text(e, ACT_QUANTIZE, key, sizeof(key)),
+                         true)) {
             ed_quantize_notes(e);
+        }
+
+        if (ui_menu_item(DM_TEXT_LEGATO, ed_binding_text(e, ACT_LEGATO, key, sizeof(key)), true)) {
+            ed_legato_notes(e);
         }
 
         ui_popup_end();

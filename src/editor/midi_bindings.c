@@ -18,6 +18,7 @@ static const struct {
     [ED_MIDI_RECORD] = {"action.record", DM_TEXT_RECORD},
     [ED_MIDI_METRONOME] = {"action.metronome", DM_TEXT_METRONOME},
     [ED_MIDI_QUANTIZE] = {"action.quantize", DM_TEXT_QUANTIZE},
+    [ED_MIDI_LEGATO] = {"action.legato", DM_TEXT_LEGATO},
     [ED_MIDI_UNDO] = {"action.undo", DM_TEXT_UNDO},
     [ED_MIDI_REDO] = {"action.redo", DM_TEXT_REDO},
     [ED_MIDI_CHANNEL_PREVIOUS] = {"action.channel_previous", DM_TEXT_MIDI_BIND_PREVIOUS_CHANNEL},
@@ -454,6 +455,7 @@ static void action(Editor *e, EdMidiTargetKind kind) {
         [ED_MIDI_RECORD] = ACT_RECORD,
         [ED_MIDI_METRONOME] = ACT_METRONOME,
         [ED_MIDI_QUANTIZE] = ACT_QUANTIZE,
+        [ED_MIDI_LEGATO] = ACT_LEGATO,
     };
 
     switch (kind) {

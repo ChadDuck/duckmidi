@@ -128,6 +128,14 @@ invalid:
 void ed_midi_select(Editor *e, MidiRow row) {
     e->event_beat = row.beat;
     e->midi_selection_revision = e->export_revision;
+    e->midi_song_end = row.song_end;
+
+    if (row.song_end) {
+        e->midi_event_index = -1;
+        e->midi_error[0] = 0;
+        return;
+    }
+
     e->midi_event_kind = row.automation ? 1 : 0;
     e->midi_event_index = row.index;
     e->midi_sample_dirty = false;
@@ -204,6 +212,10 @@ const char *ed_midi_row_name(Editor *e, MidiRow row) {
     static char label[160];
     uint8_t status, first;
 
+    if (row.song_end) {
+        return DM_TEXT_END_OF_TRACK;
+    }
+
     if (row.automation) {
         DmAutomation a = e->project.automation[row.index];
         status = a.type | a.channel;
@@ -253,8 +265,9 @@ static void midi_event_list(Editor *e, size_t count) {
         char label[256];
         snprintf(label, sizeof(label), DM_TEXT_EVENT_ROW_ID, ed_midi_row_name(e, row), row.beat + 1,
                  row.automation, row.index);
-        bool selected =
-            e->midi_event_index == row.index && e->midi_event_kind == (int)row.automation;
+        bool selected = row.song_end ? e->midi_song_end
+                                     : e->midi_event_index == row.index &&
+                                           e->midi_event_kind == (int)row.automation;
 
         if (e->song_event && !e->song_event_add && ed_song_event_pick_count(e)) {
             selected = ed_song_event_picked(e, row);
@@ -758,6 +771,11 @@ bool ed_midi_apply_draft(Editor *e) {
 static void midi_event_inspector(Editor *e) {
     if (e->song_event && !e->song_event_add && ed_song_event_pick_count(e) > 1) {
         ed_song_events_move_panel(e);
+        return;
+    }
+
+    if (e->song_event && !e->song_event_add && e->midi_song_end) {
+        ed_song_end_details(e);
         return;
     }
 

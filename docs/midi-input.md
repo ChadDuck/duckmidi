@@ -230,11 +230,11 @@ bass_drum_1=48
 
 A binding key is `mixer.volume`, `mixer.pan`, `mixer.mute` or `mixer.solo` followed by
 `.channel.port` (channel 1–16, note-color port), or one of `action.play`, `action.stop`,
-`action.record`, `action.metronome`, `action.quantize`, `action.undo`, `action.redo`,
-`action.channel_previous` and `action.channel_next`. The value is the quoted device name
-(`""` for any device), the source channel 1–16, `cc` or `note`, its number, and `momentary` or
-`toggle`. Volume and pan accept only `cc` and `momentary`. Each target and each source appears
-once.
+`action.record`, `action.metronome`, `action.quantize`, `action.legato`, `action.undo`,
+`action.redo`, `action.channel_previous` and `action.channel_next`. The value is the quoted
+device name (`""` for any device), the source channel 1–16, `cc` or `note`, its number, and
+`momentary` or `toggle`. Volume and pan accept only `cc` and `momentary`. Each target and each
+source appears once.
 
 In `[percussion_midi]` the key names the drum as in `[percussion]` (its General MIDI name in
 lower case with underscores, or `unassigned_N` outside notes 35–81) and the value is the
